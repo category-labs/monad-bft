@@ -37,6 +37,8 @@ impl Voter {
         self.voting_power > 0
     }
 }
+
+#[derive(Debug)]
 pub struct WeightedRoundRobin {
     voters: Vec<Voter>,
     leader: usize, // voter idx
@@ -133,12 +135,12 @@ mod tests {
     use crate::validator::PubKey;
 
     use super::super::leader_election::LeaderElection;
-    use super::super::validator::{Address, Stake, Validator};
+    use super::super::validator::{Address, Validator};
 
     use super::WeightedRoundRobin;
 
     fn collect_voting_powers(validators: &Vec<Validator>) -> Vec<(Address, i64)> {
-        validators.iter().map(|v| (v.address, v.stake.0)).collect()
+        validators.iter().map(|v| (v.address, v.stake)).collect()
     }
 
     // expected schedule (basic round robin)
@@ -147,12 +149,12 @@ mod tests {
         let v1 = Validator {
             address: Address(1),
             pubkey: PubKey(1),
-            stake: Stake(1),
+            stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
             pubkey: PubKey(2),
-            stake: Stake(1),
+            stake: 1,
         };
         let validators = vec![v1, v2];
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
@@ -173,12 +175,12 @@ mod tests {
         let v1 = Validator {
             address: Address(1),
             pubkey: PubKey(1),
-            stake: Stake(1),
+            stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
             pubkey: PubKey(2),
-            stake: Stake(2),
+            stake: 2,
         };
         let validators = vec![v1, v2];
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
@@ -205,12 +207,12 @@ mod tests {
         let v1 = Validator {
             address: Address(1),
             pubkey: PubKey(1),
-            stake: Stake(1),
+            stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
             pubkey: PubKey(2),
-            stake: Stake(3),
+            stake: 3,
         };
         let validators = vec![v1, v2];
         let mut wrr1: WeightedRoundRobin = LeaderElection::new();
@@ -231,12 +233,12 @@ mod tests {
         let v1 = Validator {
             address: Address(1),
             pubkey: PubKey(1),
-            stake: Stake(1),
+            stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
             pubkey: PubKey(2),
-            stake: Stake(3),
+            stake: 3,
         };
         let validators = vec![v1, v2];
         let mut wrr1: WeightedRoundRobin = LeaderElection::new();
@@ -258,12 +260,12 @@ mod tests {
         let mut v1 = Validator {
             address: Address(1),
             pubkey: PubKey(1),
-            stake: Stake(10),
+            stake: 10,
         };
         let v2 = Validator {
             address: Address(2),
             pubkey: PubKey(2),
-            stake: Stake(10),
+            stake: 10,
         };
 
         let validators = vec![v1, v2];
@@ -276,8 +278,8 @@ mod tests {
         wrr.increment_view(1);
 
         // now v1 gets slashed to 5
-        v1.stake = Stake(5);
-        assert!(wrr.update_voting_power(&v1.address, v1.stake.0));
+        v1.stake = 5;
+        assert!(wrr.update_voting_power(&v1.address, v1.stake));
         assert!(wrr.total_voting_power == 15);
 
         // we do not change the proposer intra-view; v2 is still the proposer

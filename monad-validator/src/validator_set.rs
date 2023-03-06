@@ -1,0 +1,174 @@
+use std::collections::HashMap;
+use std::error;
+
+use super::leader_election::LeaderElection;
+use super::validator::Address;
+use super::validator::Validator;
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, ValidatorSetError>;
+
+#[derive(Debug)]
+pub enum ValidatorSetError {
+    DuplicateValidator(String),
+}
+
+impl fmt::Display for ValidatorSetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateValidator(s) => write!(f, "Duplicate validator entry: {}", s),
+        }
+    }
+}
+
+impl error::Error for ValidatorSetError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        None
+    }
+}
+
+#[derive(Debug)]
+pub struct ValidatorSet<T: LeaderElection> {
+    validators: HashMap<Address, Validator>,
+    leader_election: T,
+    _total_stake: i64,
+    quorom_stake: i64,
+    round: i64, // monotonically increasing: initial 1
+}
+
+impl<T: LeaderElection> ValidatorSet<T> {
+    pub fn new(validators: Vec<Validator>) -> Result<Self> {
+        let mut vmap = HashMap::new();
+        for v in validators.into_iter() {
+            let entry = vmap.entry(v.address).or_insert(v);
+            if entry.stake != v.stake {
+                return Err(ValidatorSetError::DuplicateValidator(format!(
+                    "{:?}",
+                    v.address
+                )));
+            }
+        }
+
+        let mut election = T::new();
+        election.start_new_epoch(vmap.iter().map(|(_, v)| (v.address, v.stake)).collect());
+        let total_stake: i64 = vmap.iter().map(|(_, v)| v.stake).sum();
+
+        Ok(ValidatorSet {
+            validators: vmap,
+            leader_election: election,
+            _total_stake: total_stake,
+            quorom_stake: total_stake * 2 / 3 + 1,
+            round: 1,
+        })
+    }
+
+    pub fn is_member(&self, addr: &Address) -> bool {
+        self.validators.contains_key(addr)
+    }
+
+    pub fn has_super_majority_votes(&self, addrs: &Vec<Address>) -> bool {
+        let mut voter_stake: i64 = 0;
+        for addr in addrs.into_iter() {
+            match self.validators.get(&addr) {
+                Some(v) => voter_stake += v.stake,
+                None => {}
+            }
+        }
+
+        voter_stake >= self.quorom_stake
+    }
+
+    pub fn get_leader(&mut self, round: i64) -> &Address {
+        if round < self.round {
+            panic!("round reversed {}->{}", self.round, round);
+        }
+        if round > self.round {
+            self.leader_election.increment_view(round - self.round);
+        }
+        self.leader_election.get_leader()
+    }
+    // fn udpate_stake(&mut self, validator: Validator) -> bool {}
+    // fn udpate_validators(&mut self, validators: Vec<Validator>) {}
+}
+
+#[cfg(test)]
+mod test {
+
+    use crate::{
+        validator::{Address, PubKey, Validator},
+        weighted_round_robin::WeightedRoundRobin,
+    };
+
+    use super::ValidatorSet;
+
+    #[test]
+    fn test_membership() {
+        let v1 = Validator {
+            address: Address(1),
+            pubkey: PubKey(1),
+            stake: 1,
+        };
+
+        let v1_ = Validator {
+            address: Address(1),
+            pubkey: PubKey(1),
+            stake: 2,
+        };
+
+        let v2 = Validator {
+            address: Address(2),
+            pubkey: PubKey(2),
+            stake: 2,
+        };
+
+        let validators_duplicate = vec![v1.clone(), v1_];
+        let _vs_err = ValidatorSet::<WeightedRoundRobin>::new(validators_duplicate).unwrap_err();
+
+        let validators = vec![v1, v2];
+        let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        assert!(vs.is_member(&Address(1)));
+        assert!(!vs.is_member(&Address(3)));
+    }
+
+    #[test]
+    fn test_super_maj() {
+        let v1 = Validator {
+            address: Address(1),
+            pubkey: PubKey(1),
+            stake: 1,
+        };
+
+        let v2 = Validator {
+            address: Address(2),
+            pubkey: PubKey(2),
+            stake: 3,
+        };
+
+        let validators = vec![v1.clone(), v2.clone()];
+        let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        assert!(vs.has_super_majority_votes(&vec![v2.address]));
+        assert!(!vs.has_super_majority_votes(&vec![v1.address]));
+        assert!(vs.has_super_majority_votes(&vec![v2.address, Address(3)])); // Address(3) is a non-member
+    }
+
+    #[test]
+    fn test_get_leader() {
+        let v1 = Validator {
+            address: Address(1),
+            pubkey: PubKey(1),
+            stake: 1,
+        };
+
+        let v2 = Validator {
+            address: Address(2),
+            pubkey: PubKey(2),
+            stake: 1,
+        };
+
+        let validators = vec![v1.clone(), v2.clone()];
+        let mut vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        assert_eq!(vs.get_leader(1), &v2.address);
+        assert_eq!(vs.get_leader(3), &v2.address);
+        assert_eq!(vs.get_leader(4), &v1.address);
+    }
+}
