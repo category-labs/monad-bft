@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "monad-consensus",
     "monad-crypto",
     "monad-validator",
 ]

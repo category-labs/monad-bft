@@ -3,6 +3,7 @@ use sha2::Digest;
 #[derive(PartialEq)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
+#[derive(Clone, Debug)]
 pub struct Signature(secp256k1::ecdsa::Signature);
 
 #[derive(Debug)]
