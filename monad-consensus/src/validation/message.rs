@@ -5,17 +5,13 @@ use crate::types::timeout::TimeoutCertificate;
 use crate::types::voting::VotingQuorum;
 
 pub fn well_formed_proposal<T: VotingQuorum>(p: &ProposalMessage<T>) -> bool {
-    well_formed(
-        p.block.round,
-        p.block.qc.info.vote_info.round,
-        &p.last_round_tc,
-    )
+    well_formed(p.block.round, p.block.qc.info.vote.round, &p.last_round_tc)
 }
 
 pub fn well_formed_timeout<T: VotingQuorum>(t: &TimeoutMessage<T>) -> bool {
     well_formed(
         t.tminfo.round,
-        t.tminfo.high_qc.info.vote_info.round,
+        t.tminfo.high_qc.info.vote.round,
         &t.last_round_tc,
     )
 }

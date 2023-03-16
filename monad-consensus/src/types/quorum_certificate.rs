@@ -1,3 +1,4 @@
+use crate::validation::signing::{Hashable, Signable, Signed};
 use crate::*;
 
 use super::{ledger::*, signature::ConsensusSignature, voting::*};
@@ -10,11 +11,61 @@ where
 {
     pub info: QcInfo,
     pub signatures: T,
-    pub author: NodeId,
-    pub author_signature: Option<ConsensusSignature>, // TODO: will make a signable trait
+    pub signature_hash: Hash,
 }
 
-#[derive(Copy, Clone, Debug)]
+pub struct QcIter<'a, T>
+where
+    T: VotingQuorum,
+{
+    pub qc: &'a QuorumCertificate<T>,
+    pub index: usize,
+}
+
+impl<'a, T> Iterator for QcIter<'a, T>
+where
+    T: VotingQuorum,
+{
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = if self.index == 0 {
+            Some(self.qc.signature_hash.as_bytes())
+        } else {
+            None
+        };
+        self.index += 1;
+        result
+    }
+}
+
+impl<'a, T> Hashable<'a> for &'a QuorumCertificate<T>
+where
+    T: VotingQuorum,
+{
+    type DataIter = QcIter<'a, T>;
+
+    fn msg_parts(&self) -> Self::DataIter {
+        QcIter { qc: self, index: 0 }
+    }
+}
+
+impl<T> Signable for QuorumCertificate<T>
+where
+    T: VotingQuorum,
+{
+    type Output = Signed<QuorumCertificate<T>>;
+
+    fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
+        Self::Output {
+            obj: self,
+            author,
+            author_signature,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
 pub struct QcInfo {
     pub vote: VoteInfo,
     pub ledger_commit: LedgerCommitInfo,
@@ -44,12 +95,12 @@ impl Ord for Rank {
 }
 
 impl<T: VotingQuorum> QuorumCertificate<T> {
-    pub fn new(info: QcInfo) -> Self {
+    pub fn new(info: QcInfo, signatures: T) -> Self {
+        let hash = signatures.get_hash();
         QuorumCertificate {
             info,
-            signatures: Default::default(),
-            author: Default::default(),
-            author_signature: None,
+            signatures,
+            signature_hash: hash,
         }
     }
 }
@@ -94,14 +145,20 @@ mod tests {
         let mut vi_2 = VoteInfo::default();
         vi_2.round = Round(3);
 
-        let qc_1 = QuorumCertificate::<MockSignatures>::new(QcInfo {
-            vote: vi_1,
-            ledger_commit: ci,
-        });
-        let mut qc_2 = QuorumCertificate::<MockSignatures>::new(QcInfo {
-            vote: vi_2,
-            ledger_commit: ci,
-        });
+        let qc_1 = QuorumCertificate::<MockSignatures>::new(
+            QcInfo {
+                vote: vi_1,
+                ledger_commit: ci,
+            },
+            MockSignatures(),
+        );
+        let mut qc_2 = QuorumCertificate::<MockSignatures>::new(
+            QcInfo {
+                vote: vi_2,
+                ledger_commit: ci,
+            },
+            MockSignatures(),
+        );
 
         assert!(Rank(qc_1.info) < Rank(qc_2.info));
         assert!(Rank(qc_2.info) > Rank(qc_1.info));

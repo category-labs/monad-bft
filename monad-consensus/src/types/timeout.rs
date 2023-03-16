@@ -11,8 +11,6 @@ where
 {
     pub round: Round,
     pub high_qc: QuorumCertificate<T>,
-    pub author: NodeId,
-    pub author_signature: ConsensusSignature,
 }
 
 #[derive(Clone, Debug)]

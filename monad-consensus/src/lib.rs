@@ -35,7 +35,7 @@ impl Sub for Round {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, AsBytes)]
 pub struct NodeId(u16);
 
 impl AsRef<[u8]> for NodeId {

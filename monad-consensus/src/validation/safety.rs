@@ -64,5 +64,5 @@ fn safe_to_extend(block_round: Round, qc_round: Round, tc: &Option<TimeoutCertif
 }
 
 fn commit_condition(block_round: Round, qc: QcInfo) -> bool {
-    consecutive(block_round, qc.vote_info.round)
+    consecutive(block_round, qc.vote.round)
 }
