@@ -8,42 +8,49 @@ pub struct QuorumCertificate<T>
 where
     T: VotingQuorum,
 {
-    pub vote_info: VoteInfo,
-    pub ledger_commit_info: LedgerCommitInfo,
+    pub info: QcInfo,
     pub signatures: T,
     pub author: NodeId,
     pub author_signature: Option<ConsensusSignature>, // TODO: will make a signable trait
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct QcInfo {
+    pub vote: VoteInfo,
+    pub ledger_commit: LedgerCommitInfo,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Rank(QcInfo);
+
+impl PartialEq for Rank {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.vote.round == other.0.vote.round
+    }
+}
+
+impl Eq for Rank {}
+
+impl PartialOrd for Rank {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Rank {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.vote.round.0.cmp(&other.0.vote.round.0)
+    }
+}
+
 impl<T: VotingQuorum> QuorumCertificate<T> {
-    pub fn new(vote_info: VoteInfo, ledger_commit_info: LedgerCommitInfo) -> Self {
+    pub fn new(info: QcInfo) -> Self {
         QuorumCertificate {
-            vote_info,
-            ledger_commit_info,
+            info,
             signatures: Default::default(),
             author: Default::default(),
             author_signature: None,
         }
-    }
-}
-
-impl<T: VotingQuorum> PartialEq for QuorumCertificate<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.vote_info.round == other.vote_info.round
-    }
-}
-
-impl<T: VotingQuorum> Eq for QuorumCertificate<T> {}
-
-impl<T: VotingQuorum> Ord for QuorumCertificate<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.vote_info.round.0.cmp(&other.vote_info.round.0)
-    }
-}
-
-impl<T: VotingQuorum> PartialOrd for QuorumCertificate<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -55,7 +62,9 @@ mod tests {
 
     use crate::*;
 
+    use super::QcInfo;
     use super::QuorumCertificate;
+    use super::Rank;
 
     #[derive(Clone, Default, Debug)]
     struct MockSignatures();
@@ -85,14 +94,20 @@ mod tests {
         let mut vi_2 = VoteInfo::default();
         vi_2.round = Round(3);
 
-        let qc_1 = QuorumCertificate::<MockSignatures>::new(vi_1, ci);
-        let mut qc_2 = QuorumCertificate::<MockSignatures>::new(vi_2, ci);
+        let qc_1 = QuorumCertificate::<MockSignatures>::new(QcInfo {
+            vote: vi_1,
+            ledger_commit: ci,
+        });
+        let mut qc_2 = QuorumCertificate::<MockSignatures>::new(QcInfo {
+            vote: vi_2,
+            ledger_commit: ci,
+        });
 
-        assert!(qc_1 < qc_2);
-        assert!(qc_2 > qc_1);
+        assert!(Rank(qc_1.info) < Rank(qc_2.info));
+        assert!(Rank(qc_2.info) > Rank(qc_1.info));
 
-        qc_2.vote_info.round = Round(2);
+        qc_2.info.vote.round = Round(2);
 
-        assert_eq!(qc_1, qc_2);
+        assert_eq!(Rank(qc_1.info), Rank(qc_2.info));
     }
 }
