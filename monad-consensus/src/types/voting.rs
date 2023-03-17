@@ -21,9 +21,9 @@ use sha2::Digest;
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct VoteInfo {
-    pub id: NodeId,
+    pub id: BlockId,
     pub round: Round,
-    pub parent_id: NodeId,
+    pub parent_id: BlockId,
     pub parent_round: Round,
 }
 
@@ -31,9 +31,9 @@ impl VoteInfo {
     // TODO will use something from monad-crypto later...
     pub fn get_hash(&self) -> Hash {
         let mut hasher = sha2::Sha256::new();
-        hasher.update(self.id);
+        hasher.update(self.id.0);
         hasher.update(self.round);
-        hasher.update(self.parent_id);
+        hasher.update(self.parent_id.0);
         hasher.update(self.parent_round);
 
         hasher.finalize().into()

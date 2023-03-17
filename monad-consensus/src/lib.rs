@@ -23,3 +23,7 @@ impl AsRef<[u8]> for NodeId {
         self.0.as_bytes()
     }
 }
+
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct BlockId(pub Hash);

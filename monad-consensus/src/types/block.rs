@@ -45,7 +45,7 @@ impl<T: VotingQuorum> Block<T> {
         hasher.update(self.author);
         hasher.update(self.round);
         hasher.update(&self.payload.0);
-        hasher.update(self.qc.info.vote.id);
+        hasher.update(self.qc.info.vote.id.0);
         hasher.update(self.qc.signatures.get_hash());
 
         self.id = hasher.finalize().into();
