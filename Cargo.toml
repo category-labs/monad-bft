@@ -3,5 +3,6 @@
 members = [
     "monad-consensus",
     "monad-crypto",
+    "monad-executor",
     "monad-validator",
 ]
