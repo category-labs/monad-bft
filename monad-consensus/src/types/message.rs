@@ -160,12 +160,11 @@ mod tests {
     use test_case::test_case;
 
     use super::VoteMessage;
+    use crate::mock_types::mock_signature::MockSignatures;
     use crate::types::block::{Block, TransactionList};
     use crate::types::message::{ProposalMessage, TimeoutMessage};
     use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
-    use crate::types::signature::ConsensusSignature;
     use crate::types::timeout::TimeoutInfo;
-    use crate::types::voting::VotingQuorum;
     use crate::*;
     use crate::{types::ledger::LedgerCommitInfo, validation::signing::Hashable, Hash};
     use sha2::Digest;
@@ -196,25 +195,6 @@ mod tests {
         let h2 = hasher.finalize();
 
         assert_eq!(h1, h2);
-    }
-
-    //TODO: use the common lib version of this once it is merged
-    #[derive(Clone, Default, Debug)]
-    struct MockSignatures();
-    impl VotingQuorum for MockSignatures {
-        fn verify_quorum(&self) -> bool {
-            true
-        }
-
-        fn current_voting_power(&self) -> i64 {
-            0
-        }
-
-        fn get_hash(&self) -> crate::Hash {
-            Default::default()
-        }
-
-        fn add_signature(&mut self, _s: ConsensusSignature) {}
     }
 
     #[test]

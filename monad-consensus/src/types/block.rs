@@ -91,32 +91,13 @@ impl<T: VotingQuorum> Block<T> {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::types::signature::ConsensusSignature;
+    use crate::mock_types::mock_signature::MockSignatures;
     use crate::types::voting::VotingQuorum;
     use crate::*;
     use crate::{types::quorum_certificate::QuorumCertificate, validation::signing::Hashable};
 
     use super::{Block, TransactionList};
     use sha2::Digest;
-
-    //TODO: use the common lib version of this once it is merged
-    #[derive(Clone, Default, Debug)]
-    struct MockSignatures();
-    impl VotingQuorum for MockSignatures {
-        fn verify_quorum(&self) -> bool {
-            true
-        }
-
-        fn current_voting_power(&self) -> i64 {
-            0
-        }
-
-        fn get_hash(&self) -> crate::Hash {
-            Default::default()
-        }
-
-        fn add_signature(&mut self, _s: ConsensusSignature) {}
-    }
 
     pub fn hash<T: VotingQuorum>(b: &Block<T>) -> Hash {
         let mut hasher = sha2::Sha256::new();
