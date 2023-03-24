@@ -1,3 +1,4 @@
+pub mod mock_types;
 pub mod types;
 pub mod validation;
 
@@ -6,11 +7,11 @@ use std::ops::Sub;
 
 use zerocopy::AsBytes;
 
-type Hash = [u8; 32];
+pub type Hash = [u8; 32];
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, AsBytes)]
-pub struct Round(u64);
+pub struct Round(pub u64);
 
 impl AsRef<[u8]> for Round {
     fn as_ref(&self) -> &[u8] {
@@ -36,7 +37,7 @@ impl Sub for Round {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, AsBytes)]
-pub struct NodeId(u16);
+pub struct NodeId(pub u16);
 
 impl AsRef<[u8]> for NodeId {
     fn as_ref(&self) -> &[u8] {
@@ -45,5 +46,15 @@ impl AsRef<[u8]> for NodeId {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
 pub struct BlockId(pub Hash);
+
+impl std::fmt::Debug for BlockId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:>02x}{:>02x}..{:>02x}{:>02x}",
+            self.0[0], self.0[1], self.0[30], self.0[31]
+        )
+    }
+}

@@ -5,4 +5,5 @@ members = [
     "monad-crypto",
     "monad-executor",
     "monad-validator",
+    "monad-blocktree",
 ]

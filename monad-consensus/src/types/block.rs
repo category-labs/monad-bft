@@ -1,3 +1,5 @@
+use sha2::Digest;
+
 use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::voting::VotingQuorum;
 use crate::validation::signing::Hashable;
@@ -15,7 +17,7 @@ where
     pub round: Round,
     pub payload: TransactionList,
     pub qc: QuorumCertificate<T>,
-    id: Hash,
+    id: BlockId,
 }
 
 pub struct BlockIter<'a, T>
@@ -73,10 +75,16 @@ impl<T: VotingQuorum> Block<T> {
             id: Default::default(),
         };
         // TODO: new() can take in a Hasher and populate id
+        let mut hasher = sha2::Sha256::new();
+        for m in (&b).msg_parts() {
+            hasher.update(m);
+        }
+        b.id = BlockId(hasher.finalize().into());
+
         b
     }
 
-    pub fn get_id(&self) -> Hash {
+    pub fn get_id(&self) -> BlockId {
         self.id
     }
 }
