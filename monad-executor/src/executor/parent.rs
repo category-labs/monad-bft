@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{Command, Executor, RouterCommand, TimerCommand};
+use crate::{Command, Executor, Message, RouterCommand, TimerCommand};
 
 use futures::Stream;
 use futures::StreamExt;
@@ -14,13 +14,14 @@ pub struct ParentExecutor<R, T> {
     pub timer: T,
 }
 
-impl<E, R, T> Executor for ParentExecutor<R, T>
+impl<E, M, R, T> Executor for ParentExecutor<R, T>
 where
-    R: Executor<Command = RouterCommand<E>>,
+    M: Message<Event = E>,
+    R: Executor<Command = RouterCommand<E, M>>,
     T: Executor<Command = TimerCommand<E>>,
 {
-    type Command = Command<E>;
-    fn exec(&mut self, commands: Vec<Command<E>>) {
+    type Command = Command<E, M>;
+    fn exec(&mut self, commands: Vec<Command<E, M>>) {
         let (router_cmds, timer_cmds) = Command::split_commands(commands);
         self.router.exec(router_cmds);
         self.timer.exec(timer_cmds);

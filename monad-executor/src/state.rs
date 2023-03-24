@@ -1,15 +1,13 @@
+use std::hash::Hash;
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PeerId;
-pub enum RouterCommand<E> {
-    Publish {
-        to: PeerId,
-        payload: Vec<u8>,
-        on_ack: E,
-    },
-    Unpublish {
-        to: PeerId,
-        payload: Vec<u8>, // this can be shortened to a hash
-    },
+pub enum RouterCommand<E, M>
+where
+    M: Message<Event = E>,
+{
+    Publish { to: PeerId, message: M, on_ack: E },
+    Unpublish { to: PeerId, id: M::Id },
 }
 
 pub enum TimerCommand<E> {
@@ -26,13 +24,19 @@ pub trait Executor {
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
 
-pub enum Command<E> {
-    RouterCommand(RouterCommand<E>),
+pub enum Command<E, M>
+where
+    M: Message<Event = E>,
+{
+    RouterCommand(RouterCommand<E, M>),
     TimerCommand(TimerCommand<E>),
 }
 
-impl<E> Command<E> {
-    pub fn split_commands(commands: Vec<Self>) -> (Vec<RouterCommand<E>>, Vec<TimerCommand<E>>) {
+impl<E, M> Command<E, M>
+where
+    M: Message<Event = E>,
+{
+    pub fn split_commands(commands: Vec<Self>) -> (Vec<RouterCommand<E, M>>, Vec<TimerCommand<E>>) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         for command in commands {
@@ -47,14 +51,19 @@ impl<E> Command<E> {
 
 pub trait State: Sized {
     type Event: Clone + Unpin;
+    type Message: Message<Event = Self::Event>;
 
-    fn init() -> (Self, Vec<Command<Self::Event>>);
-    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event>>;
+    fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>);
+    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>>;
 }
 
-pub trait Codec {
-    type Event: Clone + Unpin;
-    type ParseError;
+pub trait Message: Sized + Clone + Unpin {
+    type Event;
+    type ReadError;
+    type Id: Eq + Hash + Clone + Unpin;
 
-    fn parse_peer_payload(from: PeerId, payload: &[u8]) -> Result<Self::Event, Self::ParseError>;
+    fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError>;
+    fn serialize(&self) -> Vec<u8>;
+    fn id(&self) -> Self::Id;
+    fn event(self) -> Self::Event;
 }

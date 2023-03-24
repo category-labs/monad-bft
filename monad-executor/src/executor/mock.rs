@@ -7,41 +7,40 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    state::{Codec, PeerId},
-    Command, Executor, RouterCommand, TimerCommand,
-};
+use crate::{state::PeerId, Command, Executor, Message, RouterCommand, TimerCommand};
 
 use futures::Stream;
 
-pub struct MockExecutor<C>
+pub struct MockExecutor<E, M>
 where
-    C: Codec,
+    E: Unpin,
+    M: Message<Event = E>,
 {
     tick: Duration,
 
-    timer: Option<(Duration, C::Event)>,
+    timer: Option<(Duration, E)>,
 
     // caller push_backs inbound stuff here (via MockExecutor::send_*)
-    inbound_messages: VecDeque<(Duration, PeerId, Vec<u8>)>,
-    inbound_ack: VecDeque<(Duration, PeerId, Vec<u8>)>,
+    inbound_messages: VecDeque<(Duration, PeerId, M)>,
+    inbound_ack: VecDeque<(Duration, PeerId, M::Id)>,
 
     // caller pop_front outbounds from this (via MockExecutor::receive_*)
-    outbound_messages: VecDeque<(PeerId, Vec<u8>)>,
-    outbound_ack: VecDeque<(PeerId, Vec<u8>)>,
+    outbound_messages: VecDeque<(PeerId, M)>,
+    outbound_ack: VecDeque<(PeerId, M::Id)>,
 
-    sent_messages: HashMap<PeerId, HashMap<Vec<u8>, C::Event>>,
-    received_messages: Vec<(PeerId, Vec<u8>)>,
+    sent_messages: HashMap<PeerId, HashMap<M::Id, E>>,
+    received_messages: Vec<(PeerId, M::Id)>,
 }
 
-impl<C> MockExecutor<C>
+impl<E, M> MockExecutor<E, M>
 where
-    C: Codec,
+    E: Unpin,
+    M: Message<Event = E>,
 {
     pub fn tick(&self) -> Duration {
         self.tick
     }
-    pub fn send_message(&mut self, tick: Duration, from: PeerId, message: Vec<u8>) {
+    pub fn send_message(&mut self, tick: Duration, from: PeerId, message: M) {
         assert!(tick >= self.tick);
         assert!(
             tick >= self
@@ -52,7 +51,7 @@ where
         );
         self.inbound_messages.push_back((tick, from, message));
     }
-    pub fn send_ack(&mut self, tick: Duration, from: PeerId, ack: Vec<u8>) {
+    pub fn send_ack(&mut self, tick: Duration, from: PeerId, ack: M::Id) {
         assert!(tick >= self.tick);
         assert!(
             tick >= self
@@ -63,17 +62,18 @@ where
         );
         self.inbound_ack.push_back((tick, from, ack));
     }
-    pub fn receive_message(&mut self) -> Option<(PeerId, Vec<u8>)> {
+    pub fn receive_message(&mut self) -> Option<(PeerId, M)> {
         self.outbound_messages.pop_front()
     }
-    pub fn receive_ack(&mut self) -> Option<(PeerId, Vec<u8>)> {
+    pub fn receive_ack(&mut self) -> Option<(PeerId, M::Id)> {
         self.outbound_ack.pop_front()
     }
 }
 
-impl<C> MockExecutor<C>
+impl<E, M> MockExecutor<E, M>
 where
-    C: Codec,
+    E: Unpin,
+    M: Message<Event = E>,
 {
     pub fn new() -> Self {
         Self {
@@ -93,12 +93,13 @@ where
     }
 }
 
-impl<C> Executor for MockExecutor<C>
+impl<E, M> Executor for MockExecutor<E, M>
 where
-    C: Codec,
+    E: Unpin,
+    M: Message<Event = E>,
 {
-    type Command = Command<C::Event>;
-    fn exec(&mut self, commands: Vec<Command<C::Event>>) {
+    type Command = Command<E, M>;
+    fn exec(&mut self, commands: Vec<Self::Command>) {
         // we must have processed received messages at this point, so we can send out acks
         self.outbound_ack.extend(
             self.received_messages
@@ -106,7 +107,7 @@ where
                 .map(|(from, message)| (from, message)),
         );
 
-        let mut to_publish = HashMap::new();
+        let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
         for command in commands {
             match command {
@@ -117,25 +118,25 @@ where
                 }) => self.timer = Some((self.tick + duration, on_timeout)),
                 Command::RouterCommand(RouterCommand::Publish {
                     to,
-                    payload,
+                    message,
                     on_ack,
                 }) => {
-                    to_publish.insert((to, payload), on_ack);
+                    to_publish.push((to, message, on_ack));
                 }
-                Command::RouterCommand(RouterCommand::Unpublish { to, payload }) => {
-                    to_unpublish.insert((to, payload));
+                Command::RouterCommand(RouterCommand::Unpublish { to, id }) => {
+                    to_unpublish.insert((to, id));
                 }
             }
         }
 
-        for (key, on_ack) in to_publish {
-            if to_unpublish.contains(&key) {
+        for (to, message, on_ack) in to_publish {
+            let id = message.id();
+            if to_unpublish.contains(&(to.clone(), id.clone())) {
                 continue;
             }
-            let (to, payload) = key;
             self.outbound_messages
-                .push_back((to.clone(), payload.clone()));
-            let entry = self.sent_messages.entry(to).or_default().entry(payload);
+                .push_back((to.clone(), message.clone()));
+            let entry = self.sent_messages.entry(to).or_default().entry(id);
             match entry {
                 Entry::Occupied(_) => panic!("can't double publish!"),
                 Entry::Vacant(v) => v.insert(on_ack),
@@ -148,11 +149,13 @@ where
     }
 }
 
-impl<C> Stream for MockExecutor<C>
+impl<E, M> Stream for MockExecutor<E, M>
 where
-    C: Codec,
+    E: Unpin,
+    M: Message<Event = E>,
+    M::Id: Unpin,
 {
-    type Item = C::Event;
+    type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -189,12 +192,9 @@ where
                 ExecutorEventType::InboundMessage => {
                     let (_, from, message) = this.inbound_messages.pop_front().unwrap();
 
-                    let event = C::parse_peer_payload(from.clone(), &message);
-                    this.received_messages.push((from, message));
+                    this.received_messages.push((from, message.id()));
 
-                    if let Ok(event) = event {
-                        return Poll::Ready(Some(event));
-                    }
+                    return Poll::Ready(Some(message.event()));
                 }
                 ExecutorEventType::InboundAck => {
                     let (_, from, ack) = this.inbound_ack.pop_front().unwrap();
@@ -255,7 +255,8 @@ mod tests {
 
     use crate::{
         executor::mock::MockExecutor,
-        state::{Codec, Command, Executor, PeerId, RouterCommand, State, TimerCommand},
+        state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
+        Message,
     };
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -272,12 +273,13 @@ mod tests {
         IncrementNumTimeout,
         IncrementNumAck,
     }
-    enum LongAckParseError {}
+    struct LongAckParseError;
 
     impl State for LongAckState {
         type Event = LongAckEvent;
+        type Message = LongAckMessage;
 
-        fn init() -> (Self, Vec<Command<Self::Event>>) {
+        fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
             let init_self = Self {
                 num_ack: 0,
                 num_timeouts: 0,
@@ -290,25 +292,25 @@ mod tests {
                 }),
                 Command::RouterCommand(RouterCommand::Publish {
                     to: PeerId,
-                    payload: init_self.num_ack.to_ne_bytes().to_vec(),
+                    message: LongAckMessage(init_self.num_ack),
                     on_ack: LongAckEvent::IncrementNumAck,
                 }),
             ];
 
             (init_self, init_cmds)
         }
-        fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event>> {
+        fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
             let mut commands = Vec::new();
             match event {
                 LongAckEvent::IncrementNumAck => {
                     commands.push(Command::RouterCommand(RouterCommand::Unpublish {
                         to: PeerId,
-                        payload: self.num_ack.to_ne_bytes().to_vec(),
+                        id: self.num_ack,
                     }));
                     self.num_ack += 1;
                     commands.push(Command::RouterCommand(RouterCommand::Publish {
                         to: PeerId,
-                        payload: self.num_ack.to_ne_bytes().to_vec(),
+                        message: LongAckMessage(self.num_ack),
                         on_ack: LongAckEvent::IncrementNumAck,
                     }));
                     // reset timer back to 1 second
@@ -330,21 +332,33 @@ mod tests {
         }
     }
 
-    struct LongAckCodec;
-    impl Codec for LongAckCodec {
+    #[derive(Clone)]
+    struct LongAckMessage(u64);
+    impl Message for LongAckMessage {
         type Event = LongAckEvent;
-        type ParseError = LongAckParseError;
+        type ReadError = LongAckParseError;
+        type Id = u64;
 
-        fn parse_peer_payload(
-            _from: PeerId,
-            _payload: &[u8],
-        ) -> Result<Self::Event, Self::ParseError> {
-            unimplemented!()
+        fn deserialize(_from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
+            let arr: [u8; 8] = message.try_into().map_err(|_| LongAckParseError)?;
+            Ok(Self(u64::from_ne_bytes(arr)))
+        }
+
+        fn serialize(&self) -> Vec<u8> {
+            self.0.to_ne_bytes().to_vec()
+        }
+
+        fn id(&self) -> Self::Id {
+            self.0
+        }
+
+        fn event(self) -> Self::Event {
+            Self::Event::IncrementNumAck
         }
     }
 
-    fn simulate_peer<C: Codec>(
-        executor: &mut MockExecutor<C>,
+    fn simulate_peer<E: Unpin, M: Message<Event = E>>(
+        executor: &mut MockExecutor<E, M>,
         message_delays: &mut impl Iterator<Item = Duration>,
     ) {
         while let Some((to, outbound_message)) = executor.receive_message() {
@@ -352,22 +366,21 @@ mod tests {
             executor.send_ack(
                 executor.tick() + message_delays.next().unwrap(),
                 to,
-                outbound_message,
+                outbound_message.id(),
             )
         }
         while executor.receive_ack().is_some() {}
     }
 
-    fn run_simulation<S, C>(
+    fn run_simulation<S>(
         init_events: Vec<S::Event>,
         mut message_delays: impl Iterator<Item = Duration>,
         terminate: impl Fn(&S) -> bool,
     ) -> (S, Vec<S::Event>)
     where
         S: State,
-        C: Codec<Event = S::Event>,
     {
-        let mut executor: MockExecutor<C> = MockExecutor::new();
+        let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
 
         let (mut state, mut init_commands) = S::init();
         let mut event_log = init_events.clone();
@@ -392,7 +405,7 @@ mod tests {
                 executor.send_ack(
                     executor.tick() + message_delays.next().unwrap(),
                     to,
-                    outbound_message,
+                    outbound_message.id(),
                 )
             }
             while executor.receive_ack().is_some() {}
@@ -403,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_100_milli_ack() {
-        let (state, events) = run_simulation::<LongAckState, LongAckCodec>(
+        let (state, events) = run_simulation::<LongAckState>(
             Vec::new(),
             std::iter::repeat(Duration::from_millis(100)),
             |state| state.num_ack == 1000,
@@ -419,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_1000_milli_ack() {
-        let (state, events) = run_simulation::<LongAckState, LongAckCodec>(
+        let (state, events) = run_simulation::<LongAckState>(
             Vec::new(),
             std::iter::repeat(Duration::from_millis(1_001)),
             |state| state.num_ack == 1000,
@@ -435,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_half_long_ack() {
-        let (state, events) = run_simulation::<LongAckState, LongAckCodec>(
+        let (state, events) = run_simulation::<LongAckState>(
             Vec::new(),
             (0..).map(|i| (i % 2) * Duration::from_millis(1_001)),
             |state| state.num_ack == 1000,
@@ -452,14 +465,14 @@ mod tests {
     #[test]
     fn test_crash() {
         // send 500 messages
-        let (_, init_events) = run_simulation::<LongAckState, LongAckCodec>(
+        let (_, init_events) = run_simulation::<LongAckState>(
             Vec::new(),
             // send back 500 acks MAX
             std::iter::repeat(Duration::from_millis(1_001)).take(500),
             |state| state.num_ack == 500,
         );
         // replay those 500 messages, send another 500 messages
-        let (state, events) = run_simulation::<LongAckState, LongAckCodec>(
+        let (state, events) = run_simulation::<LongAckState>(
             init_events,
             // send back 500 acks MAX
             std::iter::repeat(Duration::from_millis(1_001)).take(500),

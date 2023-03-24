@@ -1,13 +1,15 @@
 use futures::{Stream, StreamExt};
 
 mod state;
-use state::*;
+pub use state::*;
 
-mod executor;
+pub mod executor;
 
 // driver loop
 async fn run<S: State>(
-    mut executor: impl Executor<Command = Command<S::Event>> + Stream<Item = S::Event> + Unpin,
+    mut executor: impl Executor<Command = Command<S::Event, S::Message>>
+        + Stream<Item = S::Event>
+        + Unpin,
     init_events: Vec<S::Event>,
 ) {
     let (mut state, mut init_commands) = S::init();
