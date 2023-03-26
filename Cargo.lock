@@ -390,6 +390,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-state"
+version = "0.1.0"
+dependencies = [
+ "monad-executor",
+]
+
+[[package]]
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
