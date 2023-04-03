@@ -140,6 +140,18 @@ where
     pub fn peek_event_tick(&self) -> Option<Duration> {
         self.peek_event().map(|(duration, _)| duration)
     }
+
+    pub fn pending_timer(&self) -> &Option<TimerEvent<E>> {
+        &self.timer
+    }
+
+    pub fn pending_messages(&self) -> &BinaryHeap<SequencedPeerEvent<M>> {
+        &self.inbound_messages
+    }
+
+    pub fn pending_acks(&self) -> &BinaryHeap<SequencedPeerEvent<M::Id>> {
+        &self.inbound_ack
+    }
 }
 
 impl<E, M> MockExecutor<E, M>

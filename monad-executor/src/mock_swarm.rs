@@ -35,6 +35,16 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
         nodes
     }
 
+    pub fn next_tick(&self) -> Option<Duration> {
+        self.states
+            .iter()
+            .filter_map(|(_, (executor, _))| {
+                let tick = executor.peek_event_tick()?;
+                Some(tick)
+            })
+            .min()
+    }
+
     pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
         if let Some((id, executor, state, tick)) = self
             .states

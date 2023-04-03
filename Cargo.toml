@@ -9,6 +9,7 @@ members = [
     "monad-testutil",
     "monad-types",
     "monad-validator",
+    "monad-viz",
 ]
 
 [profile.dev]
