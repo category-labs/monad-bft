@@ -1,7 +1,7 @@
 use std::hash::Hash;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PeerId;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PeerId(pub u64);
 pub enum RouterCommand<E, M>
 where
     M: Message<Event = E>,
@@ -65,5 +65,5 @@ pub trait Message: Sized + Clone + Unpin {
     fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError>;
     fn serialize(&self) -> Vec<u8>;
     fn id(&self) -> Self::Id;
-    fn event(self) -> Self::Event;
+    fn event(self, from: PeerId) -> Self::Event;
 }

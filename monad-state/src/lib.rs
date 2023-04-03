@@ -37,7 +37,7 @@ impl Message for MonadMessage {
         self.clone()
     }
 
-    fn event(self) -> Self::Event {
+    fn event(self, _from: PeerId) -> Self::Event {
         todo!()
     }
 }

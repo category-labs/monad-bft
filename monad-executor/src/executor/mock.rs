@@ -21,8 +21,8 @@ where
     timer: Option<(Duration, E)>,
 
     // caller push_backs inbound stuff here (via MockExecutor::send_*)
-    inbound_messages: VecDeque<(Duration, PeerId, M)>,
-    inbound_ack: VecDeque<(Duration, PeerId, M::Id)>,
+    inbound_messages: VecDeque<(Duration, PeerId, M)>, // FIXME pqueue
+    inbound_ack: VecDeque<(Duration, PeerId, M::Id)>,  // FIXME pqueue
 
     // caller pop_front outbounds from this (via MockExecutor::receive_*)
     outbound_messages: VecDeque<(PeerId, M)>,
@@ -30,6 +30,14 @@ where
 
     sent_messages: HashMap<PeerId, HashMap<M::Id, E>>,
     received_messages: Vec<(PeerId, M::Id)>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum ExecutorEventType {
+    InboundMessage,
+    InboundAck,
+
+    Timer,
 }
 
 impl<E, M> MockExecutor<E, M>
@@ -67,6 +75,33 @@ where
     }
     pub fn receive_ack(&mut self) -> Option<(PeerId, M::Id)> {
         self.outbound_ack.pop_front()
+    }
+
+    fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
+        std::iter::empty()
+            .chain(
+                self.inbound_messages
+                    .front()
+                    .map(|(tick, _, _)| (*tick, ExecutorEventType::InboundMessage))
+                    .into_iter(),
+            )
+            .chain(
+                self.inbound_ack
+                    .front()
+                    .map(|(tick, _, _)| (*tick, ExecutorEventType::InboundAck))
+                    .into_iter(),
+            )
+            .chain(
+                self.timer
+                    .as_ref()
+                    .map(|(tick, _)| (*tick, ExecutorEventType::Timer))
+                    .into_iter(),
+            )
+            .min()
+    }
+
+    pub fn peek_event_tick(&self) -> Option<Duration> {
+        self.peek_event().map(|(duration, _)| duration)
     }
 }
 
@@ -146,6 +181,17 @@ where
         for (to, payload) in to_unpublish {
             self.sent_messages.entry(to).or_default().remove(&payload);
         }
+
+        // remove any unpublished messages
+        while self.inbound_ack.front().map_or(false, |(_, from, ack)| {
+            !self
+                .sent_messages
+                .entry(from.clone())
+                .or_default()
+                .contains_key(ack)
+        }) {
+            self.inbound_ack.pop_front();
+        }
     }
 }
 
@@ -159,59 +205,34 @@ where
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        #[derive(PartialEq, Eq, PartialOrd, Ord)]
-        enum ExecutorEventType {
-            InboundMessage,
-            InboundAck,
-
-            Timer,
-        }
-        while let Some((tick, event_type)) = std::iter::empty()
-            .chain(
-                this.inbound_messages
-                    .front()
-                    .map(|(tick, _, _)| (*tick, ExecutorEventType::InboundMessage))
-                    .into_iter(),
-            )
-            .chain(
-                this.inbound_ack
-                    .front()
-                    .map(|(tick, _, _)| (*tick, ExecutorEventType::InboundAck))
-                    .into_iter(),
-            )
-            .chain(
-                this.timer
-                    .as_ref()
-                    .map(|(tick, _)| (*tick, ExecutorEventType::Timer))
-                    .into_iter(),
-            )
-            .min()
-        {
+        if let Some((tick, event_type)) = this.peek_event() {
             this.tick = tick;
-            match event_type {
+            let event = match event_type {
                 ExecutorEventType::InboundMessage => {
                     let (_, from, message) = this.inbound_messages.pop_front().unwrap();
 
-                    this.received_messages.push((from, message.id()));
+                    this.received_messages.push((from.clone(), message.id()));
 
-                    return Poll::Ready(Some(message.event()));
+                    message.event(from)
                 }
                 ExecutorEventType::InboundAck => {
                     let (_, from, ack) = this.inbound_ack.pop_front().unwrap();
 
-                    let maybe_ack = this.sent_messages.entry(from).or_default().remove(&ack);
-                    if maybe_ack.is_some() {
-                        // when receive ack for a message, call on_ack for that message
-                        return Poll::Ready(maybe_ack);
-                    }
+                    this.sent_messages
+                        .entry(from)
+                        .or_default()
+                        .remove(&ack)
+                        .unwrap()
                 }
                 ExecutorEventType::Timer => {
                     let (_, event) = this.timer.take().unwrap();
-                    return Poll::Ready(Some(event));
+                    event
                 }
-            }
+            };
+            Poll::Ready(Some(event))
+        } else {
+            Poll::Ready(None)
         }
-        Poll::Ready(None)
     }
 }
 
@@ -249,7 +270,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        collections::{HashMap, HashSet},
+        time::Duration,
+    };
 
     use futures::StreamExt;
 
@@ -291,7 +315,7 @@ mod tests {
                     on_timeout: LongAckEvent::IncrementNumTimeout,
                 }),
                 Command::RouterCommand(RouterCommand::Publish {
-                    to: PeerId,
+                    to: PeerId(0),
                     message: LongAckMessage(init_self.num_ack),
                     on_ack: LongAckEvent::IncrementNumAck,
                 }),
@@ -304,12 +328,12 @@ mod tests {
             match event {
                 LongAckEvent::IncrementNumAck => {
                     commands.push(Command::RouterCommand(RouterCommand::Unpublish {
-                        to: PeerId,
+                        to: PeerId(0),
                         id: self.num_ack,
                     }));
                     self.num_ack += 1;
                     commands.push(Command::RouterCommand(RouterCommand::Publish {
-                        to: PeerId,
+                        to: PeerId(0),
                         message: LongAckMessage(self.num_ack),
                         on_ack: LongAckEvent::IncrementNumAck,
                     }));
@@ -352,7 +376,7 @@ mod tests {
             self.0
         }
 
-        fn event(self) -> Self::Event {
+        fn event(self, _from: PeerId) -> Self::Event {
             Self::Event::IncrementNumAck
         }
     }
@@ -400,15 +424,7 @@ mod tests {
             }
 
             executor.exec(commands);
-            while let Some((to, outbound_message)) = executor.receive_message() {
-                // ack all messages that executor wants to send out
-                executor.send_ack(
-                    executor.tick() + message_delays.next().unwrap(),
-                    to,
-                    outbound_message.id(),
-                )
-            }
-            while executor.receive_ack().is_some() {}
+            simulate_peer(&mut executor, &mut message_delays);
         }
 
         (state, event_log)
@@ -487,5 +503,229 @@ mod tests {
         }
         // replaying all 1_000 messages at once should match
         assert_eq!(state, replay_state);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+    /// EXAMPLE SWARM TEST
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    const NUM_NODES: u64 = 5;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct SimpleChainState {
+        me: PeerId,
+
+        chain: Vec<HashSet<PeerId>>,
+
+        // outbound votes for given round (self.chain.len() - 1)
+        outbound_votes: Vec<HashSet<PeerId>>,
+    }
+    #[derive(Debug, Clone)]
+    enum SimpleChainEvent {
+        Vote { peer: PeerId, round: u64 },
+        Ack { peer: PeerId, round: u64 },
+    }
+    struct SimpleChainEventParseError;
+
+    impl State for SimpleChainState {
+        type Event = SimpleChainEvent;
+        type Message = SimpleChainMessage;
+
+        fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+            let init_self = Self {
+                me: PeerId(0),
+                chain: vec![HashSet::new()],
+                outbound_votes: vec![(0..NUM_NODES).map(PeerId).collect()],
+            };
+
+            let init_cmds = (0..NUM_NODES)
+                .map(|idx| {
+                    Command::RouterCommand(RouterCommand::Publish {
+                        to: PeerId(idx),
+                        message: SimpleChainMessage { round: 0 },
+                        on_ack: SimpleChainEvent::Ack {
+                            peer: PeerId(idx),
+                            round: 0,
+                        },
+                    })
+                })
+                .collect();
+
+            (init_self, init_cmds)
+        }
+        fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
+            let mut commands = Vec::new();
+            match event {
+                SimpleChainEvent::Vote { peer, round } => {
+                    self.chain[round as usize].insert(peer);
+
+                    if self.chain.last().unwrap().len() > NUM_NODES as usize / 2
+                        && self.chain.len() < NUM_NODES as usize
+                    {
+                        // max NUM_NODES blocks
+                        self.chain.push(HashSet::new());
+
+                        commands.extend((0..NUM_NODES).map(|idx| {
+                            Command::RouterCommand(RouterCommand::Publish {
+                                to: PeerId(idx),
+                                message: SimpleChainMessage {
+                                    round: self.chain.len() as u64 - 1,
+                                },
+                                on_ack: SimpleChainEvent::Ack {
+                                    peer: PeerId(idx),
+                                    round: self.chain.len() as u64 - 1,
+                                },
+                            })
+                        }));
+                        self.outbound_votes
+                            .push((0..NUM_NODES).map(PeerId).collect());
+                    }
+                }
+                SimpleChainEvent::Ack { peer, round } => {
+                    self.outbound_votes[round as usize].remove(&peer);
+                    commands.push(Command::RouterCommand(RouterCommand::Unpublish {
+                        to: peer,
+                        id: round,
+                    }));
+                }
+            };
+            commands
+        }
+    }
+
+    #[derive(Clone)]
+    struct SimpleChainMessage {
+        round: u64,
+    }
+    impl Message for SimpleChainMessage {
+        type Event = SimpleChainEvent;
+        type ReadError = SimpleChainEventParseError;
+        type Id = u64;
+
+        fn deserialize(_from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
+            let arr: [u8; 8] = message.try_into().map_err(|_| SimpleChainEventParseError)?;
+            Ok(Self {
+                round: u64::from_ne_bytes(arr),
+            })
+        }
+
+        fn serialize(&self) -> Vec<u8> {
+            self.round.to_ne_bytes().to_vec()
+        }
+
+        fn id(&self) -> Self::Id {
+            self.round
+        }
+
+        fn event(self, from: PeerId) -> Self::Event {
+            Self::Event::Vote {
+                round: self.round,
+                peer: from,
+            }
+        }
+    }
+
+    struct Nodes<S: State, L: Fn(&PeerId, &PeerId) -> Duration> {
+        states: HashMap<PeerId, (MockExecutor<S::Event, S::Message>, S)>,
+        compute_latency: L,
+    }
+
+    impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
+        pub fn new(num_peers: u16, compute_latency: L) -> Self {
+            assert!(num_peers > 0);
+
+            let mut states = HashMap::new();
+
+            for idx in 0..num_peers {
+                let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
+                let (state, init_commands) = S::init();
+                executor.exec(init_commands);
+                states.insert(PeerId(idx.into()), (executor, state));
+            }
+
+            let mut nodes = Self {
+                states,
+                compute_latency,
+            };
+
+            for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
+                nodes.simulate_peer(&peer_id);
+            }
+
+            nodes
+        }
+
+        pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
+            if let Some((id, executor, state, tick)) = self
+                .states
+                .iter_mut()
+                .filter_map(|(id, (executor, state))| {
+                    let tick = executor.peek_event_tick()?;
+                    Some((id, executor, state, tick))
+                })
+                .min_by_key(|(_, _, _, tick)| *tick)
+            {
+                let id = id.clone();
+                let event = futures::executor::block_on(executor.next()).unwrap();
+                let commands = state.update(event.clone());
+
+                executor.exec(commands);
+
+                self.simulate_peer(&id);
+
+                Some((tick, id, event))
+            } else {
+                None
+            }
+        }
+
+        fn simulate_peer(&mut self, peer_id: &PeerId) {
+            let (mut executor, state) = self.states.remove(peer_id).unwrap();
+
+            let tick = executor.tick();
+
+            while let Some((to, outbound_message)) = executor.receive_message() {
+                let to_state = if &to == peer_id {
+                    &mut executor
+                } else {
+                    &mut self.states.get_mut(&to).unwrap().0
+                };
+                to_state.send_message(
+                    tick + (self.compute_latency)(peer_id, &to),
+                    peer_id.clone(),
+                    outbound_message,
+                );
+            }
+            while let Some((to, message_id)) = executor.receive_ack() {
+                let to_state = if &to == peer_id {
+                    &mut executor
+                } else {
+                    &mut self.states.get_mut(&to).unwrap().0
+                };
+                to_state.send_ack(
+                    tick + (self.compute_latency)(peer_id, &to),
+                    peer_id.clone(),
+                    message_id,
+                );
+            }
+
+            self.states.insert(peer_id.clone(), (executor, state));
+        }
+    }
+
+    #[test]
+    fn test_nodes() {
+        let mut nodes = Nodes::<SimpleChainState, _>::new(NUM_NODES as u16, |_from, _to| {
+            Duration::from_millis(50)
+        });
+
+        // FIXME this shouldn't be necessary once we can pass stuff into init()
+        for (idx, (_, state)) in nodes.states.values_mut().enumerate() {
+            state.me = PeerId(idx as u64);
+        }
+
+        while let Some((duration, id, event)) = nodes.step() {
+            println!("{duration:?} => {id:?} => {event:?}")
+        }
     }
 }

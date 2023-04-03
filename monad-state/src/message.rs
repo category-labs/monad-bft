@@ -146,7 +146,7 @@ mod tests {
             self.clone()
         }
 
-        fn event(self) -> Self::Event {
+        fn event(self, _from: PeerId) -> Self::Event {
             todo!()
         }
     }
@@ -171,22 +171,22 @@ mod tests {
     #[test]
     fn send() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let action = state.send(PeerId, TestMessage);
+        let action = state.send(PeerId(0), TestMessage);
 
-        assert_eq!(action.to, PeerId);
+        assert_eq!(action.to, PeerId(0));
         assert_eq!(action.message, TestMessage);
     }
 
     #[test]
     fn set_round_eviction() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId, TestMessage);
+        let _ = state.send(PeerId(0), TestMessage);
 
         let evicted = state.set_round(10, Vec::new());
         assert_eq!(
             evicted,
             vec![MessageActionUnpublish {
-                to: PeerId,
+                to: PeerId(0),
                 id: TestMessage,
             }],
         )
@@ -195,13 +195,13 @@ mod tests {
     #[test]
     fn handle_ack() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId, TestMessage);
+        let _ = state.send(PeerId(0), TestMessage);
 
-        let evicted = state.handle_ack(0, PeerId, TestMessage);
+        let evicted = state.handle_ack(0, PeerId(0), TestMessage);
         assert_eq!(
             evicted,
             Some(MessageActionUnpublish {
-                to: PeerId,
+                to: PeerId(0),
                 id: TestMessage,
             }),
         )
@@ -210,11 +210,11 @@ mod tests {
     #[test]
     fn evicted_handle_ack() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId, TestMessage);
+        let _ = state.send(PeerId(0), TestMessage);
 
         let _ = state.set_round(10, Vec::new());
 
-        let evicted = state.handle_ack(0, PeerId, TestMessage);
+        let evicted = state.handle_ack(0, PeerId(0), TestMessage);
         assert_eq!(evicted, None,)
     }
 }
