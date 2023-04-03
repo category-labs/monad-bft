@@ -1,10 +1,11 @@
+use secp256k1::Secp256k1;
 use sha2::Digest;
 
 #[derive(PartialEq)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Clone, Debug)]
-pub struct Signature(secp256k1::ecdsa::Signature);
+pub struct Signature(secp256k1::ecdsa::RecoverableSignature);
 
 #[derive(Debug)]
 pub struct Error(secp256k1::Error);
@@ -25,7 +26,11 @@ impl KeyPair {
     }
 
     pub fn sign(&self, msg: &[u8]) -> Signature {
-        Signature(self.0.secret_key().sign_ecdsa(msg_hash(msg)))
+        Signature(Secp256k1::sign_ecdsa_recoverable(
+            secp256k1::SECP256K1,
+            &msg_hash(msg),
+            &self.0.secret_key(),
+        ))
     }
 
     pub fn pubkey(&self) -> PubKey {
@@ -45,7 +50,21 @@ impl PubKey {
     }
 
     pub fn verify(&self, msg: &[u8], signature: &Signature) -> Result<(), Error> {
-        signature.0.verify(&msg_hash(msg), &self.0).map_err(Error)
+        Secp256k1::verify_ecdsa(
+            secp256k1::SECP256K1,
+            &msg_hash(msg),
+            &signature.0.to_standard(),
+            &self.0,
+        )
+        .map_err(Error)
+    }
+}
+
+impl Signature {
+    pub fn recover_pubkey(&self, msg: &[u8], signature: &Signature) -> Result<PubKey, Error> {
+        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &signature.0)
+            .map(PubKey)
+            .map_err(Error)
     }
 }
 
@@ -97,5 +116,20 @@ mod tests {
 
         assert!(keypair.pubkey().verify(msg, &signature).is_ok());
         assert!(keypair.pubkey().verify(b"bye world", &signature).is_err());
+    }
+
+    #[test]
+    fn test_recovery() {
+        let privkey =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let keypair = KeyPair::from_slice(&privkey).unwrap();
+
+        let msg = b"hello world";
+        let signature = keypair.sign(msg);
+
+        let recovered_key = signature.recover_pubkey(msg, &signature).unwrap();
+
+        assert!(keypair.pubkey().into_bytes() == recovered_key.into_bytes());
     }
 }
