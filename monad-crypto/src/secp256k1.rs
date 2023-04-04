@@ -66,6 +66,10 @@ impl Signature {
             .map(PubKey)
             .map_err(Error)
     }
+
+    pub fn serialize(&self) -> [u8; 64] {
+        self.0.serialize_compact().1
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use crate::types::signature::ConsensusSignature;
+use crate::validation::signing::Hashable;
 use crate::*;
 
 pub trait VotingQuorum: Default + Clone {
@@ -8,13 +9,12 @@ pub trait VotingQuorum: Default + Clone {
     // TODO get the return type from monad-validators later
     fn current_voting_power(&self) -> i64;
 
+    // hash of all the signatures
     fn get_hash(&self) -> Hash;
 
-    // this function is used by the leader to add signed VoteMsgs from replicas
-    // to the QC it is creating.
-    // Pass in the whole VoteMsg and let the implementation deal with how the signature
-    // is extracted from that or what portion is used for the adding the signature
-    fn add_signature(&mut self, s: ConsensusSignature);
+    // add the signature from a signed vote message and its voting power to the
+    // aggregate
+    fn add_signature(&mut self, s: ConsensusSignature, vote_power: i64);
 }
 
 use sha2::Digest;
@@ -27,15 +27,72 @@ pub struct VoteInfo {
     pub parent_round: Round,
 }
 
+pub struct VoteInfoIter<'a> {
+    pub v: &'a VoteInfo,
+    pub index: usize,
+}
+
+impl<'a> Iterator for VoteInfoIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = match self.index {
+            0 => Some(self.v.id.0.as_bytes()),
+            1 => Some(self.v.round.as_bytes()),
+            2 => Some(self.v.parent_id.0.as_bytes()),
+            3 => Some(self.v.parent_round.as_bytes()),
+            _ => None,
+        };
+
+        self.index += 1;
+        result
+    }
+}
+
+impl<'a> Hashable<'a> for &'a VoteInfo {
+    type DataIter = VoteInfoIter<'a>;
+
+    fn msg_parts(&self) -> Self::DataIter {
+        VoteInfoIter { v: self, index: 0 }
+    }
+}
+
 impl VoteInfo {
-    // TODO will use something from monad-crypto later...
+    // TODO make the hasher a parameter
     pub fn get_hash(&self) -> Hash {
         let mut hasher = sha2::Sha256::new();
-        hasher.update(self.id.0);
-        hasher.update(self.round);
-        hasher.update(self.parent_id.0);
-        hasher.update(self.parent_round);
+        for m in (&self).msg_parts() {
+            hasher.update(m);
+        }
 
         hasher.finalize().into()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::Hash;
+
+    use super::VoteInfo;
+    use sha2::Digest;
+
+    pub fn hash_vote(v: &VoteInfo) -> Hash {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(v.id.0);
+        hasher.update(v.round);
+        hasher.update(v.parent_id.0);
+        hasher.update(v.parent_round);
+
+        hasher.finalize().into()
+    }
+
+    #[test]
+    fn voteinfo_hash() {
+        let vi = VoteInfo::default();
+
+        let h1 = vi.get_hash();
+        let h2 = hash_vote(&vi);
+
+        assert_eq!(h1, h2);
     }
 }

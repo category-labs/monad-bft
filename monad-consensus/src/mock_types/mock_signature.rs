@@ -17,5 +17,5 @@ impl VotingQuorum for MockSignatures {
         Default::default()
     }
 
-    fn add_signature(&mut self, _s: ConsensusSignature) {}
+    fn add_signature(&mut self, _s: ConsensusSignature, _vp: i64) {}
 }
