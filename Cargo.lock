@@ -357,6 +357,7 @@ name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
  "monad-consensus",
+ "monad-testutil",
  "ptree",
 ]
 
@@ -366,6 +367,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "monad-crypto",
+ "monad-testutil",
  "sha2",
  "test-case",
  "zerocopy",
@@ -394,6 +396,14 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "monad-executor",
+]
+
+[[package]]
+name = "monad-testutil"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus",
+ "sha2",
 ]
 
 [[package]]

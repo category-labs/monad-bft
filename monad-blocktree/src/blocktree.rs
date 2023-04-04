@@ -187,12 +187,12 @@ impl<T: VotingQuorum> BlockTree<T> {
 
 #[cfg(test)]
 mod test {
-    use monad_consensus::mock_types::mock_signature::MockSignatures;
     use monad_consensus::types::block::{Block as ConsensusBlock, TransactionList};
     use monad_consensus::types::ledger::LedgerCommitInfo;
     use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::{BlockId, NodeId, Round};
+    use monad_testutil::signing::MockSignatures;
 
     use super::BlockTree;
     use super::BlockTreeError;
@@ -212,7 +212,7 @@ mod test {
                     vote: VoteInfo::default(),
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -232,7 +232,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -252,7 +252,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -272,7 +272,7 @@ mod test {
                     vote: v3,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -292,7 +292,7 @@ mod test {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -312,7 +312,7 @@ mod test {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -332,7 +332,7 @@ mod test {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -352,7 +352,7 @@ mod test {
                     vote: v7,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -433,7 +433,7 @@ mod test {
                     vote: v8,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -453,7 +453,7 @@ mod test {
                     vote: VoteInfo::default(),
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -473,7 +473,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 
@@ -493,7 +493,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures(),
+                MockSignatures,
             ),
         );
 

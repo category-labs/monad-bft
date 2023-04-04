@@ -8,7 +8,7 @@ use crate::*;
 #[derive(Clone, Debug, Default)]
 pub struct TransactionList(pub Vec<u8>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Block<T>
 where
     T: VotingQuorum,
@@ -86,47 +86,5 @@ impl<T: VotingQuorum> Block<T> {
 
     pub fn get_id(&self) -> BlockId {
         self.id
-    }
-}
-
-#[cfg(test)]
-pub mod tests {
-    use crate::mock_types::mock_signature::MockSignatures;
-    use crate::types::voting::VotingQuorum;
-    use crate::*;
-    use crate::{types::quorum_certificate::QuorumCertificate, validation::signing::Hashable};
-
-    use super::{Block, TransactionList};
-    use sha2::Digest;
-
-    pub fn hash<T: VotingQuorum>(b: &Block<T>) -> Hash {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(b.author);
-        hasher.update(b.round);
-        hasher.update(&b.payload.0);
-        hasher.update(b.qc.info.vote.id.0);
-        hasher.update(b.qc.signatures.get_hash());
-
-        hasher.finalize().into()
-    }
-
-    #[test]
-    fn block_hash_id() {
-        let txns = TransactionList(vec![1, 2, 3, 4]);
-        let author = NodeId(12);
-        let round = Round(234);
-        let qc = QuorumCertificate::<MockSignatures>::new(Default::default(), MockSignatures());
-
-        let block = Block::<MockSignatures>::new(author, round, &txns, &qc);
-
-        let mut hasher = sha2::Sha256::new();
-        for m in (&block).msg_parts() {
-            hasher.update(m);
-        }
-
-        let h1 = hasher.finalize_reset();
-        let h2 = hash(&block);
-
-        assert_eq!(h1, h2.into());
     }
 }
