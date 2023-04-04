@@ -2,7 +2,7 @@ use sha2::Digest;
 
 use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::voting::VotingQuorum;
-use crate::validation::signing::Hashable;
+use crate::validation::hashing::Hashable;
 use crate::*;
 
 #[derive(Clone, Debug, Default)]

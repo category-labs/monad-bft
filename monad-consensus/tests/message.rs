@@ -6,7 +6,7 @@ use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use monad_consensus::types::timeout::TimeoutInfo;
 use monad_consensus::*;
-use monad_consensus::{types::ledger::LedgerCommitInfo, validation::signing::Hashable, Hash};
+use monad_consensus::{types::ledger::LedgerCommitInfo, validation::hashing::Hashable, Hash};
 use monad_testutil::signing::MockSignatures;
 use sha2::Digest;
 

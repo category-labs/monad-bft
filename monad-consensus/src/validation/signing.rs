@@ -7,33 +7,33 @@ pub trait Signable {
     fn signed_object(self, author: NodeId, signature: ConsensusSignature) -> Self::Output;
 }
 
-pub trait Hashable<'a> {
-    type DataIter: Iterator<Item = &'a [u8]>;
-
-    fn msg_parts(&self) -> Self::DataIter;
-}
-
-pub struct Signed<M> {
+#[derive(Clone, Debug)]
+pub struct Signed<M: Signable> {
     pub obj: M,
     pub author: NodeId,
     pub author_signature: ConsensusSignature,
+}
+
+pub trait ConsensusSigned {}
+impl<M> ConsensusSigned for Signed<M> where M: Signable {}
+
+pub struct Verified<S: ConsensusSigned> {
+    pub obj: S,
 }
 
 #[cfg(test)]
 mod tests {
     use crate::types::ledger::LedgerCommitInfo;
     use crate::types::message::VoteMessage;
-    use crate::types::signature::ConsensusSignature;
+    use crate::validation::hashing::Hashable;
     use crate::NodeId;
     use monad_crypto::secp256k1::KeyPair;
-
-    use super::Hashable;
-    use super::Signable;
+    use monad_testutil::signing::Signer;
 
     use sha2::Digest;
 
-    struct Signer;
-    impl Signer {
+    struct Hasher;
+    impl Hasher {
         fn hash_object<'a, T: Hashable<'a>>(o: T) -> [u8; 32] {
             let mut hasher = sha2::Sha256::new();
 
@@ -41,13 +41,6 @@ mod tests {
                 hasher.update(f);
             }
             hasher.finalize().into()
-        }
-
-        fn sign_object<'a, T: Signable>(o: T, msg: &[u8], key: KeyPair) -> <T as Signable>::Output {
-            let sig = key.sign(msg);
-
-            let id = NodeId(0);
-            o.signed_object(id, ConsensusSignature(sig))
         }
     }
 
@@ -70,7 +63,7 @@ mod tests {
 
         let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
 
-        let msg = Signer::hash_object(&vm);
+        let msg = Hasher::hash_object(&vm);
         let svm = Signer::sign_object(vm, &msg, keypair);
 
         assert_eq!(svm.author, NodeId(0));

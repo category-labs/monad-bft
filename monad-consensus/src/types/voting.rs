@@ -1,5 +1,5 @@
 use crate::types::signature::ConsensusSignature;
-use crate::validation::signing::Hashable;
+use crate::validation::hashing::Hashable;
 use crate::*;
 
 pub trait VotingQuorum: Default + Clone {
@@ -15,6 +15,8 @@ pub trait VotingQuorum: Default + Clone {
     // add the signature from a signed vote message and its voting power to the
     // aggregate
     fn add_signature(&mut self, s: ConsensusSignature, vote_power: i64);
+
+    fn get_signatures(&self) -> Vec<&ConsensusSignature>;
 }
 
 use sha2::Digest;

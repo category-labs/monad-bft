@@ -132,7 +132,7 @@ impl WeightedRoundRobin {
 
 #[cfg(test)]
 mod tests {
-    use crate::validator::PubKey;
+    use monad_crypto::secp256k1::KeyPair;
 
     use super::super::leader_election::LeaderElection;
     use super::super::validator::{Address, Validator};
@@ -143,17 +143,25 @@ mod tests {
         validators.iter().map(|v| (v.address, v.stake)).collect()
     }
 
+    fn get_key1() -> Vec<u8> {
+        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap()
+    }
+
+    fn get_key2() -> Vec<u8> {
+        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap()
+    }
+
     // expected schedule (basic round robin)
     #[test]
     fn test_basic_round_robin() {
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 1,
         };
         let validators = vec![v1, v2];
@@ -174,12 +182,12 @@ mod tests {
     fn test_weighted_round_robin() {
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 2,
         };
         let validators = vec![v1, v2];
@@ -206,12 +214,12 @@ mod tests {
     fn test_agreement() {
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 3,
         };
         let validators = vec![v1, v2];
@@ -232,12 +240,12 @@ mod tests {
     fn test_increment_views_equivalent() {
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 3,
         };
         let validators = vec![v1, v2];
@@ -259,12 +267,12 @@ mod tests {
     fn test_update_stake() {
         let mut v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 10,
         };
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 10,
         };
 

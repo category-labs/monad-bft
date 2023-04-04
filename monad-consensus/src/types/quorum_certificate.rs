@@ -1,4 +1,5 @@
-use crate::validation::signing::{Hashable, Signable, Signed};
+use crate::validation::hashing::Hashable;
+use crate::validation::signing::{Signable, Signed};
 use crate::*;
 
 use super::{ledger::*, signature::ConsensusSignature, voting::*};

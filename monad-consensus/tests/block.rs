@@ -1,6 +1,6 @@
 use monad_consensus::types::block::{Block, TransactionList};
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::validation::signing::Hashable;
+use monad_consensus::validation::hashing::Hashable;
 use monad_consensus::*;
 use monad_testutil::signing::{hash, MockSignatures};
 

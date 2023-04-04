@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 hex = "0.4.3"
 monad-crypto = { path = "../monad-crypto" }
+monad-validator = { path = "../monad-validator" }
 sha2 = "0.10.6"
 test-case = "3.0.0"
 zerocopy = "0.6.1"

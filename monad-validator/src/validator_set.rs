@@ -95,29 +95,37 @@ impl<T: LeaderElection> ValidatorSet<T> {
 mod test {
 
     use crate::{
-        validator::{Address, PubKey, Validator},
+        validator::{Address, Validator},
         weighted_round_robin::WeightedRoundRobin,
     };
 
     use super::ValidatorSet;
+    use monad_crypto::secp256k1::KeyPair;
 
     #[test]
     fn test_membership() {
+        let mut privkey =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let keypair1 = KeyPair::from_slice(&privkey).unwrap();
+
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: keypair1.pubkey().clone(),
             stake: 1,
         };
 
         let v1_ = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: keypair1.pubkey().clone(),
             stake: 2,
         };
 
+        privkey = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&privkey).unwrap().pubkey(),
             stake: 2,
         };
 
@@ -132,15 +140,19 @@ mod test {
 
     #[test]
     fn test_super_maj() {
+        let pkey1 = hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
+        let pkey2 = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&pkey1).unwrap().pubkey(),
             stake: 1,
         };
 
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&pkey2).unwrap().pubkey(),
             stake: 3,
         };
 
@@ -153,15 +165,19 @@ mod test {
 
     #[test]
     fn test_get_leader() {
+        let pkey1 = hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
         let v1 = Validator {
             address: Address(1),
-            pubkey: PubKey(1),
+            pubkey: KeyPair::from_slice(&pkey1).unwrap().pubkey(),
             stake: 1,
         };
 
+        let pkey2 = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
         let v2 = Validator {
             address: Address(2),
-            pubkey: PubKey(2),
+            pubkey: KeyPair::from_slice(&pkey2).unwrap().pubkey(),
             stake: 1,
         };
 

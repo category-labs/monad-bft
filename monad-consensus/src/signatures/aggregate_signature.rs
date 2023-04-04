@@ -65,6 +65,10 @@ impl VotingQuorum for AggregateSignatures {
         self.sigs.push(s);
         self.voting_power += vote_power;
     }
+
+    fn get_signatures(&self) -> Vec<&ConsensusSignature> {
+        self.sigs.iter().collect()
+    }
 }
 
 #[cfg(test)]

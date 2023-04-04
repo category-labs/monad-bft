@@ -1,7 +1,7 @@
 use secp256k1::Secp256k1;
 use sha2::Digest;
 
-#[derive(PartialEq)]
+#[derive(Copy, Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Clone, Debug)]
@@ -61,8 +61,8 @@ impl PubKey {
 }
 
 impl Signature {
-    pub fn recover_pubkey(&self, msg: &[u8], signature: &Signature) -> Result<PubKey, Error> {
-        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &signature.0)
+    pub fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
+        Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &self.0)
             .map(PubKey)
             .map_err(Error)
     }
@@ -132,7 +132,7 @@ mod tests {
         let msg = b"hello world";
         let signature = keypair.sign(msg);
 
-        let recovered_key = signature.recover_pubkey(msg, &signature).unwrap();
+        let recovered_key = signature.recover_pubkey(msg).unwrap();
 
         assert!(keypair.pubkey().into_bytes() == recovered_key.into_bytes());
     }

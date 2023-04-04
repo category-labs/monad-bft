@@ -1,10 +1,10 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
+use monad_crypto::secp256k1::PubKey;
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct Address(pub i64); // placeholder type for Address
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PubKey(pub i64); // placeholder type
 
 #[derive(Clone, Copy)]
 pub struct Validator {
