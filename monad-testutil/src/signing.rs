@@ -1,6 +1,7 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::ConsensusSignature;
 use monad_consensus::types::voting::VotingQuorum;
+use monad_consensus::validation::hashing::Hashable;
 use monad_consensus::validation::signing::Signable;
 use monad_consensus::{Hash, NodeId};
 use monad_crypto::secp256k1::KeyPair;
@@ -47,6 +48,18 @@ impl Signer {
 
         let id = NodeId(0);
         o.signed_object(id, ConsensusSignature(sig))
+    }
+}
+
+pub struct Hasher;
+impl Hasher {
+    pub fn hash_object<'a, T: Hashable<'a>>(o: T) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+
+        for f in o.msg_parts() {
+            hasher.update(f);
+        }
+        hasher.finalize().into()
     }
 }
 

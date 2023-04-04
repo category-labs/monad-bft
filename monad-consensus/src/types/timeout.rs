@@ -79,38 +79,3 @@ impl TimeoutCertificate {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::*;
-
-    use super::{HighQcRound, TimeoutCertificate};
-    use crate::validation::hashing::*;
-    use monad_testutil::signing::get_key;
-    use monad_testutil::signing::Signer;
-
-    #[test]
-    fn max_high_qc() {
-        let high_qc_rounds = vec![
-            HighQcRound { qc_round: Round(1) },
-            HighQcRound { qc_round: Round(3) },
-            HighQcRound { qc_round: Round(1) },
-        ]
-        .iter()
-        .map(|x| {
-            let hasher = Sha256Hash;
-            let msg = hasher.hash_object(x);
-            let keypair = get_key("a");
-
-            Signer::sign_object(*x, &msg, keypair)
-        })
-        .collect();
-
-        let tc = TimeoutCertificate {
-            round: Round(2),
-            high_qc_rounds,
-        };
-
-        assert_eq!(tc.max_round(), Round(3));
-    }
-}
