@@ -2,10 +2,10 @@ use monad_consensus::types::block::{Block, TransactionList};
 use monad_consensus::types::message::ProposalMessage;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::validation::hashing::*;
-use monad_consensus::validation::protocol::{verify_proposal, ValidatorSet};
+use monad_consensus::validation::protocol::{verify_proposal, ValidatorMember};
 use monad_consensus::*;
 use monad_testutil::signing::{get_key, MockSignatures, Signer};
-use monad_validator::validator::{Address, Validator};
+use monad_validator::validator::Validator;
 
 fn setup_block(author: NodeId, block_round: u64, qc_round: u64) -> Block<MockSignatures> {
     let txns = TransactionList(vec![1, 2, 3, 4]);
@@ -18,7 +18,7 @@ fn setup_block(author: NodeId, block_round: u64, qc_round: u64) -> Block<MockSig
 
 #[test]
 fn test_proposal_hash() {
-    let mut vset = ValidatorSet::new();
+    let mut vset = ValidatorMember::new();
 
     let author = NodeId(12);
     let proposal = ProposalMessage {
@@ -31,7 +31,6 @@ fn test_proposal_hash() {
     vset.insert(
         keypair.pubkey(),
         Validator {
-            address: Address(author.0 as i64),
             pubkey: keypair.pubkey(),
             stake: 0,
         },
@@ -46,7 +45,7 @@ fn test_proposal_hash() {
 
 #[test]
 fn test_proposal_missing_tc() {
-    let mut vset = ValidatorSet::new();
+    let mut vset = ValidatorMember::new();
 
     let author = NodeId(12);
     let proposal = ProposalMessage {
@@ -59,7 +58,6 @@ fn test_proposal_missing_tc() {
     vset.insert(
         keypair.pubkey(),
         Validator {
-            address: Address(author.0 as i64),
             pubkey: keypair.pubkey(),
             stake: 0,
         },
@@ -74,7 +72,7 @@ fn test_proposal_missing_tc() {
 
 #[test]
 fn test_proposal_invalid_qc() {
-    let mut vset = ValidatorSet::new();
+    let mut vset = ValidatorMember::new();
 
     let author = NodeId(12);
     let proposal = ProposalMessage {
@@ -87,7 +85,6 @@ fn test_proposal_invalid_qc() {
     vset.insert(
         keypair.pubkey(),
         Validator {
-            address: Address(author.0 as i64),
             pubkey: keypair.pubkey(),
             stake: 0,
         },

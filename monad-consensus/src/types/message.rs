@@ -11,6 +11,13 @@ use super::{
     voting::{VoteInfo, VotingQuorum},
 };
 
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum ConsensusMessage {
+    VoteMessage,
+    TimeoutMessage,
+    ProposalMessage,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct VoteMessage {
     pub vote_info: VoteInfo,

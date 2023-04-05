@@ -15,17 +15,17 @@ use crate::Hash;
 use monad_crypto::secp256k1::PubKey;
 use monad_validator::validator::Validator;
 
-pub type ValidatorSet = HashMap<PubKey, Validator>;
+pub type ValidatorMember = HashMap<PubKey, Validator>;
 
 trait ValidatorPubKey {
     // PubKey is valid if it is in the validator set
-    fn valid_pubkey(self, validators: &ValidatorSet) -> Result<Self, Error>
+    fn valid_pubkey(self, validators: &ValidatorMember) -> Result<Self, Error>
     where
         Self: Sized;
 }
 
 impl ValidatorPubKey for PubKey {
-    fn valid_pubkey(self, validators: &ValidatorSet) -> Result<Self, Error> {
+    fn valid_pubkey(self, validators: &ValidatorMember) -> Result<Self, Error> {
         // TODO: fix the Address type from monad-validators
         if validators.contains_key(&self) {
             Ok(self)
@@ -46,7 +46,7 @@ fn get_pubkey(msg: &[u8], sig: &ConsensusSignature) -> Result<PubKey, Error> {
 // signatures for the present TC or QC
 pub fn verify_proposal<H, T>(
     h: H,
-    validators: &ValidatorSet,
+    validators: &ValidatorMember,
     p: Unverified<ProposalMessage<T>>,
 ) -> Result<Verified<ProposalMessage<T>>, Error>
 where
@@ -71,7 +71,7 @@ where
 // Return type must keep the signature with the message as it is used later by the protocol
 pub fn verify_vote_message<H>(
     h: H,
-    validators: &ValidatorSet,
+    validators: &ValidatorMember,
     v: Unverified<VoteMessage>,
 ) -> Result<Verified<VoteMessage>, Error>
 where
@@ -95,7 +95,7 @@ where
 
 pub fn verify_timeout_message<H, T>(
     h: H,
-    validators: &ValidatorSet,
+    validators: &ValidatorMember,
     t: Unverified<TimeoutMessage<T>>,
 ) -> Result<Verified<TimeoutMessage<T>>, Error>
 where
@@ -122,7 +122,7 @@ where
 
 fn verify_certificates<H, V>(
     h: &H,
-    validators: &ValidatorSet,
+    validators: &ValidatorMember,
     tc: &Option<TimeoutCertificate>,
     qc: &QuorumCertificate<V>,
 ) -> Result<(), Error>
@@ -153,7 +153,7 @@ where
 }
 
 fn verify_author(
-    validators: &ValidatorSet,
+    validators: &ValidatorMember,
     msg: &Hash,
     sig: &ConsensusSignature,
 ) -> Result<(), Error> {

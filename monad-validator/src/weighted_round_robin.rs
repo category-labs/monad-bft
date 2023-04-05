@@ -1,11 +1,12 @@
-use super::{leader_election::LeaderElection, validator::Address};
+use super::leader_election::LeaderElection;
 use log::warn;
+use monad_crypto::secp256k1::PubKey;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
 #[derive(Eq, Clone, Copy, Debug)]
 struct Voter {
-    address: Address,
+    address: PubKey,
     voting_power: i64,
     priority: i64,
 }
@@ -54,7 +55,7 @@ impl LeaderElection for WeightedRoundRobin {
         }
     }
 
-    fn start_new_epoch(&mut self, voting_powers: Vec<(Address, i64)>) {
+    fn start_new_epoch(&mut self, voting_powers: Vec<(PubKey, i64)>) {
         self.voters.reserve(voting_powers.len());
         self.total_voting_power = 0;
         for (addr, vp) in voting_powers.into_iter() {
@@ -84,12 +85,12 @@ impl LeaderElection for WeightedRoundRobin {
         }
     }
 
-    fn get_leader(&self) -> &Address {
+    fn get_leader(&self) -> &PubKey {
         self.panic_if_empty();
         &self.voters[self.leader].address
     }
 
-    fn update_voting_power(&mut self, addr: &Address, new_voting_power: i64) -> bool {
+    fn update_voting_power(&mut self, addr: &PubKey, new_voting_power: i64) -> bool {
         self.panic_if_empty();
         let v = match self.voters.iter_mut().filter(|v| addr == &v.address).next() {
             Some(v) => v,
@@ -132,15 +133,15 @@ impl WeightedRoundRobin {
 
 #[cfg(test)]
 mod tests {
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::secp256k1::{KeyPair, PubKey};
 
     use super::super::leader_election::LeaderElection;
-    use super::super::validator::{Address, Validator};
+    use super::super::validator::Validator;
 
     use super::WeightedRoundRobin;
 
-    fn collect_voting_powers(validators: &Vec<Validator>) -> Vec<(Address, i64)> {
-        validators.iter().map(|v| (v.address, v.stake)).collect()
+    fn collect_voting_powers(validators: &Vec<Validator>) -> Vec<(PubKey, i64)> {
+        validators.iter().map(|v| (v.pubkey, v.stake)).collect()
     }
 
     fn get_key1() -> Vec<u8> {
@@ -155,12 +156,10 @@ mod tests {
     #[test]
     fn test_basic_round_robin() {
         let v1 = Validator {
-            address: Address(1),
             pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            address: Address(2),
             pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 1,
         };
@@ -168,25 +167,23 @@ mod tests {
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
         wrr.start_new_epoch(collect_voting_powers(&validators));
 
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
     }
 
     // expected schedule (weighted round robin)
     #[test]
     fn test_weighted_round_robin() {
         let v1 = Validator {
-            address: Address(1),
             pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            address: Address(2),
             pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 2,
         };
@@ -195,30 +192,28 @@ mod tests {
         wrr.start_new_epoch(collect_voting_powers(&validators));
 
         // expected schedule: (v2, v2, v1), (v2, v2, v1)...
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
         wrr.increment_view(1);
 
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
     }
 
     // two instances agree on the same schedule
     #[test]
     fn test_agreement() {
         let v1 = Validator {
-            address: Address(1),
             pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            address: Address(2),
             pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 3,
         };
@@ -239,12 +234,10 @@ mod tests {
     #[test]
     fn test_increment_views_equivalent() {
         let v1 = Validator {
-            address: Address(1),
             pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            address: Address(2),
             pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 3,
         };
@@ -266,12 +259,10 @@ mod tests {
     #[test]
     fn test_update_stake() {
         let mut v1 = Validator {
-            address: Address(1),
             pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
             stake: 10,
         };
         let v2 = Validator {
-            address: Address(2),
             pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
             stake: 10,
         };
@@ -280,35 +271,35 @@ mod tests {
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
         wrr.start_new_epoch(collect_voting_powers(&validators));
 
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
         wrr.increment_view(1);
 
         // now v1 gets slashed to 5
         v1.stake = 5;
-        assert!(wrr.update_voting_power(&v1.address, v1.stake));
+        assert!(wrr.update_voting_power(&v1.pubkey, v1.stake));
         assert!(wrr.total_voting_power == 15);
 
         // we do not change the proposer intra-view; v2 is still the proposer
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
         // "compensating" v2/"slashing" v1 by giving v2 one more round
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
 
         // schedule after (v2, v2, v1), (v2, v2, v1)...
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
         wrr.increment_view(1);
 
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v2.address);
+        assert!(wrr.get_leader() == &v2.pubkey);
         wrr.increment_view(1);
-        assert!(wrr.get_leader() == &v1.address);
+        assert!(wrr.get_leader() == &v1.pubkey);
     }
 }
