@@ -143,10 +143,10 @@ where
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     };
 
-    for i in msg_sig {
-        get_pubkey(&i.0, i.1)?
+    for (hash, sig) in msg_sig {
+        get_pubkey(&hash, sig)?
             .valid_pubkey(validators)?
-            .verify(&i.0, &i.1 .0)
+            .verify(&hash, &sig.0)
             .map_err(|_| Error::InvalidSignature)?;
     }
     Ok(())

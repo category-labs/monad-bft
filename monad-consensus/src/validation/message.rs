@@ -34,19 +34,24 @@ fn well_formed(
     tc: &Option<TimeoutCertificate>,
 ) -> Result<(), Error> {
     let prev_round = round - Round(1);
-    if qc_round == prev_round {
-        if tc.is_none() {
-            Ok(())
-        } else {
-            Err(Error::NotWellFormed)
-        }
-    } else {
-        tc.as_ref().map_or(Err(Error::NotWellFormed), |t| {
-            if t.round == prev_round {
+    let valid_qc_round = qc_round == prev_round;
+
+    match tc {
+        Some(tc) => {
+            // if there is a TC, the qc round must be invalid and the tc round must be valid
+            if !valid_qc_round && tc.round == prev_round {
                 Ok(())
             } else {
                 Err(Error::NotWellFormed)
             }
-        })
+        }
+        None => {
+            // If no TC, the qc round must be valid
+            if valid_qc_round {
+                Ok(())
+            } else {
+                Err(Error::NotWellFormed)
+            }
+        }
     }
 }
