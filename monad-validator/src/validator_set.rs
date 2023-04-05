@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error;
 
 use monad_crypto::secp256k1::PubKey;
@@ -32,8 +32,7 @@ impl error::Error for ValidatorSetError {
 pub struct ValidatorSet<T: LeaderElection> {
     validators: HashMap<PubKey, Validator>,
     leader_election: T,
-    _total_stake: i64,
-    quorom_stake: i64,
+    total_stake: i64,
     round: i64, // monotonically increasing: initial 1
 }
 
@@ -57,8 +56,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
         Ok(ValidatorSet {
             validators: vmap,
             leader_election: election,
-            _total_stake: total_stake,
-            quorom_stake: total_stake * 2 / 3 + 1,
+            total_stake,
             round: 1,
         })
     }
@@ -72,6 +70,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
     }
 
     pub fn has_super_majority_votes(&self, addrs: &Vec<PubKey>) -> bool {
+        assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
         let mut voter_stake: i64 = 0;
         for addr in addrs.into_iter() {
             match self.validators.get(&addr) {
@@ -80,7 +79,16 @@ impl<T: LeaderElection> ValidatorSet<T> {
             }
         }
 
-        voter_stake >= self.quorom_stake
+        voter_stake >= self.total_stake * 2 / 3 + 1
+    }
+
+    pub fn has_honest_vote(&self, addrs: &Vec<PubKey>) -> bool {
+        assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
+        addrs
+            .iter()
+            .filter_map(|addr| self.validators.get(&addr).map(|v| v.stake))
+            .sum::<i64>()
+            >= self.total_stake / 3 + 1
     }
 
     pub fn get_leader(&mut self, round: i64) -> &PubKey {
@@ -166,6 +174,32 @@ mod test {
         assert!(vs.has_super_majority_votes(&vec![v2.pubkey]));
         assert!(!vs.has_super_majority_votes(&vec![v1.pubkey]));
         assert!(vs.has_super_majority_votes(&vec![v2.pubkey, pubkey3])); // Address(3) is a non-member
+    }
+
+    #[test]
+    fn test_honest_vote() {
+        let pkey1 = hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
+        let pkey2 = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
+        let v1 = Validator {
+            pubkey: KeyPair::from_slice(&pkey1).unwrap().pubkey(),
+            stake: 1,
+        };
+
+        let v2 = Validator {
+            pubkey: KeyPair::from_slice(&pkey2).unwrap().pubkey(),
+            stake: 2,
+        };
+
+        let pkey3 = hex::decode("cfe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+            .unwrap();
+        let pubkey3 = KeyPair::from_slice(&pkey3).unwrap().pubkey();
+
+        let validators = vec![v1.clone(), v2.clone()];
+        let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        assert!(!vs.has_honest_vote(&vec![v1.pubkey]));
+        assert!(vs.has_honest_vote(&vec![v2.pubkey]));
     }
 
     #[test]

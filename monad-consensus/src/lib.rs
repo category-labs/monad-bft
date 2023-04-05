@@ -1,3 +1,4 @@
+pub mod pacemaker;
 pub mod signatures;
 pub mod types;
 pub mod validation;
@@ -36,7 +37,7 @@ impl Sub for Round {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, AsBytes)]
+#[derive(Copy, Clone, Hash, Debug, Default, Eq, PartialEq, AsBytes)]
 pub struct NodeId(pub u16);
 
 impl AsRef<[u8]> for NodeId {

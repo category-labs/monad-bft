@@ -1,7 +1,8 @@
 use std::cmp;
 
-use crate::types::quorum_certificate::QcInfo;
-use crate::types::timeout::TimeoutCertificate;
+use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
+use crate::types::signature::SignatureCollection;
+use crate::types::timeout::{TimeoutCertificate, TimeoutInfo};
 use crate::*;
 
 pub struct Safety {
@@ -19,7 +20,7 @@ impl Safety {
     }
 
     fn safe_to_vote(
-        self,
+        &self,
         block_round: Round,
         qc_round: Round,
         tc: &Option<TimeoutCertificate>,
@@ -32,7 +33,7 @@ impl Safety {
     }
 
     fn safe_to_timeout(
-        self,
+        &self,
         round: Round,
         qc_round: Round,
         tc: &Option<TimeoutCertificate>,
@@ -49,6 +50,21 @@ impl Safety {
         };
 
         return consecutive(round, qc_round) || consecutive_tc;
+    }
+
+    pub fn make_timeout<T: SignatureCollection>(
+        &mut self,
+        round: Round,
+        high_qc: QuorumCertificate<T>,
+        last_tc: &Option<TimeoutCertificate>,
+    ) -> Option<TimeoutInfo<T>> {
+        let qc_round = high_qc.info.vote.round;
+        if self.safe_to_timeout(round, qc_round, &last_tc) {
+            self.update_highest_vote_round(round);
+            Some(TimeoutInfo { round, high_qc })
+        } else {
+            None
+        }
     }
 }
 

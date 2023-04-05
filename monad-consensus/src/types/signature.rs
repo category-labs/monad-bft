@@ -1,7 +1,7 @@
 use crate::Hash;
 use monad_crypto::secp256k1::Signature;
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct ConsensusSignature(pub Signature);
 
 pub trait SignatureCollection: Default + Clone {
