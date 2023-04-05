@@ -6,4 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+monad-blocktree = { path = "../monad-blocktree" }
+monad-consensus = { path = "../monad-consensus" }
 monad-executor = { path = "../monad-executor" }
+monad-validator = { path = "../monad-validator" }
+

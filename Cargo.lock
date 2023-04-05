@@ -396,7 +396,10 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "monad-blocktree",
+ "monad-consensus",
  "monad-executor",
+ "monad-validator",
 ]
 
 [[package]]
