@@ -10,8 +10,7 @@ use crate::types::voting::VotingQuorum;
 use crate::validation::error::Error;
 use crate::validation::hashing::Hasher;
 use crate::validation::message::{well_formed_proposal, well_formed_timeout};
-use crate::validation::signing::Signed;
-use crate::validation::signing::Verified;
+use crate::validation::signing::{Signed, Unverified, Verified};
 use crate::Hash;
 use monad_crypto::secp256k1::PubKey;
 use monad_validator::validator::Validator;
@@ -48,18 +47,24 @@ fn get_pubkey(msg: &[u8], sig: &ConsensusSignature) -> Result<PubKey, Error> {
 pub fn verify_proposal<H, T>(
     h: H,
     validators: &ValidatorSet,
-    p: Signed<ProposalMessage<T>>,
-) -> Result<Verified<Signed<ProposalMessage<T>>>, Error>
+    p: Unverified<ProposalMessage<T>>,
+) -> Result<Verified<ProposalMessage<T>>, Error>
 where
     T: VotingQuorum,
     H: Hasher,
 {
     well_formed_proposal(&p)?;
-    let msg = h.hash_object(&p.obj);
-    verify_author(validators, &msg, &p.author_signature)?;
-    verify_certificates(&h, validators, &p.obj.last_round_tc, &p.obj.block.qc)?;
+    let msg = h.hash_object(&p.0.obj);
+    verify_author(validators, &msg, &p.0.author_signature)?;
+    verify_certificates(&h, validators, &p.0.obj.last_round_tc, &p.0.obj.block.qc)?;
 
-    Ok(Verified { obj: p })
+    let result = Verified(Signed {
+        obj: p.0.obj,
+        author: p.0.author,
+        author_signature: p.0.author_signature,
+    });
+
+    Ok(result)
 }
 
 // A verified vote message has a valid signature
@@ -67,36 +72,52 @@ where
 pub fn verify_vote_message<H>(
     h: H,
     validators: &ValidatorSet,
-    v: Signed<VoteMessage>,
-) -> Result<Verified<Signed<VoteMessage>>, Error>
+    v: Unverified<VoteMessage>,
+) -> Result<Verified<VoteMessage>, Error>
 where
     H: Hasher,
 {
-    let msg = h.hash_object(&v.obj);
+    let msg = h.hash_object(&v.0.obj);
 
-    get_pubkey(&msg, &v.author_signature)?
+    get_pubkey(&msg, &v.0.author_signature)?
         .valid_pubkey(validators)?
-        .verify(&msg, &v.author_signature.0)
+        .verify(&msg, &v.0.author_signature.0)
         .map_err(|_| Error::InvalidSignature)?;
 
-    Ok(Verified { obj: v })
+    let result = Verified(Signed {
+        obj: v.0.obj,
+        author: v.0.author,
+        author_signature: v.0.author_signature,
+    });
+
+    Ok(result)
 }
 
 pub fn verify_timeout_message<H, T>(
     h: H,
     validators: &ValidatorSet,
-    t: Signed<TimeoutMessage<T>>,
-) -> Result<Verified<Signed<TimeoutMessage<T>>>, Error>
+    t: Unverified<TimeoutMessage<T>>,
+) -> Result<Verified<TimeoutMessage<T>>, Error>
 where
     H: Hasher,
     T: VotingQuorum,
 {
     well_formed_timeout(&t)?;
-    let msg = h.hash_object(&t.obj);
-    verify_author(validators, &msg, &t.author_signature)?;
-    verify_certificates(&h, validators, &t.obj.last_round_tc, &t.obj.tminfo.high_qc)?;
+    let msg = h.hash_object(&t.0.obj);
+    verify_author(validators, &msg, &t.0.author_signature)?;
+    verify_certificates(
+        &h,
+        validators,
+        &t.0.obj.last_round_tc,
+        &t.0.obj.tminfo.high_qc,
+    )?;
 
-    Ok(Verified { obj: t })
+    let result = Verified(Signed {
+        obj: t.0.obj,
+        author: t.0.author,
+        author_signature: t.0.author_signature,
+    });
+    Ok(result)
 }
 
 fn verify_certificates<H, V>(
@@ -112,7 +133,7 @@ where
     let msg_sig = if let Some(tc) = tc {
         tc.high_qc_rounds
             .iter()
-            .map(|a| (h.hash_object(&a.obj), &a.author_signature))
+            .map(|a| (h.hash_object(&a.0.obj), &a.0.author_signature))
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     } else {
         qc.signatures

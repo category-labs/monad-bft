@@ -1,5 +1,5 @@
 use crate::validation::hashing::Hashable;
-use crate::validation::signing::{Signable, Signed};
+use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
 use super::{
@@ -51,30 +51,30 @@ impl<'a> Hashable<'a> for &'a HighQcRound {
 }
 
 impl Signable for HighQcRound {
-    type Output = Signed<HighQcRound>;
+    type Output = Unverified<HighQcRound>;
 
     fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Self::Output {
+        Unverified(Signed {
             obj: self,
             author,
             author_signature,
-        }
+        })
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct TimeoutCertificate {
     pub round: Round,
-    pub high_qc_rounds: Vec<Signed<HighQcRound>>,
+    pub high_qc_rounds: Vec<Unverified<HighQcRound>>,
 }
 
 impl TimeoutCertificate {
     pub fn max_round(&self) -> Round {
         self.high_qc_rounds.iter().fold(Round(0), |acc, r| {
-            if acc >= r.obj.qc_round {
+            if acc >= r.0.obj.qc_round {
                 acc
             } else {
-                r.obj.qc_round
+                r.0.obj.qc_round
             }
         })
     }

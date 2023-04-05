@@ -143,9 +143,9 @@ fn test_vote_message() {
     let msg = monad_testutil::signing::Hasher::hash_object(&vm);
     let svm = Signer::sign_object(vm, &msg, keypair);
 
-    assert_eq!(svm.author, NodeId(0));
+    assert_eq!(svm.0.author, NodeId(0));
     assert_eq!(
-        svm.obj.ledger_commit_info.vote_info_hash,
+        svm.0.obj.ledger_commit_info.vote_info_hash,
         expected_vote_info_hash
     );
 }

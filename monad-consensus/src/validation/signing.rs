@@ -8,15 +8,14 @@ pub trait Signable {
 }
 
 #[derive(Clone, Debug)]
-pub struct Signed<M: Signable> {
+pub struct Signed<M: Signable, const VERIFIED: bool> {
     pub obj: M,
     pub author: NodeId,
     pub author_signature: ConsensusSignature,
 }
 
-pub trait ConsensusSigned {}
-impl<M> ConsensusSigned for Signed<M> where M: Signable {}
+#[derive(Clone, Debug)]
+pub struct Verified<M: Signable>(pub Signed<M, true>);
 
-pub struct Verified<S: ConsensusSigned> {
-    pub obj: S,
-}
+#[derive(Clone, Debug)]
+pub struct Unverified<M: Signable>(pub Signed<M, false>);

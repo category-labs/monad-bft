@@ -4,21 +4,25 @@ use crate::types::message::{ProposalMessage, TimeoutMessage};
 use crate::types::timeout::TimeoutCertificate;
 use crate::types::voting::VotingQuorum;
 use crate::validation::error::Error;
-use crate::validation::signing::Signed;
+use crate::validation::signing::Unverified;
 
-pub fn well_formed_proposal<T: VotingQuorum>(p: &Signed<ProposalMessage<T>>) -> Result<(), Error> {
+pub fn well_formed_proposal<T: VotingQuorum>(
+    p: &Unverified<ProposalMessage<T>>,
+) -> Result<(), Error> {
     well_formed(
-        p.obj.block.round,
-        p.obj.block.qc.info.vote.round,
-        &p.obj.last_round_tc,
+        p.0.obj.block.round,
+        p.0.obj.block.qc.info.vote.round,
+        &p.0.obj.last_round_tc,
     )
 }
 
-pub fn well_formed_timeout<T: VotingQuorum>(t: &Signed<TimeoutMessage<T>>) -> Result<(), Error> {
+pub fn well_formed_timeout<T: VotingQuorum>(
+    t: &Unverified<TimeoutMessage<T>>,
+) -> Result<(), Error> {
     well_formed(
-        t.obj.tminfo.round,
-        t.obj.tminfo.high_qc.info.vote.round,
-        &t.obj.last_round_tc,
+        t.0.obj.tminfo.round,
+        t.0.obj.tminfo.high_qc.info.vote.round,
+        &t.0.obj.last_round_tc,
     )
 }
 
