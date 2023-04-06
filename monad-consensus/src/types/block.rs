@@ -1,7 +1,7 @@
 use sha2::Digest;
 
 use crate::types::quorum_certificate::QuorumCertificate;
-use crate::types::voting::VotingQuorum;
+use crate::types::signature::SignatureCollection;
 use crate::validation::hashing::Hashable;
 use crate::*;
 
@@ -11,7 +11,7 @@ pub struct TransactionList(pub Vec<u8>);
 #[derive(Clone, Default, Debug)]
 pub struct Block<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub author: NodeId,
     pub round: Round,
@@ -22,7 +22,7 @@ where
 
 pub struct BlockIter<'a, T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub b: &'a Block<T>,
     pub index: usize,
@@ -30,7 +30,7 @@ where
 
 impl<'a, T> Iterator for BlockIter<'a, T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type Item = &'a [u8];
 
@@ -51,7 +51,7 @@ where
 
 impl<'a, T> Hashable<'a> for &'a Block<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type DataIter = BlockIter<'a, T>;
 
@@ -60,7 +60,7 @@ where
     }
 }
 
-impl<T: VotingQuorum> Block<T> {
+impl<T: SignatureCollection> Block<T> {
     pub fn new(
         author: NodeId,
         round: Round,

@@ -6,9 +6,9 @@ use super::block::BlockIter;
 use super::{
     block::Block,
     ledger::LedgerCommitInfo,
-    signature::ConsensusSignature,
+    signature::{ConsensusSignature, SignatureCollection},
     timeout::{TimeoutCertificate, TimeoutInfo},
-    voting::{VoteInfo, VotingQuorum},
+    voting::VoteInfo,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -60,7 +60,7 @@ impl<'a> Hashable<'a> for &'a VoteMessage {
 #[derive(Clone)]
 pub struct TimeoutMessage<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub tminfo: TimeoutInfo<T>,
     pub last_round_tc: Option<TimeoutCertificate>,
@@ -68,7 +68,7 @@ where
 
 pub struct TimeoutMessageIter<'a, T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     tm: &'a TimeoutMessage<T>,
     index: usize,
@@ -76,7 +76,7 @@ where
 
 impl<'a, T> Iterator for TimeoutMessageIter<'a, T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type Item = &'a [u8];
 
@@ -94,7 +94,7 @@ where
 
 impl<T> Signable for TimeoutMessage<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type Output = Unverified<TimeoutMessage<T>>;
 
@@ -109,7 +109,7 @@ where
 
 impl<'a, T> Hashable<'a> for &'a TimeoutMessage<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type DataIter = TimeoutMessageIter<'a, T>;
 
@@ -121,7 +121,7 @@ where
 #[derive(Clone, Debug)]
 pub struct ProposalMessage<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub block: Block<T>,
     pub last_round_tc: Option<TimeoutCertificate>,
@@ -129,7 +129,7 @@ where
 
 impl<'a, T> Hashable<'a> for &'a ProposalMessage<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type DataIter = BlockIter<'a, T>;
 
@@ -143,7 +143,7 @@ where
 
 impl<T> Signable for ProposalMessage<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type Output = Unverified<ProposalMessage<T>>;
 

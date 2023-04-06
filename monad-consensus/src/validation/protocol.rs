@@ -5,8 +5,8 @@ use crate::types::message::TimeoutMessage;
 use crate::types::message::VoteMessage;
 use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::signature::ConsensusSignature;
+use crate::types::signature::SignatureCollection;
 use crate::types::timeout::TimeoutCertificate;
-use crate::types::voting::VotingQuorum;
 use crate::validation::error::Error;
 use crate::validation::hashing::Hasher;
 use crate::validation::message::{well_formed_proposal, well_formed_timeout};
@@ -50,7 +50,7 @@ pub fn verify_proposal<H, T>(
     p: Unverified<ProposalMessage<T>>,
 ) -> Result<Verified<ProposalMessage<T>>, Error>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
     H: Hasher,
 {
     well_formed_proposal(&p)?;
@@ -100,7 +100,7 @@ pub fn verify_timeout_message<H, T>(
 ) -> Result<Verified<TimeoutMessage<T>>, Error>
 where
     H: Hasher,
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     well_formed_timeout(&t)?;
     let msg = h.hash_object(&t.0.obj);
@@ -128,7 +128,7 @@ fn verify_certificates<H, V>(
 ) -> Result<(), Error>
 where
     H: Hasher,
-    V: VotingQuorum,
+    V: SignatureCollection,
 {
     let msg_sig = if let Some(tc) = tc {
         tc.high_qc_rounds

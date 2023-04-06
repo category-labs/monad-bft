@@ -2,7 +2,7 @@ use message::MessageState;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::types::message::{TimeoutMessage, VoteMessage};
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::types::voting::VotingQuorum;
+use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::validation::hashing::Sha256Hash;
 use monad_consensus::validation::protocol::{
     verify_proposal, verify_timeout_message, verify_vote_message,
@@ -170,7 +170,7 @@ impl State for MonadState {
 
 struct ConsensusState<T, V>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
     V: LeaderElection,
 {
     pending_block_tree: BlockTree<T>,
@@ -181,7 +181,7 @@ where
 
 impl<T, V> ConsensusState<T, V>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
     V: LeaderElection,
 {
     fn handle_proposal_message(

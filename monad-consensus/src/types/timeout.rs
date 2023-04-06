@@ -3,13 +3,14 @@ use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
 use super::{
-    quorum_certificate::QuorumCertificate, signature::ConsensusSignature, voting::VotingQuorum,
+    quorum_certificate::QuorumCertificate, signature::ConsensusSignature,
+    signature::SignatureCollection,
 };
 
 #[derive(Clone, Debug)]
 pub struct TimeoutInfo<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub round: Round,
     pub high_qc: QuorumCertificate<T>,

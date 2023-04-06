@@ -1,30 +1,19 @@
-use crate::types::signature::ConsensusSignature;
-use crate::types::voting::VotingQuorum;
+use crate::types::signature::{ConsensusSignature, SignatureCollection};
 use sha2::Digest;
 
 #[derive(Clone, Debug)]
 pub struct AggregateSignatures {
     pub sigs: Vec<ConsensusSignature>,
-    voting_power: i64,
-    max_power: i64,
-}
-
-impl AggregateSignatures {
-    pub fn new(max_power: i64) -> Self {
-        AggregateSignatures {
-            sigs: Vec::new(),
-            voting_power: 0,
-            max_power,
-        }
-    }
+    voting_stake: i64,
+    max_stake: i64,
 }
 
 impl Default for AggregateSignatures {
     fn default() -> Self {
         Self {
             sigs: Vec::new(),
-            voting_power: 0,
-            max_power: 10000,
+            voting_stake: 0,
+            max_stake: 10000,
         }
     }
 }
@@ -41,14 +30,22 @@ fn div_ceil(a: i64) -> i64 {
     (a + (3 - 1)) / 3
 }
 
-impl VotingQuorum for AggregateSignatures {
-    fn verify_quorum(&self) -> bool {
-        let super_majority = div_ceil(2 * self.max_power);
-        self.voting_power >= super_majority
+impl SignatureCollection for AggregateSignatures {
+    fn new(max_stake: i64) -> Self {
+        AggregateSignatures {
+            sigs: Vec::new(),
+            voting_stake: 0,
+            max_stake,
+        }
     }
 
-    fn current_voting_power(&self) -> i64 {
-        self.voting_power
+    fn verify_quorum(&self) -> bool {
+        let super_majority = div_ceil(2 * self.max_stake);
+        self.voting_stake >= super_majority
+    }
+
+    fn current_stake(&self) -> i64 {
+        self.voting_stake
     }
 
     fn get_hash(&self) -> crate::Hash {
@@ -61,9 +58,9 @@ impl VotingQuorum for AggregateSignatures {
         hasher.finalize().into()
     }
 
-    fn add_signature(&mut self, s: ConsensusSignature, vote_power: i64) {
+    fn add_signature(&mut self, s: ConsensusSignature, vote_stake: i64) {
         self.sigs.push(s);
-        self.voting_power += vote_power;
+        self.voting_stake += vote_stake;
     }
 
     fn get_signatures(&self) -> Vec<&ConsensusSignature> {
@@ -73,7 +70,7 @@ impl VotingQuorum for AggregateSignatures {
 
 #[cfg(test)]
 mod test {
-    use crate::{signatures::aggregate_signature::div_ceil, types::voting::VotingQuorum};
+    use crate::{signatures::aggregate_signature::div_ceil, types::signature::SignatureCollection};
 
     use super::AggregateSignatures;
 
@@ -88,16 +85,16 @@ mod test {
     fn super_maj_test() {
         let mut s = AggregateSignatures::new(4);
 
-        s.voting_power = 2;
+        s.voting_stake = 2;
         assert!(!s.verify_quorum());
 
-        s.voting_power = 3;
+        s.voting_stake = 3;
         assert!(s.verify_quorum());
 
-        s.voting_power = 4;
+        s.voting_stake = 4;
         assert!(s.verify_quorum());
 
-        s.voting_power = 5;
+        s.voting_stake = 5;
         assert!(s.verify_quorum());
     }
 

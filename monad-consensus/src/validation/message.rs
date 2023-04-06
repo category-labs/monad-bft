@@ -1,12 +1,12 @@
 use crate::*;
 
 use crate::types::message::{ProposalMessage, TimeoutMessage};
+use crate::types::signature::SignatureCollection;
 use crate::types::timeout::TimeoutCertificate;
-use crate::types::voting::VotingQuorum;
 use crate::validation::error::Error;
 use crate::validation::signing::Unverified;
 
-pub fn well_formed_proposal<T: VotingQuorum>(
+pub fn well_formed_proposal<T: SignatureCollection>(
     p: &Unverified<ProposalMessage<T>>,
 ) -> Result<(), Error> {
     well_formed(
@@ -16,7 +16,7 @@ pub fn well_formed_proposal<T: VotingQuorum>(
     )
 }
 
-pub fn well_formed_timeout<T: VotingQuorum>(
+pub fn well_formed_timeout<T: SignatureCollection>(
     t: &Unverified<TimeoutMessage<T>>,
 ) -> Result<(), Error> {
     well_formed(

@@ -1,6 +1,6 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::ConsensusSignature;
-use monad_consensus::types::voting::VotingQuorum;
+use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::validation::hashing::Hashable;
 use monad_consensus::validation::signing::Signable;
 use monad_consensus::{Hash, NodeId};
@@ -8,12 +8,16 @@ use monad_crypto::secp256k1::KeyPair;
 
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures;
-impl VotingQuorum for MockSignatures {
+impl SignatureCollection for MockSignatures {
+    fn new(_stake: i64) -> Self {
+        MockSignatures {}
+    }
+
     fn verify_quorum(&self) -> bool {
         true
     }
 
-    fn current_voting_power(&self) -> i64 {
+    fn current_stake(&self) -> i64 {
         0
     }
 
@@ -30,7 +34,7 @@ impl VotingQuorum for MockSignatures {
 
 use sha2::Digest;
 
-pub fn hash<T: VotingQuorum>(b: &Block<T>) -> Hash {
+pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let mut hasher = sha2::Sha256::new();
     hasher.update(b.author);
     hasher.update(b.round);

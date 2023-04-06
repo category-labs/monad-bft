@@ -1,5 +1,5 @@
 use monad_consensus::types::block::Block;
-use monad_consensus::types::voting::VotingQuorum;
+use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::BlockId;
 use monad_consensus::Round;
 use ptree::print_tree;
@@ -35,13 +35,13 @@ impl std::error::Error for BlockTreeError {
 
 pub struct BlockTreeBlock<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     block: Block<T>,
     children: Vec<BlockId>,
 }
 
-impl<T: VotingQuorum> BlockTreeBlock<T> {
+impl<T: SignatureCollection> BlockTreeBlock<T> {
     const CHILD_INDENT: &str = "    ";
     fn new(b: Block<T>) -> Self {
         BlockTreeBlock {
@@ -89,14 +89,14 @@ impl<T: VotingQuorum> BlockTreeBlock<T> {
 
 pub struct BlockTree<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     root: BlockId,
     tree: HashMap<BlockId, BlockTreeBlock<T>>,
     high_round: Round,
 }
 
-impl<T: VotingQuorum> std::fmt::Debug for BlockTree<T> {
+impl<T: SignatureCollection> std::fmt::Debug for BlockTree<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let root = self.tree.get(&self.root).unwrap();
         root.tree_fmt(&self, f, &"".to_owned())?;
@@ -104,7 +104,7 @@ impl<T: VotingQuorum> std::fmt::Debug for BlockTree<T> {
     }
 }
 
-impl<T: VotingQuorum> BlockTree<T> {
+impl<T: SignatureCollection> BlockTree<T> {
     pub fn new(genesis_block: Block<T>) -> Self {
         let bid = genesis_block.get_id();
         let round = genesis_block.round;

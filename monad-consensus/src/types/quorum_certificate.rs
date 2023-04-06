@@ -1,14 +1,15 @@
+use crate::types::ledger::*;
+use crate::types::signature::{ConsensusSignature, SignatureCollection};
+use crate::types::voting::*;
 use crate::validation::hashing::Hashable;
 use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
-
-use super::{ledger::*, signature::ConsensusSignature, voting::*};
 
 #[non_exhaustive]
 #[derive(Clone, Default, Debug)]
 pub struct QuorumCertificate<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub info: QcInfo,
     pub signatures: T,
@@ -17,7 +18,7 @@ where
 
 pub struct QcIter<'a, T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     pub qc: &'a QuorumCertificate<T>,
     pub index: usize,
@@ -25,7 +26,7 @@ where
 
 impl<'a, T> Iterator for QcIter<'a, T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type Item = &'a [u8];
 
@@ -42,7 +43,7 @@ where
 
 impl<'a, T> Hashable<'a> for &'a QuorumCertificate<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type DataIter = QcIter<'a, T>;
 
@@ -53,7 +54,7 @@ where
 
 impl<T> Signable for QuorumCertificate<T>
 where
-    T: VotingQuorum,
+    T: SignatureCollection,
 {
     type Output = Unverified<QuorumCertificate<T>>;
 
@@ -95,7 +96,7 @@ impl Ord for Rank {
     }
 }
 
-impl<T: VotingQuorum> QuorumCertificate<T> {
+impl<T: SignatureCollection> QuorumCertificate<T> {
     pub fn new(info: QcInfo, signatures: T) -> Self {
         let hash = signatures.get_hash();
         QuorumCertificate {
