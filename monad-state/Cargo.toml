@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 monad-blocktree = { path = "../monad-blocktree" }
 monad-consensus = { path = "../monad-consensus" }
+monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-validator = { path = "../monad-validator" }
 

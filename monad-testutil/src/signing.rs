@@ -48,7 +48,7 @@ impl Signer {
     pub fn sign_object<T: Signable>(o: T, msg: &[u8], key: &KeyPair) -> <T as Signable>::Output {
         let sig = key.sign(msg);
 
-        o.signed_object(node_id(), ConsensusSignature(sig))
+        o.signed_object(NodeId(key.pubkey().clone()), ConsensusSignature(sig))
     }
 }
 

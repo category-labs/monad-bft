@@ -1,21 +1,26 @@
-use message::MessageState;
 use monad_blocktree::blocktree::BlockTree;
-use monad_consensus::types::message::{TimeoutMessage, VoteMessage};
-use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::validation::hashing::Sha256Hash;
-use monad_consensus::validation::protocol::{
-    verify_proposal, verify_timeout_message, verify_vote_message,
-};
-use monad_consensus::validation::signing::{Unverified, Verified};
 use monad_consensus::{
-    signatures::aggregate_signature::AggregateSignatures, types::message::ProposalMessage,
+    signatures::aggregate_signature::AggregateSignatures,
+    types::{
+        block::Block,
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        quorum_certificate::{QuorumCertificate, Rank},
+        signature::SignatureCollection,
+        timeout::TimeoutCertificate,
+    },
+    validation::{
+        hashing::{Hasher, Sha256Hash},
+        protocol::{verify_proposal, verify_timeout_message, verify_vote_message},
+        signing::{Unverified, Verified},
+    },
+    vote_state::VoteState,
+    Round,
 };
 use monad_executor::{Command, Message, PeerId, RouterCommand, State};
 use monad_validator::leader_election::LeaderElection;
 use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
 
-use std::marker::PhantomData;
+use message::MessageState;
 
 mod message;
 
@@ -27,7 +32,7 @@ type LeaderElectionType = WeightedRoundRobin;
 pub struct MonadState {
     message_state: MessageState<MonadMessage>,
 
-    consensus_state: ConsensusState<SignatureType, LeaderElectionType>,
+    consensus_state: ConsensusState<SignatureType>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
@@ -132,8 +137,10 @@ impl State for MonadState {
                 .collect(),
 
             MonadEvent::Proposal { msg } => {
-                let proposal =
-                    verify_proposal::<Sha256Hash, _>(self.validator_set.get_members(), msg);
+                let proposal = verify_proposal::<Sha256Hash, SignatureType>(
+                    self.validator_set.get_members(),
+                    msg,
+                );
 
                 match proposal {
                     Ok(p) => self
@@ -149,14 +156,19 @@ impl State for MonadState {
                 match vote {
                     Ok(p) => self
                         .consensus_state
-                        .handle_vote_message(&p, &self.validator_set),
+                        .handle_vote_message::<Sha256Hash, LeaderElectionType>(
+                            &p,
+                            &self.validator_set,
+                        ),
                     Err(_) => todo!(),
                 }
             }
 
             MonadEvent::Timeout { msg } => {
-                let timeout =
-                    verify_timeout_message::<Sha256Hash, _>(self.validator_set.get_members(), msg);
+                let timeout = verify_timeout_message::<Sha256Hash, SignatureType>(
+                    self.validator_set.get_members(),
+                    msg,
+                );
 
                 match timeout {
                     Ok(p) => self
@@ -169,23 +181,26 @@ impl State for MonadState {
     }
 }
 
-struct ConsensusState<T, V>
+struct ConsensusState<T>
 where
     T: SignatureCollection,
-    V: LeaderElection,
 {
     pending_block_tree: BlockTree<T>,
+    vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,
 
-    _phantom: PhantomData<V>,
+    //TODO use ledger interface from monad-consensus
+    ledger: Vec<Block<T>>,
+
+    // TODO this might be in synchronizer only
+    round: Round,
 }
 
-impl<T, V> ConsensusState<T, V>
+impl<T> ConsensusState<T>
 where
     T: SignatureCollection,
-    V: LeaderElection,
 {
-    fn handle_proposal_message(
+    fn handle_proposal_message<V: LeaderElection>(
         &mut self,
         p: &Verified<ProposalMessage<T>>,
         validators: &ValidatorSet<V>,
@@ -193,18 +208,68 @@ where
         todo!();
     }
 
-    fn handle_vote_message(
+    fn handle_vote_message<H: Hasher, V: LeaderElection>(
         &mut self,
         v: &Verified<VoteMessage>,
         validators: &ValidatorSet<V>,
     ) -> Vec<Command<MonadEvent, MonadMessage>> {
-        todo!()
+        if self.round != v.0.obj.vote_info.round {
+            todo!();
+        }
+
+        let qc = self.vote_state.process_vote::<V, H>(v, validators);
+
+        let mut retval = Vec::new();
+        match qc {
+            Some(qc) => {
+                retval.extend(self.process_certificate_qc(&qc));
+                retval.extend(self.process_new_round_event(&None));
+            }
+            None => (),
+        }
+        retval
     }
 
-    fn handle_timeout_message(
+    fn handle_timeout_message<V: LeaderElection>(
         &mut self,
         p: &Verified<TimeoutMessage<T>>,
         validators: &ValidatorSet<V>,
+    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+        todo!();
+    }
+
+    // If the qc has a commit_state_hash, commit the parent block and prune the
+    // block tree
+    // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
+    fn process_qc(&mut self, qc: &QuorumCertificate<T>) {
+        match qc.info.ledger_commit.commit_state_hash {
+            Some(_) => {
+                let blocks_to_commit = self.pending_block_tree.prune(&qc.info.vote.parent_id);
+                match blocks_to_commit {
+                    Ok(blocks) => self.ledger.extend(blocks),
+                    Err(e) => panic!("{}", e),
+                }
+            }
+            None => (),
+        }
+
+        if Rank(qc.info) > Rank(self.high_qc.info) {
+            self.high_qc = qc.clone();
+        }
+    }
+
+    #[must_use]
+    fn process_certificate_qc(
+        &self,
+        qc: &QuorumCertificate<T>,
+    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+        todo!();
+    }
+
+    #[must_use]
+    fn process_new_round_event(
+        &self,
+        last_round_tc: &Option<TimeoutCertificate>,
     ) -> Vec<Command<MonadEvent, MonadMessage>> {
         todo!();
     }
