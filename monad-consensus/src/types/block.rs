@@ -1,14 +1,12 @@
-use sha2::Digest;
-
 use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::signature::SignatureCollection;
-use crate::validation::hashing::Hashable;
+use crate::validation::hashing::{Hashable, Hasher};
 use crate::*;
 
 #[derive(Clone, Debug, Default)]
 pub struct TransactionList(pub Vec<u8>);
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct Block<T>
 where
     T: SignatureCollection,
@@ -20,48 +18,18 @@ where
     id: BlockId,
 }
 
-pub struct BlockIter<'a, T>
-where
-    T: SignatureCollection,
-{
-    pub b: &'a Block<T>,
-    pub index: usize,
-}
-
-impl<'a, T> Iterator for BlockIter<'a, T>
-where
-    T: SignatureCollection,
-{
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = match self.index {
-            0 => Some(self.b.author.as_bytes()),
-            1 => Some(self.b.round.as_bytes()),
-            2 => Some(self.b.payload.0.as_bytes()),
-            3 => Some(self.b.qc.info.vote.id.0.as_bytes()),
-            4 => Some(self.b.qc.signature_hash.as_bytes()),
-            _ => None,
-        };
-
-        self.index += 1;
-        result
-    }
-}
-
-impl<'a, T> Hashable<'a> for &'a Block<T>
-where
-    T: SignatureCollection,
-{
-    type DataIter = BlockIter<'a, T>;
-
-    fn msg_parts(&self) -> Self::DataIter {
-        BlockIter { b: self, index: 0 }
+impl<T: SignatureCollection> Hashable for &Block<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(self.author.0.into_bytes().as_bytes());
+        state.update(self.round.as_bytes());
+        state.update(self.payload.0.as_bytes());
+        state.update(self.qc.info.vote.id.0.as_bytes());
+        state.update(self.qc.signature_hash.as_bytes());
     }
 }
 
 impl<T: SignatureCollection> Block<T> {
-    pub fn new(
+    pub fn new<H: Hasher>(
         author: NodeId,
         round: Round,
         txns: &TransactionList,
@@ -74,13 +42,7 @@ impl<T: SignatureCollection> Block<T> {
             qc: qc.clone(),
             id: Default::default(),
         };
-        // TODO: new() can take in a Hasher and populate id
-        let mut hasher = sha2::Sha256::new();
-        for m in (&b).msg_parts() {
-            hasher.update(m);
-        }
-        b.id = BlockId(hasher.finalize().into());
-
+        b.id = BlockId(H::hash_object(&b));
         b
     }
 

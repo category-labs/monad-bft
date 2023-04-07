@@ -6,6 +6,7 @@ pub mod validation;
 use std::ops::Add;
 use std::ops::Sub;
 
+use monad_crypto::secp256k1::PubKey;
 use zerocopy::AsBytes;
 
 pub type Hash = [u8; 32];
@@ -37,14 +38,8 @@ impl Sub for Round {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Debug, Default, Eq, PartialEq, AsBytes)]
-pub struct NodeId(pub u16);
-
-impl AsRef<[u8]> for NodeId {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
-}
+#[derive(Copy, Clone, Hash, Debug, Eq, PartialEq)]
+pub struct NodeId(pub PubKey);
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]

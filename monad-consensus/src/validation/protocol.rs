@@ -45,7 +45,6 @@ fn get_pubkey(msg: &[u8], sig: &ConsensusSignature) -> Result<PubKey, Error> {
 // A verified proposal is one which is well-formed and has valid
 // signatures for the present TC or QC
 pub fn verify_proposal<H, T>(
-    h: H,
     validators: &ValidatorMember,
     p: Unverified<ProposalMessage<T>>,
 ) -> Result<Verified<ProposalMessage<T>>, Error>
@@ -54,9 +53,9 @@ where
     H: Hasher,
 {
     well_formed_proposal(&p)?;
-    let msg = h.hash_object(&p.0.obj);
+    let msg = H::hash_object(&p.0.obj);
     verify_author(validators, &msg, &p.0.author_signature)?;
-    verify_certificates(&h, validators, &p.0.obj.last_round_tc, &p.0.obj.block.qc)?;
+    verify_certificates::<H, _>(validators, &p.0.obj.last_round_tc, &p.0.obj.block.qc)?;
 
     let result = Verified(Signed {
         obj: p.0.obj,
@@ -70,14 +69,13 @@ where
 // A verified vote message has a valid signature
 // Return type must keep the signature with the message as it is used later by the protocol
 pub fn verify_vote_message<H>(
-    h: H,
     validators: &ValidatorMember,
     v: Unverified<VoteMessage>,
 ) -> Result<Verified<VoteMessage>, Error>
 where
     H: Hasher,
 {
-    let msg = h.hash_object(&v.0.obj);
+    let msg = H::hash_object(&v.0.obj);
 
     get_pubkey(&msg, &v.0.author_signature)?
         .valid_pubkey(validators)?
@@ -94,7 +92,6 @@ where
 }
 
 pub fn verify_timeout_message<H, T>(
-    h: H,
     validators: &ValidatorMember,
     t: Unverified<TimeoutMessage<T>>,
 ) -> Result<Verified<TimeoutMessage<T>>, Error>
@@ -103,14 +100,9 @@ where
     T: SignatureCollection,
 {
     well_formed_timeout(&t)?;
-    let msg = h.hash_object(&t.0.obj);
+    let msg = H::hash_object(&t.0.obj);
     verify_author(validators, &msg, &t.0.author_signature)?;
-    verify_certificates(
-        &h,
-        validators,
-        &t.0.obj.last_round_tc,
-        &t.0.obj.tminfo.high_qc,
-    )?;
+    verify_certificates::<H, _>(validators, &t.0.obj.last_round_tc, &t.0.obj.tminfo.high_qc)?;
 
     let result = Verified(Signed {
         obj: t.0.obj,
@@ -121,7 +113,6 @@ where
 }
 
 fn verify_certificates<H, V>(
-    h: &H,
     validators: &ValidatorMember,
     tc: &Option<TimeoutCertificate>,
     qc: &QuorumCertificate<V>,
@@ -133,7 +124,7 @@ where
     let msg_sig = if let Some(tc) = tc {
         tc.high_qc_rounds
             .iter()
-            .map(|a| (h.hash_object(&a.0.obj), &a.0.author_signature))
+            .map(|a| (H::hash_object(&a.0.obj), &a.0.author_signature))
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     } else {
         qc.signatures

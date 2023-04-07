@@ -1,8 +1,7 @@
-use crate::validation::hashing::Hashable;
+use crate::validation::hashing::{Hashable, Hasher};
 use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
-use super::block::BlockIter;
 use super::{
     block::Block,
     ledger::LedgerCommitInfo,
@@ -17,26 +16,6 @@ pub struct VoteMessage {
     pub ledger_commit_info: LedgerCommitInfo,
 }
 
-pub struct VoteMessageIter<'a> {
-    vm: &'a VoteMessage,
-    index: usize,
-}
-
-impl<'a> Iterator for VoteMessageIter<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = match self.index {
-            0 => Some(&self.vm.ledger_commit_info.vote_info_hash),
-            1 => self.vm.ledger_commit_info.commit_state_hash.as_ref(),
-            _ => None,
-        };
-
-        self.index += 1;
-        result.map(|s| s.as_bytes())
-    }
-}
-
 impl Signable for VoteMessage {
     type Output = Unverified<VoteMessage>;
 
@@ -49,11 +28,12 @@ impl Signable for VoteMessage {
     }
 }
 
-impl<'a> Hashable<'a> for &'a VoteMessage {
-    type DataIter = VoteMessageIter<'a>;
-
-    fn msg_parts(&self) -> Self::DataIter {
-        VoteMessageIter { vm: self, index: 0 }
+impl Hashable for &VoteMessage {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(&self.ledger_commit_info.vote_info_hash);
+        if let Some(x) = self.ledger_commit_info.commit_state_hash.as_ref() {
+            state.update(x);
+        }
     }
 }
 
@@ -64,32 +44,6 @@ where
 {
     pub tminfo: TimeoutInfo<T>,
     pub last_round_tc: Option<TimeoutCertificate>,
-}
-
-pub struct TimeoutMessageIter<'a, T>
-where
-    T: SignatureCollection,
-{
-    tm: &'a TimeoutMessage<T>,
-    index: usize,
-}
-
-impl<'a, T> Iterator for TimeoutMessageIter<'a, T>
-where
-    T: SignatureCollection,
-{
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = match self.index {
-            0 => Some(&self.tm.tminfo.round),
-            1 => Some(&self.tm.tminfo.high_qc.info.vote.round),
-            _ => None,
-        };
-
-        self.index += 1;
-        result.map(|s| s.as_bytes())
-    }
 }
 
 impl<T> Signable for TimeoutMessage<T>
@@ -107,14 +61,10 @@ where
     }
 }
 
-impl<'a, T> Hashable<'a> for &'a TimeoutMessage<T>
-where
-    T: SignatureCollection,
-{
-    type DataIter = TimeoutMessageIter<'a, T>;
-
-    fn msg_parts(&self) -> Self::DataIter {
-        TimeoutMessageIter { tm: self, index: 0 }
+impl<T: SignatureCollection> Hashable for &TimeoutMessage<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(&self.tminfo.round);
+        state.update(&self.tminfo.high_qc.info.vote.round);
     }
 }
 
@@ -127,17 +77,9 @@ where
     pub last_round_tc: Option<TimeoutCertificate>,
 }
 
-impl<'a, T> Hashable<'a> for &'a ProposalMessage<T>
-where
-    T: SignatureCollection,
-{
-    type DataIter = BlockIter<'a, T>;
-
-    fn msg_parts(&self) -> Self::DataIter {
-        BlockIter {
-            b: &self.block,
-            index: 0,
-        }
+impl<T: SignatureCollection> Hashable for &ProposalMessage<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (&self.block).hash(state);
     }
 }
 

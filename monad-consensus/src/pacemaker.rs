@@ -126,9 +126,6 @@ where
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
         tmo: Verified<TimeoutMessage<T>>,
-
-        // TODO delete this after deprecating NodeId
-        node_id_to_pubkey: impl Fn(&NodeId) -> PubKey,
     ) -> (Option<TimeoutCertificate>, Vec<PacemakerCommand<T>>) {
         let mut ret_commands = Vec::new();
 
@@ -144,7 +141,7 @@ where
         let timeouts = self
             .pending_timeouts
             .keys()
-            .map(node_id_to_pubkey)
+            .map(|node_id| node_id.0)
             .collect();
 
         if self.phase == Phase::ZeroHonest && validators.has_honest_vote(&timeouts) {

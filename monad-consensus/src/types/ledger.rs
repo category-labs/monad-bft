@@ -1,4 +1,5 @@
 use crate::types::voting::*;
+use crate::validation::hashing::Hasher;
 use crate::*;
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -8,10 +9,10 @@ pub struct LedgerCommitInfo {
 }
 
 impl LedgerCommitInfo {
-    pub fn new(commit_state_hash: Option<Hash>, vote_info: &VoteInfo) -> Self {
+    pub fn new<H: Hasher>(commit_state_hash: Option<Hash>, vote_info: &VoteInfo) -> Self {
         LedgerCommitInfo {
             commit_state_hash,
-            vote_info_hash: vote_info.get_hash(),
+            vote_info_hash: H::hash_object(vote_info),
         }
     }
 }

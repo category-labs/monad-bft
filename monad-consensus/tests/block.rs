@@ -1,27 +1,20 @@
 use monad_consensus::types::block::{Block, TransactionList};
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::validation::hashing::Hashable;
+use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
 use monad_consensus::*;
-use monad_testutil::signing::{hash, MockSignatures};
-
-use sha2::Digest;
+use monad_testutil::signing::{hash, node_id, MockSignatures};
 
 #[test]
 fn block_hash_id() {
     let txns = TransactionList(vec![1, 2, 3, 4]);
-    let author = NodeId(12);
+    let author = node_id();
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new(Default::default(), MockSignatures);
 
-    let block = Block::<MockSignatures>::new(author, round, &txns, &qc);
+    let block = Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc);
 
-    let mut hasher = sha2::Sha256::new();
-    for m in (&block).msg_parts() {
-        hasher.update(m);
-    }
+    let h1 = Sha256Hash::hash_object(&block);
+    let h2: Hash = hash(&block);
 
-    let h1 = hasher.finalize_reset();
-    let h2 = hash(&block);
-
-    assert_eq!(h1, h2.into());
+    assert_eq!(h1, h2);
 }

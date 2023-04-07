@@ -1,7 +1,6 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::ConsensusSignature;
 use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::validation::hashing::Hashable;
 use monad_consensus::validation::signing::Signable;
 use monad_consensus::{Hash, NodeId};
 use monad_crypto::secp256k1::KeyPair;
@@ -28,7 +27,7 @@ use sha2::Digest;
 
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let mut hasher = sha2::Sha256::new();
-    hasher.update(b.author);
+    hasher.update(b.author.0.into_bytes());
     hasher.update(b.round);
     hasher.update(&b.payload.0);
     hasher.update(b.qc.info.vote.id.0);
@@ -37,25 +36,19 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.finalize().into()
 }
 
-pub struct Signer;
-impl Signer {
-    pub fn sign_object<T: Signable>(o: T, msg: &[u8], key: KeyPair) -> <T as Signable>::Output {
-        let sig = key.sign(msg);
-
-        let id = NodeId(0);
-        o.signed_object(id, ConsensusSignature(sig))
-    }
+pub fn node_id() -> NodeId {
+    let privkey =
+        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
+    let keypair = KeyPair::from_slice(&privkey).unwrap();
+    NodeId(keypair.pubkey())
 }
 
-pub struct Hasher;
-impl Hasher {
-    pub fn hash_object<'a, T: Hashable<'a>>(o: T) -> [u8; 32] {
-        let mut hasher = sha2::Sha256::new();
+pub struct Signer;
+impl Signer {
+    pub fn sign_object<T: Signable>(o: T, msg: &[u8], key: &KeyPair) -> <T as Signable>::Output {
+        let sig = key.sign(msg);
 
-        for f in o.msg_parts() {
-            hasher.update(f);
-        }
-        hasher.finalize().into()
+        o.signed_object(node_id(), ConsensusSignature(sig))
     }
 }
 

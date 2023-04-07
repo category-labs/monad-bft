@@ -132,7 +132,8 @@ impl State for MonadState {
                 .collect(),
 
             MonadEvent::Proposal { msg } => {
-                let proposal = verify_proposal(Sha256Hash, self.validator_set.get_members(), msg);
+                let proposal =
+                    verify_proposal::<Sha256Hash, _>(self.validator_set.get_members(), msg);
 
                 match proposal {
                     Ok(p) => self
@@ -143,7 +144,7 @@ impl State for MonadState {
             }
 
             MonadEvent::Vote { msg } => {
-                let vote = verify_vote_message(Sha256Hash, self.validator_set.get_members(), msg);
+                let vote = verify_vote_message::<Sha256Hash>(self.validator_set.get_members(), msg);
 
                 match vote {
                     Ok(p) => self
@@ -155,7 +156,7 @@ impl State for MonadState {
 
             MonadEvent::Timeout { msg } => {
                 let timeout =
-                    verify_timeout_message(Sha256Hash, self.validator_set.get_members(), msg);
+                    verify_timeout_message::<Sha256Hash, _>(self.validator_set.get_members(), msg);
 
                 match timeout {
                     Ok(p) => self

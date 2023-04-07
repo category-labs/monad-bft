@@ -7,7 +7,7 @@ use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use monad_consensus::types::timeout::{HighQcRound, TimeoutCertificate, TimeoutInfo};
 use monad_consensus::validation::hashing::*;
 use monad_consensus::*;
-use monad_consensus::{types::ledger::LedgerCommitInfo, validation::hashing::Hashable, Hash};
+use monad_consensus::{types::ledger::LedgerCommitInfo, Hash};
 use monad_crypto::secp256k1::KeyPair;
 use monad_testutil::signing::*;
 use sha2::Digest;
@@ -30,12 +30,9 @@ fn vote_msg_hash(cs: Option<Hash>) {
     if vm.ledger_commit_info.commit_state_hash.is_some() {
         hasher.update(vm.ledger_commit_info.commit_state_hash.as_ref().unwrap());
     }
-    let h1 = hasher.finalize_reset();
+    let h1: Hash = hasher.finalize_reset().into();
 
-    for v in (&vm).msg_parts() {
-        hasher.update(v);
-    }
-    let h2 = hasher.finalize();
+    let h2 = Sha256Hash::hash_object(&vm);
 
     assert_eq!(h1, h2);
 }
@@ -61,12 +58,9 @@ fn timeout_msg_hash() {
     let mut hasher = sha2::Sha256::new();
     hasher.update(tm.tminfo.round);
     hasher.update(tm.tminfo.high_qc.info.vote.round);
-    let h1 = hasher.finalize_reset();
+    let h1: Hash = hasher.finalize_reset().into();
 
-    for m in (&tm).msg_parts() {
-        hasher.update(m);
-    }
-    let h2 = hasher.finalize();
+    let h2 = Sha256Hash::hash_object(&tm);
 
     assert_eq!(h1, h2);
 }
@@ -76,25 +70,25 @@ fn proposal_msg_hash() {
     use monad_testutil::signing::hash;
 
     let txns = TransactionList(vec![1, 2, 3, 4]);
-    let author = NodeId(12);
+
+    let privkey =
+        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
+    let keypair = KeyPair::from_slice(&privkey).unwrap();
+    let author = NodeId(keypair.pubkey());
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new(Default::default(), MockSignatures);
 
-    let block = Block::<MockSignatures>::new(author, round, &txns, &qc);
+    let block = Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc);
 
     let proposal = ProposalMessage {
         block: block.clone(),
         last_round_tc: None,
     };
 
-    let mut hasher = sha2::Sha256::new();
-    for p in (&proposal).msg_parts() {
-        hasher.update(p);
-    }
-    let h1 = hasher.finalize_reset();
+    let h1 = Sha256Hash::hash_object(&proposal);
     let h2 = hash(&block);
 
-    assert_eq!(h1, h2.into());
+    assert_eq!(h1, h2);
 }
 
 #[test]
@@ -106,11 +100,10 @@ fn max_high_qc() {
     ]
     .iter()
     .map(|x| {
-        let hasher = Sha256Hash;
-        let msg = hasher.hash_object(x);
+        let msg = Sha256Hash::hash_object(x);
         let keypair = get_key("a");
 
-        Signer::sign_object(*x, &msg, keypair)
+        Signer::sign_object(*x, &msg, &keypair)
     })
     .collect();
 
@@ -140,10 +133,10 @@ fn test_vote_message() {
 
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
 
-    let msg = monad_testutil::signing::Hasher::hash_object(&vm);
-    let svm = Signer::sign_object(vm, &msg, keypair);
+    let msg = Sha256Hash::hash_object(&vm);
+    let svm = Signer::sign_object(vm, &msg, &keypair);
 
-    assert_eq!(svm.0.author, NodeId(0));
+    assert_eq!(svm.0.author, NodeId(keypair.pubkey()));
     assert_eq!(
         svm.0.obj.ledger_commit_info.vote_info_hash,
         expected_vote_info_hash

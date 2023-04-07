@@ -1,24 +1,31 @@
 use crate::Hash;
 use sha2::Digest;
 
-pub trait Hashable<'a> {
-    type DataIter: Iterator<Item = &'a [u8]>;
-
-    fn msg_parts(&self) -> Self::DataIter;
+pub trait Hashable {
+    fn hash<H: Hasher>(&self, state: &mut H);
 }
 
-pub trait Hasher {
-    fn hash_object<'a, T: Hashable<'a>>(&self, o: T) -> Hash;
+pub trait Hasher: Sized {
+    fn new() -> Self;
+    fn update(&mut self, data: impl AsRef<[u8]>);
+    fn hash(self) -> Hash;
+
+    fn hash_object<T: Hashable>(obj: T) -> Hash {
+        let mut hasher = Self::new();
+        obj.hash(&mut hasher);
+        hasher.hash()
+    }
 }
 
-pub struct Sha256Hash;
+pub struct Sha256Hash(sha2::Sha256);
 impl Hasher for Sha256Hash {
-    fn hash_object<'a, T: Hashable<'a>>(&self, o: T) -> Hash {
-        let mut hasher = sha2::Sha256::new();
-
-        for f in o.msg_parts() {
-            hasher.update(f);
-        }
-        hasher.finalize().into()
+    fn new() -> Self {
+        Self(sha2::Sha256::new())
+    }
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        self.0.update(data);
+    }
+    fn hash(self) -> Hash {
+        self.0.finalize().into()
     }
 }

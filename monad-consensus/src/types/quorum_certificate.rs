@@ -1,7 +1,7 @@
 use crate::types::ledger::*;
 use crate::types::signature::{ConsensusSignature, SignatureCollection};
 use crate::types::voting::*;
-use crate::validation::hashing::Hashable;
+use crate::validation::hashing::{Hashable, Hasher};
 use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
@@ -16,39 +16,9 @@ where
     pub signature_hash: Hash,
 }
 
-pub struct QcIter<'a, T>
-where
-    T: SignatureCollection,
-{
-    pub qc: &'a QuorumCertificate<T>,
-    pub index: usize,
-}
-
-impl<'a, T> Iterator for QcIter<'a, T>
-where
-    T: SignatureCollection,
-{
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = if self.index == 0 {
-            Some(self.qc.signature_hash.as_bytes())
-        } else {
-            None
-        };
-        self.index += 1;
-        result
-    }
-}
-
-impl<'a, T> Hashable<'a> for &'a QuorumCertificate<T>
-where
-    T: SignatureCollection,
-{
-    type DataIter = QcIter<'a, T>;
-
-    fn msg_parts(&self) -> Self::DataIter {
-        QcIter { qc: self, index: 0 }
+impl<T: SignatureCollection> Hashable for &QuorumCertificate<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(self.signature_hash.as_bytes());
     }
 }
 

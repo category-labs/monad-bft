@@ -1,4 +1,4 @@
-use crate::validation::hashing::Hashable;
+use crate::validation::hashing::{Hashable, Hasher};
 use crate::validation::signing::{Signable, Signed, Unverified};
 use crate::*;
 
@@ -21,33 +21,9 @@ pub struct HighQcRound {
     pub qc_round: Round,
 }
 
-pub struct HighQcRoundIter<'a> {
-    pub hqc: &'a HighQcRound,
-    pub index: usize,
-}
-
-impl<'a> Iterator for HighQcRoundIter<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = if self.index == 0 {
-            Some(self.hqc.qc_round.as_bytes())
-        } else {
-            None
-        };
-        self.index += 1;
-        result
-    }
-}
-
-impl<'a> Hashable<'a> for &'a HighQcRound {
-    type DataIter = HighQcRoundIter<'a>;
-
-    fn msg_parts(&self) -> Self::DataIter {
-        Self::DataIter {
-            hqc: self,
-            index: 0,
-        }
+impl Hashable for &HighQcRound {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(self.qc_round.as_bytes());
     }
 }
 

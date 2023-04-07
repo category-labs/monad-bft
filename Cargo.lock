@@ -356,7 +356,9 @@ checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "monad-consensus",
+ "monad-crypto",
  "monad-testutil",
  "ptree",
 ]

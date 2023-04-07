@@ -191,7 +191,9 @@ mod test {
     use monad_consensus::types::ledger::LedgerCommitInfo;
     use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
     use monad_consensus::types::voting::VoteInfo;
+    use monad_consensus::validation::hashing::Sha256Hash;
     use monad_consensus::{BlockId, NodeId, Round};
+    use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::MockSignatures;
 
     use super::BlockTree;
@@ -200,11 +202,19 @@ mod test {
     type Block = ConsensusBlock<MockSignatures>;
     type QC = QuorumCertificate<MockSignatures>;
 
+    fn node_id() -> NodeId {
+        let privkey =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let keypair = KeyPair::from_slice(&privkey).unwrap();
+        NodeId(keypair.pubkey())
+    }
+
     #[test]
     fn test_prune() {
         let txlist = TransactionList(vec![]);
-        let g = Block::new(
-            NodeId(0),
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
             Round(0),
             &txlist,
             &QC::new(
@@ -223,8 +233,8 @@ mod test {
             parent_round: Round::default(),
         };
 
-        let b1 = Block::new(
-            NodeId(0),
+        let b1 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(1),
             &txlist,
             &QC::new(
@@ -243,8 +253,8 @@ mod test {
             parent_round: Round(0),
         };
 
-        let b2 = Block::new(
-            NodeId(0),
+        let b2 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(2),
             &txlist,
             &QC::new(
@@ -263,8 +273,8 @@ mod test {
             parent_round: Round::default(),
         };
 
-        let b3 = Block::new(
-            NodeId(0),
+        let b3 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(3),
             &txlist,
             &QC::new(
@@ -283,8 +293,8 @@ mod test {
             parent_round: Round::default(),
         };
 
-        let b4 = Block::new(
-            NodeId(0),
+        let b4 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(4),
             &txlist,
             &QC::new(
@@ -303,8 +313,8 @@ mod test {
             parent_round: Round(0),
         };
 
-        let b5 = Block::new(
-            NodeId(0),
+        let b5 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(5),
             &txlist,
             &QC::new(
@@ -323,8 +333,8 @@ mod test {
             parent_round: Round(3),
         };
 
-        let b6 = Block::new(
-            NodeId(0),
+        let b6 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(6),
             &txlist,
             &QC::new(
@@ -343,8 +353,8 @@ mod test {
             parent_round: Round(5),
         };
 
-        let b7 = Block::new(
-            NodeId(0),
+        let b7 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(7),
             &txlist,
             &QC::new(
@@ -424,8 +434,8 @@ mod test {
             parent_round: Round(3),
         };
 
-        let b8 = Block::new(
-            NodeId(0),
+        let b8 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(8),
             &txlist,
             &QC::new(
@@ -444,8 +454,8 @@ mod test {
     #[test]
     fn test_add_parent_not_exist() {
         let txlist = TransactionList(vec![]);
-        let g = Block::new(
-            NodeId(0),
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
             Round(0),
             &txlist,
             &QC::new(
@@ -464,8 +474,8 @@ mod test {
             parent_round: Round::default(),
         };
 
-        let b1 = Block::new(
-            NodeId(0),
+        let b1 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(1),
             &txlist,
             &QC::new(
@@ -484,8 +494,8 @@ mod test {
             parent_round: Round(0),
         };
 
-        let b2 = Block::new(
-            NodeId(0),
+        let b2 = Block::new::<Sha256Hash>(
+            node_id(),
             Round(2),
             &txlist,
             &QC::new(
