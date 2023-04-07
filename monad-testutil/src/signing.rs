@@ -9,23 +9,15 @@ use monad_crypto::secp256k1::KeyPair;
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures;
 impl SignatureCollection for MockSignatures {
-    fn new(_stake: i64) -> Self {
+    fn new() -> Self {
         MockSignatures {}
-    }
-
-    fn verify_quorum(&self) -> bool {
-        true
-    }
-
-    fn current_stake(&self) -> i64 {
-        0
     }
 
     fn get_hash(&self) -> Hash {
         Default::default()
     }
 
-    fn add_signature(&mut self, _s: ConsensusSignature, _vote_power: i64) {}
+    fn add_signature(&mut self, _s: ConsensusSignature) {}
 
     fn get_signatures(&self) -> Vec<&ConsensusSignature> {
         Default::default()
