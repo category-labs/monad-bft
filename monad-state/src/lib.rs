@@ -24,8 +24,6 @@ use message::MessageState;
 
 mod message;
 
-type SerializedConsensusMessage = Vec<u8>;
-
 type SignatureType = AggregateSignatures;
 type LeaderElectionType = WeightedRoundRobin;
 
@@ -40,77 +38,40 @@ pub struct MonadState {
 pub enum MonadEvent {
     Ack {
         peer: PeerId,
-        id: MonadMessage,
+        id: <MonadMessage as Message>::Id,
         round: u64,
     },
-    Proposal {
-        msg: Unverified<ProposalMessage<SignatureType>>,
-    },
-    Vote {
-        msg: Unverified<VoteMessage>,
-    },
-    Timeout {
-        msg: Unverified<TimeoutMessage<SignatureType>>,
-    },
+    UnverifiedMessage(MonadMessage),
 }
 
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(Clone)]
 pub enum MonadMessage {
-    Proposal(SerializedConsensusMessage),
-    Vote(SerializedConsensusMessage),
-    Timeout(SerializedConsensusMessage),
-}
-
-//TODO: use the protobuf functions
-fn deserialize_proposal(
-    _s: SerializedConsensusMessage,
-) -> Result<Unverified<ProposalMessage<SignatureType>>, ()> {
-    todo!();
-}
-
-fn deserialize_vote(_s: SerializedConsensusMessage) -> Result<Unverified<VoteMessage>, ()> {
-    todo!();
-}
-
-fn deserialize_timeout(
-    _s: SerializedConsensusMessage,
-) -> Result<Unverified<TimeoutMessage<SignatureType>>, ()> {
-    todo!();
+    Proposal(Unverified<ProposalMessage<SignatureType>>),
+    Vote(Unverified<VoteMessage>),
+    Timeout(Unverified<TimeoutMessage<SignatureType>>),
 }
 
 impl Message for MonadMessage {
     type Event = MonadEvent;
     type ReadError = ();
 
-    type Id = Self;
+    type Id = Vec<u8>;
 
     fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
-        todo!()
+        // MUST assert that output is valid and came from the `from` PeerId
+        todo!("proto deserialize")
     }
 
     fn serialize(&self) -> Vec<u8> {
-        todo!()
+        todo!("proto serialize")
     }
 
     fn id(&self) -> Self::Id {
-        self.clone()
+        self.serialize()
     }
 
     fn event(self, _from: PeerId) -> Self::Event {
-        match self {
-            Self::Proposal(a) => match deserialize_proposal(a) {
-                Ok(m) => Self::Event::Proposal { msg: m },
-                Err(()) => todo!(),
-            },
-            Self::Vote(a) => match deserialize_vote(a) {
-                Ok(m) => Self::Event::Vote { msg: m },
-                Err(()) => todo!(),
-            },
-            Self::Timeout(a) => match deserialize_timeout(a) {
-                Ok(m) => Self::Event::Timeout { msg: m },
-                Err(()) => todo!(),
-            },
-        }
+        Self::Event::UnverifiedMessage(self)
     }
 }
 
@@ -136,7 +97,7 @@ impl State for MonadState {
                 })
                 .collect(),
 
-            MonadEvent::Proposal { msg } => {
+            MonadEvent::UnverifiedMessage(MonadMessage::Proposal(msg)) => {
                 let proposal = verify_proposal::<Sha256Hash, SignatureType>(
                     self.validator_set.get_members(),
                     msg,
@@ -150,7 +111,7 @@ impl State for MonadState {
                 }
             }
 
-            MonadEvent::Vote { msg } => {
+            MonadEvent::UnverifiedMessage(MonadMessage::Vote(msg)) => {
                 let vote = verify_vote_message::<Sha256Hash>(self.validator_set.get_members(), msg);
 
                 match vote {
@@ -164,7 +125,7 @@ impl State for MonadState {
                 }
             }
 
-            MonadEvent::Timeout { msg } => {
+            MonadEvent::UnverifiedMessage(MonadMessage::Timeout(msg)) => {
                 let timeout = verify_timeout_message::<Sha256Hash, SignatureType>(
                     self.validator_set.get_members(),
                     msg,
