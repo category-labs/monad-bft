@@ -1,4 +1,4 @@
-use crate::*;
+use monad_types::*;
 
 use crate::types::message::{ProposalMessage, TimeoutMessage};
 use crate::types::signature::SignatureCollection;

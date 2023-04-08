@@ -1,9 +1,12 @@
+use zerocopy::AsBytes;
+
+use monad_types::*;
+
 use crate::types::ledger::*;
 use crate::types::signature::{ConsensusSignature, SignatureCollection};
 use crate::types::voting::*;
 use crate::validation::hashing::{Hashable, Hasher};
 use crate::validation::signing::{Signable, Signed, Unverified};
-use crate::*;
 
 #[non_exhaustive]
 #[derive(Clone, Default, Debug)]

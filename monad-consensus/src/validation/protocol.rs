@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use monad_crypto::secp256k1::PubKey;
+use monad_types::{Hash, NodeId};
+use monad_validator::validator::Validator;
+
 use crate::types::message::ProposalMessage;
 use crate::types::message::TimeoutMessage;
 use crate::types::message::VoteMessage;
@@ -11,11 +15,8 @@ use crate::validation::error::Error;
 use crate::validation::hashing::Hasher;
 use crate::validation::message::{well_formed_proposal, well_formed_timeout};
 use crate::validation::signing::{Signed, Unverified, Verified};
-use crate::Hash;
-use monad_crypto::secp256k1::PubKey;
-use monad_validator::validator::Validator;
 
-pub type ValidatorMember = HashMap<PubKey, Validator>;
+pub type ValidatorMember = HashMap<NodeId, Validator>;
 
 trait ValidatorPubKey {
     // PubKey is valid if it is in the validator set
@@ -26,8 +27,7 @@ trait ValidatorPubKey {
 
 impl ValidatorPubKey for PubKey {
     fn valid_pubkey(self, validators: &ValidatorMember) -> Result<Self, Error> {
-        // TODO: fix the Address type from monad-validators
-        if validators.contains_key(&self) {
+        if validators.contains_key(&NodeId(self)) {
             Ok(self)
         } else {
             Err(Error::InvalidAuthor)

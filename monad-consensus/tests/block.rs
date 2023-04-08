@@ -1,8 +1,8 @@
 use monad_consensus::types::block::{Block, TransactionList};
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
-use monad_consensus::*;
 use monad_testutil::signing::{hash, node_id, MockSignatures};
+use monad_types::*;
 
 #[test]
 fn block_hash_id() {

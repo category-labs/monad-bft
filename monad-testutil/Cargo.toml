@@ -9,5 +9,6 @@ edition = "2021"
 hex = "0.4.3"
 monad-consensus = {path = "../monad-consensus"}
 monad-crypto = {path = "../monad-crypto"}
+monad-types = {path = "../monad-types"}
 monad-validator = {path = "../monad-validator"}
 sha2 = "0.10.6"

@@ -1,5 +1,6 @@
+use monad_types::NodeId;
+
 use crate::types::signature::ConsensusSignature;
-use crate::*;
 
 pub trait Signable {
     type Output;

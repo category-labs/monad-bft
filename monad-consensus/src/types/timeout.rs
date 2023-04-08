@@ -1,6 +1,9 @@
+use zerocopy::AsBytes;
+
+use monad_types::*;
+
 use crate::validation::hashing::{Hashable, Hasher};
 use crate::validation::signing::{Signable, Signed, Unverified};
-use crate::*;
 
 use super::{
     quorum_certificate::QuorumCertificate, signature::ConsensusSignature,

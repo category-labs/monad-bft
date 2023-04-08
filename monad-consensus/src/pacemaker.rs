@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
-use monad_crypto::secp256k1::PubKey;
+use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
 use crate::{
@@ -14,7 +14,6 @@ use crate::{
         safety::Safety,
         signing::{Signed, Unverified, Verified},
     },
-    NodeId, Round,
 };
 
 struct Pacemaker<T: SignatureCollection> {
@@ -141,7 +140,7 @@ where
         let timeouts = self
             .pending_timeouts
             .keys()
-            .map(|node_id| node_id.0)
+            .map(|node_id| node_id.clone()) // TODO: maybe has_honest_vote should take &Vec<&NodeId>
             .collect();
 
         if self.phase == Phase::ZeroHonest && validators.has_honest_vote(&timeouts) {

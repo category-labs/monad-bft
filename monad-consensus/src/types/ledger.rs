@@ -1,7 +1,8 @@
+use monad_types::Hash;
+
 use crate::{
     types::{block::Block, signature::SignatureCollection, voting::VoteInfo},
     validation::hashing::Hasher,
-    Hash,
 };
 
 #[derive(Copy, Clone, Debug, Default)]

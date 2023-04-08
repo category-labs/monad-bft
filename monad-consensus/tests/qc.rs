@@ -1,7 +1,7 @@
 use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::*;
 use monad_testutil::signing::MockSignatures;
+use monad_types::*;
 
 use monad_consensus::types::quorum_certificate::QcInfo;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;

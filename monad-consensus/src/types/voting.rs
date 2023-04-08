@@ -1,5 +1,8 @@
+use zerocopy::AsBytes;
+
+use monad_types::*;
+
 use crate::validation::hashing::{Hashable, Hasher};
-use crate::*;
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct VoteInfo {
@@ -20,10 +23,8 @@ impl Hashable for &VoteInfo {
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        validation::hashing::{Hasher, Sha256Hash},
-        Hash,
-    };
+    use crate::validation::hashing::{Hasher, Sha256Hash};
+    use monad_types::Hash;
 
     use super::VoteInfo;
     use sha2::Digest;

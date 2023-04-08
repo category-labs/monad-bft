@@ -1,3 +1,5 @@
+use monad_types::Hash;
+
 use crate::types::signature::{ConsensusSignature, SignatureCollection};
 use sha2::Digest;
 
@@ -17,7 +19,7 @@ impl SignatureCollection for AggregateSignatures {
         AggregateSignatures { sigs: Vec::new() }
     }
 
-    fn get_hash(&self) -> crate::Hash {
+    fn get_hash(&self) -> Hash {
         let mut hasher = sha2::Sha256::new();
 
         for v in self.sigs.iter() {

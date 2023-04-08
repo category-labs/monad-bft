@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use monad_types::{Hash, NodeId};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
 use crate::{
@@ -9,7 +10,6 @@ use crate::{
         signature::SignatureCollection,
     },
     validation::{hashing::Hasher, signing::Verified},
-    Hash, NodeId,
 };
 
 // accumulate votes and create a QC if enough votes are received
@@ -49,7 +49,7 @@ where
 
         let pubkeys = &self.pending_vote_keys[&vote_idx];
 
-        if validators.has_super_majority_votes(&pubkeys.iter().map(|nodeid| nodeid.0).collect()) {
+        if validators.has_super_majority_votes(pubkeys) {
             assert!(self.qc_created == false);
             let qc = QuorumCertificate::<T>::new(
                 QcInfo {

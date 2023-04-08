@@ -360,6 +360,7 @@ dependencies = [
  "monad-consensus",
  "monad-crypto",
  "monad-testutil",
+ "monad-types",
  "ptree",
 ]
 
@@ -370,6 +371,7 @@ dependencies = [
  "hex",
  "monad-crypto",
  "monad-testutil",
+ "monad-types",
  "monad-validator",
  "sha2",
  "test-case",
@@ -402,6 +404,7 @@ dependencies = [
  "monad-consensus",
  "monad-crypto",
  "monad-executor",
+ "monad-types",
  "monad-validator",
 ]
 
@@ -412,8 +415,17 @@ dependencies = [
  "hex",
  "monad-consensus",
  "monad-crypto",
+ "monad-types",
  "monad-validator",
  "sha2",
+]
+
+[[package]]
+name = "monad-types"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "zerocopy",
 ]
 
 [[package]]
@@ -423,6 +435,7 @@ dependencies = [
  "hex",
  "log",
  "monad-crypto",
+ "monad-types",
 ]
 
 [[package]]

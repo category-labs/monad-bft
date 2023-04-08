@@ -14,9 +14,9 @@ use monad_consensus::{
         signing::{Unverified, Verified},
     },
     vote_state::VoteState,
-    Round,
 };
 use monad_executor::{Command, Message, PeerId, RouterCommand, State};
+use monad_types::Round;
 use monad_validator::leader_election::LeaderElection;
 use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
 

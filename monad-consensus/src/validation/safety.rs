@@ -1,9 +1,10 @@
 use std::cmp;
 
+use monad_types::*;
+
 use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use crate::types::signature::SignatureCollection;
 use crate::types::timeout::{TimeoutCertificate, TimeoutInfo};
-use crate::*;
 
 pub struct Safety {
     highest_vote_round: Round,

@@ -3,8 +3,8 @@ use monad_consensus::types::message::ProposalMessage;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::validation::hashing::*;
 use monad_consensus::validation::protocol::{verify_proposal, ValidatorMember};
-use monad_consensus::*;
 use monad_testutil::signing::{get_key, node_id, MockSignatures, Signer};
+use monad_types::*;
 use monad_validator::validator::Validator;
 
 fn setup_block(author: NodeId, block_round: u64, qc_round: u64) -> Block<MockSignatures> {
@@ -29,7 +29,7 @@ fn test_proposal_hash() {
     let keypair = get_key("a");
 
     vset.insert(
-        keypair.pubkey(),
+        NodeId(keypair.pubkey()),
         Validator {
             pubkey: keypair.pubkey(),
             stake: 0,
@@ -55,7 +55,7 @@ fn test_proposal_missing_tc() {
     let keypair = get_key("6");
 
     vset.insert(
-        keypair.pubkey(),
+        NodeId(keypair.pubkey()),
         Validator {
             pubkey: keypair.pubkey(),
             stake: 0,
@@ -81,7 +81,7 @@ fn test_proposal_invalid_qc() {
     let keypair = get_key("6");
 
     vset.insert(
-        keypair.pubkey(),
+        NodeId(keypair.pubkey()),
         Validator {
             pubkey: keypair.pubkey(),
             stake: 0,

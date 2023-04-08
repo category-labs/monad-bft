@@ -1,15 +1,15 @@
 use test_case::test_case;
 
 use monad_consensus::types::block::{Block, TransactionList};
+use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::message::VoteMessage;
 use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use monad_consensus::types::timeout::{HighQcRound, TimeoutCertificate, TimeoutInfo};
 use monad_consensus::validation::hashing::*;
-use monad_consensus::*;
-use monad_consensus::{types::ledger::LedgerCommitInfo, Hash};
 use monad_crypto::secp256k1::KeyPair;
 use monad_testutil::signing::*;
+use monad_types::*;
 use sha2::Digest;
 
 #[test_case(None ; "None commit_state")]

@@ -7,5 +7,6 @@ members = [
     "monad-executor",
     "monad-state",
     "monad-testutil",
+    "monad-types",
     "monad-validator",
 ]

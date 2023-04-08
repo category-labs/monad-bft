@@ -1,4 +1,4 @@
-use crate::Hash;
+use monad_types::Hash;
 use sha2::Digest;
 
 pub trait Hashable {

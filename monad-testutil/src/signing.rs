@@ -2,8 +2,8 @@ use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::ConsensusSignature;
 use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::validation::signing::Signable;
-use monad_consensus::{Hash, NodeId};
 use monad_crypto::secp256k1::KeyPair;
+use monad_types::{Hash, NodeId};
 
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures;

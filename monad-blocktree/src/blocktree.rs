@@ -1,7 +1,7 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::BlockId;
-use monad_consensus::Round;
+use monad_types::BlockId;
+use monad_types::Round;
 use ptree::print_tree;
 use std::collections::HashMap;
 use std::fmt;
@@ -192,9 +192,9 @@ mod test {
     use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::validation::hashing::Sha256Hash;
-    use monad_consensus::{BlockId, NodeId, Round};
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::MockSignatures;
+    use monad_types::{BlockId, NodeId, Round};
 
     use super::BlockTree;
     use super::BlockTreeError;

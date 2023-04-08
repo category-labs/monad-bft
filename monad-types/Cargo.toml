@@ -1,12 +1,11 @@
 [package]
-name = "monad-validator"
+name = "monad-types"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hex = "0.4.3"
-log = "0.4"
 monad-crypto = { path = "../monad-crypto" }
-monad-types = { path = "../monad-types" }
+
+zerocopy = "0.6.1"
