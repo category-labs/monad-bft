@@ -1,4 +1,5 @@
 use std::ops::Add;
+use std::ops::AddAssign;
 use std::ops::Sub;
 
 use monad_crypto::secp256k1::PubKey;
@@ -29,6 +30,12 @@ impl Sub for Round {
 
     fn sub(self, rhs: Self) -> Self::Output {
         Round(self.0 - rhs.0)
+    }
+}
+
+impl AddAssign for Round {
+    fn add_assign(&mut self, other: Self) {
+        self.0 += other.0
     }
 }
 

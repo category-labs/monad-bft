@@ -42,7 +42,7 @@ pub enum MonadEvent {
     Ack {
         peer: PeerId,
         id: <MonadMessage as Message>::Id,
-        round: u64,
+        round: Round,
     },
     ConsensusEvent(ConsensusEvent),
 }
@@ -193,7 +193,7 @@ pub enum ConsensusMessage {
 }
 
 impl ConsensusMessage {
-    fn round(&self) -> u64 {
+    fn round(&self) -> Round {
         todo!()
     }
 }
