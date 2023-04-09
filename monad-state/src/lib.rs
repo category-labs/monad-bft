@@ -5,7 +5,9 @@ use monad_consensus::{
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
     signatures::aggregate_signature::AggregateSignatures,
     types::{
+        block::{Block, TransactionList},
         ledger::{InMemoryLedger, Ledger},
+        mempool::{Mempool, SimulationMempool},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
         quorum_certificate::{QuorumCertificate, Rank},
         signature::{ConsensusSignature, SignatureCollection},
@@ -34,7 +36,8 @@ type LeaderElectionType = WeightedRoundRobin;
 pub struct MonadState {
     message_state: MessageState<MonadMessage>,
 
-    consensus_state: ConsensusState<SignatureType, InMemoryLedger<SignatureType>>,
+    consensus_state:
+        ConsensusState<SignatureType, InMemoryLedger<SignatureType>, SimulationMempool>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
@@ -145,7 +148,10 @@ impl State for MonadState {
                                     match timeout {
                                         Ok(p) => self
                                             .consensus_state
-                                            .handle_timeout_message(p, &self.validator_set),
+                                            .handle_timeout_message::<Sha256Hash, _>(
+                                                p,
+                                                &mut self.validator_set,
+                                            ),
                                         Err(_) => todo!(),
                                     }
                                 }
@@ -293,28 +299,30 @@ pub enum ConsensusCommand<T: SignatureCollection> {
     // - to handle this command, we need to call message_state.set_round()
 }
 
-struct ConsensusState<T, L>
+struct ConsensusState<T, L, M>
 where
     T: SignatureCollection,
     L: Ledger<Signatures = T>,
+    M: Mempool,
 {
     pending_block_tree: BlockTree<T>,
     vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,
 
     ledger: L,
+    mempool: M,
 
     pacemaker: Pacemaker<T>,
     safety: Safety,
 
-    // TODO this might be in synchronizer only
-    round: Round,
+    nodeid: NodeId,
 }
 
-impl<T, L> ConsensusState<T, L>
+impl<T, L, M> ConsensusState<T, L, M>
 where
     T: SignatureCollection,
     L: Ledger<Signatures = T>,
+    M: Mempool,
 {
     fn handle_proposal_message<V: LeaderElection>(
         &mut self,
@@ -329,9 +337,8 @@ where
         v: &Verified<VoteMessage>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
-        let mut cmds = Vec::new();
-        if self.round != v.0.obj.vote_info.round {
-            return cmds;
+        if self.pacemaker.get_current_round() != v.0.obj.vote_info.round {
+            return Default::default();
         }
 
         let qc = self.vote_state.process_vote::<V, H>(v, validators);
@@ -340,17 +347,20 @@ where
         match qc {
             Some(qc) => {
                 cmds.extend(self.process_certificate_qc(&qc));
-                cmds.extend(self.process_new_round_event(&None));
+
+                if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
+                    cmds.extend(self.process_new_round_event::<H>(None));
+                }
             }
             None => (),
         }
         cmds
     }
 
-    fn handle_timeout_message<V: LeaderElection>(
+    fn handle_timeout_message<H: Hasher, V: LeaderElection>(
         &mut self,
         p: Verified<TimeoutMessage<T>>,
-        validators: &ValidatorSet<V>,
+        validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
         let mut cmds = Vec::new();
 
@@ -378,7 +388,9 @@ where
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
-            self.process_new_round_event(&Some(tc));
+            if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
+                self.process_new_round_event::<H>(Some(tc));
+            }
         }
 
         cmds
@@ -406,19 +418,38 @@ where
 
     #[must_use]
     fn process_certificate_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<T>> {
-        let cmds = Vec::new();
+        let mut cmds = Vec::new();
         self.process_qc(qc);
 
-        // TODO: Pacemaker.advance_round(qc.info.vote.round)
+        match self.pacemaker.advance_round_qc(qc) {
+            Some(cmd) => cmds.push(cmd.into()),
+            None => (),
+        }
+
         cmds
     }
 
     #[must_use]
-    fn process_new_round_event(
+    fn process_new_round_event<H: Hasher>(
         &self,
-        last_round_tc: &Option<TimeoutCertificate>,
+        last_round_tc: Option<TimeoutCertificate>,
     ) -> Vec<ConsensusCommand<T>> {
-        todo!();
+        let txns: TransactionList = self.mempool.get_transactions(10000);
+        let b = Block::new::<H>(
+            self.nodeid,
+            self.pacemaker.get_current_round(),
+            &txns,
+            &self.high_qc,
+        );
+
+        let p = ProposalMessage {
+            block: b,
+            last_round_tc,
+        };
+
+        return Vec::from([ConsensusCommand::Broadcast {
+            message: ConsensusMessage::Proposal(p),
+        }]);
     }
 }
 

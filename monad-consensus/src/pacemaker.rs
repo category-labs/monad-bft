@@ -70,6 +70,10 @@ where
         }
     }
 
+    pub fn get_current_round(&self) -> Round {
+        self.current_round
+    }
+
     fn get_round_timer(&self) -> Duration {
         self.delta * 4
     }
@@ -181,7 +185,7 @@ where
     }
 
     #[must_use]
-    fn advance_round_qc(&mut self, qc: QuorumCertificate<T>) -> Option<PacemakerCommand<T>> {
+    pub fn advance_round_qc(&mut self, qc: &QuorumCertificate<T>) -> Option<PacemakerCommand<T>> {
         if qc.info.vote.round < self.current_round {
             return None;
         }
