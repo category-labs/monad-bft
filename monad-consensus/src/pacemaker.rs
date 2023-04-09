@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-struct Pacemaker<T: SignatureCollection> {
+pub struct Pacemaker<T: SignatureCollection> {
     delta: Duration,
 
     current_round: Round,
@@ -120,7 +120,7 @@ where
     }
 
     #[must_use]
-    fn process_remote_timeout<L: LeaderElection>(
+    pub fn process_remote_timeout<L: LeaderElection>(
         &mut self,
         validators: &ValidatorSet<L>,
         safety: &mut Safety,
@@ -175,7 +175,7 @@ where
     }
 
     #[must_use]
-    fn advance_round_tc(&mut self, tc: TimeoutCertificate) -> Option<PacemakerCommand<T>> {
+    pub fn advance_round_tc(&mut self, tc: TimeoutCertificate) -> Option<PacemakerCommand<T>> {
         if tc.round < self.current_round {
             return None;
         }

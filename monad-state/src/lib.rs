@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    pacemaker::PacemakerTimerExpire,
+    pacemaker::{Pacemaker, PacemakerTimerExpire},
     signatures::aggregate_signature::AggregateSignatures,
     types::{
         ledger::{InMemoryLedger, Ledger},
@@ -14,6 +14,7 @@ use monad_consensus::{
     validation::{
         hashing::{Hasher, Sha256Hash},
         protocol::{verify_proposal, verify_timeout_message, verify_vote_message},
+        safety::Safety,
         signing::{Unverified, Verified},
     },
     vote_state::VoteState,
@@ -140,7 +141,7 @@ impl State for MonadState {
                         match timeout {
                             Ok(p) => self
                                 .consensus_state
-                                .handle_timeout_message(&p, &self.validator_set),
+                                .handle_timeout_message(p, &self.validator_set),
                             Err(_) => todo!(),
                         }
                     }
@@ -243,6 +244,9 @@ where
 
     ledger: L,
 
+    pacemaker: Pacemaker<T>,
+    safety: Safety,
+
     // TODO this might be in synchronizer only
     round: Round,
 }
@@ -285,10 +289,10 @@ where
 
     fn handle_timeout_message<V: LeaderElection>(
         &mut self,
-        p: &Verified<TimeoutMessage<T>>,
+        p: Verified<TimeoutMessage<T>>,
         validators: &ValidatorSet<V>,
     ) -> Vec<ConsensusCommand> {
-        todo!();
+        todo!()
     }
 
     // If the qc has a commit_state_hash, commit the parent block and prune the
