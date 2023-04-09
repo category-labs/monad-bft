@@ -329,22 +329,22 @@ where
         v: &Verified<VoteMessage>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
-        let mut retval = Vec::new();
+        let mut cmds = Vec::new();
         if self.round != v.0.obj.vote_info.round {
-            return retval;
+            return cmds;
         }
 
         let qc = self.vote_state.process_vote::<V, H>(v, validators);
 
-        let mut retval = Vec::new();
+        let mut cmds = Vec::new();
         match qc {
             Some(qc) => {
-                retval.extend(self.process_certificate_qc(&qc));
-                retval.extend(self.process_new_round_event(&None));
+                cmds.extend(self.process_certificate_qc(&qc));
+                cmds.extend(self.process_new_round_event(&None));
             }
             None => (),
         }
-        retval
+        cmds
     }
 
     fn handle_timeout_message<V: LeaderElection>(
@@ -406,11 +406,11 @@ where
 
     #[must_use]
     fn process_certificate_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<T>> {
-        let retval = Vec::new();
+        let cmds = Vec::new();
         self.process_qc(qc);
 
         // TODO: Pacemaker.advance_round(qc.info.vote.round)
-        retval
+        cmds
     }
 
     #[must_use]
