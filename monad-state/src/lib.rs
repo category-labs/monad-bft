@@ -119,7 +119,10 @@ impl State for MonadState {
                                     match proposal {
                                         Ok(p) => self
                                             .consensus_state
-                                            .handle_proposal_message(&p, &self.validator_set),
+                                            .handle_proposal_message::<Sha256Hash, _>(
+                                                &p,
+                                                &mut self.validator_set,
+                                            ),
                                         Err(_) => todo!(),
                                     }
                                 }
@@ -324,12 +327,53 @@ where
     L: Ledger<Signatures = T>,
     M: Mempool,
 {
-    fn handle_proposal_message<V: LeaderElection>(
+    fn handle_proposal_message<H: Hasher, V: LeaderElection>(
         &mut self,
         p: &Verified<ProposalMessage<T>>,
-        validators: &ValidatorSet<V>,
+        validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
-        todo!();
+        let mut cmds = Vec::new();
+
+        let process_certificate_cmds = self.process_certificate_qc(&p.0.obj.block.qc);
+        cmds.extend(process_certificate_cmds);
+
+        if let Some(last_round_tc) = p.0.obj.last_round_tc.as_ref() {
+            let advance_round_cmds = self
+                .pacemaker
+                .advance_round_tc(last_round_tc)
+                .map(Into::into)
+                .into_iter();
+            cmds.extend(advance_round_cmds);
+        }
+
+        let round = self.pacemaker.get_current_round();
+        let leader = *validators.get_leader(round);
+
+        if p.0.obj.block.round != round || p.0.author != leader || p.0.obj.block.author != leader {
+            return cmds;
+        }
+
+        self.pending_block_tree
+            .add(p.0.obj.block.clone())
+            .expect("Failed to add block to blocktree");
+
+        let vote_msg = self
+            .safety
+            .make_vote::<T, H>(&p.0.obj.block, &p.0.obj.last_round_tc);
+
+        match vote_msg {
+            Some(v) => {
+                let next_leader = validators.get_leader(round + Round(1));
+                let send_cmd = ConsensusCommand::Send {
+                    to: PeerId(next_leader.0),
+                    message: ConsensusMessage::Vote(v),
+                };
+                cmds.push(send_cmd);
+            }
+            None => (),
+        }
+
+        cmds
     }
 
     fn handle_vote_message<H: Hasher, V: LeaderElection>(

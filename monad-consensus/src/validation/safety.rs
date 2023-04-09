@@ -2,9 +2,14 @@ use std::cmp;
 
 use monad_types::*;
 
+use crate::types::block::Block;
+use crate::types::ledger::LedgerCommitInfo;
+use crate::types::message::VoteMessage;
 use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use crate::types::signature::SignatureCollection;
 use crate::types::timeout::{TimeoutCertificate, TimeoutInfo};
+use crate::types::voting::VoteInfo;
+use crate::validation::hashing::Hasher;
 
 pub struct Safety {
     highest_vote_round: Round,
@@ -66,6 +71,40 @@ impl Safety {
         } else {
             None
         }
+    }
+
+    pub fn make_vote<T: SignatureCollection, H: Hasher>(
+        &mut self,
+        block: &Block<T>,
+        last_tc: &Option<TimeoutCertificate>,
+    ) -> Option<VoteMessage> {
+        let qc_round = block.qc.info.vote.round;
+        if self.safe_to_vote(block.round, qc_round, last_tc) {
+            self.update_highest_qc_round(qc_round);
+            self.update_highest_vote_round(block.round);
+
+            let vote_info = VoteInfo {
+                id: block.get_id(),
+                round: block.round,
+                parent_id: block.qc.info.vote.id,
+                parent_round: block.qc.info.vote.round,
+            };
+
+            let commit_hash = if commit_condition(block.round, block.qc.info) {
+                Some(H::hash_object(block))
+            } else {
+                None
+            };
+
+            let ledger_commit_info = LedgerCommitInfo::new::<H>(commit_hash, &vote_info);
+
+            return Some(VoteMessage {
+                vote_info,
+                ledger_commit_info,
+            });
+        }
+
+        None
     }
 }
 
