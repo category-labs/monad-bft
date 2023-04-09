@@ -1,5 +1,6 @@
 pub mod block;
 pub mod ledger;
+pub mod mempool;
 pub mod message;
 pub mod quorum_certificate;
 pub mod signature;
