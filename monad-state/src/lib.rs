@@ -167,6 +167,9 @@ impl State for MonadState {
                                 on_ack: MonadEvent::Ack {
                                     peer: publish_action.to,
                                     id,
+
+                                    // TODO verify that this is the correct round()?
+                                    // should we be extracting this from `message` instead?
                                     round: self.message_state.round(),
                                 },
                             }))
@@ -184,6 +187,9 @@ impl State for MonadState {
                                         on_ack: MonadEvent::Ack {
                                             peer: publish_action.to,
                                             id,
+
+                                            // TODO verify that this is the correct round()?
+                                            // should we be extracting this from `message` instead?
                                             round: self.message_state.round(),
                                         },
                                     })
@@ -231,12 +237,6 @@ impl<T: SignatureCollection> Signable for ConsensusMessage<T> {
             author,
             author_signature: signature,
         })
-    }
-}
-
-impl<T: SignatureCollection> ConsensusMessage<T> {
-    fn round(&self) -> Round {
-        todo!()
     }
 }
 
