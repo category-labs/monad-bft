@@ -45,6 +45,7 @@ pub enum PacemakerCommand<T: SignatureCollection> {
     Unschedule,
 }
 
+#[derive(Debug, Clone)]
 pub struct PacemakerTimerExpire {
     round: Round,
 }

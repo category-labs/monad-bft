@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
+    pacemaker::PacemakerTimerExpire,
     signatures::aggregate_signature::AggregateSignatures,
     types::{
         block::Block,
@@ -15,12 +18,12 @@ use monad_consensus::{
     },
     vote_state::VoteState,
 };
-use monad_executor::{Command, Message, PeerId, RouterCommand, State};
+use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
 use monad_types::Round;
 use monad_validator::leader_election::LeaderElection;
 use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
 
-use message::MessageState;
+use message::{MessageActionPublish, MessageState};
 
 mod message;
 
@@ -41,15 +44,10 @@ pub enum MonadEvent {
         id: <MonadMessage as Message>::Id,
         round: u64,
     },
-    UnverifiedMessage(MonadMessage),
+    ConsensusEvent(ConsensusEvent),
 }
 
-#[derive(Clone)]
-pub enum MonadMessage {
-    Proposal(Unverified<ProposalMessage<SignatureType>>),
-    Vote(Unverified<VoteMessage>),
-    Timeout(Unverified<TimeoutMessage<SignatureType>>),
-}
+type MonadMessage = ConsensusMessage;
 
 impl Message for MonadMessage {
     type Event = MonadEvent;
@@ -59,6 +57,8 @@ impl Message for MonadMessage {
 
     fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
         // MUST assert that output is valid and came from the `from` PeerId
+        // `from` must somehow be guaranteed to be staked at this point so that subsequent
+        // malformed stuff (that gets added to event log) can be slashed? TODO
         todo!("proto deserialize")
     }
 
@@ -71,7 +71,7 @@ impl Message for MonadMessage {
     }
 
     fn event(self, _from: PeerId) -> Self::Event {
-        Self::Event::UnverifiedMessage(self)
+        Self::Event::ConsensusEvent(ConsensusEvent::UnverifiedMessage(self))
     }
 }
 
@@ -97,48 +97,138 @@ impl State for MonadState {
                 })
                 .collect(),
 
-            MonadEvent::UnverifiedMessage(MonadMessage::Proposal(msg)) => {
-                let proposal = verify_proposal::<Sha256Hash, SignatureType>(
-                    self.validator_set.get_members(),
-                    msg,
-                );
+            MonadEvent::ConsensusEvent(consensus_event) => {
+                let consensus_commands: Vec<ConsensusCommand> = match consensus_event {
+                    ConsensusEvent::Timeout(pacemaker_expire) => {
+                        todo!()
+                    }
+                    ConsensusEvent::UnverifiedMessage(ConsensusMessage::Proposal(msg)) => {
+                        let proposal = verify_proposal::<Sha256Hash, SignatureType>(
+                            self.validator_set.get_members(),
+                            msg,
+                        );
 
-                match proposal {
-                    Ok(p) => self
-                        .consensus_state
-                        .handle_proposal_message(&p, &self.validator_set),
-                    Err(_) => todo!(),
+                        match proposal {
+                            Ok(p) => self
+                                .consensus_state
+                                .handle_proposal_message(&p, &self.validator_set),
+                            Err(_) => todo!(),
+                        }
+                    }
+                    ConsensusEvent::UnverifiedMessage(ConsensusMessage::Vote(msg)) => {
+                        let vote = verify_vote_message::<Sha256Hash>(
+                            self.validator_set.get_members(),
+                            msg,
+                        );
+
+                        match vote {
+                            Ok(p) => self
+                                .consensus_state
+                                .handle_vote_message::<Sha256Hash, LeaderElectionType>(
+                                    &p,
+                                    &self.validator_set,
+                                ),
+                            Err(_) => todo!(),
+                        }
+                    }
+                    ConsensusEvent::UnverifiedMessage(ConsensusMessage::Timeout(msg)) => {
+                        let timeout = verify_timeout_message::<Sha256Hash, SignatureType>(
+                            self.validator_set.get_members(),
+                            msg,
+                        );
+
+                        match timeout {
+                            Ok(p) => self
+                                .consensus_state
+                                .handle_timeout_message(&p, &self.validator_set),
+                            Err(_) => todo!(),
+                        }
+                    }
+                };
+                let mut cmds = Vec::new();
+                for consensus_command in consensus_commands {
+                    match consensus_command {
+                        ConsensusCommand::Send { to, message } => {
+                            cmds.push(self.message_state.send(to, message).into())
+                        }
+                        ConsensusCommand::Broadcast { message } => {
+                            cmds.extend(
+                                self.message_state
+                                    .broadcast(message)
+                                    .into_iter()
+                                    .map(Into::into),
+                            );
+                        }
+                        ConsensusCommand::Schedule {
+                            duration,
+                            on_timeout,
+                        } => cmds.push(Command::TimerCommand(TimerCommand::Schedule {
+                            duration,
+                            on_timeout: Self::Event::ConsensusEvent(ConsensusEvent::Timeout(
+                                on_timeout,
+                            )),
+                        })),
+                        ConsensusCommand::Unschedule => {
+                            cmds.push(Command::TimerCommand(TimerCommand::Unschedule))
+                        }
+                    }
                 }
-            }
-
-            MonadEvent::UnverifiedMessage(MonadMessage::Vote(msg)) => {
-                let vote = verify_vote_message::<Sha256Hash>(self.validator_set.get_members(), msg);
-
-                match vote {
-                    Ok(p) => self
-                        .consensus_state
-                        .handle_vote_message::<Sha256Hash, LeaderElectionType>(
-                            &p,
-                            &self.validator_set,
-                        ),
-                    Err(_) => todo!(),
-                }
-            }
-
-            MonadEvent::UnverifiedMessage(MonadMessage::Timeout(msg)) => {
-                let timeout = verify_timeout_message::<Sha256Hash, SignatureType>(
-                    self.validator_set.get_members(),
-                    msg,
-                );
-
-                match timeout {
-                    Ok(p) => self
-                        .consensus_state
-                        .handle_timeout_message(&p, &self.validator_set),
-                    Err(_) => todo!(),
-                }
+                cmds
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ConsensusEvent {
+    UnverifiedMessage(ConsensusMessage),
+    Timeout(PacemakerTimerExpire),
+}
+
+#[derive(Debug, Clone)]
+pub enum ConsensusMessage {
+    Proposal(Unverified<ProposalMessage<SignatureType>>),
+    Vote(Unverified<VoteMessage>),
+    Timeout(Unverified<TimeoutMessage<SignatureType>>),
+}
+
+impl ConsensusMessage {
+    fn round(&self) -> u64 {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+pub enum ConsensusCommand {
+    Send {
+        to: PeerId,
+        message: ConsensusMessage,
+    },
+    Broadcast {
+        message: ConsensusMessage,
+    },
+    Schedule {
+        duration: Duration,
+        on_timeout: PacemakerTimerExpire,
+    },
+    Unschedule,
+    // TODO add command for updating validator_set/round
+    // - to handle this command, we need to call message_state.set_round()
+}
+
+impl From<MessageActionPublish<ConsensusMessage>> for Command<MonadEvent, MonadMessage> {
+    fn from(publish: MessageActionPublish<ConsensusMessage>) -> Self {
+        let id = publish.message.id();
+        let round = publish.message.round();
+        Command::RouterCommand(RouterCommand::Publish {
+            to: publish.to.clone(),
+            message: publish.message,
+            on_ack: MonadEvent::Ack {
+                peer: publish.to,
+                id,
+                round,
+            },
+        })
     }
 }
 
@@ -165,7 +255,7 @@ where
         &mut self,
         p: &Verified<ProposalMessage<T>>,
         validators: &ValidatorSet<V>,
-    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+    ) -> Vec<ConsensusCommand> {
         todo!();
     }
 
@@ -173,7 +263,7 @@ where
         &mut self,
         v: &Verified<VoteMessage>,
         validators: &ValidatorSet<V>,
-    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+    ) -> Vec<ConsensusCommand> {
         if self.round != v.0.obj.vote_info.round {
             todo!();
         }
@@ -195,7 +285,7 @@ where
         &mut self,
         p: &Verified<TimeoutMessage<T>>,
         validators: &ValidatorSet<V>,
-    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+    ) -> Vec<ConsensusCommand> {
         todo!();
     }
 
@@ -220,10 +310,7 @@ where
     }
 
     #[must_use]
-    fn process_certificate_qc(
-        &self,
-        qc: &QuorumCertificate<T>,
-    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+    fn process_certificate_qc(&self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand> {
         todo!();
     }
 
@@ -231,7 +318,7 @@ where
     fn process_new_round_event(
         &self,
         last_round_tc: &Option<TimeoutCertificate>,
-    ) -> Vec<Command<MonadEvent, MonadMessage>> {
+    ) -> Vec<ConsensusCommand> {
         todo!();
     }
 }

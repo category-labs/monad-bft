@@ -38,7 +38,7 @@ impl Hashable for &VoteMessage {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TimeoutMessage<T>
 where
     T: SignatureCollection,
