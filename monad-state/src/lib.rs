@@ -5,7 +5,7 @@ use monad_consensus::{
     pacemaker::PacemakerTimerExpire,
     signatures::aggregate_signature::AggregateSignatures,
     types::{
-        block::Block,
+        ledger::{InMemoryLedger, Ledger},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
         quorum_certificate::{QuorumCertificate, Rank},
         signature::SignatureCollection,
@@ -33,7 +33,7 @@ type LeaderElectionType = WeightedRoundRobin;
 pub struct MonadState {
     message_state: MessageState<MonadMessage>,
 
-    consensus_state: ConsensusState<SignatureType>,
+    consensus_state: ConsensusState<SignatureType, InMemoryLedger<SignatureType>>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
@@ -126,7 +126,7 @@ impl State for MonadState {
                                 .consensus_state
                                 .handle_vote_message::<Sha256Hash, LeaderElectionType>(
                                     &p,
-                                    &self.validator_set,
+                                    &mut self.validator_set,
                                 ),
                             Err(_) => todo!(),
                         }
@@ -232,24 +232,25 @@ impl From<MessageActionPublish<ConsensusMessage>> for Command<MonadEvent, MonadM
     }
 }
 
-struct ConsensusState<T>
+struct ConsensusState<T, L>
 where
     T: SignatureCollection,
+    L: Ledger<Signatures = T>,
 {
     pending_block_tree: BlockTree<T>,
     vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,
 
-    //TODO use ledger interface from monad-consensus
-    ledger: Vec<Block<T>>,
+    ledger: L,
 
     // TODO this might be in synchronizer only
     round: Round,
 }
 
-impl<T> ConsensusState<T>
+impl<T, L> ConsensusState<T, L>
 where
     T: SignatureCollection,
+    L: Ledger<Signatures = T>,
 {
     fn handle_proposal_message<V: LeaderElection>(
         &mut self,
@@ -262,10 +263,11 @@ where
     fn handle_vote_message<H: Hasher, V: LeaderElection>(
         &mut self,
         v: &Verified<VoteMessage>,
-        validators: &ValidatorSet<V>,
+        validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand> {
+        let mut retval = Vec::new();
         if self.round != v.0.obj.vote_info.round {
-            todo!();
+            return retval;
         }
 
         let qc = self.vote_state.process_vote::<V, H>(v, validators);
@@ -297,7 +299,7 @@ where
             Some(_) => {
                 let blocks_to_commit = self.pending_block_tree.prune(&qc.info.vote.parent_id);
                 match blocks_to_commit {
-                    Ok(blocks) => self.ledger.extend(blocks),
+                    Ok(blocks) => self.ledger.add_blocks(blocks),
                     Err(e) => panic!("{}", e),
                 }
             }
@@ -310,8 +312,12 @@ where
     }
 
     #[must_use]
-    fn process_certificate_qc(&self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand> {
-        todo!();
+    fn process_certificate_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand> {
+        let retval = Vec::new();
+        self.process_qc(qc);
+
+        // TODO: Pacemaker.advance_round(qc.info.vote.round)
+        retval
     }
 
     #[must_use]
