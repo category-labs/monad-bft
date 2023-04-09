@@ -60,6 +60,10 @@ where
         self.round
     }
 
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
     pub fn set_round(
         &mut self,
         round: Round,

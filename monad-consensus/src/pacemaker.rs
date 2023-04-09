@@ -138,11 +138,7 @@ where
         // it's fine to overwrite if already exists
         self.pending_timeouts.insert(tmo.0.author, tmo.clone());
 
-        let timeouts = self
-            .pending_timeouts
-            .keys()
-            .map(|node_id| node_id.clone()) // TODO: maybe has_honest_vote should take &Vec<&NodeId>
-            .collect();
+        let timeouts = self.pending_timeouts.keys().copied().collect();
 
         if self.phase == Phase::ZeroHonest && validators.has_honest_vote(&timeouts) {
             ret_commands.push(PacemakerCommand::Unschedule);
@@ -175,12 +171,12 @@ where
     }
 
     #[must_use]
-    pub fn advance_round_tc(&mut self, tc: TimeoutCertificate) -> Option<PacemakerCommand<T>> {
+    pub fn advance_round_tc(&mut self, tc: &TimeoutCertificate) -> Option<PacemakerCommand<T>> {
         if tc.round < self.current_round {
             return None;
         }
         let round = tc.round;
-        self.last_round_tc = Some(tc);
+        self.last_round_tc = Some(tc.clone());
         Some(self.start_timer(round + Round(1)))
     }
 
