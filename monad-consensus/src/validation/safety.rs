@@ -17,6 +17,13 @@ pub struct Safety {
 }
 
 impl Safety {
+    pub fn new() -> Self {
+        Safety {
+            highest_vote_round: Round(0),
+            highest_qc_round: Round(0),
+        }
+    }
+
     fn update_highest_vote_round(&mut self, r: Round) {
         self.highest_vote_round = cmp::max(r, self.highest_vote_round);
     }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use monad_blocktree::blocktree::BlockTree;
@@ -9,7 +10,7 @@ use monad_consensus::{
         ledger::{InMemoryLedger, Ledger},
         mempool::{Mempool, SimulationMempool},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
-        quorum_certificate::{QuorumCertificate, Rank},
+        quorum_certificate::{QcInfo, QuorumCertificate, Rank},
         signature::{ConsensusSignature, SignatureCollection},
         timeout::TimeoutCertificate,
     },
@@ -21,10 +22,13 @@ use monad_consensus::{
     },
     vote_state::VoteState,
 };
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
 use monad_types::{NodeId, Round};
-use monad_validator::leader_election::LeaderElection;
-use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
+use monad_validator::{
+    leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
+    weighted_round_robin::WeightedRoundRobin,
+};
 
 use message::MessageState;
 
@@ -86,7 +90,56 @@ impl State for MonadState {
     type Message = MonadMessage;
 
     fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
-        todo!()
+        //TODO initial validator set and initial signature
+        // of QC should come externally
+
+        // create my keys and validator structs
+        let my_key = KeyPair::from_slice(&[0xAA as u8; 32]).unwrap();
+
+        let me = Validator {
+            pubkey: my_key.pubkey(),
+            stake: 1,
+        };
+
+        let validator_list = vec![me];
+
+        // create the genesis block
+        let genesis_author = KeyPair::from_slice(&[0xFF as u8; 32]).unwrap().pubkey();
+        let genesis_txn = TransactionList::default();
+
+        let empty_qc = QuorumCertificate::default();
+        let genesis_block = Block::<SignatureType>::new::<HasherType>(
+            NodeId(genesis_author),
+            Round(0),
+            &genesis_txn,
+            &empty_qc,
+        );
+
+        // create the initial validator set
+        let val_set =
+            ValidatorSet::new(validator_list.clone()).expect("initial validator set init failed");
+
+        // sign the genesis qc
+        let mut genesis_sigs = AggregateSignatures::new();
+        let sig = my_key.sign(&genesis_block.get_id().0);
+        genesis_sigs.add_signature(ConsensusSignature(sig));
+        let genesis_qc = QuorumCertificate::new(QcInfo::default(), genesis_sigs);
+
+        let monad_state = Self {
+            message_state: MessageState::new(
+                10,
+                validator_list
+                    .into_iter()
+                    .map(|v| PeerId(v.pubkey))
+                    .collect(),
+            ),
+            validator_set: val_set,
+            consensus_state: ConsensusState::new(my_key.pubkey(), genesis_block, genesis_qc),
+        };
+
+        let init_cmds = vec![];
+
+        (monad_state, init_cmds)
     }
 
     fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
@@ -336,6 +389,23 @@ where
     L: Ledger<Signatures = T>,
     M: Mempool,
 {
+    pub fn new(
+        my_pubkey: PubKey,
+        genesis_block: Block<T>,
+        genesis_qc: QuorumCertificate<T>,
+    ) -> Self {
+        ConsensusState {
+            pending_block_tree: BlockTree::new(genesis_block),
+            vote_state: VoteState::new(),
+            high_qc: genesis_qc,
+            ledger: L::new(),
+            mempool: M::new(),
+            pacemaker: Pacemaker::new(Duration::new(1, 0), Round(0), None, HashMap::new()),
+            safety: Safety::new(),
+            nodeid: NodeId(my_pubkey),
+        }
+    }
+
     fn handle_proposal_message<H: Hasher, V: LeaderElection>(
         &mut self,
         p: &Verified<ProposalMessage<T>>,
