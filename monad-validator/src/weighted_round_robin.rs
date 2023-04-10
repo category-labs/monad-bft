@@ -119,7 +119,6 @@ impl WeightedRoundRobin {
         for v in self.voters.iter_mut() {
             v.priority += v.voting_power;
         }
-        println!("voters: {:?}", self.voters);
         self.leader = self.get_highest_priority_validator();
         self.voters[self.leader].priority -= self.total_voting_power;
     }

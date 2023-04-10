@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::time::Duration;
+use std::{collections::HashMap, fmt::Debug};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
@@ -10,12 +10,12 @@ use monad_consensus::{
         ledger::{InMemoryLedger, Ledger},
         mempool::{Mempool, SimulationMempool},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
-        quorum_certificate::{QcInfo, QuorumCertificate, Rank},
+        quorum_certificate::{QuorumCertificate, Rank},
         signature::{ConsensusSignature, SignatureCollection},
         timeout::TimeoutCertificate,
     },
     validation::{
-        hashing::{Hasher, Sha256Hash},
+        hashing::{Hashable, Hasher, Sha256Hash},
         protocol::{verify_proposal, verify_timeout_message, verify_vote_message},
         safety::Safety,
         signing::{Signable, Signed, Unverified, Verified},
@@ -46,7 +46,17 @@ pub struct MonadState {
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
-#[derive(Clone)]
+impl MonadState {
+    pub fn pubkey(&self) -> PubKey {
+        self.consensus_state.nodeid.0
+    }
+
+    pub fn ledger(&self) -> Vec<Block<SignatureType>> {
+        self.consensus_state.ledger.get_blocks()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum MonadEvent {
     Ack {
         peer: PeerId,
@@ -63,7 +73,7 @@ impl Message for MonadMessage {
     type Event = MonadEvent;
     type ReadError = ();
 
-    type Id = Vec<u8>;
+    type Id = ConsensusSignature;
 
     fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
         // MUST assert that output is valid and came from the `from` PeerId
@@ -77,7 +87,7 @@ impl Message for MonadMessage {
     }
 
     fn id(&self) -> Self::Id {
-        self.serialize()
+        self.0 .0.author_signature
     }
 
     fn event(self, _from: PeerId) -> Self::Event {
@@ -85,48 +95,41 @@ impl Message for MonadMessage {
     }
 }
 
+pub struct MonadConfig {
+    pub validators: Vec<PubKey>,
+    pub key: KeyPair,
+}
+
 impl State for MonadState {
-    type Config = ();
+    type Config = MonadConfig;
     type Event = MonadEvent;
     type Message = MonadMessage;
 
-    fn init(_config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
-        //TODO initial validator set and initial signature
-        // of QC should come externally
-
+    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
         // create my keys and validator structs
-        let my_key = KeyPair::from_slice(&[0xAA as u8; 32]).unwrap();
-
-        let me = Validator {
-            pubkey: my_key.pubkey(),
-            stake: 1,
-        };
-
-        let validator_list = vec![me];
+        let validator_list = config
+            .validators
+            .into_iter()
+            .map(|pubkey| Validator { pubkey, stake: 1 })
+            .collect::<Vec<_>>();
 
         // create the genesis block
-        let genesis_author = KeyPair::from_slice(&[0xFF as u8; 32]).unwrap().pubkey();
+        // FIXME init from genesis config, don't use random key
         let genesis_txn = TransactionList::default();
 
-        let empty_qc = QuorumCertificate::default();
+        let genesis_qc = QuorumCertificate::default();
         let genesis_block = Block::<SignatureType>::new::<HasherType>(
-            NodeId(genesis_author),
+            NodeId(KeyPair::from_slice(&[0xBE as u8; 32]).unwrap().pubkey()),
             Round(0),
             &genesis_txn,
-            &empty_qc,
+            &genesis_qc,
         );
 
         // create the initial validator set
         let val_set =
             ValidatorSet::new(validator_list.clone()).expect("initial validator set init failed");
 
-        // sign the genesis qc
-        let mut genesis_sigs = AggregateSignatures::new();
-        let sig = my_key.sign(&genesis_block.get_id().0);
-        genesis_sigs.add_signature(ConsensusSignature(sig));
-        let genesis_qc = QuorumCertificate::new(QcInfo::default(), genesis_sigs);
-
-        let monad_state = Self {
+        let mut monad_state = Self {
             message_state: MessageState::new(
                 10,
                 validator_list
@@ -135,10 +138,17 @@ impl State for MonadState {
                     .collect(),
             ),
             validator_set: val_set,
-            consensus_state: ConsensusState::new(my_key.pubkey(), genesis_block, genesis_qc),
+            consensus_state: ConsensusState::new(
+                config.key.pubkey(),
+                genesis_block,
+                genesis_qc,
+                config.key,
+            ),
         };
 
-        let init_cmds = vec![];
+        let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
+            PacemakerTimerExpire,
+        )));
 
         (monad_state, init_cmds)
     }
@@ -186,7 +196,7 @@ impl State for MonadState {
                                                 &p,
                                                 &mut self.validator_set,
                                             ),
-                                        Err(_) => todo!(),
+                                        Err(e) => todo!(),
                                     }
                                 }
                                 UnverifiedConsensusMessage::Vote(msg) => {
@@ -218,7 +228,7 @@ impl State for MonadState {
                                                 p,
                                                 &mut self.validator_set,
                                             ),
-                                        Err(_) => todo!(),
+                                        Err(e) => todo!("{:?}", e),
                                     }
                                 }
                             }
@@ -228,8 +238,13 @@ impl State for MonadState {
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Send { to, message } => {
+                            let signature = ConsensusSignature(
+                                self.consensus_state
+                                    .keypair
+                                    .sign(&HasherType::hash_object(message.clone())),
+                            );
                             let message = MonadMessage(
-                                message.signed_object(todo!("author"), todo!("signature")),
+                                message.signed_object(self.consensus_state.nodeid, signature),
                             );
                             let publish_action = self.message_state.send(to, message);
                             let id = publish_action.message.id();
@@ -247,8 +262,13 @@ impl State for MonadState {
                             }))
                         }
                         ConsensusCommand::Broadcast { message } => {
+                            let signature = ConsensusSignature(
+                                self.consensus_state
+                                    .keypair
+                                    .sign(&HasherType::hash_object(message.clone())),
+                            );
                             let message = MonadMessage(
-                                message.signed_object(todo!("author"), todo!("signature")),
+                                message.signed_object(self.consensus_state.nodeid, signature),
                             );
                             cmds.extend(self.message_state.broadcast(message).into_iter().map(
                                 |publish_action| {
@@ -309,6 +329,16 @@ impl<T: SignatureCollection> Signable for ConsensusMessage<T> {
             author,
             author_signature: signature,
         })
+    }
+}
+
+impl<T: SignatureCollection> Hashable for ConsensusMessage<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ConsensusMessage::Proposal(msg) => msg.hash(state),
+            ConsensusMessage::Vote(msg) => (&msg.ledger_commit_info).hash(state),
+            ConsensusMessage::Timeout(msg) => msg.hash(state),
+        }
     }
 }
 
@@ -382,11 +412,14 @@ where
     safety: Safety,
 
     nodeid: NodeId,
+
+    // TODO deprecate
+    keypair: KeyPair,
 }
 
 impl<T, L, M> ConsensusState<T, L, M>
 where
-    T: SignatureCollection,
+    T: SignatureCollection + Debug,
     L: Ledger<Signatures = T>,
     M: Mempool,
 {
@@ -394,6 +427,9 @@ where
         my_pubkey: PubKey,
         genesis_block: Block<T>,
         genesis_qc: QuorumCertificate<T>,
+
+        // TODO deprecate
+        keypair: KeyPair,
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
@@ -401,9 +437,11 @@ where
             high_qc: genesis_qc,
             ledger: L::new(),
             mempool: M::new(),
-            pacemaker: Pacemaker::new(Duration::new(1, 0), Round(0), None, HashMap::new()),
+            pacemaker: Pacemaker::new(Duration::new(1, 0), Round(1), None, HashMap::new()),
             safety: Safety::new(),
             nodeid: NodeId(my_pubkey),
+
+            keypair,
         }
     }
 
@@ -549,9 +587,11 @@ where
     // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_new_round_event<H: Hasher>(
-        &self,
+        &mut self,
         last_round_tc: Option<TimeoutCertificate>,
     ) -> Vec<ConsensusCommand<T>> {
+        self.vote_state.start_new_round();
+
         let txns: TransactionList = self.mempool.get_transactions(10000);
         let b = Block::new::<H>(
             self.nodeid,

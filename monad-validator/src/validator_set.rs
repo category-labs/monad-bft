@@ -96,13 +96,17 @@ impl<T: LeaderElection> ValidatorSet<T> {
     }
 
     pub fn get_leader(&mut self, round: Round) -> &NodeId {
-        if round < self.round {
-            panic!("round reversed {:?}->{:?}", self.round, round);
-        }
-        if round > self.round {
-            self.leader_election.increment_view(round - self.round);
-        }
-        self.leader_election.get_leader()
+        // FIXME switch back to weighted round robin
+        let mut validators = self.validators.iter().collect::<Vec<_>>();
+        validators.sort_by_key(|(pubkey, _)| *pubkey);
+        &validators[(round.0 as usize % self.validators.len())].0
+        // if round < self.round {
+        //     panic!("round reversed {:?}->{:?}", self.round, round);
+        // }
+        // if round > self.round {
+        //     self.leader_election.increment_view(round - self.round);
+        // }
+        // self.leader_election.get_leader()
     }
     // fn udpate_stake(&mut self, validator: Validator) -> bool {}
     // fn udpate_validators(&mut self, validators: Vec<Validator>) {}

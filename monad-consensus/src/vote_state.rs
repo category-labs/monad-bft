@@ -38,7 +38,7 @@ where
             return None;
         }
 
-        let vote_idx = H::hash_object(&v.0.obj);
+        let vote_idx = H::hash_object(&v.0.obj.ledger_commit_info);
         let sigs = self.pending_vote_sigs.entry(vote_idx).or_insert(T::new());
         sigs.add_signature(v.0.author_signature.clone());
 

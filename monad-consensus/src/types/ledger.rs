@@ -2,7 +2,7 @@ use monad_types::Hash;
 
 use crate::{
     types::{block::Block, signature::SignatureCollection, voting::VoteInfo},
-    validation::hashing::Hasher,
+    validation::hashing::{Hashable, Hasher},
 };
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -20,6 +20,15 @@ impl LedgerCommitInfo {
     }
 }
 
+impl Hashable for &LedgerCommitInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(&self.vote_info_hash);
+        if let Some(x) = self.commit_state_hash.as_ref() {
+            state.update(x);
+        }
+    }
+}
+
 pub trait Ledger {
     type Signatures: SignatureCollection;
 
@@ -30,6 +39,12 @@ pub trait Ledger {
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryLedger<T: SignatureCollection> {
     blockchain: Vec<Block<T>>,
+}
+
+impl<T: SignatureCollection> InMemoryLedger<T> {
+    pub fn get_blocks(&self) -> Vec<Block<T>> {
+        self.blockchain.clone()
+    }
 }
 
 impl<T: SignatureCollection> Ledger for InMemoryLedger<T> {

@@ -34,7 +34,7 @@ fn create_signed_vote_message(vote_hash: &str, keypair: &KeyPair) -> Unverified<
         ledger_commit_info: lci,
     };
 
-    let msg = Sha256Hash::hash_object(&vm);
+    let msg = Sha256Hash::hash_object(&vm.ledger_commit_info);
     let svm = Signer::sign_object(vm, &msg, keypair);
 
     svm

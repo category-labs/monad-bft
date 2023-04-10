@@ -11,6 +11,7 @@ use monad_crypto::secp256k1::KeyPair;
 use monad_testutil::signing::*;
 use monad_types::*;
 use sha2::Digest;
+use zerocopy::AsBytes;
 
 #[test_case(None ; "None commit_state")]
 #[test_case(Some(Default::default()) ; "Some commit_state")]
@@ -26,13 +27,13 @@ fn vote_msg_hash(cs: Option<Hash>) {
     };
 
     let mut hasher = sha2::Sha256::new();
-    hasher.update(vm.ledger_commit_info.vote_info_hash);
-    if vm.ledger_commit_info.commit_state_hash.is_some() {
-        hasher.update(vm.ledger_commit_info.commit_state_hash.as_ref().unwrap());
-    }
+    hasher.update(vm.vote_info.id.0.as_bytes());
+    hasher.update(vm.vote_info.round.as_bytes());
+    hasher.update(vm.vote_info.parent_id.0.as_bytes());
+    hasher.update(vm.vote_info.parent_round.as_bytes());
     let h1: Hash = hasher.finalize_reset().into();
 
-    let h2 = Sha256Hash::hash_object(&vm);
+    let h2 = Sha256Hash::hash_object(&vm.vote_info);
 
     assert_eq!(h1, h2);
 }
@@ -133,7 +134,7 @@ fn test_vote_message() {
 
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
 
-    let msg = Sha256Hash::hash_object(&vm);
+    let msg = Sha256Hash::hash_object(&vm.vote_info);
     let svm = Signer::sign_object(vm, &msg, &keypair);
 
     assert_eq!(svm.0.author, NodeId(keypair.pubkey()));

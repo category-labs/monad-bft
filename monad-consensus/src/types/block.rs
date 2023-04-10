@@ -45,7 +45,11 @@ impl<T: SignatureCollection> Block<T> {
             qc: qc.clone(),
             id: Default::default(),
         };
-        b.id = BlockId(H::hash_object(&b));
+        if round == Round(0) {
+            // FIXME lol
+        } else {
+            b.id = BlockId(H::hash_object(&b));
+        }
         b
     }
 

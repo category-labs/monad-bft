@@ -52,7 +52,8 @@ impl Safety {
         tc: &Option<TimeoutCertificate>,
     ) -> bool {
         if qc_round < self.highest_qc_round
-            || round <= cmp::max(self.highest_qc_round - Round(1), qc_round)
+            || round + Round(1) <= self.highest_vote_round
+            || round <= qc_round
         {
             return false;
         }
@@ -116,7 +117,7 @@ impl Safety {
 }
 
 fn consecutive(block_round: Round, round: Round) -> bool {
-    round + Round(1) == block_round
+    block_round == round + Round(1)
 }
 
 fn safe_to_extend(block_round: Round, qc_round: Round, tc: &Option<TimeoutCertificate>) -> bool {

@@ -46,9 +46,7 @@ pub enum PacemakerCommand<T: SignatureCollection> {
 }
 
 #[derive(Debug, Clone)]
-pub struct PacemakerTimerExpire {
-    round: Round,
-}
+pub struct PacemakerTimerExpire;
 
 impl<T> Pacemaker<T>
 where
@@ -89,9 +87,7 @@ where
 
         PacemakerCommand::Schedule {
             duration: self.get_round_timer(),
-            on_timeout: PacemakerTimerExpire {
-                round: self.current_round,
-            },
+            on_timeout: PacemakerTimerExpire,
         }
     }
 
@@ -116,9 +112,8 @@ where
         &mut self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
-        event: PacemakerTimerExpire,
+        _event: PacemakerTimerExpire,
     ) -> Option<PacemakerCommand<T>> {
-        assert_eq!(event.round, self.current_round);
         self.phase = Phase::OneHonest;
         self.local_timeout_round(safety, high_qc)
     }
@@ -162,7 +157,7 @@ where
                             author: tmo.0.author,
                             author_signature: tmo.0.author_signature,
                             obj: HighQcRound {
-                                qc_round: tmo.0.obj.tminfo.round,
+                                qc_round: tmo.0.obj.tminfo.high_qc.info.vote.round,
                             },
                         })
                     })

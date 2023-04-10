@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use monad_crypto::secp256k1::PubKey;
+use monad_types::Round;
 use monad_types::{Hash, NodeId};
 use monad_validator::validator::Validator;
 
@@ -75,7 +76,7 @@ pub fn verify_vote_message<H>(
 where
     H: Hasher,
 {
-    let msg = H::hash_object(&v.0.obj);
+    let msg = H::hash_object(&v.0.obj.ledger_commit_info);
 
     get_pubkey(&msg, &v.0.author_signature)?
         .valid_pubkey(validators)?
@@ -121,16 +122,28 @@ where
     H: Hasher,
     V: SignatureCollection,
 {
+    if qc.info.vote.round == Round(0) {
+        // FIXME lol
+        return Ok(());
+    }
+
     let msg_sig = if let Some(tc) = tc {
         tc.high_qc_rounds
             .iter()
-            .map(|a| (H::hash_object(&a.0.obj), &a.0.author_signature))
+            .map(|a| {
+                // TODO fix this..
+                let mut h = H::new();
+                h.update(tc.round);
+                h.update(a.0.obj.qc_round);
+
+                (h.hash(), &a.0.author_signature)
+            })
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     } else {
         qc.signatures
             .get_signatures()
             .into_iter()
-            .map(|s| (qc.signature_hash, s))
+            .map(|s| (H::hash_object(&qc.info.ledger_commit), s))
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     };
 

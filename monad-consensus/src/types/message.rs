@@ -29,15 +29,6 @@ impl Signable for VoteMessage {
     }
 }
 
-impl Hashable for &VoteMessage {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.update(&self.ledger_commit_info.vote_info_hash);
-        if let Some(x) = self.ledger_commit_info.commit_state_hash.as_ref() {
-            state.update(x);
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TimeoutMessage<T>
 where
