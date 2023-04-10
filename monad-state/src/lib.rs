@@ -105,9 +105,17 @@ impl State for MonadState {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<AggregateSignatures>> =
                     match consensus_event {
-                        ConsensusEvent::Timeout(pacemaker_expire) => {
-                            todo!()
-                        }
+                        ConsensusEvent::Timeout(pacemaker_expire) => self
+                            .consensus_state
+                            .pacemaker
+                            .handle_event(
+                                &mut self.consensus_state.safety,
+                                &self.consensus_state.high_qc,
+                                pacemaker_expire,
+                            )
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
                         ConsensusEvent::UnverifiedMessage(msg) => {
                             match UnverifiedConsensusMessage::from(msg) {
                                 UnverifiedConsensusMessage::Proposal(msg) => {

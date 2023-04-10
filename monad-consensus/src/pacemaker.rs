@@ -112,7 +112,7 @@ where
     }
 
     #[must_use]
-    fn handle_event(
+    pub fn handle_event(
         &mut self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
