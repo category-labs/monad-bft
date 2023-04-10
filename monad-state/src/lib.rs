@@ -32,6 +32,7 @@ mod message;
 
 type SignatureType = AggregateSignatures;
 type LeaderElectionType = WeightedRoundRobin;
+type HasherType = Sha256Hash;
 
 pub struct MonadState {
     message_state: MessageState<MonadMessage>,
@@ -111,7 +112,7 @@ impl State for MonadState {
                         ConsensusEvent::UnverifiedMessage(msg) => {
                             match UnverifiedConsensusMessage::from(msg) {
                                 UnverifiedConsensusMessage::Proposal(msg) => {
-                                    let proposal = verify_proposal::<Sha256Hash, SignatureType>(
+                                    let proposal = verify_proposal::<HasherType, SignatureType>(
                                         self.validator_set.get_members(),
                                         msg,
                                     );
@@ -124,7 +125,7 @@ impl State for MonadState {
                                     }
                                 }
                                 UnverifiedConsensusMessage::Vote(msg) => {
-                                    let vote = verify_vote_message::<Sha256Hash>(
+                                    let vote = verify_vote_message::<HasherType>(
                                         self.validator_set.get_members(),
                                         msg,
                                     );
@@ -132,7 +133,7 @@ impl State for MonadState {
                                     match vote {
                                         Ok(p) => self
                                             .consensus_state
-                                            .handle_vote_message::<Sha256Hash, LeaderElectionType>(
+                                            .handle_vote_message::<HasherType, LeaderElectionType>(
                                                 &p,
                                                 &mut self.validator_set,
                                             ),
@@ -140,7 +141,7 @@ impl State for MonadState {
                                     }
                                 }
                                 UnverifiedConsensusMessage::Timeout(msg) => {
-                                    let timeout = verify_timeout_message::<Sha256Hash, SignatureType>(
+                                    let timeout = verify_timeout_message::<HasherType, SignatureType>(
                                         self.validator_set.get_members(),
                                         msg,
                                     );
@@ -148,7 +149,7 @@ impl State for MonadState {
                                     match timeout {
                                         Ok(p) => self
                                             .consensus_state
-                                            .handle_timeout_message::<Sha256Hash, _>(
+                                            .handle_timeout_message::<HasherType, _>(
                                                 p,
                                                 &mut self.validator_set,
                                             ),
@@ -344,15 +345,12 @@ where
         let qc = self.vote_state.process_vote::<V, H>(v, validators);
 
         let mut cmds = Vec::new();
-        match qc {
-            Some(qc) => {
-                cmds.extend(self.process_certificate_qc(&qc));
+        if let Some(qc) = qc {
+            cmds.extend(self.process_certificate_qc(&qc));
 
-                if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
-                    cmds.extend(self.process_new_round_event::<H>(None));
-                }
+            if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
+                cmds.extend(self.process_new_round_event::<H>(None));
             }
-            None => (),
         }
         cmds
     }
@@ -389,7 +387,7 @@ where
             cmds.extend(advance_round_cmds);
 
             if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
-                self.process_new_round_event::<H>(Some(tc));
+                cmds.extend(self.process_new_round_event::<H>(Some(tc)));
             }
         }
 
@@ -400,15 +398,12 @@ where
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     fn process_qc(&mut self, qc: &QuorumCertificate<T>) {
-        match qc.info.ledger_commit.commit_state_hash {
-            Some(_) => {
-                let blocks_to_commit = self.pending_block_tree.prune(&qc.info.vote.parent_id);
-                match blocks_to_commit {
-                    Ok(blocks) => self.ledger.add_blocks(blocks),
-                    Err(e) => panic!("{}", e),
-                }
-            }
-            None => (),
+        if qc.info.ledger_commit.commit_state_hash.is_some() {
+            let blocks_to_commit = self
+                .pending_block_tree
+                .prune(&qc.info.vote.parent_id)
+                .unwrap();
+            self.ledger.add_blocks(blocks_to_commit);
         }
 
         if Rank(qc.info) > Rank(self.high_qc.info) {
@@ -416,19 +411,19 @@ where
         }
     }
 
+    // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_certificate_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<T>> {
-        let mut cmds = Vec::new();
         self.process_qc(qc);
 
-        match self.pacemaker.advance_round_qc(qc) {
-            Some(cmd) => cmds.push(cmd.into()),
-            None => (),
-        }
-
-        cmds
+        self.pacemaker
+            .advance_round_qc(qc)
+            .map(Into::into)
+            .into_iter()
+            .collect()
     }
 
+    // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_new_round_event<H: Hasher>(
         &self,
@@ -447,9 +442,9 @@ where
             last_round_tc,
         };
 
-        return Vec::from([ConsensusCommand::Broadcast {
+        vec![ConsensusCommand::Broadcast {
             message: ConsensusMessage::Proposal(p),
-        }]);
+        }]
     }
 }
 
