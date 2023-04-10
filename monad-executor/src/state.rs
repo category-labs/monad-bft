@@ -1,7 +1,9 @@
 use std::hash::Hash;
 
+use monad_crypto::secp256k1::PubKey;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PeerId(pub u64);
+pub struct PeerId(pub PubKey);
 pub enum RouterCommand<E, M>
 where
     M: Message<Event = E>,

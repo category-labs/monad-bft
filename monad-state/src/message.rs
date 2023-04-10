@@ -132,6 +132,7 @@ where
 #[cfg(test)]
 mod tests {
     use monad_executor::{Message, PeerId};
+    use monad_testutil::signing::node_id;
     use monad_types::Round;
 
     use crate::message::{MessageActionUnpublish, MessageState};
@@ -181,22 +182,22 @@ mod tests {
     #[test]
     fn send() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let action = state.send(PeerId(0), TestMessage);
+        let action = state.send(PeerId(node_id().0), TestMessage);
 
-        assert_eq!(action.to, PeerId(0));
+        assert_eq!(action.to, PeerId(node_id().0));
         assert_eq!(action.message, TestMessage);
     }
 
     #[test]
     fn set_round_eviction() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId(0), TestMessage);
+        let _ = state.send(PeerId(node_id().0), TestMessage);
 
         let evicted = state.set_round(Round(10), Vec::new());
         assert_eq!(
             evicted,
             vec![MessageActionUnpublish {
-                to: PeerId(0),
+                to: PeerId(node_id().0),
                 id: TestMessage,
             }],
         )
@@ -205,13 +206,13 @@ mod tests {
     #[test]
     fn handle_ack() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId(0), TestMessage);
+        let _ = state.send(PeerId(node_id().0), TestMessage);
 
-        let evicted = state.handle_ack(Round(0), PeerId(0), TestMessage);
+        let evicted = state.handle_ack(Round(0), PeerId(node_id().0), TestMessage);
         assert_eq!(
             evicted,
             Some(MessageActionUnpublish {
-                to: PeerId(0),
+                to: PeerId(node_id().0),
                 id: TestMessage,
             }),
         )
@@ -220,11 +221,11 @@ mod tests {
     #[test]
     fn evicted_handle_ack() {
         let mut state = MessageState::<TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId(0), TestMessage);
+        let _ = state.send(PeerId(node_id().0), TestMessage);
 
         let _ = state.set_round(Round(10), Vec::new());
 
-        let evicted = state.handle_ack(Round(0), PeerId(0), TestMessage);
+        let evicted = state.handle_ack(Round(0), PeerId(node_id().0), TestMessage);
         assert_eq!(evicted, None,)
     }
 }

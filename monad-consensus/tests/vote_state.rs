@@ -40,19 +40,6 @@ fn create_signed_vote_message(vote_hash: &str, keypair: &KeyPair) -> Unverified<
     svm
 }
 
-fn create_keys(num_keys: u32) -> Vec<KeyPair> {
-    assert!(num_keys < 255);
-    let mut res = Vec::new();
-    for i in 0..num_keys {
-        let k: [u8; 32] = [(i + 1) as u8; 32];
-        let keypair = KeyPair::from_slice(&k).unwrap();
-
-        res.push(keypair);
-    }
-
-    res
-}
-
 fn setup_ctx(
     num_nodes: u32,
 ) -> (

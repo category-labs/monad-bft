@@ -43,6 +43,19 @@ pub fn node_id() -> NodeId {
     NodeId(keypair.pubkey())
 }
 
+pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
+    assert!(num_keys < 255);
+    let mut res = Vec::new();
+    for i in 0..num_keys {
+        let k: [u8; 32] = [(i + 1) as u8; 32];
+        let keypair = KeyPair::from_slice(&k).unwrap();
+
+        res.push(keypair);
+    }
+
+    res
+}
+
 pub struct Signer;
 impl Signer {
     pub fn sign_object<T: Signable>(o: T, msg: &[u8], key: &KeyPair) -> <T as Signable>::Output {

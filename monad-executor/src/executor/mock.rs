@@ -277,6 +277,9 @@ mod tests {
 
     use futures::StreamExt;
 
+    use monad_crypto::secp256k1::{KeyPair, PubKey};
+    use monad_testutil::signing::{create_keys, node_id};
+
     use crate::{
         executor::mock::MockExecutor,
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
@@ -315,7 +318,7 @@ mod tests {
                     on_timeout: LongAckEvent::IncrementNumTimeout,
                 }),
                 Command::RouterCommand(RouterCommand::Publish {
-                    to: PeerId(0),
+                    to: PeerId(node_id().0),
                     message: LongAckMessage(init_self.num_ack),
                     on_ack: LongAckEvent::IncrementNumAck,
                 }),
@@ -328,12 +331,12 @@ mod tests {
             match event {
                 LongAckEvent::IncrementNumAck => {
                     commands.push(Command::RouterCommand(RouterCommand::Unpublish {
-                        to: PeerId(0),
+                        to: PeerId(node_id().0),
                         id: self.num_ack,
                     }));
                     self.num_ack += 1;
                     commands.push(Command::RouterCommand(RouterCommand::Publish {
-                        to: PeerId(0),
+                        to: PeerId(node_id().0),
                         message: LongAckMessage(self.num_ack),
                         on_ack: LongAckEvent::IncrementNumAck,
                     }));
@@ -532,29 +535,39 @@ mod tests {
         type Message = SimpleChainMessage;
 
         fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
-            let init_self = Self {
-                me: PeerId(0),
-                chain: vec![HashSet::new()],
-                outbound_votes: vec![(0..NUM_NODES).map(PeerId).collect()],
-            };
+            let pubkey = create_keys(NUM_NODES as u32)
+                .iter()
+                .map(KeyPair::pubkey)
+                .collect::<Vec<PubKey>>();
 
-            let init_cmds = (0..NUM_NODES)
+            let init_cmds = pubkey
+                .iter()
                 .map(|idx| {
                     Command::RouterCommand(RouterCommand::Publish {
-                        to: PeerId(idx),
+                        to: PeerId(*idx),
                         message: SimpleChainMessage { round: 0 },
                         on_ack: SimpleChainEvent::Ack {
-                            peer: PeerId(idx),
+                            peer: PeerId(*idx),
                             round: 0,
                         },
                     })
                 })
                 .collect();
 
+            let init_self = Self {
+                me: PeerId(node_id().0),
+                chain: vec![HashSet::new()],
+                outbound_votes: vec![pubkey.into_iter().map(PeerId).collect()],
+            };
+
             (init_self, init_cmds)
         }
         fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
             let mut commands = Vec::new();
+            let pubkey = create_keys(NUM_NODES as u32)
+                .iter()
+                .map(KeyPair::pubkey)
+                .collect::<Vec<PubKey>>();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {
                     self.chain[round as usize].insert(peer);
@@ -565,20 +578,20 @@ mod tests {
                         // max NUM_NODES blocks
                         self.chain.push(HashSet::new());
 
-                        commands.extend((0..NUM_NODES).map(|idx| {
+                        commands.extend(pubkey.iter().map(|idx| {
                             Command::RouterCommand(RouterCommand::Publish {
-                                to: PeerId(idx),
+                                to: PeerId(*idx),
                                 message: SimpleChainMessage {
                                     round: self.chain.len() as u64 - 1,
                                 },
                                 on_ack: SimpleChainEvent::Ack {
-                                    peer: PeerId(idx),
+                                    peer: PeerId(*idx),
                                     round: self.chain.len() as u64 - 1,
                                 },
                             })
                         }));
                         self.outbound_votes
-                            .push((0..NUM_NODES).map(PeerId).collect());
+                            .push(pubkey.into_iter().map(PeerId).collect());
                     }
                 }
                 SimpleChainEvent::Ack { peer, round } => {
@@ -635,12 +648,16 @@ mod tests {
             assert!(num_peers > 0);
 
             let mut states = HashMap::new();
+            let pubkey = create_keys(num_peers as u32)
+                .iter()
+                .map(KeyPair::pubkey)
+                .collect::<Vec<PubKey>>();
 
-            for idx in 0..num_peers {
+            for idx in pubkey.iter() {
                 let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
                 let (state, init_commands) = S::init();
                 executor.exec(init_commands);
-                states.insert(PeerId(idx.into()), (executor, state));
+                states.insert(PeerId(*idx), (executor, state));
             }
 
             let mut nodes = Self {
@@ -720,8 +737,8 @@ mod tests {
         });
 
         // FIXME this shouldn't be necessary once we can pass stuff into init()
-        for (idx, (_, state)) in nodes.states.values_mut().enumerate() {
-            state.me = PeerId(idx as u64);
+        for (_, state) in nodes.states.values_mut() {
+            state.me = PeerId(node_id().0);
         }
 
         while let Some((duration, id, event)) = nodes.step() {

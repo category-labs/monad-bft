@@ -7,5 +7,9 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3"
+monad-crypto = { path = "../monad-crypto" }
 
 tokio = { version = "1.26", features = ["time"], optional = true }
+
+[dev-dependencies]
+monad-testutil = { path = "../monad-testutil"}
