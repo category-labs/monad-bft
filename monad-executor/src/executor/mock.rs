@@ -1,5 +1,6 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    cmp::Ordering,
+    collections::{hash_map::Entry, BinaryHeap, HashMap, HashSet, VecDeque},
     marker::Unpin,
     ops::DerefMut,
     pin::Pin,
@@ -21,8 +22,8 @@ where
     timer: Option<(Duration, E)>,
 
     // caller push_backs inbound stuff here (via MockExecutor::send_*)
-    inbound_messages: VecDeque<(Duration, PeerId, M)>, // FIXME pqueue
-    inbound_ack: VecDeque<(Duration, PeerId, M::Id)>,  // FIXME pqueue
+    inbound_messages: BinaryHeap<SequencedPeerEvent<M>>,
+    inbound_ack: BinaryHeap<SequencedPeerEvent<M::Id>>,
 
     // caller pop_front outbounds from this (via MockExecutor::receive_*)
     outbound_messages: VecDeque<(PeerId, M)>,
@@ -30,6 +31,32 @@ where
 
     sent_messages: HashMap<PeerId, HashMap<M::Id, E>>,
     received_messages: Vec<(PeerId, M::Id)>,
+}
+
+pub struct SequencedPeerEvent<T> {
+    pub tick: Duration,
+    pub from: PeerId,
+    pub t: T,
+}
+
+impl<T> PartialEq for SequencedPeerEvent<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.tick == other.tick
+    }
+}
+impl<T> Eq for SequencedPeerEvent<T> {}
+impl<T> PartialOrd for SequencedPeerEvent<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        // reverse ordering - because we want smaller events to be higher priority!
+        other.tick.partial_cmp(&self.tick)
+    }
+}
+
+impl<T> Ord for SequencedPeerEvent<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // reverse ordering - because we want smaller events to be higher priority!
+        other.tick.cmp(&self.tick)
+    }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -50,25 +77,16 @@ where
     }
     pub fn send_message(&mut self, tick: Duration, from: PeerId, message: M) {
         assert!(tick >= self.tick);
-        assert!(
-            tick >= self
-                .inbound_messages
-                .back()
-                .map(|(tick, _, _)| *tick)
-                .unwrap_or_default()
-        );
-        self.inbound_messages.push_back((tick, from, message));
+        self.inbound_messages.push(SequencedPeerEvent {
+            tick,
+            from,
+            t: message,
+        });
     }
     pub fn send_ack(&mut self, tick: Duration, from: PeerId, ack: M::Id) {
         assert!(tick >= self.tick);
-        assert!(
-            tick >= self
-                .inbound_ack
-                .back()
-                .map(|(tick, _, _)| *tick)
-                .unwrap_or_default()
-        );
-        self.inbound_ack.push_back((tick, from, ack));
+        self.inbound_ack
+            .push(SequencedPeerEvent { tick, from, t: ack });
     }
     pub fn receive_message(&mut self) -> Option<(PeerId, M)> {
         self.outbound_messages.pop_front()
@@ -81,14 +99,16 @@ where
         std::iter::empty()
             .chain(
                 self.inbound_messages
-                    .front()
-                    .map(|(tick, _, _)| (*tick, ExecutorEventType::InboundMessage))
+                    .peek()
+                    .map(|SequencedPeerEvent { tick, .. }| {
+                        (*tick, ExecutorEventType::InboundMessage)
+                    })
                     .into_iter(),
             )
             .chain(
                 self.inbound_ack
-                    .front()
-                    .map(|(tick, _, _)| (*tick, ExecutorEventType::InboundAck))
+                    .peek()
+                    .map(|SequencedPeerEvent { tick, .. }| (*tick, ExecutorEventType::InboundAck))
                     .into_iter(),
             )
             .chain(
@@ -116,8 +136,8 @@ where
 
             timer: None,
 
-            inbound_messages: VecDeque::new(),
-            inbound_ack: VecDeque::new(),
+            inbound_messages: BinaryHeap::new(),
+            inbound_ack: BinaryHeap::new(),
 
             outbound_messages: VecDeque::new(),
             outbound_ack: VecDeque::new(),
@@ -183,14 +203,21 @@ where
         }
 
         // remove any unpublished messages
-        while self.inbound_ack.front().map_or(false, |(_, from, ack)| {
-            !self
-                .sent_messages
-                .entry(from.clone())
-                .or_default()
-                .contains_key(ack)
-        }) {
-            self.inbound_ack.pop_front();
+        while self.inbound_ack.peek().map_or(
+            false,
+            |SequencedPeerEvent {
+                 from,
+                 t: ack,
+                 tick: _,
+             }| {
+                !self
+                    .sent_messages
+                    .entry(from.clone())
+                    .or_default()
+                    .contains_key(ack)
+            },
+        ) {
+            self.inbound_ack.pop();
         }
     }
 }
@@ -209,14 +236,22 @@ where
             this.tick = tick;
             let event = match event_type {
                 ExecutorEventType::InboundMessage => {
-                    let (_, from, message) = this.inbound_messages.pop_front().unwrap();
+                    let SequencedPeerEvent {
+                        from,
+                        t: message,
+                        tick: _,
+                    } = this.inbound_messages.pop().unwrap();
 
                     this.received_messages.push((from.clone(), message.id()));
 
                     message.event(from)
                 }
                 ExecutorEventType::InboundAck => {
-                    let (_, from, ack) = this.inbound_ack.pop_front().unwrap();
+                    let SequencedPeerEvent {
+                        from,
+                        t: ack,
+                        tick: _,
+                    } = this.inbound_ack.pop().unwrap();
 
                     this.sent_messages
                         .entry(from)
