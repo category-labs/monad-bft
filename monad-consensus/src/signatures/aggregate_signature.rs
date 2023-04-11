@@ -7,7 +7,7 @@ use monad_types::Hash;
 use crate::types::signature::SignatureCollection;
 use sha2::Digest;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateSignatures<S> {
     pub sigs: Vec<S>,
 }

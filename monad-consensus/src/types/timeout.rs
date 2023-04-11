@@ -6,13 +6,13 @@ use crate::validation::hashing::{Hashable, Hasher};
 
 use super::quorum_certificate::QuorumCertificate;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutInfo<T> {
     pub round: Round,
     pub high_qc: QuorumCertificate<T>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HighQcRound {
     pub qc_round: Round,
 }
@@ -23,7 +23,7 @@ impl Hashable for HighQcRound {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutCertificate<S> {
     pub round: Round,
     pub high_qc_rounds: Vec<(HighQcRound, S)>,

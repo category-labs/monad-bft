@@ -9,7 +9,7 @@ pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Error(secp256k1::Error);
 
 impl std::fmt::Display for Error {

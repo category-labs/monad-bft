@@ -5,3 +5,11 @@ package monad_proto.basic;
 message ProtoNodeId {
   bytes id = 1;
 }
+
+message ProtoRound {
+  uint64 round = 1;
+}
+
+message ProtoHash {
+  bytes hash = 1;
+}

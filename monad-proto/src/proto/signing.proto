@@ -5,3 +5,8 @@ package monad_proto.signing;
 message ProtoSecpSignature {
   bytes sig = 1;
 }
+
+// AggregateSignatures
+message ProtoAggSig {
+  repeated ProtoSecpSignature sigs = 1;
+}

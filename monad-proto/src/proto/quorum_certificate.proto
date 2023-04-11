@@ -2,10 +2,17 @@ syntax = "proto3";
 
 package monad_proto.quorum_certificate;
 
+import "basic.proto";
 import "ledger.proto";
+import "signing.proto";
 import "voting.proto";
 
 message ProtoQcInfo{
   monad_proto.voting.ProtoVoteInfo vote = 1; 
   monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit = 2;
+}
+
+message ProtoQuorumCertificateAggSig {
+  ProtoQcInfo info = 1;
+  monad_proto.signing.ProtoAggSig signatures = 2;
 }

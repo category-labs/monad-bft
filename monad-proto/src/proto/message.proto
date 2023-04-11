@@ -5,6 +5,7 @@ package monad_proto.message;
 import "basic.proto";
 import "ledger.proto";
 import "signing.proto";
+import "timeout.proto";
 import "voting.proto";
 
 message ProtoVoteMessage {
@@ -14,5 +15,15 @@ message ProtoVoteMessage {
 
 message ProtoUnverifiedVoteMessage {
   ProtoVoteMessage vote_msg = 1;
+  monad_proto.signing.ProtoSecpSignature author_signature = 2;
+}
+
+message ProtoTimeoutMessage {
+  monad_proto.timeout.ProtoTimeoutInfoAggSig tminfo = 1;
+  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
+}
+
+message ProtoUnverifiedTimeoutMessage {
+  ProtoTimeoutMessage tmo_msg = 1;
   monad_proto.signing.ProtoSecpSignature author_signature = 2;
 }

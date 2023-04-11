@@ -22,7 +22,7 @@ impl Hashable for VoteMessage {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutMessage<S, T> {
     pub tminfo: TimeoutInfo<T>,
     pub last_round_tc: Option<TimeoutCertificate<S>>,

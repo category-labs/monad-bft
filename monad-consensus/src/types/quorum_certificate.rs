@@ -8,14 +8,14 @@ use crate::validation::hashing::Hasher;
 pub const GENESIS_PRIME_QC_HASH: Hash = [0xAA; 32];
 
 #[non_exhaustive]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuorumCertificate<T> {
     pub info: QcInfo,
     pub signatures: T,
     signature_hash: Hash,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct QcInfo {
     pub vote: VoteInfo,
     pub ledger_commit: LedgerCommitInfo,

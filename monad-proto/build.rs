@@ -9,6 +9,7 @@ fn main() {
             "src/proto/message.proto",
             "src/proto/quorum_certificate.proto",
             "src/proto/signing.proto",
+            "src/proto/timeout.proto",
             "src/proto/voting.proto",
         ],
         &["src/proto/"],

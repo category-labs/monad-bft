@@ -1,12 +1,13 @@
 use monad_crypto::secp256k1;
 use std::fmt;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProtoError {
     DecodeError(prost::DecodeError),
     WrongHashLen(String),
     MissingRequiredField(String),
     InvalidNodeId(String),
     Secp256k1Error(secp256k1::Error),
+    SignatureHashMismatch(String),
 }
 
 impl fmt::Display for ProtoError {
@@ -17,6 +18,7 @@ impl fmt::Display for ProtoError {
             Self::MissingRequiredField(s) => write!(f, "Missing required field: {}", s),
             Self::InvalidNodeId(s) => write!(f, "Invalid NodeId: {}", s),
             Self::Secp256k1Error(err) => write!(f, "Crypto error: {}", err),
+            Self::SignatureHashMismatch(s) => write!(f, "QC Signature hash mismatch: {}", s),
         }
     }
 }

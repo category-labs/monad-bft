@@ -19,7 +19,7 @@ use crate::validation::hashing::{Hashable, Hasher};
 
 use crate::validation::message::well_formed;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verified<S, M> {
     obj: M,
     author: NodeId,
