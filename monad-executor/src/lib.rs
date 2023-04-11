@@ -5,6 +5,8 @@ pub use state::*;
 
 pub mod executor;
 
+pub mod mock_swarm;
+
 // driver loop
 async fn run<S: State>(
     mut executor: impl Executor<Command = Command<S::Event, S::Message>>

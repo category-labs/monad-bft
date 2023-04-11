@@ -317,6 +317,7 @@ mod tests {
 
     use crate::{
         executor::mock::MockExecutor,
+        mock_swarm::Nodes,
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         Message,
     };
@@ -677,94 +678,6 @@ mod tests {
         }
     }
 
-    struct Nodes<S: State, L: Fn(&PeerId, &PeerId) -> Duration> {
-        states: HashMap<PeerId, (MockExecutor<S::Event, S::Message>, S)>,
-        compute_latency: L,
-    }
-
-    impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
-        pub fn new(peers: Vec<(PubKey, S::Config)>, compute_latency: L) -> Self {
-            assert!(!peers.is_empty());
-
-            let mut states = HashMap::new();
-
-            for (pubkey, config) in peers {
-                let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
-                let (state, init_commands) = S::init(config);
-                executor.exec(init_commands);
-                states.insert(PeerId(pubkey), (executor, state));
-            }
-
-            let mut nodes = Self {
-                states,
-                compute_latency,
-            };
-
-            for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
-                nodes.simulate_peer(&peer_id);
-            }
-
-            nodes
-        }
-
-        pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
-            if let Some((id, executor, state, tick)) = self
-                .states
-                .iter_mut()
-                .filter_map(|(id, (executor, state))| {
-                    let tick = executor.peek_event_tick()?;
-                    Some((id, executor, state, tick))
-                })
-                .min_by_key(|(_, _, _, tick)| *tick)
-            {
-                let id = id.clone();
-                let event = futures::executor::block_on(executor.next()).unwrap();
-                let commands = state.update(event.clone());
-
-                executor.exec(commands);
-
-                self.simulate_peer(&id);
-
-                Some((tick, id, event))
-            } else {
-                None
-            }
-        }
-
-        fn simulate_peer(&mut self, peer_id: &PeerId) {
-            let (mut executor, state) = self.states.remove(peer_id).unwrap();
-
-            let tick = executor.tick();
-
-            while let Some((to, outbound_message)) = executor.receive_message() {
-                let to_state = if &to == peer_id {
-                    &mut executor
-                } else {
-                    &mut self.states.get_mut(&to).unwrap().0
-                };
-                to_state.send_message(
-                    tick + (self.compute_latency)(peer_id, &to),
-                    peer_id.clone(),
-                    outbound_message,
-                );
-            }
-            while let Some((to, message_id)) = executor.receive_ack() {
-                let to_state = if &to == peer_id {
-                    &mut executor
-                } else {
-                    &mut self.states.get_mut(&to).unwrap().0
-                };
-                to_state.send_ack(
-                    tick + (self.compute_latency)(peer_id, &to),
-                    peer_id.clone(),
-                    message_id,
-                );
-            }
-
-            self.states.insert(peer_id.clone(), (executor, state));
-        }
-    }
-
     #[test]
     fn test_nodes() {
         let pubkeys = create_keys(NUM_NODES as u32)
@@ -783,11 +696,6 @@ mod tests {
                 .collect(),
             |_from, _to| Duration::from_millis(50),
         );
-
-        // FIXME this shouldn't be necessary once we can pass stuff into init()
-        for (_, state) in nodes.states.values_mut() {
-            state.me = PeerId(node_id().0);
-        }
 
         while let Some((duration, id, event)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")
