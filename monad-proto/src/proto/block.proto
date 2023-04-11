@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package monad_proto.block;
+
+import "basic.proto";
+import "quorum_certificate.proto";
+
+message ProtoTransactionList {
+  bytes data = 1;
+}
+
+message ProtoBlockAggSig {
+  monad_proto.basic.ProtoNodeId author = 1;
+  monad_proto.basic.ProtoRound round = 2;
+  ProtoTransactionList payload = 3;
+  monad_proto.quorum_certificate.ProtoQuorumCertificateAggSig qc = 4;
+}

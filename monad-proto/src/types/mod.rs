@@ -1,4 +1,5 @@
 pub mod basic;
+pub mod block;
 pub mod ledger;
 pub mod message;
 pub mod quorum_certificate;

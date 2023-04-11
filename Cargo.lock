@@ -962,6 +962,7 @@ dependencies = [
  "hex",
  "monad-consensus",
  "monad-crypto",
+ "monad-testutil",
  "monad-types",
  "monad-validator",
  "prost",

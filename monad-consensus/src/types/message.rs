@@ -35,7 +35,7 @@ impl<S: Signature, T: SignatureCollection> Hashable for TimeoutMessage<S, T> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalMessage<S, T> {
     pub block: Block<T>,
     pub last_round_tc: Option<TimeoutCertificate<S>>,

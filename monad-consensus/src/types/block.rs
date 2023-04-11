@@ -6,10 +6,10 @@ use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::signature::SignatureCollection;
 use crate::validation::hashing::{Hashable, Hasher};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransactionList(pub Vec<u8>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block<T> {
     pub author: NodeId,
     pub round: Round,

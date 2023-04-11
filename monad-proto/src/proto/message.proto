@@ -3,6 +3,7 @@ syntax = "proto3";
 package monad_proto.message;
 
 import "basic.proto";
+import "block.proto";
 import "ledger.proto";
 import "signing.proto";
 import "timeout.proto";
@@ -25,5 +26,15 @@ message ProtoTimeoutMessage {
 
 message ProtoUnverifiedTimeoutMessage {
   ProtoTimeoutMessage tmo_msg = 1;
+  monad_proto.signing.ProtoSecpSignature author_signature = 2;
+}
+
+message ProtoProposalMessageAggSig {
+  monad_proto.block.ProtoBlockAggSig block = 1;
+  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
+}
+
+message ProtoUnverifiedProposalMessageAggSig {
+  ProtoProposalMessageAggSig proposal = 1;
   monad_proto.signing.ProtoSecpSignature author_signature = 2;
 }

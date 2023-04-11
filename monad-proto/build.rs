@@ -5,6 +5,7 @@ fn main() {
     prost_build::compile_protos(
         &[
             "src/proto/basic.proto",
+            "src/proto/block.proto",
             "src/proto/ledger.proto",
             "src/proto/message.proto",
             "src/proto/quorum_certificate.proto",

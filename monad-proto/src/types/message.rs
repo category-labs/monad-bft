@@ -1,6 +1,8 @@
 use prost::Message;
 
-use monad_consensus::types::message::{TimeoutMessage as ConsensusTmoMsg, VoteMessage};
+use monad_consensus::types::message::{
+    ProposalMessage as ConsensusPropMsg, TimeoutMessage as ConsensusTmoMsg, VoteMessage,
+};
 use monad_consensus::validation::signing::{Unverified, Verified};
 use monad_crypto::secp256k1::SecpSignature;
 
@@ -13,6 +15,9 @@ type UnverifiedVoteMessage = Unverified<SecpSignature, VoteMessage>;
 type TimeoutMessage = ConsensusTmoMsg<SecpSignature, AggSecpSignature>;
 type VerifiedTimeoutMessage = Verified<SecpSignature, TimeoutMessage>;
 type UnverifiedTimeoutMessage = Unverified<SecpSignature, TimeoutMessage>;
+type ProposalMessage = ConsensusPropMsg<SecpSignature, AggSecpSignature>;
+type VerifiedProposalMessage = Verified<SecpSignature, ProposalMessage>;
+type UnverifiedProposalMessage = Unverified<SecpSignature, ProposalMessage>;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.message.rs"));
 
@@ -152,4 +157,70 @@ pub fn deserialize_unverified_timeout_message(
     let proto_tmomsg = ProtoUnverifiedTimeoutMessage::decode(buf)?;
     let tmomsg: UnverifiedTimeoutMessage = proto_tmomsg.try_into()?;
     Ok(tmomsg)
+}
+
+impl From<&ProposalMessage> for ProtoProposalMessageAggSig {
+    fn from(value: &ProposalMessage) -> Self {
+        Self {
+            block: Some((&value.block).into()),
+            last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoProposalMessageAggSig> for ProposalMessage {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoProposalMessageAggSig) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block: value
+                .block
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ProposalMessage<AggregateSignatures>.block".to_owned(),
+                ))?
+                .try_into()?,
+            last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
+        })
+    }
+}
+
+impl From<&VerifiedProposalMessage> for ProtoUnverifiedProposalMessageAggSig {
+    fn from(value: &VerifiedProposalMessage) -> Self {
+        Self {
+            proposal: Some((&(**value)).into()),
+            author_signature: Some(value.author_signature().into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoUnverifiedProposalMessageAggSig> for UnverifiedProposalMessage {
+    type Error = ProtoError;
+    fn try_from(value: ProtoUnverifiedProposalMessageAggSig) -> Result<Self, Self::Error> {
+        Ok(Self::new(
+            value
+                .proposal
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Unverified<ProposalMessage<AggregateSignatures>>.proposal".to_owned(),
+                ))?
+                .try_into()?,
+            value
+                .author_signature
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Unverified<ProposalMessage<AggregateSignatures>>.author_signature".to_owned(),
+                ))?
+                .try_into()?,
+        ))
+    }
+}
+
+pub fn serialize_verified_proposal_message(proposal: &VerifiedProposalMessage) -> Vec<u8> {
+    let proto_proposal: ProtoUnverifiedProposalMessageAggSig = proposal.into();
+    proto_proposal.encode_to_vec()
+}
+
+pub fn deserialize_unverified_proposal_message(
+    data: &[u8],
+) -> Result<UnverifiedProposalMessage, ProtoError> {
+    let proposal = ProtoUnverifiedProposalMessageAggSig::decode(data)?;
+    proposal.try_into()
 }
