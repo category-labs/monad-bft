@@ -13,7 +13,7 @@ use crate::{
     validation::{safety::Safety, signing::Verified},
 };
 
-pub struct Pacemaker<T: SignatureCollection> {
+pub struct Pacemaker<T> {
     delta: Duration,
 
     current_round: Round,
@@ -33,7 +33,7 @@ enum Phase {
     SupermajorityHonest,
 }
 
-pub enum PacemakerCommand<T: SignatureCollection> {
+pub enum PacemakerCommand<T> {
     Broadcast(TimeoutMessage<T>),
     Schedule {
         duration: Duration,

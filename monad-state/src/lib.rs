@@ -368,12 +368,7 @@ pub enum ConsensusCommand<T: SignatureCollection> {
     // - to handle this command, we need to call message_state.set_round()
 }
 
-struct ConsensusState<T, L, M>
-where
-    T: SignatureCollection,
-    L: Ledger<Signatures = T>,
-    M: Mempool,
-{
+struct ConsensusState<T, L, M> {
     pending_block_tree: BlockTree<T>,
     vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,

@@ -15,10 +15,7 @@ use crate::{
 // accumulate votes and create a QC if enough votes are received
 // only one QC should be created in a round using the first supermajority of votes received
 // At the end of a round, this state should be reset.
-pub struct VoteState<T>
-where
-    T: SignatureCollection,
-{
+pub struct VoteState<T> {
     pending_vote_sigs: HashMap<Hash, T>,
     pending_vote_keys: HashMap<Hash, Vec<NodeId>>,
     qc_created: bool,

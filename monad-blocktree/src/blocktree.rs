@@ -33,10 +33,7 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
-pub struct BlockTreeBlock<T>
-where
-    T: SignatureCollection,
-{
+pub struct BlockTreeBlock<T> {
     block: Block<T>,
     children: Vec<BlockId>,
 }
@@ -87,10 +84,7 @@ impl<T: SignatureCollection> BlockTreeBlock<T> {
     }
 }
 
-pub struct BlockTree<T>
-where
-    T: SignatureCollection,
-{
+pub struct BlockTree<T> {
     root: BlockId,
     tree: HashMap<BlockId, BlockTreeBlock<T>>,
     high_round: Round,

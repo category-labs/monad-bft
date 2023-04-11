@@ -37,7 +37,7 @@ pub trait Ledger {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct InMemoryLedger<T: SignatureCollection> {
+pub struct InMemoryLedger<T> {
     blockchain: Vec<Block<T>>,
 }
 
