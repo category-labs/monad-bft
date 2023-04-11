@@ -1,6 +1,5 @@
 use crate::error::ProtoError;
 use monad_consensus::types::ledger::LedgerCommitInfo;
-use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.ledger.rs"));
 
@@ -20,12 +19,12 @@ impl TryFrom<ProtoLedgerCommitInfo> for LedgerCommitInfo {
                 .commit_state_hash
                 .map(|csh: Vec<_>| {
                     csh.try_into().map_err(|e: Vec<_>| {
-                        ProtoError::WrongHashLen(format!("commit state hash {}", e.len()))
+                        Self::Error::WrongHashLen(format!("commit state hash {}", e.len()))
                     })
                 })
                 .transpose()?,
             vote_info_hash: proto_lci.vote_info_hash.try_into().map_err(|e: Vec<_>| {
-                ProtoError::WrongHashLen(format!("vote info hash {}", e.len()))
+                Self::Error::WrongHashLen(format!("vote info hash {}", e.len()))
             })?,
         })
     }

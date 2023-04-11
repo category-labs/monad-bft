@@ -31,18 +31,16 @@ impl TryFrom<ProtoVoteMessage> for VoteMessage {
         Ok(Self {
             vote_info: proto_votemsg
                 .vote_info
-                .map(|v| v.try_into())
-                .transpose()?
-                .ok_or(ProtoError::MissingRequiredField(
+                .ok_or(Self::Error::MissingRequiredField(
                     "VoteMessage.vote_info".to_owned(),
-                ))?,
+                ))?
+                .try_into()?,
             ledger_commit_info: proto_votemsg
                 .ledger_commit_info
-                .map(|v| v.try_into())
-                .transpose()?
-                .ok_or(ProtoError::MissingRequiredField(
+                .ok_or(Self::Error::MissingRequiredField(
                     "VoteMessage.ledger_commit_info".to_owned(),
-                ))?,
+                ))?
+                .try_into()?,
         })
     }
 }
@@ -52,19 +50,24 @@ impl TryFrom<ProtoUnverifiedVoteMessage> for Unverified<VoteMessage> {
     fn try_from(value: ProtoUnverifiedVoteMessage) -> Result<Self, Self::Error> {
         Ok(Unverified::<VoteMessage> {
             0: Signed::<VoteMessage, false> {
-                obj: value.vote_msg.map(|v| v.try_into()).transpose()?.ok_or(
-                    ProtoError::MissingRequiredField("Unverified<VoteMessage>.obj".to_owned()),
-                )?,
-                author: value.author.map(|v| v.try_into()).transpose()?.ok_or(
-                    ProtoError::MissingRequiredField("Unverified<VoteMessage>.author".to_owned()),
-                )?,
+                obj: value
+                    .vote_msg
+                    .ok_or(Self::Error::MissingRequiredField(
+                        "Unverified<VoteMessage>.obj".to_owned(),
+                    ))?
+                    .try_into()?,
+                author: value
+                    .author
+                    .ok_or(Self::Error::MissingRequiredField(
+                        "Unverified<VoteMessage>.author".to_owned(),
+                    ))?
+                    .try_into()?,
                 author_signature: value
                     .author_signature
-                    .map(|v| v.try_into())
-                    .transpose()?
-                    .ok_or(ProtoError::MissingRequiredField(
+                    .ok_or(Self::Error::MissingRequiredField(
                         "Unverified<VoteMessage>.signature".to_owned(),
-                    ))?,
+                    ))?
+                    .try_into()?,
             },
         })
     }

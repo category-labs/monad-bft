@@ -1,6 +1,5 @@
 use crate::error::ProtoError;
 use monad_consensus::types::quorum_certificate::QcInfo;
-use prost::Message;
 
 include!(concat!(
     env!("OUT_DIR"),
@@ -21,16 +20,14 @@ impl TryFrom<ProtoQcInfo> for QcInfo {
         Ok(Self {
             vote: proto_qci
                 .vote
-                .map(|v| v.try_into())
-                .transpose()?
-                .ok_or(ProtoError::MissingRequiredField("qcinfo.vote".to_owned()))?,
+                .ok_or(Self::Error::MissingRequiredField("qcinfo.vote".to_owned()))?
+                .try_into()?,
             ledger_commit: proto_qci
                 .ledger_commit
-                .map(|v| v.try_into())
-                .transpose()?
-                .ok_or(ProtoError::MissingRequiredField(
+                .ok_or(Self::Error::MissingRequiredField(
                     "qcinfo.ledger_commit".to_owned(),
-                ))?,
+                ))?
+                .try_into()?,
         })
     }
 }

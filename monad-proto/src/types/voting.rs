@@ -1,7 +1,6 @@
 use crate::error::ProtoError;
 use monad_consensus::types::voting::VoteInfo;
 use monad_types::{BlockId, Round};
-use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.voting.rs"));
 
@@ -23,14 +22,12 @@ impl TryFrom<ProtoVoteInfo> for VoteInfo {
                 proto_vi
                     .id
                     .try_into()
-                    .map_err(|e: Vec<_>| ProtoError::WrongHashLen(format!("id {}", e.len())))?,
+                    .map_err(|e: Vec<_>| Self::Error::WrongHashLen(format!("id {}", e.len())))?,
             ),
             round: Round(proto_vi.round),
-            parent_id: BlockId(
-                proto_vi.parent_id.try_into().map_err(|e: Vec<_>| {
-                    ProtoError::WrongHashLen(format!("parent_id {}", e.len()))
-                })?,
-            ),
+            parent_id: BlockId(proto_vi.parent_id.try_into().map_err(|e: Vec<_>| {
+                Self::Error::WrongHashLen(format!("parent_id {}", e.len()))
+            })?),
             parent_round: Round(proto_vi.parent_round),
         })
     }
