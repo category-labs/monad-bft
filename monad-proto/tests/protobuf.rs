@@ -39,7 +39,7 @@ mod test {
         let keypair = KeyPair::from_slice(&privkey).unwrap();
         let author = NodeId(keypair.pubkey());
 
-        let hash = Sha256Hash::hash_object(&votemsg);
+        let hash = Sha256Hash::hash_object(&votemsg.ledger_commit_info);
         let sig = ConsensusSignature(keypair.sign(&hash));
 
         let signed_votemsg = votemsg.signed_object(author, sig);
