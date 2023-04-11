@@ -338,10 +338,11 @@ mod tests {
     struct LongAckParseError;
 
     impl State for LongAckState {
+        type Config = ();
         type Event = LongAckEvent;
         type Message = LongAckMessage;
 
-        fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+        fn init(_config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
             let init_self = Self {
                 num_ack: 0,
                 num_timeouts: 0,
@@ -435,6 +436,7 @@ mod tests {
     }
 
     fn run_simulation<S>(
+        config: S::Config,
         init_events: Vec<S::Event>,
         mut message_delays: impl Iterator<Item = Duration>,
         terminate: impl Fn(&S) -> bool,
@@ -444,7 +446,7 @@ mod tests {
     {
         let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
 
-        let (mut state, mut init_commands) = S::init();
+        let (mut state, mut init_commands) = S::init(config);
         let mut event_log = init_events.clone();
         for event in init_events {
             let cmds = state.update(event);
@@ -471,13 +473,14 @@ mod tests {
     #[test]
     fn test_100_milli_ack() {
         let (state, events) = run_simulation::<LongAckState>(
+            (),
             Vec::new(),
             std::iter::repeat(Duration::from_millis(100)),
             |state| state.num_ack == 1000,
         );
         assert_eq!(state.num_timeouts, 0);
 
-        let mut replay_state = LongAckState::init().0;
+        let mut replay_state = LongAckState::init(()).0;
         for event in events {
             replay_state.update(event);
         }
@@ -487,13 +490,14 @@ mod tests {
     #[test]
     fn test_1000_milli_ack() {
         let (state, events) = run_simulation::<LongAckState>(
+            (),
             Vec::new(),
             std::iter::repeat(Duration::from_millis(1_001)),
             |state| state.num_ack == 1000,
         );
         assert_eq!(state.num_timeouts, 1_000);
 
-        let mut replay_state = LongAckState::init().0;
+        let mut replay_state = LongAckState::init(()).0;
         for event in events {
             replay_state.update(event);
         }
@@ -503,13 +507,14 @@ mod tests {
     #[test]
     fn test_half_long_ack() {
         let (state, events) = run_simulation::<LongAckState>(
+            (),
             Vec::new(),
             (0..).map(|i| (i % 2) * Duration::from_millis(1_001)),
             |state| state.num_ack == 1000,
         );
         assert_eq!(state.num_timeouts, 500);
 
-        let mut replay_state = LongAckState::init().0;
+        let mut replay_state = LongAckState::init(()).0;
         for event in events {
             replay_state.update(event);
         }
@@ -520,6 +525,7 @@ mod tests {
     fn test_crash() {
         // send 500 messages
         let (_, init_events) = run_simulation::<LongAckState>(
+            (),
             Vec::new(),
             // send back 500 acks MAX
             std::iter::repeat(Duration::from_millis(1_001)).take(500),
@@ -527,6 +533,7 @@ mod tests {
         );
         // replay those 500 messages, send another 500 messages
         let (state, events) = run_simulation::<LongAckState>(
+            (),
             init_events,
             // send back 500 acks MAX
             std::iter::repeat(Duration::from_millis(1_001)).take(500),
@@ -535,7 +542,7 @@ mod tests {
         // total should be 1_000
         assert_eq!(state.num_timeouts, 1_000);
 
-        let mut replay_state = LongAckState::init().0;
+        let mut replay_state = LongAckState::init(()).0;
         for event in events {
             replay_state.update(event);
         }
@@ -552,6 +559,7 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     struct SimpleChainState {
         me: PeerId,
+        peers: Vec<PeerId>,
 
         chain: Vec<HashSet<PeerId>>,
 
@@ -566,23 +574,21 @@ mod tests {
     struct SimpleChainEventParseError;
 
     impl State for SimpleChainState {
+        type Config = (Vec<PeerId>, PeerId);
         type Event = SimpleChainEvent;
         type Message = SimpleChainMessage;
 
-        fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
-            let pubkey = create_keys(NUM_NODES as u32)
-                .iter()
-                .map(KeyPair::pubkey)
-                .collect::<Vec<PubKey>>();
+        fn init(config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+            let (pubkeys, me) = config;
 
-            let init_cmds = pubkey
+            let init_cmds = pubkeys
                 .iter()
-                .map(|idx| {
+                .map(|peer| {
                     Command::RouterCommand(RouterCommand::Publish {
-                        to: PeerId(*idx),
+                        to: *peer,
                         message: SimpleChainMessage { round: 0 },
                         on_ack: SimpleChainEvent::Ack {
-                            peer: PeerId(*idx),
+                            peer: *peer,
                             round: 0,
                         },
                     })
@@ -591,42 +597,40 @@ mod tests {
 
             let init_self = Self {
                 me: PeerId(node_id().0),
+                peers: pubkeys.clone(),
+
                 chain: vec![HashSet::new()],
-                outbound_votes: vec![pubkey.into_iter().map(PeerId).collect()],
+                outbound_votes: vec![pubkeys.into_iter().collect()],
             };
 
             (init_self, init_cmds)
         }
         fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
             let mut commands = Vec::new();
-            let pubkey = create_keys(NUM_NODES as u32)
-                .iter()
-                .map(KeyPair::pubkey)
-                .collect::<Vec<PubKey>>();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {
                     self.chain[round as usize].insert(peer);
 
-                    if self.chain.last().unwrap().len() > NUM_NODES as usize / 2
-                        && self.chain.len() < NUM_NODES as usize
+                    if self.chain.last().unwrap().len() > self.peers.len() as usize / 2
+                        && self.chain.len() < self.peers.len() as usize
                     {
                         // max NUM_NODES blocks
                         self.chain.push(HashSet::new());
 
-                        commands.extend(pubkey.iter().map(|idx| {
+                        commands.extend(self.peers.iter().map(|peer| {
                             Command::RouterCommand(RouterCommand::Publish {
-                                to: PeerId(*idx),
+                                to: *peer,
                                 message: SimpleChainMessage {
                                     round: self.chain.len() as u64 - 1,
                                 },
                                 on_ack: SimpleChainEvent::Ack {
-                                    peer: PeerId(*idx),
+                                    peer: *peer,
                                     round: self.chain.len() as u64 - 1,
                                 },
                             })
                         }));
                         self.outbound_votes
-                            .push(pubkey.into_iter().map(PeerId).collect());
+                            .push(self.peers.iter().cloned().collect());
                     }
                 }
                 SimpleChainEvent::Ack { peer, round } => {
@@ -679,20 +683,16 @@ mod tests {
     }
 
     impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
-        pub fn new(num_peers: u16, compute_latency: L) -> Self {
-            assert!(num_peers > 0);
+        pub fn new(peers: Vec<(PubKey, S::Config)>, compute_latency: L) -> Self {
+            assert!(!peers.is_empty());
 
             let mut states = HashMap::new();
-            let pubkey = create_keys(num_peers as u32)
-                .iter()
-                .map(KeyPair::pubkey)
-                .collect::<Vec<PubKey>>();
 
-            for idx in pubkey.iter() {
+            for (pubkey, config) in peers {
                 let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
-                let (state, init_commands) = S::init();
+                let (state, init_commands) = S::init(config);
                 executor.exec(init_commands);
-                states.insert(PeerId(*idx), (executor, state));
+                states.insert(PeerId(pubkey), (executor, state));
             }
 
             let mut nodes = Self {
@@ -767,9 +767,22 @@ mod tests {
 
     #[test]
     fn test_nodes() {
-        let mut nodes = Nodes::<SimpleChainState, _>::new(NUM_NODES as u16, |_from, _to| {
-            Duration::from_millis(50)
-        });
+        let pubkeys = create_keys(NUM_NODES as u32)
+            .iter()
+            .map(KeyPair::pubkey)
+            .map(PeerId)
+            .collect::<Vec<_>>();
+        let state_configs = (0..NUM_NODES)
+            .map(|idx| (pubkeys.clone(), pubkeys[idx as usize].clone()))
+            .collect::<Vec<_>>();
+        let mut nodes = Nodes::<SimpleChainState, _>::new(
+            pubkeys
+                .into_iter()
+                .map(|peer_id| peer_id.0)
+                .zip(state_configs)
+                .collect(),
+            |_from, _to| Duration::from_millis(50),
+        );
 
         // FIXME this shouldn't be necessary once we can pass stuff into init()
         for (_, state) in nodes.states.values_mut() {

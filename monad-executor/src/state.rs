@@ -2,7 +2,7 @@ use std::hash::Hash;
 
 use monad_crypto::secp256k1::PubKey;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
 pub enum RouterCommand<E, M>
 where
@@ -52,10 +52,11 @@ where
 }
 
 pub trait State: Sized {
+    type Config;
     type Event: Clone + Unpin;
     type Message: Message<Event = Self::Event>;
 
-    fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>);
+    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>);
     fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>>;
 }
 

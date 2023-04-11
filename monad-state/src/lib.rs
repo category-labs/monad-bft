@@ -86,10 +86,11 @@ impl Message for MonadMessage {
 }
 
 impl State for MonadState {
+    type Config = ();
     type Event = MonadEvent;
     type Message = MonadMessage;
 
-    fn init() -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+    fn init(_config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
         //TODO initial validator set and initial signature
         // of QC should come externally
 

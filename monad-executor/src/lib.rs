@@ -10,9 +10,10 @@ async fn run<S: State>(
     mut executor: impl Executor<Command = Command<S::Event, S::Message>>
         + Stream<Item = S::Event>
         + Unpin,
+    config: S::Config,
     init_events: Vec<S::Event>,
 ) {
-    let (mut state, mut init_commands) = S::init();
+    let (mut state, mut init_commands) = S::init(config);
     for event in init_events {
         let cmds = state.update(event);
         init_commands.extend(cmds.into_iter());
