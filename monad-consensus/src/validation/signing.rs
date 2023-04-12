@@ -45,8 +45,21 @@ impl<M> Deref for Verified<M> {
 
 #[derive(Clone, Debug)]
 pub struct Unverified<M> {
-    pub obj: M,
-    pub author_signature: ConsensusSignature,
+    obj: M,
+    author_signature: ConsensusSignature,
+}
+
+impl<M> Unverified<M> {
+    pub fn new(obj: M, signature: ConsensusSignature) -> Self {
+        Self {
+            obj,
+            author_signature: signature,
+        }
+    }
+
+    pub fn author_signature(&self) -> &ConsensusSignature {
+        &self.author_signature
+    }
 }
 
 impl<T: SignatureCollection> Unverified<ProposalMessage<T>> {

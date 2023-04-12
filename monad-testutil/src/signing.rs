@@ -61,10 +61,7 @@ impl Signer {
     pub fn sign_object<T>(o: T, msg: &[u8], key: &KeyPair) -> Unverified<T> {
         let sig = key.sign(msg);
 
-        Unverified {
-            obj: o,
-            author_signature: ConsensusSignature(sig),
-        }
+        Unverified::new(o, ConsensusSignature(sig))
     }
 }
 

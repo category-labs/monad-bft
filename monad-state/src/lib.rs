@@ -66,7 +66,7 @@ pub enum MonadEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct MonadMessage(Unverified<ConsensusMessage<SignatureType>>);
+pub struct MonadMessage(SignedConsensusMessage<SignatureType>);
 
 impl Message for MonadMessage {
     type Event = MonadEvent;
@@ -86,7 +86,11 @@ impl Message for MonadMessage {
     }
 
     fn id(&self) -> Self::Id {
-        self.0.author_signature
+        *match &self.0 {
+            SignedConsensusMessage::Proposal(msg) => msg.author_signature(),
+            SignedConsensusMessage::Vote(msg) => msg.author_signature(),
+            SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
+        }
     }
 
     fn event(self, from: PeerId) -> Self::Event {
@@ -186,8 +190,8 @@ impl State for MonadState {
                         ConsensusEvent::Message {
                             sender,
                             unverified_message,
-                        } => match UnverifiedConsensusMessage::from(unverified_message) {
-                            UnverifiedConsensusMessage::Proposal(msg) => {
+                        } => match SignedConsensusMessage::from(unverified_message) {
+                            SignedConsensusMessage::Proposal(msg) => {
                                 let proposal = msg.verify::<HasherType>(
                                     self.validator_set.get_members(),
                                     &sender,
@@ -203,7 +207,7 @@ impl State for MonadState {
                                     Err(e) => todo!(),
                                 }
                             }
-                            UnverifiedConsensusMessage::Vote(msg) => {
+                            SignedConsensusMessage::Vote(msg) => {
                                 let vote = msg.verify::<HasherType>(
                                     self.validator_set.get_members(),
                                     &sender,
@@ -219,7 +223,7 @@ impl State for MonadState {
                                     Err(_) => todo!(),
                                 }
                             }
-                            UnverifiedConsensusMessage::Timeout(msg) => {
+                            SignedConsensusMessage::Timeout(msg) => {
                                 let timeout = msg.verify::<HasherType>(
                                     self.validator_set.get_members(),
                                     &sender,
@@ -241,15 +245,9 @@ impl State for MonadState {
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Send { to, message } => {
-                            let signature = ConsensusSignature(
-                                self.consensus_state
-                                    .keypair
-                                    .sign(&HasherType::hash_object(message.clone())),
+                            let message = MonadMessage(
+                                message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
-                            let message = MonadMessage(Unverified {
-                                obj: message,
-                                author_signature: signature,
-                            });
                             let publish_action = self.message_state.send(to, message);
                             let id = publish_action.message.id();
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
@@ -266,15 +264,9 @@ impl State for MonadState {
                             }))
                         }
                         ConsensusCommand::Broadcast { message } => {
-                            let signature = ConsensusSignature(
-                                self.consensus_state
-                                    .keypair
-                                    .sign(&HasherType::hash_object(message.clone())),
+                            let message = MonadMessage(
+                                message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
-                            let message = MonadMessage(Unverified {
-                                obj: message,
-                                author_signature: signature,
-                            });
                             cmds.extend(self.message_state.broadcast(message).into_iter().map(
                                 |publish_action| {
                                     let id = publish_action.message.id();
@@ -317,7 +309,7 @@ impl State for MonadState {
 pub enum ConsensusEvent<T> {
     Message {
         sender: PubKey,
-        unverified_message: Unverified<ConsensusMessage<T>>,
+        unverified_message: SignedConsensusMessage<T>,
     },
     Timeout(PacemakerTimerExpire),
 }
@@ -329,42 +321,33 @@ pub enum ConsensusMessage<T> {
     Timeout(TimeoutMessage<T>),
 }
 
-impl<T: SignatureCollection> Hashable for ConsensusMessage<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+impl<T: SignatureCollection> ConsensusMessage<T> {
+    fn sign<H: Hasher>(self, keypair: &KeyPair) -> SignedConsensusMessage<T> {
         match self {
-            ConsensusMessage::Proposal(msg) => msg.hash(state),
-            ConsensusMessage::Vote(msg) => (&msg.ledger_commit_info).hash(state),
-            ConsensusMessage::Timeout(msg) => msg.hash(state),
+            ConsensusMessage::Proposal(msg) => {
+                let hash = H::hash_object(&msg);
+                let signature = ConsensusSignature(keypair.sign(&hash));
+                SignedConsensusMessage::Proposal(Unverified::new(msg, signature))
+            }
+            ConsensusMessage::Vote(msg) => {
+                let hash = H::hash_object(&msg.ledger_commit_info);
+                let signature = ConsensusSignature(keypair.sign(&hash));
+                SignedConsensusMessage::Vote(Unverified::new(msg, signature))
+            }
+            ConsensusMessage::Timeout(msg) => {
+                let hash = H::hash_object(&msg);
+                let signature = ConsensusSignature(keypair.sign(&hash));
+                SignedConsensusMessage::Timeout(Unverified::new(msg, signature))
+            }
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum UnverifiedConsensusMessage<T> {
+pub enum SignedConsensusMessage<T> {
     Proposal(Unverified<ProposalMessage<T>>),
     Vote(Unverified<VoteMessage>),
     Timeout(Unverified<TimeoutMessage<T>>),
-}
-
-impl<T> From<Unverified<ConsensusMessage<T>>> for UnverifiedConsensusMessage<T> {
-    fn from(unverified: Unverified<ConsensusMessage<T>>) -> Self {
-        match unverified.obj {
-            ConsensusMessage::Proposal(proposal) => {
-                UnverifiedConsensusMessage::Proposal(Unverified {
-                    obj: proposal,
-                    author_signature: unverified.author_signature,
-                })
-            }
-            ConsensusMessage::Vote(vote) => UnverifiedConsensusMessage::Vote(Unverified {
-                obj: vote,
-                author_signature: unverified.author_signature,
-            }),
-            ConsensusMessage::Timeout(timeout) => UnverifiedConsensusMessage::Timeout(Unverified {
-                obj: timeout,
-                author_signature: unverified.author_signature,
-            }),
-        }
-    }
 }
 
 #[derive(Debug)]
