@@ -1,11 +1,8 @@
-use zerocopy::AsBytes;
-
 use monad_types::*;
 
 use crate::types::ledger::*;
 use crate::types::signature::SignatureCollection;
 use crate::types::voting::*;
-use crate::validation::hashing::{Hashable, Hasher};
 
 #[non_exhaustive]
 #[derive(Clone, Default, Debug)]
@@ -16,12 +13,6 @@ where
     pub info: QcInfo,
     pub signatures: T,
     pub signature_hash: Hash,
-}
-
-impl<T: SignatureCollection> Hashable for &QuorumCertificate<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.update(self.signature_hash.as_bytes());
-    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
