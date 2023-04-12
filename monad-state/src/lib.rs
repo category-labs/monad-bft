@@ -314,7 +314,7 @@ impl State for MonadState {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConsensusEvent<T: SignatureCollection> {
+pub enum ConsensusEvent<T> {
     Message {
         sender: PubKey,
         unverified_message: Unverified<ConsensusMessage<T>>,
@@ -323,7 +323,7 @@ pub enum ConsensusEvent<T: SignatureCollection> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ConsensusMessage<T: SignatureCollection> {
+pub enum ConsensusMessage<T> {
     Proposal(ProposalMessage<T>),
     Vote(VoteMessage),
     Timeout(TimeoutMessage<T>),
@@ -340,15 +340,13 @@ impl<T: SignatureCollection> Hashable for ConsensusMessage<T> {
 }
 
 #[derive(Debug, Clone)]
-pub enum UnverifiedConsensusMessage<T: SignatureCollection> {
+pub enum UnverifiedConsensusMessage<T> {
     Proposal(Unverified<ProposalMessage<T>>),
     Vote(Unverified<VoteMessage>),
     Timeout(Unverified<TimeoutMessage<T>>),
 }
 
-impl<T: SignatureCollection> From<Unverified<ConsensusMessage<T>>>
-    for UnverifiedConsensusMessage<T>
-{
+impl<T> From<Unverified<ConsensusMessage<T>>> for UnverifiedConsensusMessage<T> {
     fn from(unverified: Unverified<ConsensusMessage<T>>) -> Self {
         match unverified.obj {
             ConsensusMessage::Proposal(proposal) => {
