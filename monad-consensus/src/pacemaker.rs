@@ -10,10 +10,7 @@ use crate::{
         signature::SignatureCollection,
         timeout::{HighQcRound, TimeoutCertificate},
     },
-    validation::{
-        safety::Safety,
-        signing::{Unverified, Verified},
-    },
+    validation::{safety::Safety, signing::Verified},
 };
 
 pub struct Pacemaker<T: SignatureCollection> {
@@ -153,12 +150,12 @@ where
                     .values()
                     .map(|tmo| {
                         assert_eq!(tmo.tminfo.round, tm_info.round);
-                        Unverified {
-                            author_signature: *tmo.author_signature(),
-                            obj: HighQcRound {
+                        (
+                            HighQcRound {
                                 qc_round: tmo.tminfo.high_qc.info.vote.round,
                             },
-                        }
+                            *tmo.author_signature(),
+                        )
                     })
                     .collect(),
             });

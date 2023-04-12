@@ -155,9 +155,9 @@ where
                 // TODO fix this..
                 let mut h = H::new();
                 h.update(tc.round);
-                h.update(a.obj.qc_round);
+                h.update(a.0.qc_round);
 
-                (h.hash(), &a.author_signature)
+                (h.hash(), &a.1)
             })
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     } else {

@@ -1,3 +1,4 @@
+use monad_consensus::types::signature::ConsensusSignature;
 use test_case::test_case;
 
 use monad_consensus::types::block::{Block, TransactionList};
@@ -104,7 +105,7 @@ fn max_high_qc() {
         let msg = Sha256Hash::hash_object(x);
         let keypair = get_key("a");
 
-        Signer::sign_object(*x, &msg, &keypair)
+        (*x, ConsensusSignature(keypair.sign(&msg)))
     })
     .collect();
 
