@@ -128,14 +128,14 @@ where
     ) -> (Option<TimeoutCertificate>, Vec<PacemakerCommand<T>>) {
         let mut ret_commands = Vec::new();
 
-        let tm_info = &tmo.obj.tminfo;
+        let tm_info = &tmo.tminfo;
         if tm_info.round < self.current_round {
             return (None, ret_commands);
         }
         assert_eq!(tm_info.round, self.current_round);
 
         // it's fine to overwrite if already exists
-        self.pending_timeouts.insert(tmo.author, tmo.clone());
+        self.pending_timeouts.insert(*tmo.author(), tmo.clone());
 
         let timeouts = self.pending_timeouts.keys().copied().collect();
 
@@ -152,11 +152,11 @@ where
                     .pending_timeouts
                     .values()
                     .map(|tmo| {
-                        assert_eq!(tmo.obj.tminfo.round, tm_info.round);
+                        assert_eq!(tmo.tminfo.round, tm_info.round);
                         Unverified {
-                            author_signature: tmo.author_signature,
+                            author_signature: *tmo.author_signature(),
                             obj: HighQcRound {
-                                qc_round: tmo.obj.tminfo.high_qc.info.vote.round,
+                                qc_round: tmo.tminfo.high_qc.info.vote.round,
                             },
                         }
                     })

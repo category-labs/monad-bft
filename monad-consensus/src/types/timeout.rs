@@ -5,13 +5,10 @@ use monad_types::*;
 use crate::validation::hashing::{Hashable, Hasher};
 use crate::validation::signing::Unverified;
 
-use super::{quorum_certificate::QuorumCertificate, signature::SignatureCollection};
+use super::quorum_certificate::QuorumCertificate;
 
 #[derive(Clone, Debug)]
-pub struct TimeoutInfo<T>
-where
-    T: SignatureCollection,
-{
+pub struct TimeoutInfo<T> {
     pub round: Round,
     pub high_qc: QuorumCertificate<T>,
 }

@@ -15,10 +15,7 @@ pub struct VoteMessage {
 }
 
 #[derive(Debug, Clone)]
-pub struct TimeoutMessage<T>
-where
-    T: SignatureCollection,
-{
+pub struct TimeoutMessage<T> {
     pub tminfo: TimeoutInfo<T>,
     pub last_round_tc: Option<TimeoutCertificate>,
 }
@@ -31,10 +28,7 @@ impl<T: SignatureCollection> Hashable for &TimeoutMessage<T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProposalMessage<T>
-where
-    T: SignatureCollection,
-{
+pub struct ProposalMessage<T> {
     pub block: Block<T>,
     pub last_round_tc: Option<TimeoutCertificate>,
 }

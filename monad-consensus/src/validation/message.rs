@@ -6,9 +6,7 @@ use crate::types::timeout::TimeoutCertificate;
 use crate::validation::error::Error;
 use crate::validation::signing::Unverified;
 
-pub fn well_formed_proposal<T: SignatureCollection>(
-    p: &Unverified<ProposalMessage<T>>,
-) -> Result<(), Error> {
+pub fn well_formed_proposal<T>(p: &Unverified<ProposalMessage<T>>) -> Result<(), Error> {
     well_formed(
         p.obj.block.round,
         p.obj.block.qc.info.vote.round,
@@ -16,9 +14,7 @@ pub fn well_formed_proposal<T: SignatureCollection>(
     )
 }
 
-pub fn well_formed_timeout<T: SignatureCollection>(
-    t: &Unverified<TimeoutMessage<T>>,
-) -> Result<(), Error> {
+pub fn well_formed_timeout<T>(t: &Unverified<TimeoutMessage<T>>) -> Result<(), Error> {
     well_formed(
         t.obj.tminfo.round,
         t.obj.tminfo.high_qc.info.vote.round,

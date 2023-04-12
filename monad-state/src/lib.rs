@@ -16,7 +16,6 @@ use monad_consensus::{
     },
     validation::{
         hashing::{Hashable, Hasher, Sha256Hash},
-        protocol::{verify_proposal, verify_timeout_message, verify_vote_message},
         safety::Safety,
         signing::{Unverified, Verified},
     },
@@ -189,28 +188,25 @@ impl State for MonadState {
                             unverified_message,
                         } => match UnverifiedConsensusMessage::from(unverified_message) {
                             UnverifiedConsensusMessage::Proposal(msg) => {
-                                let proposal = verify_proposal::<HasherType, SignatureType>(
+                                let proposal = msg.verify::<HasherType>(
                                     self.validator_set.get_members(),
                                     &sender,
-                                    msg,
                                 );
 
                                 match proposal {
                                     Ok(p) => self
                                         .consensus_state
                                         .handle_proposal_message::<Sha256Hash, _>(
-                                            &p.author,
-                                            &p.obj,
+                                            &p,
                                             &mut self.validator_set,
                                         ),
                                     Err(e) => todo!(),
                                 }
                             }
                             UnverifiedConsensusMessage::Vote(msg) => {
-                                let vote = verify_vote_message::<HasherType>(
+                                let vote = msg.verify::<HasherType>(
                                     self.validator_set.get_members(),
                                     &sender,
-                                    msg,
                                 );
 
                                 match vote {
@@ -224,10 +220,9 @@ impl State for MonadState {
                                 }
                             }
                             UnverifiedConsensusMessage::Timeout(msg) => {
-                                let timeout = verify_timeout_message::<HasherType, SignatureType>(
+                                let timeout = msg.verify::<HasherType>(
                                     self.validator_set.get_members(),
                                     &sender,
-                                    msg,
                                 );
 
                                 match timeout {
@@ -444,8 +439,7 @@ where
 
     fn handle_proposal_message<H: Hasher, V: LeaderElection>(
         &mut self,
-        author: &NodeId,
-        p: &ProposalMessage<T>,
+        p: &Verified<ProposalMessage<T>>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
         let mut cmds = Vec::new();
@@ -465,7 +459,7 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = *validators.get_leader(round);
 
-        if p.block.round != round || author != &leader || p.block.author != leader {
+        if p.block.round != round || p.author() != &leader || p.block.author != leader {
             return cmds;
         }
 
@@ -495,7 +489,7 @@ where
         v: &Verified<VoteMessage>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
-        if self.pacemaker.get_current_round() != v.obj.vote_info.round {
+        if self.pacemaker.get_current_round() != v.vote_info.round {
             return Default::default();
         }
 
@@ -519,10 +513,10 @@ where
     ) -> Vec<ConsensusCommand<T>> {
         let mut cmds = Vec::new();
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.obj.tminfo.high_qc);
+        let process_certificate_cmds = self.process_certificate_qc(&p.tminfo.high_qc);
         cmds.extend(process_certificate_cmds);
 
-        if let Some(last_round_tc) = p.obj.last_round_tc.as_ref() {
+        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)

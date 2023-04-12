@@ -10,10 +10,7 @@ use crate::validation::hashing::{Hashable, Hasher};
 pub struct TransactionList(pub Vec<u8>);
 
 #[derive(Clone, Debug)]
-pub struct Block<T>
-where
-    T: SignatureCollection,
-{
+pub struct Block<T> {
     pub author: NodeId,
     pub round: Round,
     pub payload: TransactionList,

@@ -6,10 +6,7 @@ use crate::types::voting::*;
 
 #[non_exhaustive]
 #[derive(Clone, Default, Debug)]
-pub struct QuorumCertificate<T>
-where
-    T: SignatureCollection,
-{
+pub struct QuorumCertificate<T> {
     pub info: QcInfo,
     pub signatures: T,
     pub signature_hash: Hash,

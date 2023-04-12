@@ -8,7 +8,6 @@ use monad_consensus::types::message::VoteMessage;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
-use monad_consensus::validation::protocol;
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus::validation::signing::Verified;
 use monad_consensus::vote_state::VoteState;
@@ -62,12 +61,9 @@ fn setup_ctx(
     let mut votes = Vec::new();
     for i in 0..num_nodes {
         let svm = create_signed_vote_message("foobar", &keys[i as usize]);
-        let vm = protocol::verify_vote_message::<Sha256Hash>(
-            &valset.get_members(),
-            &keys[i as usize].pubkey(),
-            svm,
-        )
-        .unwrap();
+        let vm = svm
+            .verify::<Sha256Hash>(&valset.get_members(), &keys[i as usize].pubkey())
+            .unwrap();
 
         votes.push(vm);
     }
