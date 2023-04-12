@@ -16,7 +16,8 @@ use crate::types::signature::SignatureCollection;
 use crate::types::timeout::TimeoutCertificate;
 use crate::validation::error::Error;
 use crate::validation::hashing::Hasher;
-use crate::validation::message::{well_formed_proposal, well_formed_timeout};
+
+use crate::validation::message::well_formed;
 
 #[derive(Clone, Debug)]
 pub struct Verified<M> {
@@ -56,7 +57,7 @@ impl<T: SignatureCollection> Unverified<ProposalMessage<T>> {
         validators: &ValidatorMember,
         sender: &PubKey,
     ) -> Result<Verified<ProposalMessage<T>>, Error> {
-        well_formed_proposal(&self)?;
+        self.well_formed_proposal()?;
         let msg = H::hash_object(&self.obj);
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
         verify_certificates::<H, _>(validators, &self.obj.last_round_tc, &self.obj.block.qc)?;
@@ -68,6 +69,14 @@ impl<T: SignatureCollection> Unverified<ProposalMessage<T>> {
         };
 
         Ok(result)
+    }
+
+    fn well_formed_proposal(&self) -> Result<(), Error> {
+        well_formed(
+            self.obj.block.round,
+            self.obj.block.qc.info.vote.round,
+            &self.obj.last_round_tc,
+        )
     }
 }
 
@@ -99,7 +108,7 @@ impl<T: SignatureCollection> Unverified<TimeoutMessage<T>> {
         validators: &ValidatorMember,
         sender: &PubKey,
     ) -> Result<Verified<TimeoutMessage<T>>, Error> {
-        well_formed_timeout(&self)?;
+        self.well_formed_timeout()?;
         let msg = H::hash_object(&self.obj);
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
         verify_certificates::<H, _>(
@@ -114,6 +123,14 @@ impl<T: SignatureCollection> Unverified<TimeoutMessage<T>> {
             author_signature: self.author_signature,
         };
         Ok(result)
+    }
+
+    fn well_formed_timeout(&self) -> Result<(), Error> {
+        well_formed(
+            self.obj.tminfo.round,
+            self.obj.tminfo.high_qc.info.vote.round,
+            &self.obj.last_round_tc,
+        )
     }
 }
 

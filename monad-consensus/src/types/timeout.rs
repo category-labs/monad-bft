@@ -2,8 +2,10 @@ use zerocopy::AsBytes;
 
 use monad_types::*;
 
-use crate::validation::hashing::{Hashable, Hasher};
-use crate::validation::signing::Unverified;
+use crate::validation::{
+    hashing::{Hashable, Hasher},
+    signing::Unverified,
+};
 
 use super::quorum_certificate::QuorumCertificate;
 
@@ -32,12 +34,11 @@ pub struct TimeoutCertificate {
 
 impl TimeoutCertificate {
     pub fn max_round(&self) -> Round {
-        self.high_qc_rounds.iter().fold(Round(0), |acc, r| {
-            if acc >= r.obj.qc_round {
-                acc
-            } else {
-                r.obj.qc_round
-            }
-        })
+        self.high_qc_rounds
+            .iter()
+            .map(|v| v.obj.qc_round)
+            .max()
+            // TODO can we unwrap here?
+            .unwrap_or(Round(0))
     }
 }
