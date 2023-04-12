@@ -55,7 +55,7 @@ impl<S, M> Deref for Verified<S, M> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unverified<S, M> {
     obj: M,
     author_signature: S,

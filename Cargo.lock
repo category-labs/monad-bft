@@ -963,6 +963,7 @@ dependencies = [
  "monad-consensus",
  "monad-crypto",
  "monad-types",
+ "monad-validator",
  "prost",
  "prost-build",
  "protobuf-src",
