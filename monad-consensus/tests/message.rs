@@ -137,9 +137,12 @@ fn test_vote_message() {
     let msg = Sha256Hash::hash_object(&vm.vote_info);
     let svm = Signer::sign_object(vm, &msg, &keypair);
 
-    assert_eq!(svm.0.author, NodeId(keypair.pubkey()));
     assert_eq!(
-        svm.0.obj.ledger_commit_info.vote_info_hash,
+        svm.author_signature.0.recover_pubkey(&msg).unwrap(),
+        keypair.pubkey()
+    );
+    assert_eq!(
+        svm.obj.ledger_commit_info.vote_info_hash,
         expected_vote_info_hash
     );
 }

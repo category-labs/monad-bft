@@ -15,7 +15,7 @@ use crate::types::timeout::TimeoutCertificate;
 use crate::validation::error::Error;
 use crate::validation::hashing::Hasher;
 use crate::validation::message::{well_formed_proposal, well_formed_timeout};
-use crate::validation::signing::{Signed, Unverified, Verified};
+use crate::validation::signing::{Unverified, Verified};
 
 pub type ValidatorMember = HashMap<NodeId, Validator>;
 
@@ -47,6 +47,7 @@ fn get_pubkey(msg: &[u8], sig: &ConsensusSignature) -> Result<PubKey, Error> {
 // signatures for the present TC or QC
 pub fn verify_proposal<H, T>(
     validators: &ValidatorMember,
+    sender: &PubKey,
     p: Unverified<ProposalMessage<T>>,
 ) -> Result<Verified<ProposalMessage<T>>, Error>
 where
@@ -54,15 +55,15 @@ where
     H: Hasher,
 {
     well_formed_proposal(&p)?;
-    let msg = H::hash_object(&p.0.obj);
-    verify_author(validators, &msg, &p.0.author_signature)?;
-    verify_certificates::<H, _>(validators, &p.0.obj.last_round_tc, &p.0.obj.block.qc)?;
+    let msg = H::hash_object(&p.obj);
+    let author = verify_author(validators, sender, &msg, &p.author_signature)?;
+    verify_certificates::<H, _>(validators, &p.obj.last_round_tc, &p.obj.block.qc)?;
 
-    let result = Verified(Signed {
-        obj: p.0.obj,
-        author: p.0.author,
-        author_signature: p.0.author_signature,
-    });
+    let result = Verified {
+        obj: p.obj,
+        author: NodeId(author),
+        author_signature: p.author_signature,
+    };
 
     Ok(result)
 }
@@ -71,29 +72,28 @@ where
 // Return type must keep the signature with the message as it is used later by the protocol
 pub fn verify_vote_message<H>(
     validators: &ValidatorMember,
+    sender: &PubKey,
     v: Unverified<VoteMessage>,
 ) -> Result<Verified<VoteMessage>, Error>
 where
     H: Hasher,
 {
-    let msg = H::hash_object(&v.0.obj.ledger_commit_info);
+    let msg = H::hash_object(&v.obj.ledger_commit_info);
 
-    get_pubkey(&msg, &v.0.author_signature)?
-        .valid_pubkey(validators)?
-        .verify(&msg, &v.0.author_signature.0)
-        .map_err(|_| Error::InvalidSignature)?;
+    let author = verify_author(validators, sender, &msg, &v.author_signature)?;
 
-    let result = Verified(Signed {
-        obj: v.0.obj,
-        author: v.0.author,
-        author_signature: v.0.author_signature,
-    });
+    let result = Verified {
+        obj: v.obj,
+        author: NodeId(author),
+        author_signature: v.author_signature,
+    };
 
     Ok(result)
 }
 
 pub fn verify_timeout_message<H, T>(
     validators: &ValidatorMember,
+    sender: &PubKey,
     t: Unverified<TimeoutMessage<T>>,
 ) -> Result<Verified<TimeoutMessage<T>>, Error>
 where
@@ -101,15 +101,15 @@ where
     T: SignatureCollection,
 {
     well_formed_timeout(&t)?;
-    let msg = H::hash_object(&t.0.obj);
-    verify_author(validators, &msg, &t.0.author_signature)?;
-    verify_certificates::<H, _>(validators, &t.0.obj.last_round_tc, &t.0.obj.tminfo.high_qc)?;
+    let msg = H::hash_object(&t.obj);
+    let author = verify_author(validators, sender, &msg, &t.author_signature)?;
+    verify_certificates::<H, _>(validators, &t.obj.last_round_tc, &t.obj.tminfo.high_qc)?;
 
-    let result = Verified(Signed {
-        obj: t.0.obj,
-        author: t.0.author,
-        author_signature: t.0.author_signature,
-    });
+    let result = Verified {
+        obj: t.obj,
+        author: NodeId(author),
+        author_signature: t.author_signature,
+    };
     Ok(result)
 }
 
@@ -134,9 +134,9 @@ where
                 // TODO fix this..
                 let mut h = H::new();
                 h.update(tc.round);
-                h.update(a.0.obj.qc_round);
+                h.update(a.obj.qc_round);
 
-                (h.hash(), &a.0.author_signature)
+                (h.hash(), &a.author_signature)
             })
             .collect::<Vec<(Hash, &ConsensusSignature)>>()
     } else {
@@ -158,12 +158,17 @@ where
 
 fn verify_author(
     validators: &ValidatorMember,
+    sender: &PubKey,
     msg: &Hash,
     sig: &ConsensusSignature,
-) -> Result<(), Error> {
-    get_pubkey(msg, sig)?
-        .valid_pubkey(validators)?
+) -> Result<PubKey, Error> {
+    let pubkey = get_pubkey(msg, sig)?.valid_pubkey(validators)?;
+    pubkey
         .verify(msg, &sig.0)
         .map_err(|_| Error::InvalidSignature)?;
-    Ok(())
+    if sender != &pubkey {
+        Err(Error::AuthorNotSender)
+    } else {
+        Ok(pubkey)
+    }
 }

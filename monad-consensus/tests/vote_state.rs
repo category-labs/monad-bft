@@ -62,7 +62,12 @@ fn setup_ctx(
     let mut votes = Vec::new();
     for i in 0..num_nodes {
         let svm = create_signed_vote_message("foobar", &keys[i as usize]);
-        let vm = protocol::verify_vote_message::<Sha256Hash>(&valset.get_members(), svm).unwrap();
+        let vm = protocol::verify_vote_message::<Sha256Hash>(
+            &valset.get_members(),
+            &keys[i as usize].pubkey(),
+            svm,
+        )
+        .unwrap();
 
         votes.push(vm);
     }

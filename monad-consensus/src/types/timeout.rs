@@ -36,10 +36,10 @@ pub struct TimeoutCertificate {
 impl TimeoutCertificate {
     pub fn max_round(&self) -> Round {
         self.high_qc_rounds.iter().fold(Round(0), |acc, r| {
-            if acc >= r.0.obj.qc_round {
+            if acc >= r.obj.qc_round {
                 acc
             } else {
-                r.0.obj.qc_round
+                r.obj.qc_round
             }
         })
     }

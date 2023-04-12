@@ -38,14 +38,14 @@ where
             return None;
         }
 
-        let vote_idx = H::hash_object(&v.0.obj.ledger_commit_info);
+        let vote_idx = H::hash_object(&v.obj.ledger_commit_info);
         let sigs = self.pending_vote_sigs.entry(vote_idx).or_insert(T::new());
-        sigs.add_signature(v.0.author_signature.clone());
+        sigs.add_signature(v.author_signature.clone());
 
         self.pending_vote_keys
             .entry(vote_idx)
             .or_default()
-            .push(v.0.author);
+            .push(v.author);
 
         let pubkeys = &self.pending_vote_keys[&vote_idx];
 
@@ -53,8 +53,8 @@ where
             assert!(self.qc_created == false);
             let qc = QuorumCertificate::<T>::new(
                 QcInfo {
-                    vote: v.0.obj.vote_info,
-                    ledger_commit: v.0.obj.ledger_commit_info,
+                    vote: v.obj.vote_info,
+                    ledger_commit: v.obj.ledger_commit_info,
                 },
                 sigs.clone(),
             );

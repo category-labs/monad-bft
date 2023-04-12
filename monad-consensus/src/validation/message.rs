@@ -10,9 +10,9 @@ pub fn well_formed_proposal<T: SignatureCollection>(
     p: &Unverified<ProposalMessage<T>>,
 ) -> Result<(), Error> {
     well_formed(
-        p.0.obj.block.round,
-        p.0.obj.block.qc.info.vote.round,
-        &p.0.obj.last_round_tc,
+        p.obj.block.round,
+        p.obj.block.qc.info.vote.round,
+        &p.obj.last_round_tc,
     )
 }
 
@@ -20,9 +20,9 @@ pub fn well_formed_timeout<T: SignatureCollection>(
     t: &Unverified<TimeoutMessage<T>>,
 ) -> Result<(), Error> {
     well_formed(
-        t.0.obj.tminfo.round,
-        t.0.obj.tminfo.high_qc.info.vote.round,
-        &t.0.obj.last_round_tc,
+        t.obj.tminfo.round,
+        t.obj.tminfo.high_qc.info.vote.round,
+        &t.obj.last_round_tc,
     )
 }
 

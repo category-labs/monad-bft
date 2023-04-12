@@ -1,6 +1,7 @@
 use monad_consensus::types::block::{Block, TransactionList};
 use monad_consensus::types::message::ProposalMessage;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
+use monad_consensus::validation::error::Error;
 use monad_consensus::validation::hashing::*;
 use monad_consensus::validation::protocol::{verify_proposal, ValidatorMember};
 use monad_testutil::signing::{get_key, node_id, MockSignatures, Signer};
@@ -39,7 +40,7 @@ fn test_proposal_hash() {
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = Signer::sign_object(proposal, &msg, &keypair);
 
-    assert!(verify_proposal::<Sha256Hash, _>(&vset, sp).is_ok());
+    assert!(verify_proposal::<Sha256Hash, _>(&vset, &keypair.pubkey(), sp).is_ok());
 }
 
 #[test]
@@ -65,7 +66,10 @@ fn test_proposal_missing_tc() {
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = Signer::sign_object(proposal, &msg, &keypair);
 
-    assert!(verify_proposal::<Sha256Hash, _>(&vset, sp).is_err());
+    assert_eq!(
+        verify_proposal::<Sha256Hash, _>(&vset, &keypair.pubkey(), sp).unwrap_err(),
+        Error::NotWellFormed
+    );
 }
 
 #[test]
@@ -91,5 +95,8 @@ fn test_proposal_invalid_qc() {
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = Signer::sign_object(proposal, &msg, &get_key("7"));
 
-    assert!(verify_proposal::<Sha256Hash, _>(&vset, sp).is_err());
+    assert_eq!(
+        verify_proposal::<Sha256Hash, _>(&vset, &keypair.pubkey(), sp).unwrap_err(),
+        Error::InvalidAuthor
+    );
 }
