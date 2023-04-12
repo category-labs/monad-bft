@@ -5,7 +5,7 @@ use crate::{
     validation::hashing::{Hashable, Hasher},
 };
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct LedgerCommitInfo {
     pub commit_state_hash: Option<Hash>,
     pub vote_info_hash: Hash,

@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package monad_proto.quorum_certificate;
+
+import "ledger.proto";
+import "voting.proto";
+
+message ProtoQcInfo{
+  monad_proto.voting.ProtoVoteInfo vote = 1; 
+  monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit = 2;
+}

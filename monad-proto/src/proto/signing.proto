@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package monad_proto.signing;
+
+message ProtoConsensusSignature {
+  bytes sig = 1;
+}

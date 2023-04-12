@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package monad_proto.ledger;
+
+message ProtoLedgerCommitInfo {
+  optional bytes commit_state_hash = 1;
+  bytes vote_info_hash = 2;
+}

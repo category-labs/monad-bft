@@ -4,7 +4,7 @@ use monad_types::*;
 
 use crate::validation::hashing::{Hashable, Hasher};
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct VoteInfo {
     pub id: BlockId,
     pub round: Round,
