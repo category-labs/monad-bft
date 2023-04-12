@@ -193,7 +193,8 @@ impl State for MonadState {
                                         Ok(p) => self
                                             .consensus_state
                                             .handle_proposal_message::<Sha256Hash, _>(
-                                                &p,
+                                                &p.0.author,
+                                                &p.0.obj,
                                                 &mut self.validator_set,
                                             ),
                                         Err(e) => todo!(),
@@ -440,15 +441,16 @@ where
 
     fn handle_proposal_message<H: Hasher, V: LeaderElection>(
         &mut self,
-        p: &Verified<ProposalMessage<T>>,
+        author: &NodeId,
+        p: &ProposalMessage<T>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<T>> {
         let mut cmds = Vec::new();
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.0.obj.block.qc);
+        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
         cmds.extend(process_certificate_cmds);
 
-        if let Some(last_round_tc) = p.0.obj.last_round_tc.as_ref() {
+        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
@@ -460,17 +462,15 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = *validators.get_leader(round);
 
-        if p.0.obj.block.round != round || p.0.author != leader || p.0.obj.block.author != leader {
+        if p.block.round != round || author != &leader || p.block.author != leader {
             return cmds;
         }
 
         self.pending_block_tree
-            .add(p.0.obj.block.clone())
+            .add(p.block.clone())
             .expect("Failed to add block to blocktree");
 
-        let vote_msg = self
-            .safety
-            .make_vote::<T, H>(&p.0.obj.block, &p.0.obj.last_round_tc);
+        let vote_msg = self.safety.make_vote::<T, H>(&p.block, &p.last_round_tc);
 
         match vote_msg {
             Some(v) => {
