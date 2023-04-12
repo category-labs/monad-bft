@@ -3,12 +3,9 @@ use zerocopy::AsBytes;
 use monad_types::*;
 
 use crate::validation::hashing::{Hashable, Hasher};
-use crate::validation::signing::{Signable, Signed, Unverified};
+use crate::validation::signing::Unverified;
 
-use super::{
-    quorum_certificate::QuorumCertificate, signature::ConsensusSignature,
-    signature::SignatureCollection,
-};
+use super::{quorum_certificate::QuorumCertificate, signature::SignatureCollection};
 
 #[derive(Clone, Debug)]
 pub struct TimeoutInfo<T>
@@ -27,18 +24,6 @@ pub struct HighQcRound {
 impl Hashable for &HighQcRound {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.qc_round.as_bytes());
-    }
-}
-
-impl Signable for HighQcRound {
-    type Output = Unverified<HighQcRound>;
-
-    fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Unverified(Signed {
-            obj: self,
-            author,
-            author_signature,
-        })
     }
 }
 

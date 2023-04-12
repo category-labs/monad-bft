@@ -18,7 +18,7 @@ use monad_consensus::{
         hashing::{Hashable, Hasher, Sha256Hash},
         protocol::{verify_proposal, verify_timeout_message, verify_vote_message},
         safety::Safety,
-        signing::{Signable, Signed, Unverified, Verified},
+        signing::{Signed, Unverified, Verified},
     },
     vote_state::VoteState,
 };
@@ -243,9 +243,11 @@ impl State for MonadState {
                                     .keypair
                                     .sign(&HasherType::hash_object(message.clone())),
                             );
-                            let message = MonadMessage(
-                                message.signed_object(self.consensus_state.nodeid, signature),
-                            );
+                            let message = MonadMessage(Unverified(Signed {
+                                obj: message,
+                                author: self.consensus_state.nodeid,
+                                author_signature: signature,
+                            }));
                             let publish_action = self.message_state.send(to, message);
                             let id = publish_action.message.id();
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
@@ -267,9 +269,11 @@ impl State for MonadState {
                                     .keypair
                                     .sign(&HasherType::hash_object(message.clone())),
                             );
-                            let message = MonadMessage(
-                                message.signed_object(self.consensus_state.nodeid, signature),
-                            );
+                            let message = MonadMessage(Unverified(Signed {
+                                obj: message,
+                                author: self.consensus_state.nodeid,
+                                author_signature: signature,
+                            }));
                             cmds.extend(self.message_state.broadcast(message).into_iter().map(
                                 |publish_action| {
                                     let id = publish_action.message.id();
@@ -319,17 +323,6 @@ pub enum ConsensusMessage<T: SignatureCollection> {
     Proposal(ProposalMessage<T>),
     Vote(VoteMessage),
     Timeout(TimeoutMessage<T>),
-}
-
-impl<T: SignatureCollection> Signable for ConsensusMessage<T> {
-    type Output = Unverified<ConsensusMessage<T>>;
-    fn signed_object(self, author: NodeId, signature: ConsensusSignature) -> Self::Output {
-        Unverified(Signed {
-            obj: self,
-            author,
-            author_signature: signature,
-        })
-    }
 }
 
 impl<T: SignatureCollection> Hashable for ConsensusMessage<T> {

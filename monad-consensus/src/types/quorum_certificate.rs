@@ -3,10 +3,9 @@ use zerocopy::AsBytes;
 use monad_types::*;
 
 use crate::types::ledger::*;
-use crate::types::signature::{ConsensusSignature, SignatureCollection};
+use crate::types::signature::SignatureCollection;
 use crate::types::voting::*;
 use crate::validation::hashing::{Hashable, Hasher};
-use crate::validation::signing::{Signable, Signed, Unverified};
 
 #[non_exhaustive]
 #[derive(Clone, Default, Debug)]
@@ -22,21 +21,6 @@ where
 impl<T: SignatureCollection> Hashable for &QuorumCertificate<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.signature_hash.as_bytes());
-    }
-}
-
-impl<T> Signable for QuorumCertificate<T>
-where
-    T: SignatureCollection,
-{
-    type Output = Unverified<QuorumCertificate<T>>;
-
-    fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Unverified(Signed {
-            obj: self,
-            author,
-            author_signature,
-        })
     }
 }
 

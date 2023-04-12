@@ -1,12 +1,9 @@
-use monad_types::*;
-
 use crate::validation::hashing::{Hashable, Hasher};
-use crate::validation::signing::{Signable, Signed, Unverified};
 
 use super::{
     block::Block,
     ledger::LedgerCommitInfo,
-    signature::{ConsensusSignature, SignatureCollection},
+    signature::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::VoteInfo,
 };
@@ -17,18 +14,6 @@ pub struct VoteMessage {
     pub ledger_commit_info: LedgerCommitInfo,
 }
 
-impl Signable for VoteMessage {
-    type Output = Unverified<VoteMessage>;
-
-    fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Unverified(Signed {
-            obj: self,
-            author,
-            author_signature,
-        })
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TimeoutMessage<T>
 where
@@ -36,21 +21,6 @@ where
 {
     pub tminfo: TimeoutInfo<T>,
     pub last_round_tc: Option<TimeoutCertificate>,
-}
-
-impl<T> Signable for TimeoutMessage<T>
-where
-    T: SignatureCollection,
-{
-    type Output = Unverified<TimeoutMessage<T>>;
-
-    fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Unverified(Signed {
-            obj: self,
-            author,
-            author_signature,
-        })
-    }
 }
 
 impl<T: SignatureCollection> Hashable for &TimeoutMessage<T> {
@@ -72,20 +42,5 @@ where
 impl<T: SignatureCollection> Hashable for &ProposalMessage<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (&self.block).hash(state);
-    }
-}
-
-impl<T> Signable for ProposalMessage<T>
-where
-    T: SignatureCollection,
-{
-    type Output = Unverified<ProposalMessage<T>>;
-
-    fn signed_object(self, author: NodeId, author_signature: ConsensusSignature) -> Self::Output {
-        Unverified(Signed {
-            obj: self,
-            author,
-            author_signature,
-        })
     }
 }

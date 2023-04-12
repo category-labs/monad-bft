@@ -1,7 +1,7 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::ConsensusSignature;
 use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::validation::signing::Signable;
+use monad_consensus::validation::signing::{Signed, Unverified};
 use monad_crypto::secp256k1::KeyPair;
 use monad_types::{Hash, NodeId};
 
@@ -58,10 +58,14 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
 
 pub struct Signer;
 impl Signer {
-    pub fn sign_object<T: Signable>(o: T, msg: &[u8], key: &KeyPair) -> <T as Signable>::Output {
+    pub fn sign_object<T>(o: T, msg: &[u8], key: &KeyPair) -> Unverified<T> {
         let sig = key.sign(msg);
 
-        o.signed_object(NodeId(key.pubkey().clone()), ConsensusSignature(sig))
+        Unverified(Signed {
+            obj: o,
+            author: NodeId(key.pubkey().clone()),
+            author_signature: ConsensusSignature(sig),
+        })
     }
 }
 
