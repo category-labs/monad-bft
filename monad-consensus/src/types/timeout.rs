@@ -4,7 +4,7 @@ use monad_types::*;
 
 use crate::validation::hashing::{Hashable, Hasher};
 
-use super::{quorum_certificate::QuorumCertificate, signature::ConsensusSignature};
+use super::quorum_certificate::QuorumCertificate;
 
 #[derive(Clone, Debug)]
 pub struct TimeoutInfo<T> {
@@ -24,12 +24,12 @@ impl Hashable for &HighQcRound {
 }
 
 #[derive(Clone, Debug)]
-pub struct TimeoutCertificate {
+pub struct TimeoutCertificate<S> {
     pub round: Round,
-    pub high_qc_rounds: Vec<(HighQcRound, ConsensusSignature)>,
+    pub high_qc_rounds: Vec<(HighQcRound, S)>,
 }
 
-impl TimeoutCertificate {
+impl<S> TimeoutCertificate<S> {
     pub fn max_round(&self) -> Round {
         self.high_qc_rounds
             .iter()

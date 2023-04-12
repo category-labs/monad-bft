@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use monad_crypto::Signature;
 use monad_types::{Hash, NodeId};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
@@ -28,7 +29,7 @@ where
     #[must_use]
     pub fn process_vote<V: LeaderElection, H: Hasher>(
         &mut self,
-        v: &Verified<VoteMessage>,
+        v: &Verified<T::SignatureType, VoteMessage>,
         validators: &ValidatorSet<V>,
     ) -> Option<QuorumCertificate<T>> {
         if self.qc_created {
@@ -37,6 +38,7 @@ where
 
         let vote_idx = H::hash_object(&v.ledger_commit_info);
         let sigs = self.pending_vote_sigs.entry(vote_idx).or_insert(T::new());
+
         sigs.add_signature(*v.author_signature());
 
         self.pending_vote_keys

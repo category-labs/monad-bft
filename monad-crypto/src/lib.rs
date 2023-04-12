@@ -1,1 +1,47 @@
+use rand::Rng;
+
+use crate::secp256k1::{Error, KeyPair, PubKey};
+
 pub mod secp256k1;
+
+pub trait Signature: Copy + Clone + std::fmt::Debug {
+    fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
+
+    fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error>;
+
+    fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error>;
+
+    fn serialize(&self) -> [u8; 65];
+}
+
+// This implementation won't sign or verify anything, but its still required to return a PubKey
+// It's Hash must also be unique (Signature's Hash is used as a MonadMessage ID) for some period
+// of time (the executor message window size?)
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct NopSignature {
+    pubkey: PubKey,
+    id: u32,
+}
+
+impl Signature for NopSignature {
+    fn sign(_msg: &[u8], keypair: &KeyPair) -> Self {
+        let mut rng = rand::thread_rng();
+
+        NopSignature {
+            pubkey: keypair.pubkey(),
+            id: rng.gen::<u32>(),
+        }
+    }
+
+    fn verify(&self, _msg: &[u8], _pubkey: &PubKey) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn recover_pubkey(&self, _msg: &[u8]) -> Result<PubKey, Error> {
+        Ok(self.pubkey)
+    }
+
+    fn serialize(&self) -> [u8; 65] {
+        [0; 65]
+    }
+}

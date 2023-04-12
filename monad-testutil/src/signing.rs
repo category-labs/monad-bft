@@ -1,13 +1,16 @@
+use std::marker::PhantomData;
+
 use monad_consensus::types::block::Block;
-use monad_consensus::types::signature::ConsensusSignature;
 use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::validation::signing::Unverified;
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::secp256k1::{Error, KeyPair, PubKey, SecpSignature};
 use monad_types::{Hash, NodeId};
 
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures;
 impl SignatureCollection for MockSignatures {
+    type SignatureType = SecpSignature;
+
     fn new() -> Self {
         MockSignatures {}
     }
@@ -16,10 +19,18 @@ impl SignatureCollection for MockSignatures {
         Default::default()
     }
 
-    fn add_signature(&mut self, _s: ConsensusSignature) {}
+    fn add_signature(&mut self, _s: SecpSignature) {}
 
-    fn get_signatures(&self) -> Vec<&ConsensusSignature> {
-        Default::default()
+    fn verify_signatures(&self, _msg: &[u8]) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn get_pubkeys(&self, _msg: &[u8]) -> Result<Vec<PubKey>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn num_signatures(&self) -> usize {
+        0
     }
 }
 
@@ -56,12 +67,15 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
     res
 }
 
-pub struct Signer;
-impl Signer {
-    pub fn sign_object<T>(o: T, msg: &[u8], key: &KeyPair) -> Unverified<T> {
+pub struct TestSigner<S> {
+    _p: PhantomData<S>,
+}
+
+impl TestSigner<SecpSignature> {
+    pub fn sign_object<T>(o: T, msg: &[u8], key: &KeyPair) -> Unverified<SecpSignature, T> {
         let sig = key.sign(msg);
 
-        Unverified::new(o, ConsensusSignature(sig))
+        Unverified::new(o, sig)
     }
 }
 

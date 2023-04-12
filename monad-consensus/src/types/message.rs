@@ -1,3 +1,5 @@
+use monad_crypto::Signature;
+
 use crate::validation::hashing::{Hashable, Hasher};
 
 use super::{
@@ -14,13 +16,13 @@ pub struct VoteMessage {
     pub ledger_commit_info: LedgerCommitInfo,
 }
 
-#[derive(Debug, Clone)]
-pub struct TimeoutMessage<T> {
+#[derive(Clone, Debug)]
+pub struct TimeoutMessage<S, T> {
     pub tminfo: TimeoutInfo<T>,
-    pub last_round_tc: Option<TimeoutCertificate>,
+    pub last_round_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<T: SignatureCollection> Hashable for &TimeoutMessage<T> {
+impl<S: Signature, T: SignatureCollection> Hashable for &TimeoutMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(&self.tminfo.round);
         state.update(&self.tminfo.high_qc.info.vote.round);
@@ -28,12 +30,12 @@ impl<T: SignatureCollection> Hashable for &TimeoutMessage<T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProposalMessage<T> {
+pub struct ProposalMessage<S, T> {
     pub block: Block<T>,
-    pub last_round_tc: Option<TimeoutCertificate>,
+    pub last_round_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<T: SignatureCollection> Hashable for &ProposalMessage<T> {
+impl<S: Signature, T: SignatureCollection> Hashable for &ProposalMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (&self.block).hash(state);
     }

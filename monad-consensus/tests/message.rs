@@ -1,4 +1,3 @@
-use monad_consensus::types::signature::ConsensusSignature;
 use test_case::test_case;
 
 use monad_consensus::types::block::{Block, TransactionList};
@@ -8,7 +7,7 @@ use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use monad_consensus::types::timeout::{HighQcRound, TimeoutCertificate, TimeoutInfo};
 use monad_consensus::validation::hashing::*;
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
 use monad_types::*;
 use sha2::Digest;
@@ -52,7 +51,7 @@ fn timeout_msg_hash() {
         ),
     };
 
-    let tm = TimeoutMessage {
+    let tm: TimeoutMessage<SecpSignature, MockSignatures> = TimeoutMessage {
         tminfo: ti,
         last_round_tc: None,
     };
@@ -82,7 +81,7 @@ fn proposal_msg_hash() {
 
     let block = Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc);
 
-    let proposal = ProposalMessage {
+    let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
         block: block.clone(),
         last_round_tc: None,
     };
@@ -105,7 +104,7 @@ fn max_high_qc() {
         let msg = Sha256Hash::hash_object(x);
         let keypair = get_key("a");
 
-        (*x, ConsensusSignature(keypair.sign(&msg)))
+        (*x, keypair.sign(&msg))
     })
     .collect();
 
@@ -136,10 +135,10 @@ fn test_vote_message() {
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
 
     let msg = Sha256Hash::hash_object(&vm.vote_info);
-    let svm = Signer::sign_object(vm, &msg, &keypair);
+    let svm = TestSigner::sign_object(vm, &msg, &keypair);
 
     assert_eq!(
-        svm.author_signature().0.recover_pubkey(&msg).unwrap(),
+        svm.author_signature().recover_pubkey(&msg).unwrap(),
         keypair.pubkey()
     );
 

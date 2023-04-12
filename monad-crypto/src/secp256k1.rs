@@ -1,11 +1,13 @@
 use secp256k1::Secp256k1;
 use sha2::Digest;
 
+use crate::Signature;
+
 #[derive(Copy, Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Signature(secp256k1::ecdsa::RecoverableSignature);
+pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
 
 #[derive(Debug)]
 pub struct Error(secp256k1::Error);
@@ -31,8 +33,8 @@ impl KeyPair {
             .map_err(Error)
     }
 
-    pub fn sign(&self, msg: &[u8]) -> Signature {
-        Signature(Secp256k1::sign_ecdsa_recoverable(
+    pub fn sign(&self, msg: &[u8]) -> SecpSignature {
+        SecpSignature(Secp256k1::sign_ecdsa_recoverable(
             secp256k1::SECP256K1,
             &msg_hash(msg),
             &self.0.secret_key(),
@@ -55,7 +57,7 @@ impl PubKey {
         self.0.serialize_uncompressed().to_vec()
     }
 
-    pub fn verify(&self, msg: &[u8], signature: &Signature) -> Result<(), Error> {
+    pub fn verify(&self, msg: &[u8], signature: &SecpSignature) -> Result<(), Error> {
         Secp256k1::verify_ecdsa(
             secp256k1::SECP256K1,
             &msg_hash(msg),
@@ -66,7 +68,7 @@ impl PubKey {
     }
 }
 
-impl Signature {
+impl SecpSignature {
     pub fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
         Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &self.0)
             .map(PubKey)
@@ -88,9 +90,27 @@ impl Signature {
         }
         let sig_data = &data[..64];
         let recid = secp256k1::ecdsa::RecoveryId::from_i32(data[64] as i32).map_err(Error)?;
-        Ok(Signature(
+        Ok(SecpSignature(
             secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
         ))
+    }
+}
+
+impl Signature for SecpSignature {
+    fn sign(msg: &[u8], keypair: &KeyPair) -> Self {
+        keypair.sign(msg)
+    }
+
+    fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error> {
+        pubkey.verify(msg, &self)
+    }
+
+    fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
+        self.recover_pubkey(msg)
+    }
+
+    fn serialize(&self) -> [u8; 65] {
+        self.serialize()
     }
 }
 
@@ -98,7 +118,7 @@ impl Signature {
 mod tests {
     use tiny_keccak::Hasher;
 
-    use super::{KeyPair, PubKey, Signature};
+    use super::{KeyPair, PubKey, SecpSignature};
 
     #[test]
     fn test_pubkey_roundtrip() {
@@ -170,7 +190,7 @@ mod tests {
         let signature = keypair.sign(msg);
 
         let ser = signature.serialize();
-        let deser = Signature::deserialize(&ser);
+        let deser = SecpSignature::deserialize(&ser);
         assert_eq!(signature, deser.unwrap());
     }
 }

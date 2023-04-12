@@ -4,7 +4,8 @@ use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::validation::error::Error;
 use monad_consensus::validation::hashing::*;
 use monad_consensus::validation::signing::ValidatorMember;
-use monad_testutil::signing::{get_key, node_id, MockSignatures, Signer};
+use monad_crypto::secp256k1::SecpSignature;
+use monad_testutil::signing::{get_key, node_id, MockSignatures, TestSigner};
 use monad_types::*;
 use monad_validator::validator::Validator;
 
@@ -22,7 +23,7 @@ fn test_proposal_hash() {
     let mut vset = ValidatorMember::new();
 
     let author = node_id();
-    let proposal = ProposalMessage {
+    let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
         block: setup_block(author, 234, 233),
         last_round_tc: None,
     };
@@ -38,7 +39,7 @@ fn test_proposal_hash() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = Signer::sign_object(proposal, &msg, &keypair);
+    let sp = TestSigner::sign_object(proposal, &msg, &keypair);
 
     assert!(sp.verify::<Sha256Hash>(&vset, &keypair.pubkey()).is_ok());
 }
@@ -64,7 +65,7 @@ fn test_proposal_missing_tc() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = Signer::sign_object(proposal, &msg, &keypair);
+    let sp = TestSigner::sign_object(proposal, &msg, &keypair);
 
     assert_eq!(
         sp.verify::<Sha256Hash>(&vset, &keypair.pubkey())
@@ -94,7 +95,7 @@ fn test_proposal_invalid_qc() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = Signer::sign_object(proposal, &msg, &get_key("7"));
+    let sp = TestSigner::sign_object(proposal, &msg, &get_key("7"));
 
     assert_eq!(
         sp.verify::<Sha256Hash>(&vset, &keypair.pubkey())
