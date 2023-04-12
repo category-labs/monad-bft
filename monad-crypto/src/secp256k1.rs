@@ -10,6 +10,12 @@ pub struct Signature(secp256k1::ecdsa::RecoverableSignature);
 #[derive(Debug)]
 pub struct Error(secp256k1::Error);
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 fn msg_hash(msg: &[u8]) -> secp256k1::Message {
     let mut hasher = sha2::Sha256::new();
     hasher.update(msg);
@@ -67,8 +73,24 @@ impl Signature {
             .map_err(Error)
     }
 
-    pub fn serialize(&self) -> [u8; 64] {
-        self.0.serialize_compact().1
+    pub fn serialize(&self) -> [u8; 65] {
+        // recid is 0..3, fit in a single byte (see secp256k1 https://docs.rs/secp256k1/0.27.0/src/secp256k1/ecdsa/recovery.rs.html#39)
+        let (recid, sig) = self.0.serialize_compact();
+        assert!((0..=3).contains(&recid.to_i32()));
+        let mut sig_vec = sig.to_vec();
+        sig_vec.push(recid.to_i32() as u8);
+        sig_vec.try_into().unwrap()
+    }
+
+    pub fn deserialize(data: &[u8]) -> Result<Self, Error> {
+        if data.len() != 64 + 1 {
+            return Err(Error(secp256k1::Error::InvalidSignature));
+        }
+        let sig_data = &data[..64];
+        let recid = secp256k1::ecdsa::RecoveryId::from_i32(data[64] as i32).map_err(Error)?;
+        Ok(Signature(
+            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
+        ))
     }
 }
 
@@ -76,7 +98,7 @@ impl Signature {
 mod tests {
     use tiny_keccak::Hasher;
 
-    use super::{KeyPair, PubKey};
+    use super::{KeyPair, PubKey, Signature};
 
     #[test]
     fn test_pubkey_roundtrip() {
@@ -135,5 +157,20 @@ mod tests {
         let recovered_key = signature.recover_pubkey(msg).unwrap();
 
         assert!(keypair.pubkey().into_bytes() == recovered_key.into_bytes());
+    }
+
+    #[test]
+    fn test_signature_serde() {
+        let privkey =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let keypair = KeyPair::from_slice(&privkey).unwrap();
+
+        let msg = b"hello world";
+        let signature = keypair.sign(msg);
+
+        let ser = signature.serialize();
+        let deser = Signature::deserialize(&ser);
+        assert_eq!(signature, deser.unwrap());
     }
 }
