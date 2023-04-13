@@ -29,7 +29,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
         };
 
         for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
-            nodes.simulate_peer(&peer_id);
+            nodes.simulate_peer(&peer_id, Duration::from_secs(0));
         }
 
         nodes
@@ -51,7 +51,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
 
             executor.exec(commands);
 
-            self.simulate_peer(&id);
+            self.simulate_peer(&id, tick);
 
             Some((tick, id, event))
         } else {
@@ -59,10 +59,8 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
         }
     }
 
-    fn simulate_peer(&mut self, peer_id: &PeerId) {
+    fn simulate_peer(&mut self, peer_id: &PeerId, tick: Duration) {
         let (mut executor, state) = self.states.remove(peer_id).unwrap();
-
-        let tick = executor.tick();
 
         while let Some((to, outbound_message)) = executor.receive_message() {
             let to_state = if &to == peer_id {
@@ -74,6 +72,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
                 tick + (self.compute_latency)(peer_id, &to),
                 peer_id.clone(),
                 outbound_message,
+                tick,
             );
         }
         while let Some((to, message_id)) = executor.receive_ack() {
@@ -86,6 +85,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
                 tick + (self.compute_latency)(peer_id, &to),
                 peer_id.clone(),
                 message_id,
+                tick,
             );
         }
 

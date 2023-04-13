@@ -19,7 +19,7 @@ where
 {
     tick: Duration,
 
-    timer: Option<(Duration, E)>,
+    timer: Option<TimerEvent<E>>,
 
     // caller push_backs inbound stuff here (via MockExecutor::send_*)
     inbound_messages: BinaryHeap<SequencedPeerEvent<M>>,
@@ -33,10 +33,21 @@ where
     received_messages: Vec<(PeerId, M::Id)>,
 }
 
+pub struct TimerEvent<E> {
+    pub tick: Duration,
+    pub event: E,
+
+    // When the event was scheduled - only used for observability
+    pub scheduled_tick: Duration,
+}
+
 pub struct SequencedPeerEvent<T> {
     pub tick: Duration,
     pub from: PeerId,
     pub t: T,
+
+    // When the event was sent - only used for observability
+    pub tx_tick: Duration,
 }
 
 impl<T> PartialEq for SequencedPeerEvent<T> {
@@ -75,18 +86,24 @@ where
     pub fn tick(&self) -> Duration {
         self.tick
     }
-    pub fn send_message(&mut self, tick: Duration, from: PeerId, message: M) {
+    pub fn send_message(&mut self, tick: Duration, from: PeerId, message: M, tx_tick: Duration) {
         assert!(tick >= self.tick);
         self.inbound_messages.push(SequencedPeerEvent {
             tick,
             from,
             t: message,
+
+            tx_tick,
         });
     }
-    pub fn send_ack(&mut self, tick: Duration, from: PeerId, ack: M::Id) {
+    pub fn send_ack(&mut self, tick: Duration, from: PeerId, ack: M::Id, tx_tick: Duration) {
         assert!(tick >= self.tick);
-        self.inbound_ack
-            .push(SequencedPeerEvent { tick, from, t: ack });
+        self.inbound_ack.push(SequencedPeerEvent {
+            tick,
+            from,
+            t: ack,
+            tx_tick,
+        });
     }
     pub fn receive_message(&mut self) -> Option<(PeerId, M)> {
         self.outbound_messages.pop_front()
@@ -114,7 +131,7 @@ where
             .chain(
                 self.timer
                     .as_ref()
-                    .map(|(tick, _)| (*tick, ExecutorEventType::Timer))
+                    .map(|TimerEvent { tick, .. }| (*tick, ExecutorEventType::Timer))
                     .into_iter(),
             )
             .min()
@@ -170,7 +187,14 @@ where
                 Command::TimerCommand(TimerCommand::Schedule {
                     duration,
                     on_timeout,
-                }) => self.timer = Some((self.tick + duration, on_timeout)),
+                }) => {
+                    self.timer = Some(TimerEvent {
+                        event: on_timeout,
+                        tick: self.tick + duration,
+
+                        scheduled_tick: self.tick,
+                    })
+                }
                 Command::RouterCommand(RouterCommand::Publish {
                     to,
                     message,
@@ -209,6 +233,8 @@ where
                  from,
                  t: ack,
                  tick: _,
+
+                 tx_tick: _,
              }| {
                 !self
                     .sent_messages
@@ -240,6 +266,8 @@ where
                         from,
                         t: message,
                         tick: _,
+
+                        tx_tick: _,
                     } = this.inbound_messages.pop().unwrap();
 
                     this.received_messages.push((from.clone(), message.id()));
@@ -251,6 +279,8 @@ where
                         from,
                         t: ack,
                         tick: _,
+
+                        tx_tick: _,
                     } = this.inbound_ack.pop().unwrap();
 
                     this.sent_messages
@@ -259,10 +289,7 @@ where
                         .remove(&ack)
                         .unwrap()
                 }
-                ExecutorEventType::Timer => {
-                    let (_, event) = this.timer.take().unwrap();
-                    event
-                }
+                ExecutorEventType::Timer => this.timer.take().unwrap().event,
             };
             Poll::Ready(Some(event))
         } else {
@@ -431,6 +458,7 @@ mod tests {
                 executor.tick() + message_delays.next().unwrap(),
                 to,
                 outbound_message.id(),
+                executor.tick(),
             )
         }
         while executor.receive_ack().is_some() {}
