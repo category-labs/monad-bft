@@ -50,7 +50,7 @@ impl MonadState {
         self.consensus_state.nodeid.0
     }
 
-    pub fn ledger(&self) -> Vec<Block<SignatureType>> {
+    pub fn ledger(&self) -> &Vec<Block<SignatureType>> {
         self.consensus_state.ledger.get_blocks()
     }
 }

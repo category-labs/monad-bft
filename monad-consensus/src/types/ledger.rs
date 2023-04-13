@@ -42,8 +42,8 @@ pub struct InMemoryLedger<T> {
 }
 
 impl<T: SignatureCollection> InMemoryLedger<T> {
-    pub fn get_blocks(&self) -> Vec<Block<T>> {
-        self.blockchain.clone()
+    pub fn get_blocks(&self) -> &Vec<Block<T>> {
+        &self.blockchain
     }
 }
 
