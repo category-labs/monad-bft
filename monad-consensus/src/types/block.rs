@@ -18,7 +18,7 @@ pub struct Block<T> {
     id: BlockId,
 }
 
-impl<T: SignatureCollection> Hashable for &Block<T> {
+impl<T: SignatureCollection> Hashable for Block<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.author.0.into_bytes().as_bytes());
         state.update(self.round.as_bytes());

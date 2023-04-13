@@ -95,9 +95,13 @@ impl Message for MonadMessage {
 
     fn id(&self) -> Self::Id {
         *match &self.0 {
-            SignedConsensusMessage::Proposal(msg) => msg.author_signature(),
-            SignedConsensusMessage::Vote(msg) => msg.author_signature(),
-            SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
+            // map the inbound and outbound type of the same message to the same Id
+            SignedConsensusMessage::InProposal(msg) => msg.author_signature(),
+            SignedConsensusMessage::OutProposal(msg) => msg.author_signature(),
+            SignedConsensusMessage::InVote(msg) => msg.author_signature(),
+            SignedConsensusMessage::OutVote(msg) => msg.author_signature(),
+            SignedConsensusMessage::InTimeout(msg) => msg.author_signature(),
+            SignedConsensusMessage::OutTimeout(msg) => msg.author_signature(),
         }
     }
 
@@ -200,7 +204,7 @@ impl State for MonadState {
                         sender,
                         unverified_message,
                     } => match SignedConsensusMessage::from(unverified_message) {
-                        SignedConsensusMessage::Proposal(msg) => {
+                        SignedConsensusMessage::InProposal(msg) => {
                             let proposal =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
 
@@ -214,7 +218,7 @@ impl State for MonadState {
                                 Err(e) => todo!(),
                             }
                         }
-                        SignedConsensusMessage::Vote(msg) => {
+                        SignedConsensusMessage::InVote(msg) => {
                             let vote =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
 
@@ -228,7 +232,7 @@ impl State for MonadState {
                                 Err(_) => todo!(),
                             }
                         }
-                        SignedConsensusMessage::Timeout(msg) => {
+                        SignedConsensusMessage::InTimeout(msg) => {
                             let timeout =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
 
@@ -242,6 +246,24 @@ impl State for MonadState {
                                 Err(e) => todo!("{:?}", e),
                             }
                         }
+                        // FIXME:
+                        // Verified => wire format => Unverified
+                        // We should never hit these branches after serde is hooked in
+                        SignedConsensusMessage::OutProposal(msg) => self
+                            .consensus_state
+                            .handle_proposal_message::<Sha256Hash, _>(
+                                &msg,
+                                &mut self.validator_set,
+                            ),
+                        SignedConsensusMessage::OutVote(msg) => self
+                            .consensus_state
+                            .handle_vote_message::<HasherType, LeaderElectionType>(
+                            &msg,
+                            &mut self.validator_set,
+                        ),
+                        SignedConsensusMessage::OutTimeout(msg) => self
+                            .consensus_state
+                            .handle_timeout_message::<HasherType, _>(msg, &mut self.validator_set),
                     },
                 };
                 let mut cmds = Vec::new();
@@ -328,19 +350,20 @@ impl<T: SignatureCollection> ConsensusMessage<SignatureType, T> {
     fn sign<H: Hasher>(self, keypair: &KeyPair) -> SignedConsensusMessage<SignatureType, T> {
         match self {
             ConsensusMessage::Proposal(msg) => {
-                let hash = H::hash_object(&msg);
-                let signature = SignatureType::sign(&hash, &keypair);
-                SignedConsensusMessage::Proposal(Unverified::new(msg, signature))
+                SignedConsensusMessage::OutProposal(Verified::new::<H>(msg, keypair))
             }
             ConsensusMessage::Vote(msg) => {
-                let hash = H::hash_object(&msg.ledger_commit_info);
-                let signature = SignatureType::sign(&hash, &keypair);
-                SignedConsensusMessage::Vote(Unverified::new(msg, signature))
+                // FIXME:
+                // implemented Hashable for VoteMsg, which only hash the ledger commit info
+                // it can be confusing as we are hashing only part of the message
+                // in the signature refactoring, we might want a clean split between:
+                //      integrity sig: sign over the entire serialized struct
+                //      protocol sig: signatures outlined in the protocol
+                // TimeoutMsg doesn't have a protocol sig
+                SignedConsensusMessage::OutVote(Verified::new::<H>(msg, keypair))
             }
             ConsensusMessage::Timeout(msg) => {
-                let hash = H::hash_object(&msg);
-                let signature = SignatureType::sign(&hash, &keypair);
-                SignedConsensusMessage::Timeout(Unverified::new(msg, signature))
+                SignedConsensusMessage::OutTimeout(Verified::new::<H>(msg, keypair))
             }
         }
     }
@@ -348,9 +371,12 @@ impl<T: SignatureCollection> ConsensusMessage<SignatureType, T> {
 
 #[derive(Debug, Clone)]
 pub enum SignedConsensusMessage<S, T> {
-    Proposal(Unverified<S, ProposalMessage<S, T>>),
-    Vote(Unverified<S, VoteMessage>),
-    Timeout(Unverified<S, TimeoutMessage<S, T>>),
+    InProposal(Unverified<S, ProposalMessage<S, T>>),
+    OutProposal(Verified<S, ProposalMessage<S, T>>),
+    InVote(Unverified<S, VoteMessage>),
+    OutVote(Verified<S, VoteMessage>),
+    InTimeout(Unverified<S, TimeoutMessage<S, T>>),
+    OutTimeout(Verified<S, TimeoutMessage<S, T>>),
 }
 
 #[derive(Debug)]

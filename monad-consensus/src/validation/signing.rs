@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
-use monad_crypto::secp256k1::{PubKey, SecpSignature};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_crypto::Signature;
 use monad_types::Hash;
 use monad_types::NodeId;
@@ -15,7 +15,7 @@ use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::signature::SignatureCollection;
 use crate::types::timeout::TimeoutCertificate;
 use crate::validation::error::Error;
-use crate::validation::hashing::Hasher;
+use crate::validation::hashing::{Hashable, Hasher};
 
 use crate::validation::message::well_formed;
 
@@ -32,6 +32,18 @@ impl<S: Signature, M> Verified<S, M> {
     }
     pub fn author_signature(&self) -> &S {
         &self.author_signature
+    }
+}
+
+impl<S: Signature, M: Hashable> Verified<S, M> {
+    pub fn new<H: Hasher>(msg: M, keypair: &KeyPair) -> Self {
+        let hash = H::hash_object(&msg);
+        let signature = S::sign(&hash, keypair);
+        Self {
+            obj: msg,
+            author: NodeId(keypair.pubkey()),
+            author_signature: signature,
+        }
     }
 }
 

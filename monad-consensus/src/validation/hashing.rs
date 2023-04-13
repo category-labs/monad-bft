@@ -10,7 +10,7 @@ pub trait Hasher: Sized {
     fn update(&mut self, data: impl AsRef<[u8]>);
     fn hash(self) -> Hash;
 
-    fn hash_object<T: Hashable>(obj: T) -> Hash {
+    fn hash_object<T: Hashable>(obj: &T) -> Hash {
         let mut hasher = Self::new();
         obj.hash(&mut hasher);
         hasher.hash()

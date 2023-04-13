@@ -17,7 +17,7 @@ pub struct HighQcRound {
     pub qc_round: Round,
 }
 
-impl Hashable for &HighQcRound {
+impl Hashable for HighQcRound {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.qc_round.as_bytes());
     }

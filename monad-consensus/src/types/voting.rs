@@ -12,7 +12,7 @@ pub struct VoteInfo {
     pub parent_round: Round,
 }
 
-impl Hashable for &VoteInfo {
+impl Hashable for VoteInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.id.0.as_bytes());
         state.update(self.round.as_bytes());

@@ -16,13 +16,19 @@ pub struct VoteMessage {
     pub ledger_commit_info: LedgerCommitInfo,
 }
 
+impl Hashable for VoteMessage {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ledger_commit_info.hash(state)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TimeoutMessage<S, T> {
     pub tminfo: TimeoutInfo<T>,
     pub last_round_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<S: Signature, T: SignatureCollection> Hashable for &TimeoutMessage<S, T> {
+impl<S: Signature, T: SignatureCollection> Hashable for TimeoutMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(&self.tminfo.round);
         state.update(&self.tminfo.high_qc.info.vote.round);
@@ -35,7 +41,7 @@ pub struct ProposalMessage<S, T> {
     pub last_round_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<S: Signature, T: SignatureCollection> Hashable for &ProposalMessage<S, T> {
+impl<S: Signature, T: SignatureCollection> Hashable for ProposalMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (&self.block).hash(state);
     }
