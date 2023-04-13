@@ -74,7 +74,10 @@ pub enum MonadEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct MonadMessage(SignedConsensusMessage<SignatureType, SignatureCollectionType>);
+pub enum MonadMessage {
+    Verified(VerifiedConsensusMessage<SignatureType, SignatureCollectionType>),
+    Unverified(SignedConsensusMessage<SignatureType, SignatureCollectionType>),
+}
 
 impl Message for MonadMessage {
     type Event = MonadEvent;
@@ -94,21 +97,29 @@ impl Message for MonadMessage {
     }
 
     fn id(&self) -> Self::Id {
-        *match &self.0 {
-            // map the inbound and outbound type of the same message to the same Id
-            SignedConsensusMessage::InProposal(msg) => msg.author_signature(),
-            SignedConsensusMessage::OutProposal(msg) => msg.author_signature(),
-            SignedConsensusMessage::InVote(msg) => msg.author_signature(),
-            SignedConsensusMessage::OutVote(msg) => msg.author_signature(),
-            SignedConsensusMessage::InTimeout(msg) => msg.author_signature(),
-            SignedConsensusMessage::OutTimeout(msg) => msg.author_signature(),
+        *match self {
+            Self::Verified(msg) => match msg {
+                VerifiedConsensusMessage::Proposal(msg) => msg.author_signature(),
+                VerifiedConsensusMessage::Vote(msg) => msg.author_signature(),
+                VerifiedConsensusMessage::Timeout(msg) => msg.author_signature(),
+            },
+            Self::Unverified(msg) => match msg {
+                SignedConsensusMessage::Proposal(msg) => msg.author_signature(),
+                SignedConsensusMessage::Vote(msg) => msg.author_signature(),
+                SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
+            },
         }
     }
 
     fn event(self, from: PeerId) -> Self::Event {
+        let unverified_msg = match self {
+            Self::Unverified(msg) => msg,
+            // the verified branch only used in tests to simulate serde
+            Self::Verified(msg) => msg.into(),
+        };
         Self::Event::ConsensusEvent(ConsensusEvent::Message {
             sender: from.0,
-            unverified_message: self.0,
+            unverified_message: unverified_msg,
         })
     }
 }
@@ -204,7 +215,7 @@ impl State for MonadState {
                         sender,
                         unverified_message,
                     } => match SignedConsensusMessage::from(unverified_message) {
-                        SignedConsensusMessage::InProposal(msg) => {
+                        SignedConsensusMessage::Proposal(msg) => {
                             let proposal =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
 
@@ -218,7 +229,7 @@ impl State for MonadState {
                                 Err(e) => todo!(),
                             }
                         }
-                        SignedConsensusMessage::InVote(msg) => {
+                        SignedConsensusMessage::Vote(msg) => {
                             let vote =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
 
@@ -232,7 +243,7 @@ impl State for MonadState {
                                 Err(_) => todo!(),
                             }
                         }
-                        SignedConsensusMessage::InTimeout(msg) => {
+                        SignedConsensusMessage::Timeout(msg) => {
                             let timeout =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
 
@@ -246,31 +257,13 @@ impl State for MonadState {
                                 Err(e) => todo!("{:?}", e),
                             }
                         }
-                        // FIXME:
-                        // Verified => wire format => Unverified
-                        // We should never hit these branches after serde is hooked in
-                        SignedConsensusMessage::OutProposal(msg) => self
-                            .consensus_state
-                            .handle_proposal_message::<Sha256Hash, _>(
-                                &msg,
-                                &mut self.validator_set,
-                            ),
-                        SignedConsensusMessage::OutVote(msg) => self
-                            .consensus_state
-                            .handle_vote_message::<HasherType, LeaderElectionType>(
-                            &msg,
-                            &mut self.validator_set,
-                        ),
-                        SignedConsensusMessage::OutTimeout(msg) => self
-                            .consensus_state
-                            .handle_timeout_message::<HasherType, _>(msg, &mut self.validator_set),
                     },
                 };
                 let mut cmds = Vec::new();
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Send { to, message } => {
-                            let message = MonadMessage(
+                            let message = MonadMessage::Verified(
                                 message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
                             let publish_action = self.message_state.send(to, message);
@@ -289,7 +282,7 @@ impl State for MonadState {
                             }))
                         }
                         ConsensusCommand::Broadcast { message } => {
-                            let message = MonadMessage(
+                            let message = MonadMessage::Verified(
                                 message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
                             cmds.extend(self.message_state.broadcast(message).into_iter().map(
@@ -347,10 +340,10 @@ pub enum ConsensusMessage<S, T> {
 }
 
 impl<T: SignatureCollection> ConsensusMessage<SignatureType, T> {
-    fn sign<H: Hasher>(self, keypair: &KeyPair) -> SignedConsensusMessage<SignatureType, T> {
+    fn sign<H: Hasher>(self, keypair: &KeyPair) -> VerifiedConsensusMessage<SignatureType, T> {
         match self {
             ConsensusMessage::Proposal(msg) => {
-                SignedConsensusMessage::OutProposal(Verified::new::<H>(msg, keypair))
+                VerifiedConsensusMessage::Proposal(Verified::new::<H>(msg, keypair))
             }
             ConsensusMessage::Vote(msg) => {
                 // FIXME:
@@ -360,10 +353,10 @@ impl<T: SignatureCollection> ConsensusMessage<SignatureType, T> {
                 //      integrity sig: sign over the entire serialized struct
                 //      protocol sig: signatures outlined in the protocol
                 // TimeoutMsg doesn't have a protocol sig
-                SignedConsensusMessage::OutVote(Verified::new::<H>(msg, keypair))
+                VerifiedConsensusMessage::Vote(Verified::new::<H>(msg, keypair))
             }
             ConsensusMessage::Timeout(msg) => {
-                SignedConsensusMessage::OutTimeout(Verified::new::<H>(msg, keypair))
+                VerifiedConsensusMessage::Timeout(Verified::new::<H>(msg, keypair))
             }
         }
     }
@@ -371,12 +364,26 @@ impl<T: SignatureCollection> ConsensusMessage<SignatureType, T> {
 
 #[derive(Debug, Clone)]
 pub enum SignedConsensusMessage<S, T> {
-    InProposal(Unverified<S, ProposalMessage<S, T>>),
-    OutProposal(Verified<S, ProposalMessage<S, T>>),
-    InVote(Unverified<S, VoteMessage>),
-    OutVote(Verified<S, VoteMessage>),
-    InTimeout(Unverified<S, TimeoutMessage<S, T>>),
-    OutTimeout(Verified<S, TimeoutMessage<S, T>>),
+    Proposal(Unverified<S, ProposalMessage<S, T>>),
+    Vote(Unverified<S, VoteMessage>),
+    Timeout(Unverified<S, TimeoutMessage<S, T>>),
+}
+
+#[derive(Debug, Clone)]
+pub enum VerifiedConsensusMessage<S, T> {
+    Proposal(Verified<S, ProposalMessage<S, T>>),
+    Vote(Verified<S, VoteMessage>),
+    Timeout(Verified<S, TimeoutMessage<S, T>>),
+}
+
+impl<S, T> From<VerifiedConsensusMessage<S, T>> for SignedConsensusMessage<S, T> {
+    fn from(value: VerifiedConsensusMessage<S, T>) -> Self {
+        match value {
+            VerifiedConsensusMessage::Proposal(msg) => Self::Proposal(msg.into()),
+            VerifiedConsensusMessage::Vote(msg) => Self::Vote(msg.into()),
+            VerifiedConsensusMessage::Timeout(msg) => Self::Timeout(msg.into()),
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -74,6 +74,15 @@ impl<S: Signature, M> Unverified<S, M> {
     }
 }
 
+impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
+    fn from(value: Verified<S, M>) -> Self {
+        Self {
+            obj: value.obj,
+            author_signature: value.author_signature,
+        }
+    }
+}
+
 impl<S, T> Unverified<S, ProposalMessage<S, T>>
 where
     S: Signature,
