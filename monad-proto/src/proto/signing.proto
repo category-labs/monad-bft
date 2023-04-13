@@ -2,6 +2,6 @@ syntax = "proto3";
 
 package monad_proto.signing;
 
-message ProtoConsensusSignature {
+message ProtoSecpSignature {
   bytes sig = 1;
 }

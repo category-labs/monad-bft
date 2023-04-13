@@ -1,7 +1,7 @@
 use crate::error::ProtoError;
 use monad_consensus::types::message::VoteMessage;
-use monad_consensus::types::signature::ConsensusSignature;
 use monad_consensus::validation::signing::{Unverified, Verified};
+use monad_crypto::secp256k1::SecpSignature;
 use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.message.rs"));
@@ -36,8 +36,8 @@ impl TryFrom<ProtoVoteMessage> for VoteMessage {
     }
 }
 
-impl From<&Verified<VoteMessage>> for ProtoUnverifiedVoteMessage {
-    fn from(value: &Verified<VoteMessage>) -> Self {
+impl From<&Verified<SecpSignature, VoteMessage>> for ProtoUnverifiedVoteMessage {
+    fn from(value: &Verified<SecpSignature, VoteMessage>) -> Self {
         Self {
             vote_msg: Some((&(**value)).into()),
             author_signature: Some(value.author_signature().into()),
@@ -45,7 +45,7 @@ impl From<&Verified<VoteMessage>> for ProtoUnverifiedVoteMessage {
     }
 }
 
-impl TryFrom<ProtoUnverifiedVoteMessage> for Unverified<VoteMessage> {
+impl TryFrom<ProtoUnverifiedVoteMessage> for Unverified<SecpSignature, VoteMessage> {
     type Error = ProtoError;
     fn try_from(value: ProtoUnverifiedVoteMessage) -> Result<Self, Self::Error> {
         let msg: VoteMessage = value
@@ -54,7 +54,7 @@ impl TryFrom<ProtoUnverifiedVoteMessage> for Unverified<VoteMessage> {
                 "Unverified<VoteMessage>.obj".to_owned(),
             ))?
             .try_into()?;
-        let signature: ConsensusSignature = value
+        let signature: SecpSignature = value
             .author_signature
             .ok_or(Self::Error::MissingRequiredField(
                 "Unverified<VoteMessage>.signature".to_owned(),
@@ -64,7 +64,7 @@ impl TryFrom<ProtoUnverifiedVoteMessage> for Unverified<VoteMessage> {
     }
 }
 
-pub fn serialize_verified_vote_message(votemsg: &Verified<VoteMessage>) -> Vec<u8> {
+pub fn serialize_verified_vote_message(votemsg: &Verified<SecpSignature, VoteMessage>) -> Vec<u8> {
     let proto_votemsg: ProtoUnverifiedVoteMessage = votemsg.into();
     let mut buf = Vec::with_capacity(proto_votemsg.encoded_len());
     proto_votemsg.encode(&mut buf).unwrap();
@@ -73,8 +73,8 @@ pub fn serialize_verified_vote_message(votemsg: &Verified<VoteMessage>) -> Vec<u
 
 pub fn deserialize_unverified_vote_message(
     buf: &[u8],
-) -> Result<Unverified<VoteMessage>, ProtoError> {
+) -> Result<Unverified<SecpSignature, VoteMessage>, ProtoError> {
     let proto_votemsg = ProtoUnverifiedVoteMessage::decode(buf)?;
-    let votemsg: Unverified<VoteMessage> = proto_votemsg.try_into()?;
+    let votemsg: Unverified<SecpSignature, VoteMessage> = proto_votemsg.try_into()?;
     Ok(votemsg)
 }

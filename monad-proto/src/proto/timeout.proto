@@ -14,7 +14,7 @@ message ProtoHighQcRound {
 message ProtoUnverifiedHighQcRound {
   ProtoHighQcRound high_qc_round = 1;
   monad_proto.basic.ProtoNodeId author = 2;
-  monad_proto.signing.ProtoConsensusSignature author_signature = 3;
+  monad_proto.signing.ProtoSecpSignature author_signature = 3;
 }
 
 message ProtoTimeoutCertificate {

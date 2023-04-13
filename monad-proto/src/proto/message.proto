@@ -14,5 +14,5 @@ message ProtoVoteMessage {
 
 message ProtoUnverifiedVoteMessage {
   ProtoVoteMessage vote_msg = 1;
-  monad_proto.signing.ProtoConsensusSignature author_signature = 3;
+  monad_proto.signing.ProtoSecpSignature author_signature = 3;
 }

@@ -1,10 +1,7 @@
 #[cfg(test)]
 mod test {
     use monad_consensus::{
-        types::{
-            ledger::LedgerCommitInfo, message::VoteMessage, signature::ConsensusSignature,
-            voting::VoteInfo,
-        },
+        types::{ledger::LedgerCommitInfo, message::VoteMessage, voting::VoteInfo},
         validation::{
             hashing::{Hasher, Sha256Hash},
             signing::{Unverified, ValidatorMember},
@@ -49,7 +46,7 @@ mod test {
         );
 
         let hash = Sha256Hash::hash_object(&votemsg.ledger_commit_info);
-        let sig = ConsensusSignature(keypair.sign(&hash));
+        let sig = keypair.sign(&hash);
 
         let signed_votemsg = Unverified::new(votemsg, sig);
         let verified_votemsg = signed_votemsg
