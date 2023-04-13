@@ -10,3 +10,6 @@ members = [
     "monad-types",
     "monad-validator",
 ]
+
+[profile.dev]
+opt-level = 1
