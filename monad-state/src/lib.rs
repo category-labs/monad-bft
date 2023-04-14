@@ -112,6 +112,8 @@ impl Message for MonadMessage {
 pub struct MonadConfig {
     pub validators: Vec<PubKey>,
     pub key: KeyPair,
+
+    pub delta: Duration,
 }
 
 impl State for MonadState {
@@ -156,6 +158,7 @@ impl State for MonadState {
                 config.key.pubkey(),
                 genesis_block,
                 genesis_qc,
+                config.delta,
                 config.key,
             ),
         };
@@ -399,6 +402,7 @@ where
         my_pubkey: PubKey,
         genesis_block: Block<T>,
         genesis_qc: QuorumCertificate<T>,
+        delta: Duration,
 
         // TODO deprecate
         keypair: KeyPair,
@@ -409,7 +413,7 @@ where
             high_qc: genesis_qc,
             ledger: L::new(),
             mempool: M::new(),
-            pacemaker: Pacemaker::new(Duration::new(1, 0), Round(1), None, HashMap::new()),
+            pacemaker: Pacemaker::new(delta, Round(1), None, HashMap::new()),
             safety: Safety::new(),
             nodeid: NodeId(my_pubkey),
 

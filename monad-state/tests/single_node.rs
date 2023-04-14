@@ -22,6 +22,8 @@ fn single_node() {
         .map(|(key, pubkeys)| MonadConfig {
             key,
             validators: pubkeys,
+
+            delta: Duration::from_millis(2),
         })
         .collect::<Vec<_>>();
 

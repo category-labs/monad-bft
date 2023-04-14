@@ -22,7 +22,7 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut simulation = {
-        const NUM_NODES: u16 = 4;
+        const NUM_NODES: u16 = 5;
         let config_gen = || {
             let keys = create_keys(NUM_NODES as u32);
             let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -33,6 +33,8 @@ async fn main() {
                 .map(|(key, pubkeys)| MonadConfig {
                     key,
                     validators: pubkeys,
+
+                    delta: Duration::from_millis(101),
                 })
                 .collect::<Vec<_>>();
 
@@ -40,8 +42,17 @@ async fn main() {
         };
         NodesSimulation::<MonadState, _, _>::new(
             config_gen,
-            |_node_1, _node_2| Duration::from_millis(20),
-            Duration::from_secs(1),
+            |node_1, node_2| {
+                let mut ck = 0;
+                for b in node_1.0.into_bytes() {
+                    ck ^= b;
+                }
+                for b in node_2.0.into_bytes() {
+                    ck ^= b;
+                }
+                Duration::from_millis(ck as u64 % 100)
+            },
+            Duration::from_secs(4),
         )
     };
     let mut tick = simulation.min_tick().as_secs_f32();
