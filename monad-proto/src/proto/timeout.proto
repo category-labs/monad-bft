@@ -10,22 +10,3 @@ import "signing.proto";
 message ProtoHighQcRound {
   monad_proto.basic.ProtoRound qc_round = 1;
 }
-
-message ProtoUnverifiedHighQcRound {
-  ProtoHighQcRound high_qc_round = 1;
-  monad_proto.basic.ProtoNodeId author = 2;
-  monad_proto.signing.ProtoSecpSignature author_signature = 3;
-}
-
-message ProtoTimeoutCertificate {
-  monad_proto.basic.ProtoRound round = 1;
-  repeated ProtoUnverifiedHighQcRound high_qc_rounds = 2;
-}
-
-message ProtoTimeoutInfoAggSig {
-  monad_proto.basic.ProtoRound round = 1;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 2;
-}
-
-
-
