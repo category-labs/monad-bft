@@ -4,7 +4,7 @@ use monad_crypto::{
 };
 use monad_types::Hash;
 
-pub trait SignatureCollection: Clone + Default {
+pub trait SignatureCollection: Clone + Default + std::fmt::Debug {
     type SignatureType: Signature;
 
     fn new() -> Self;

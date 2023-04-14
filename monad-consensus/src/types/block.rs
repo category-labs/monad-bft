@@ -24,7 +24,7 @@ impl<T: SignatureCollection> Hashable for &Block<T> {
         state.update(self.round.as_bytes());
         state.update(self.payload.0.as_bytes());
         state.update(self.qc.info.vote.id.0.as_bytes());
-        state.update(self.qc.signature_hash.as_bytes());
+        state.update(self.qc.get_hash().as_bytes());
     }
 }
 
@@ -42,11 +42,7 @@ impl<T: SignatureCollection> Block<T> {
             qc: qc.clone(),
             id: Default::default(),
         };
-        if round == Round(0) {
-            // FIXME lol
-        } else {
-            b.id = BlockId(H::hash_object(&b));
-        }
+        b.id = BlockId(H::hash_object(&b));
         b
     }
 

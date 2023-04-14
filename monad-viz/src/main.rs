@@ -8,9 +8,12 @@ use graph::NodeEvent;
 use graph::NodesSimulation;
 
 use macroquad::prelude::*;
+use monad_consensus::{
+    types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
+};
 use monad_crypto::secp256k1::KeyPair;
-use monad_state::{MonadConfig, MonadState};
-use monad_testutil::signing::create_keys;
+use monad_state::{MonadConfig, MonadState, SignatureCollectionType};
+use monad_testutil::signing::{create_keys, get_genesis_config};
 
 fn window_conf() -> Conf {
     Conf {
@@ -26,6 +29,8 @@ async fn main() {
         let config_gen = || {
             let keys = create_keys(NUM_NODES as u32);
             let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+            let (genesis_block, genesis_sigs) =
+                get_genesis_config::<Sha256Hash, SignatureCollectionType>(&keys);
 
             let state_configs = keys
                 .into_iter()
@@ -35,6 +40,9 @@ async fn main() {
                     validators: pubkeys,
 
                     delta: Duration::from_millis(101),
+                    genesis_block: genesis_block.clone(),
+                    genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
+                    genesis_signatures: genesis_sigs.clone(),
                 })
                 .collect::<Vec<_>>();
 

@@ -1,12 +1,12 @@
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
+use monad_consensus::{
+    types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
+};
 use monad_crypto::secp256k1::KeyPair;
 use monad_executor::mock_swarm::Nodes;
-use monad_state::{MonadConfig, MonadState};
-use monad_testutil::signing::create_keys;
+use monad_state::{MonadConfig, MonadState, SignatureCollectionType};
+use monad_testutil::signing::{create_keys, get_genesis_config};
 
 // FIXME this isn't actually single node, factor this out and name better
 #[test]
@@ -15,6 +15,8 @@ fn single_node() {
 
     let keys = create_keys(NUM_NODES as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+    let (genesis_block, genesis_sigs) =
+        get_genesis_config::<Sha256Hash, SignatureCollectionType>(&keys);
 
     let state_configs = keys
         .into_iter()
@@ -24,6 +26,9 @@ fn single_node() {
             validators: pubkeys,
 
             delta: Duration::from_millis(2),
+            genesis_block: genesis_block.clone(),
+            genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
+            genesis_signatures: genesis_sigs.clone(),
         })
         .collect::<Vec<_>>();
 
@@ -33,8 +38,6 @@ fn single_node() {
     );
 
     while let Some((duration, id, event)) = nodes.step() {
-        // println!("{duration:?} => {id:?} => {event:?}");
-
         if nodes.states().values().next().unwrap().1.ledger().len() > 1024 {
             break;
         }

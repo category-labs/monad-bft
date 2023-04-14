@@ -165,11 +165,6 @@ where
     H: Hasher,
     V: SignatureCollection,
 {
-    if qc.info.vote.round == Round(0) {
-        // FIXME lol
-        return Ok(());
-    }
-
     if let Some(tc) = tc {
         for a in tc.high_qc_rounds.iter() {
             // TODO fix this hashing..

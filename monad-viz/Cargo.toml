@@ -11,6 +11,7 @@ egui-macroquad = "0.15"
 macroquad = { version = "0.3.25", default-features = false }
 
 monad-executor = { path = "../monad-executor" }
+monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }

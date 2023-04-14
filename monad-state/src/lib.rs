@@ -13,6 +13,7 @@ use monad_consensus::{
         quorum_certificate::{QuorumCertificate, Rank},
         signature::SignatureCollection,
         timeout::TimeoutCertificate,
+        voting::VoteInfo,
     },
     validation::{
         hashing::{Hasher, Sha256Hash},
@@ -36,8 +37,8 @@ use message::MessageState;
 
 mod message;
 
-type SignatureType = NopSignature;
-type SignatureCollectionType = AggregateSignatures<SignatureType>;
+pub type SignatureType = NopSignature;
+pub type SignatureCollectionType = AggregateSignatures<SignatureType>;
 type LeaderElectionType = WeightedRoundRobin;
 type HasherType = Sha256Hash;
 
@@ -114,6 +115,9 @@ pub struct MonadConfig {
     pub key: KeyPair,
 
     pub delta: Duration,
+    pub genesis_block: Block<SignatureCollectionType>,
+    pub genesis_vote_info: VoteInfo,
+    pub genesis_signatures: SignatureCollectionType,
 }
 
 impl State for MonadState {
@@ -129,21 +133,14 @@ impl State for MonadState {
             .map(|pubkey| Validator { pubkey, stake: 1 })
             .collect::<Vec<_>>();
 
-        // create the genesis block
-        // FIXME init from genesis config, don't use random key
-        let genesis_txn = TransactionList::default();
-
-        let genesis_qc = QuorumCertificate::default();
-        let genesis_block = Block::<SignatureCollectionType>::new::<HasherType>(
-            NodeId(KeyPair::from_slice(&[0xBE as u8; 32]).unwrap().pubkey()),
-            Round(0),
-            &genesis_txn,
-            &genesis_qc,
-        );
-
         // create the initial validator set
         let val_set =
             ValidatorSet::new(validator_list.clone()).expect("initial validator set init failed");
+
+        let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
+            config.genesis_vote_info,
+            config.genesis_signatures,
+        );
 
         let mut monad_state = Self {
             message_state: MessageState::new(
@@ -156,7 +153,7 @@ impl State for MonadState {
             validator_set: val_set,
             consensus_state: ConsensusState::new(
                 config.key.pubkey(),
-                genesis_block,
+                config.genesis_block,
                 genesis_qc,
                 config.delta,
                 config.key,

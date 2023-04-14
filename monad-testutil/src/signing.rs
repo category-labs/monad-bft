@@ -1,10 +1,16 @@
 use std::marker::PhantomData;
 
-use monad_consensus::types::block::Block;
+use monad_consensus::types::block::{Block, TransactionList};
+use monad_consensus::types::ledger::LedgerCommitInfo;
+use monad_consensus::types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
 use monad_consensus::types::signature::SignatureCollection;
+use monad_consensus::validation::hashing::Hasher;
 use monad_consensus::validation::signing::Unverified;
-use monad_crypto::secp256k1::{Error, KeyPair, PubKey, SecpSignature};
-use monad_types::{Hash, NodeId};
+use monad_crypto::{
+    secp256k1::{Error, KeyPair, PubKey, SecpSignature},
+    Signature,
+};
+use monad_types::{Hash, NodeId, Round};
 
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures;
@@ -65,6 +71,29 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
     }
 
     res
+}
+
+pub fn get_genesis_config<H: Hasher, T: SignatureCollection>(keys: &Vec<KeyPair>) -> (Block<T>, T) {
+    let genesis_txn = TransactionList::default();
+    let genesis_prime_qc = QuorumCertificate::<T>::genesis_prime_qc::<H>();
+    let genesis_block = Block::<T>::new::<H>(
+        // FIXME init from genesis config, don't use random key
+        NodeId(KeyPair::from_slice(&[0xBE as u8; 32]).unwrap().pubkey()),
+        Round(0),
+        &genesis_txn,
+        &genesis_prime_qc,
+    );
+
+    let genesis_lci = LedgerCommitInfo::new::<H>(None, &genesis_vote_info(genesis_block.get_id()));
+
+    let mut sigs = T::new();
+    let msg = H::hash_object(&genesis_lci);
+    for k in keys {
+        let s = T::SignatureType::sign(&msg, k);
+        sigs.add_signature(s);
+    }
+
+    (genesis_block, sigs)
 }
 
 pub struct TestSigner<S> {
