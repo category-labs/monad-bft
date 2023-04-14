@@ -1,12 +1,13 @@
 use prost::Message;
 
 use monad_consensus::types::message::VoteMessage;
-use monad_consensus::validation::signing::Unverified;
+use monad_consensus::validation::signing::{Unverified, Verified};
 use monad_crypto::secp256k1::SecpSignature;
 
 use crate::error::ProtoError;
 
-use super::{UnverifiedVoteMessage, VerifiedVoteMessage};
+type VerifiedVoteMessage = Verified<SecpSignature, VoteMessage>;
+type UnverifiedVoteMessage = Unverified<SecpSignature, VoteMessage>;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.message.rs"));
 
