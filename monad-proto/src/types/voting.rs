@@ -1,6 +1,7 @@
-use crate::error::ProtoError;
 use monad_consensus::types::voting::VoteInfo;
 use monad_types::{BlockId, Round};
+
+use crate::error::ProtoError;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.voting.rs"));
 

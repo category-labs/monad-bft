@@ -1,5 +1,6 @@
-use crate::error::ProtoError;
 use monad_consensus::types::quorum_certificate::QcInfo;
+
+use crate::error::ProtoError;
 
 include!(concat!(
     env!("OUT_DIR"),

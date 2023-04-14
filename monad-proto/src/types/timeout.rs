@@ -1,8 +1,10 @@
-use crate::error::ProtoError;
+use zerocopy::AsBytes;
+
 use monad_consensus::types::signature::ConsensusSignature;
 use monad_crypto::secp256k1::Signature;
 use monad_types::Round;
-use zerocopy::AsBytes;
+
+use crate::error::ProtoError;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.timeout.rs"));
 

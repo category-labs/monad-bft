@@ -1,6 +1,8 @@
-use crate::error::ProtoError;
-use monad_crypto::secp256k1::SecpSignature;
 use zerocopy::AsBytes;
+
+use monad_crypto::secp256k1::SecpSignature;
+
+use crate::error::ProtoError;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.signing.rs"));
 
