@@ -1,7 +1,10 @@
 use prost::Message;
 
+use monad_consensus::types::consensus_message::{
+    SignedConsensusMessage, VerifiedConsensusMessage as ConsensusTypeVerifiedMessage,
+};
 use monad_consensus::types::message::{
-    ProposalMessage as ConsensusPropMsg, TimeoutMessage as ConsensusTmoMsg, VoteMessage,
+    ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
 };
 use monad_consensus::validation::signing::{Unverified, Verified};
 use monad_crypto::secp256k1::SecpSignature;
@@ -12,12 +15,14 @@ use super::signing::AggSecpSignature;
 
 type VerifiedVoteMessage = Verified<SecpSignature, VoteMessage>;
 type UnverifiedVoteMessage = Unverified<SecpSignature, VoteMessage>;
-type TimeoutMessage = ConsensusTmoMsg<SecpSignature, AggSecpSignature>;
+type TimeoutMessage = ConsensusTypeTmoMsg<SecpSignature, AggSecpSignature>;
 type VerifiedTimeoutMessage = Verified<SecpSignature, TimeoutMessage>;
 type UnverifiedTimeoutMessage = Unverified<SecpSignature, TimeoutMessage>;
-type ProposalMessage = ConsensusPropMsg<SecpSignature, AggSecpSignature>;
+type ProposalMessage = ConsensusTypePropMsg<SecpSignature, AggSecpSignature>;
 type VerifiedProposalMessage = Verified<SecpSignature, ProposalMessage>;
 type UnverifiedProposalMessage = Unverified<SecpSignature, ProposalMessage>;
+type VerifiedConsensusMessage = ConsensusTypeVerifiedMessage<SecpSignature, AggSecpSignature>;
+type UnverifiedConsensusMessage = SignedConsensusMessage<SecpSignature, AggSecpSignature>;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.message.rs"));
 
@@ -79,19 +84,6 @@ impl TryFrom<ProtoUnverifiedVoteMessage> for UnverifiedVoteMessage {
     }
 }
 
-pub fn serialize_verified_vote_message(votemsg: &VerifiedVoteMessage) -> Vec<u8> {
-    let proto_votemsg: ProtoUnverifiedVoteMessage = votemsg.into();
-    proto_votemsg.encode_to_vec()
-}
-
-pub fn deserialize_unverified_vote_message(
-    buf: &[u8],
-) -> Result<UnverifiedVoteMessage, ProtoError> {
-    let proto_votemsg = ProtoUnverifiedVoteMessage::decode(buf)?;
-    let votemsg: UnverifiedVoteMessage = proto_votemsg.try_into()?;
-    Ok(votemsg)
-}
-
 impl From<&TimeoutMessage> for ProtoTimeoutMessage {
     fn from(value: &TimeoutMessage) -> Self {
         ProtoTimeoutMessage {
@@ -144,19 +136,6 @@ impl TryFrom<ProtoUnverifiedTimeoutMessage> for UnverifiedTimeoutMessage {
                 .try_into()?,
         ))
     }
-}
-
-pub fn serialize_verified_timeout_message(tmomsg: &VerifiedTimeoutMessage) -> Vec<u8> {
-    let proto_tmomsg: ProtoUnverifiedTimeoutMessage = tmomsg.into();
-    proto_tmomsg.encode_to_vec()
-}
-
-pub fn deserialize_unverified_timeout_message(
-    buf: &[u8],
-) -> Result<UnverifiedTimeoutMessage, ProtoError> {
-    let proto_tmomsg = ProtoUnverifiedTimeoutMessage::decode(buf)?;
-    let tmomsg: UnverifiedTimeoutMessage = proto_tmomsg.try_into()?;
-    Ok(tmomsg)
 }
 
 impl From<&ProposalMessage> for ProtoProposalMessageAggSig {
@@ -213,14 +192,57 @@ impl TryFrom<ProtoUnverifiedProposalMessageAggSig> for UnverifiedProposalMessage
     }
 }
 
-pub fn serialize_verified_proposal_message(proposal: &VerifiedProposalMessage) -> Vec<u8> {
-    let proto_proposal: ProtoUnverifiedProposalMessageAggSig = proposal.into();
-    proto_proposal.encode_to_vec()
+impl From<&VerifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
+    fn from(value: &VerifiedConsensusMessage) -> Self {
+        match value {
+            ConsensusTypeVerifiedMessage::Proposal(msg) => Self {
+                oneof_message: Some(proto_unverified_consensus_message::OneofMessage::Proposal(
+                    msg.into(),
+                )),
+            },
+            ConsensusTypeVerifiedMessage::Timeout(msg) => Self {
+                oneof_message: Some(proto_unverified_consensus_message::OneofMessage::Timeout(
+                    msg.into(),
+                )),
+            },
+            ConsensusTypeVerifiedMessage::Vote(msg) => Self {
+                oneof_message: Some(proto_unverified_consensus_message::OneofMessage::Vote(
+                    msg.into(),
+                )),
+            },
+        }
+    }
 }
 
-pub fn deserialize_unverified_proposal_message(
+impl TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoUnverifiedConsensusMessage) -> Result<Self, Self::Error> {
+        Ok(match value.oneof_message {
+            Some(proto_unverified_consensus_message::OneofMessage::Proposal(msg)) => {
+                Self::Proposal(msg.try_into()?)
+            }
+            Some(proto_unverified_consensus_message::OneofMessage::Timeout(msg)) => {
+                Self::Timeout(msg.try_into()?)
+            }
+            Some(proto_unverified_consensus_message::OneofMessage::Vote(msg)) => {
+                Self::Vote(msg.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "UnverifiedConsensusMessage".to_owned(),
+            ))?,
+        })
+    }
+}
+
+pub fn serialize_verified_consensus_message(msg: &VerifiedConsensusMessage) -> Vec<u8> {
+    let proto_msg: ProtoUnverifiedConsensusMessage = msg.into();
+    proto_msg.encode_to_vec()
+}
+
+pub fn deserialize_unverified_consensus_message(
     data: &[u8],
-) -> Result<UnverifiedProposalMessage, ProtoError> {
-    let proposal = ProtoUnverifiedProposalMessageAggSig::decode(data)?;
-    proposal.try_into()
+) -> Result<UnverifiedConsensusMessage, ProtoError> {
+    let msg = ProtoUnverifiedConsensusMessage::decode(data)?;
+    msg.try_into()
 }

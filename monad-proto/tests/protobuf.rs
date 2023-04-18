@@ -1,9 +1,11 @@
 #[cfg(test)]
 mod test {
+
     use monad_consensus::{
         signatures::aggregate_signature::AggregateSignatures,
         types::{
             block::{Block, TransactionList},
+            consensus_message::{SignedConsensusMessage, VerifiedConsensusMessage},
             ledger::LedgerCommitInfo,
             message::{ProposalMessage, TimeoutMessage, VoteMessage},
             quorum_certificate::{QcInfo, QuorumCertificate},
@@ -13,14 +15,12 @@ mod test {
         },
         validation::{
             hashing::{Hasher, Sha256Hash},
-            signing::{Unverified, ValidatorMember, Verified},
+            signing::{ValidatorMember, Verified},
         },
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_proto::types::message::{
-        deserialize_unverified_proposal_message, deserialize_unverified_timeout_message,
-        deserialize_unverified_vote_message, serialize_verified_proposal_message,
-        serialize_verified_timeout_message, serialize_verified_vote_message,
+        deserialize_unverified_consensus_message, serialize_verified_consensus_message,
     };
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{BlockId, NodeId, Round};
@@ -60,19 +60,24 @@ mod test {
         let author_keypair = &keypairs[0];
         let validators = setup_validator_member(&keypairs);
 
-        let hash = Sha256Hash::hash_object(&votemsg.ledger_commit_info);
-        let sig = author_keypair.sign(&hash);
+        let verified_votemsg = Verified::new::<Sha256Hash>(votemsg.clone(), author_keypair);
+        let verified_consensus_msg: VerifiedConsensusMessage<
+            SecpSignature,
+            AggregateSignatures<SecpSignature>,
+        > = VerifiedConsensusMessage::Vote(verified_votemsg.clone());
 
-        let signed_votemsg = Unverified::new(votemsg, sig);
-        let verified_votemsg = signed_votemsg
-            .clone()
+        let rx_buf = serialize_verified_consensus_message(&verified_consensus_msg);
+        let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
+
+        let rx_vote = match rx_msg {
+            SignedConsensusMessage::Vote(msg) => msg,
+            _ => panic!("Expect Vote variant"),
+        };
+        let verified_rx_vote = rx_vote
             .verify::<Sha256Hash>(&validators, &author_keypair.pubkey())
             .unwrap();
 
-        let buf = serialize_verified_vote_message(&verified_votemsg);
-        let de_votemsg = deserialize_unverified_vote_message(buf.as_ref());
-
-        assert_eq!(signed_votemsg, de_votemsg.unwrap());
+        assert_eq!(verified_votemsg, verified_rx_vote);
     }
 
     #[test]
@@ -134,15 +139,21 @@ mod test {
             last_round_tc: Some(tc),
         };
         let verified_tmo_message = Verified::new::<Sha256Hash>(tmo_message, &author_keypair);
+        let verified_consensus_msg =
+            VerifiedConsensusMessage::Timeout(verified_tmo_message.clone());
 
-        let buf = serialize_verified_timeout_message(&verified_tmo_message);
-        let de_tmo_message = deserialize_unverified_timeout_message(buf.as_ref());
+        let rx_buf = serialize_verified_consensus_message(&verified_consensus_msg);
+        let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
-        let verified_de_tmo_messaage = de_tmo_message
-            .unwrap()
-            .verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+        let rx_tmo_msg = match rx_msg {
+            SignedConsensusMessage::Timeout(msg) => msg,
+            _ => panic!("Expect Timeout Variant"),
+        };
 
-        assert_eq!(verified_tmo_message, verified_de_tmo_messaage.unwrap());
+        let verified_rx_tmo_messaage =
+            rx_tmo_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+
+        assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
     }
 
     fn setup_block(
@@ -192,13 +203,20 @@ mod test {
             last_round_tc: None,
         };
         let verified_proposal = Verified::new::<Sha256Hash>(proposal, author_keypair);
+        let verified_msg = VerifiedConsensusMessage::Proposal(verified_proposal.clone());
 
-        let buf = serialize_verified_proposal_message(&verified_proposal);
-        let de_proposal = deserialize_unverified_proposal_message(buf.as_ref()).unwrap();
-        let verified_de_proposal =
-            de_proposal.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+        let rx_buf = serialize_verified_consensus_message(&verified_msg);
+        let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        assert_eq!(verified_proposal, verified_de_proposal.unwrap());
+        let rx_proposal = match rx_msg {
+            SignedConsensusMessage::Proposal(msg) => msg,
+            _ => panic!("Expected Proposal variant"),
+        };
+
+        let verified_rx_proposal =
+            rx_proposal.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+
+        assert_eq!(verified_proposal, verified_rx_proposal.unwrap());
     }
 
     #[test]
@@ -234,11 +252,19 @@ mod test {
         };
         let verified_proposal = Verified::new::<Sha256Hash>(proposal, &author_keypair);
 
-        let buf = serialize_verified_proposal_message(&verified_proposal);
-        let de_proposal = deserialize_unverified_proposal_message(buf.as_ref()).unwrap();
-        let verified_de_proposal =
-            de_proposal.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+        let verified_msg = VerifiedConsensusMessage::Proposal(verified_proposal.clone());
 
-        assert_eq!(verified_proposal, verified_de_proposal.unwrap());
+        let rx_buf = serialize_verified_consensus_message(&verified_msg);
+        let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
+
+        let rx_proposal = match rx_msg {
+            SignedConsensusMessage::Proposal(msg) => msg,
+            _ => panic!("Expected Proposal variant"),
+        };
+
+        let verified_rx_proposal =
+            rx_proposal.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+
+        assert_eq!(verified_proposal, verified_rx_proposal.unwrap());
     }
 }

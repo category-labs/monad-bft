@@ -38,3 +38,11 @@ message ProtoUnverifiedProposalMessageAggSig {
   ProtoProposalMessageAggSig proposal = 1;
   monad_proto.signing.ProtoSecpSignature author_signature = 2;
 }
+
+message ProtoUnverifiedConsensusMessage {
+  oneof OneofMessage {
+    ProtoUnverifiedProposalMessageAggSig proposal = 1;
+    ProtoUnverifiedTimeoutMessage timeout = 2;
+    ProtoUnverifiedVoteMessage vote = 3;
+  }
+}
