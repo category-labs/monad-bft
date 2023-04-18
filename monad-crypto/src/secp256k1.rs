@@ -102,7 +102,7 @@ impl Signature for SecpSignature {
     }
 
     fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error> {
-        pubkey.verify(msg, &self)
+        pubkey.verify(msg, self)
     }
 
     fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {

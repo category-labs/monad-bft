@@ -10,7 +10,7 @@ use super::{
     voting::VoteInfo,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoteMessage {
     pub vote_info: VoteInfo,
     pub ledger_commit_info: LedgerCommitInfo,
@@ -30,8 +30,8 @@ pub struct TimeoutMessage<S, T> {
 
 impl<S: Signature, T: SignatureCollection> Hashable for TimeoutMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.update(&self.tminfo.round);
-        state.update(&self.tminfo.high_qc.info.vote.round);
+        state.update(self.tminfo.round);
+        state.update(self.tminfo.high_qc.info.vote.round);
     }
 }
 
@@ -43,6 +43,6 @@ pub struct ProposalMessage<S, T> {
 
 impl<S: Signature, T: SignatureCollection> Hashable for ProposalMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (&self.block).hash(state);
+        self.block.hash(state);
     }
 }

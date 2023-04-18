@@ -1,3 +1,4 @@
+use monad_consensus::types::voting::VoteInfo;
 use test_case::test_case;
 
 use monad_consensus::types::block::{Block, TransactionList};
@@ -22,7 +23,12 @@ fn vote_msg_hash(cs: Option<Hash>) {
     };
 
     let vm = VoteMessage {
-        vote_info: Default::default(),
+        vote_info: VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(0),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        },
         ledger_commit_info: lci,
     };
 
@@ -44,7 +50,12 @@ fn timeout_msg_hash() {
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
-                vote: Default::default(),
+                vote: VoteInfo {
+                    id: BlockId([0x00_u8; 32]),
+                    round: Round(0),
+                    parent_id: BlockId([0x00_u8; 32]),
+                    parent_round: Round(0),
+                },
                 ledger_commit: Default::default(),
             },
             MockSignatures,
@@ -77,7 +88,18 @@ fn proposal_msg_hash() {
     let keypair = KeyPair::from_slice(&privkey).unwrap();
     let author = NodeId(keypair.pubkey());
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new(Default::default(), MockSignatures);
+    let qc = QuorumCertificate::<MockSignatures>::new(
+        QcInfo {
+            vote: VoteInfo {
+                id: BlockId([0x00_u8; 32]),
+                round: Round(0),
+                parent_id: BlockId([0x00_u8; 32]),
+                parent_round: Round(0),
+            },
+            ledger_commit: LedgerCommitInfo::default(),
+        },
+        MockSignatures,
+    );
 
     let block = Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc);
 
@@ -124,7 +146,12 @@ fn test_vote_message() {
     };
 
     let vm = VoteMessage {
-        vote_info: Default::default(),
+        vote_info: VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(0),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        },
         ledger_commit_info: lci,
     };
 

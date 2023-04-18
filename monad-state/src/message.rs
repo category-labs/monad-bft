@@ -94,7 +94,7 @@ where
         self.messages
             .back_mut()
             .unwrap()
-            .insert((peer.clone(), message.id()));
+            .insert((peer, message.id()));
 
         MessageActionPublish { to: peer, message }
     }
@@ -102,7 +102,7 @@ where
     pub fn broadcast(&mut self, message: M) -> Vec<MessageActionPublish<M>> {
         let mut commands = Vec::new();
         for peer in self.peers.to_vec() {
-            commands.push(self.send(peer.clone(), message.clone()));
+            commands.push(self.send(peer, message.clone()));
         }
 
         commands

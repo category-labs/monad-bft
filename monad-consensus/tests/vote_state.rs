@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use monad_consensus::types::voting::VoteInfo;
+use monad_types::{BlockId, Round};
 use test_case::test_case;
 
 use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
@@ -32,7 +34,12 @@ fn create_signed_vote_message(
     };
 
     let vm = VoteMessage {
-        vote_info: Default::default(),
+        vote_info: VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(0),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        },
         ledger_commit_info: lci,
     };
 
@@ -98,7 +105,7 @@ fn verify_qcs(
 fn test_votes(num_nodes: u32) {
     let (_, valset, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::new();
+    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let qc =
@@ -121,7 +128,7 @@ fn test_votes(num_nodes: u32) {
 fn test_reset(num_nodes: u32, num_rounds: u32) {
     let (_, valset, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::new();
+    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
     let mut qcs = Vec::new();
 
     for _ in 0..num_rounds {
@@ -147,7 +154,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 fn test_minority(num_nodes: u32) {
     let (_, valset, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::new();
+    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
     let mut qcs = Vec::new();
 
     let majority = 2 * num_nodes / 3 + 1;

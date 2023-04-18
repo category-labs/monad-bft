@@ -10,7 +10,7 @@ impl LeaderElection for MockLeaderElection {
     fn new() -> Self {
         let key: [u8; 32] = [128; 32];
         let keypair = KeyPair::from_slice(&key).unwrap();
-        let leader = keypair.pubkey().clone();
+        let leader = keypair.pubkey();
         MockLeaderElection {
             leader: NodeId(leader),
         }

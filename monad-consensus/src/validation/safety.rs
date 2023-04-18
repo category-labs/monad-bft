@@ -16,14 +16,16 @@ pub struct Safety {
     highest_qc_round: Round,
 }
 
-impl Safety {
-    pub fn new() -> Self {
-        Safety {
+impl Default for Safety {
+    fn default() -> Self {
+        Self {
             highest_vote_round: Round(0),
             highest_qc_round: Round(0),
         }
     }
+}
 
+impl Safety {
     fn update_highest_vote_round(&mut self, r: Round) {
         self.highest_vote_round = cmp::max(r, self.highest_vote_round);
     }
@@ -42,7 +44,7 @@ impl Safety {
             return false;
         }
 
-        return consecutive(block_round, qc_round) || safe_to_extend(block_round, qc_round, tc);
+        consecutive(block_round, qc_round) || safe_to_extend(block_round, qc_round, tc)
     }
 
     fn safe_to_timeout<S>(
@@ -63,7 +65,7 @@ impl Safety {
             None => false,
         };
 
-        return consecutive(round, qc_round) || consecutive_tc;
+        consecutive(round, qc_round) || consecutive_tc
     }
 
     pub fn make_timeout<S, T: SignatureCollection>(
@@ -73,7 +75,7 @@ impl Safety {
         last_tc: &Option<TimeoutCertificate<S>>,
     ) -> Option<TimeoutInfo<T>> {
         let qc_round = high_qc.info.vote.round;
-        if self.safe_to_timeout(round, qc_round, &last_tc) {
+        if self.safe_to_timeout(round, qc_round, last_tc) {
             self.update_highest_vote_round(round);
             Some(TimeoutInfo { round, high_qc })
         } else {

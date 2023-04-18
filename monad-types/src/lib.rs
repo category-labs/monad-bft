@@ -8,7 +8,7 @@ use zerocopy::AsBytes;
 pub type Hash = [u8; 32];
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, AsBytes)]
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, AsBytes)]
 pub struct Round(pub u64);
 
 impl AsRef<[u8]> for Round {
@@ -44,7 +44,7 @@ impl AddAssign for Round {
 pub struct NodeId(pub PubKey);
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BlockId(pub Hash);
 
 impl std::fmt::Debug for BlockId {

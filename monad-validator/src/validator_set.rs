@@ -50,12 +50,8 @@ impl<T: LeaderElection> ValidatorSet<T> {
         }
 
         let mut election = T::new();
-        election.start_new_epoch(
-            vmap.iter()
-                .map(|(_, v)| (NodeId(v.pubkey), v.stake))
-                .collect(),
-        );
-        let total_stake: i64 = vmap.iter().map(|(_, v)| v.stake).sum();
+        election.start_new_epoch(vmap.values().map(|v| (NodeId(v.pubkey), v.stake)).collect());
+        let total_stake: i64 = vmap.values().map(|v| v.stake).sum();
 
         Ok(ValidatorSet {
             validators: vmap,
@@ -76,10 +72,9 @@ impl<T: LeaderElection> ValidatorSet<T> {
     pub fn has_super_majority_votes(&self, addrs: &Vec<NodeId>) -> bool {
         assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
         let mut voter_stake: i64 = 0;
-        for addr in addrs.into_iter() {
-            match self.validators.get(&addr) {
-                Some(v) => voter_stake += v.stake,
-                None => {}
+        for addr in addrs {
+            if let Some(v) = self.validators.get(addr) {
+                voter_stake += v.stake
             }
         }
 
@@ -90,7 +85,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
         assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
         addrs
             .iter()
-            .filter_map(|addr| self.validators.get(&addr).map(|v| v.stake))
+            .filter_map(|addr| self.validators.get(addr).map(|v| v.stake))
             .sum::<i64>()
             >= self.total_stake / 3 + 1
     }
@@ -99,7 +94,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
         // FIXME switch back to weighted round robin
         let mut validators = self.validators.iter().collect::<Vec<_>>();
         validators.sort_by_key(|(pubkey, _)| *pubkey);
-        &validators[(round.0 as usize % self.validators.len())].0
+        validators[(round.0 as usize % self.validators.len())].0
         // if round < self.round {
         //     panic!("round reversed {:?}->{:?}", self.round, round);
         // }

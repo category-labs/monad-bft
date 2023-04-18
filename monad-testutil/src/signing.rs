@@ -78,7 +78,7 @@ pub fn get_genesis_config<H: Hasher, T: SignatureCollection>(keys: &Vec<KeyPair>
     let genesis_prime_qc = QuorumCertificate::<T>::genesis_prime_qc::<H>();
     let genesis_block = Block::<T>::new::<H>(
         // FIXME init from genesis config, don't use random key
-        NodeId(KeyPair::from_slice(&[0xBE as u8; 32]).unwrap().pubkey()),
+        NodeId(KeyPair::from_slice(&[0xBE_u8; 32]).unwrap().pubkey()),
         Round(0),
         &genesis_txn,
         &genesis_prime_qc,

@@ -53,9 +53,9 @@ impl<T: SignatureCollection> BlockTreeBlock<T> {
         f: &mut fmt::Formatter<'_>,
         indent: &String,
     ) -> std::fmt::Result {
-        write!(
+        writeln!(
             f,
-            "{}({:?}){:?}\n",
+            "{}({:?}){:?}",
             indent,
             self.block.round.0,
             self.block.get_id()
@@ -93,7 +93,7 @@ pub struct BlockTree<T> {
 impl<T: SignatureCollection> std::fmt::Debug for BlockTree<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let root = self.tree.get(&self.root).unwrap();
-        root.tree_fmt(&self, f, &"".to_owned())?;
+        root.tree_fmt(self, f, &"".to_owned())?;
         Ok(())
     }
 }
@@ -106,7 +106,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         tree.insert(bid, BlockTreeBlock::new(genesis_block));
         Self {
             root: bid,
-            tree: tree,
+            tree,
             high_round: round,
         }
     }
@@ -173,7 +173,7 @@ impl<T: SignatureCollection> BlockTree<T> {
     pub fn debug_print(&self) -> std::io::Result<()> {
         let mut tree = TreeBuilder::new("BlockTree".to_owned());
         let root = self.tree.get(&self.root).unwrap();
-        root.build_ptree(&self, &mut tree);
+        root.build_ptree(self, &mut tree);
 
         print_tree(&tree.build())
     }
@@ -213,7 +213,12 @@ mod test {
             &txlist,
             &QC::new(
                 QcInfo {
-                    vote: VoteInfo::default(),
+                    vote: VoteInfo {
+                        id: BlockId([0x00_u8; 32]),
+                        round: Round(0),
+                        parent_id: BlockId([0x00_u8; 32]),
+                        parent_round: Round(0),
+                    },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
                 MockSignatures,
@@ -223,8 +228,8 @@ mod test {
         let v1 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId::default(),
-            parent_round: Round::default(),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -263,8 +268,8 @@ mod test {
         let v3 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId::default(),
-            parent_round: Round::default(),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
         };
 
         let b3 = Block::new::<Sha256Hash>(
@@ -283,8 +288,8 @@ mod test {
         let v4 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId::default(),
-            parent_round: Round::default(),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
         };
 
         let b4 = Block::new::<Sha256Hash>(
@@ -454,7 +459,12 @@ mod test {
             &txlist,
             &QC::new(
                 QcInfo {
-                    vote: VoteInfo::default(),
+                    vote: VoteInfo {
+                        id: BlockId([0x00_u8; 32]),
+                        round: Round(0),
+                        parent_id: BlockId([0x00_u8; 32]),
+                        parent_round: Round(0),
+                    },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
                 MockSignatures,
@@ -464,8 +474,8 @@ mod test {
         let v1 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId::default(),
-            parent_round: Round::default(),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
         };
 
         let b1 = Block::new::<Sha256Hash>(

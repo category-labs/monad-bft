@@ -24,14 +24,14 @@ pub struct Pacemaker<S, T> {
     pending_timeouts: HashMap<NodeId, Verified<S, TimeoutMessage<S, T>>>,
 
     // used to not duplicate broadcast/tc
-    phase: Phase,
+    phase: PhaseHonest,
 }
 
 #[derive(PartialEq)]
-enum Phase {
-    ZeroHonest,
-    OneHonest,
-    SupermajorityHonest,
+enum PhaseHonest {
+    Zero,
+    One,
+    Supermajority,
 }
 
 pub enum PacemakerCommand<S, T> {
@@ -63,7 +63,7 @@ where
             last_round_tc,
             pending_timeouts,
 
-            phase: Phase::ZeroHonest,
+            phase: PhaseHonest::Zero,
         }
     }
 
@@ -79,7 +79,7 @@ where
     fn start_timer(&mut self, new_round: Round) -> PacemakerCommand<S, T> {
         assert!(new_round > self.current_round);
 
-        self.phase = Phase::ZeroHonest;
+        self.phase = PhaseHonest::Zero;
         self.pending_timeouts.clear();
 
         self.current_round = new_round;
@@ -113,7 +113,7 @@ where
         high_qc: &QuorumCertificate<T>,
         _event: PacemakerTimerExpire,
     ) -> Option<PacemakerCommand<S, T>> {
-        self.phase = Phase::OneHonest;
+        self.phase = PhaseHonest::One;
         self.local_timeout_round(safety, high_qc)
     }
 
@@ -138,13 +138,13 @@ where
 
         let timeouts = self.pending_timeouts.keys().copied().collect();
 
-        if self.phase == Phase::ZeroHonest && validators.has_honest_vote(&timeouts) {
+        if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
             ret_commands.push(PacemakerCommand::Unschedule);
             ret_commands.extend(self.local_timeout_round(safety, high_qc));
-            self.phase = Phase::OneHonest;
+            self.phase = PhaseHonest::One;
         }
         let mut ret_tc = None;
-        if self.phase == Phase::OneHonest && validators.has_super_majority_votes(&timeouts) {
+        if self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
             ret_tc = Some(TimeoutCertificate {
                 round: tm_info.round,
                 high_qc_rounds: self
@@ -161,7 +161,7 @@ where
                     })
                     .collect(),
             });
-            self.phase = Phase::SupermajorityHonest;
+            self.phase = PhaseHonest::Supermajority;
         }
 
         (ret_tc, ret_commands)

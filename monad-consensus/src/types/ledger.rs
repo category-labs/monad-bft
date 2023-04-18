@@ -22,7 +22,7 @@ impl LedgerCommitInfo {
 
 impl Hashable for LedgerCommitInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.update(&self.vote_info_hash);
+        state.update(self.vote_info_hash);
         if let Some(x) = self.commit_state_hash.as_ref() {
             state.update(x);
         }

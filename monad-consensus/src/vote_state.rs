@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use monad_crypto::Signature;
 use monad_types::{Hash, NodeId};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
@@ -20,6 +19,16 @@ pub struct VoteState<T> {
     pending_vote_sigs: HashMap<Hash, T>,
     pending_vote_keys: HashMap<Hash, Vec<NodeId>>,
     qc_created: bool,
+}
+
+impl<T> Default for VoteState<T> {
+    fn default() -> Self {
+        VoteState {
+            pending_vote_sigs: HashMap::new(),
+            pending_vote_keys: HashMap::new(),
+            qc_created: false,
+        }
+    }
 }
 
 impl<T> VoteState<T>
@@ -49,7 +58,7 @@ where
         let pubkeys = &self.pending_vote_keys[&vote_idx];
 
         if validators.has_super_majority_votes(pubkeys) {
-            assert!(self.qc_created == false);
+            assert!(!self.qc_created);
             let qc = QuorumCertificate::<T>::new(
                 QcInfo {
                     vote: v.vote_info,
@@ -62,14 +71,6 @@ where
         }
 
         None
-    }
-
-    pub fn new() -> Self {
-        VoteState {
-            pending_vote_sigs: HashMap::new(),
-            pending_vote_keys: HashMap::new(),
-            qc_created: false,
-        }
     }
 
     pub fn start_new_round(&mut self) {

@@ -23,7 +23,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_crypto::{
-    secp256k1::{KeyPair, PubKey, SecpSignature},
+    secp256k1::{KeyPair, PubKey},
     NopSignature, Signature,
 };
 use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
@@ -214,7 +214,7 @@ impl State for MonadState {
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
-                    } => match SignedConsensusMessage::from(unverified_message) {
+                    } => match unverified_message {
                         SignedConsensusMessage::Proposal(msg) => {
                             let proposal =
                                 msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
@@ -269,7 +269,7 @@ impl State for MonadState {
                             let publish_action = self.message_state.send(to, message);
                             let id = publish_action.message.id();
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
-                                to: publish_action.to.clone(),
+                                to: publish_action.to,
                                 message: publish_action.message,
                                 on_ack: MonadEvent::Ack {
                                     peer: publish_action.to,
@@ -289,7 +289,7 @@ impl State for MonadState {
                                 |publish_action| {
                                     let id = publish_action.message.id();
                                     Command::RouterCommand(RouterCommand::Publish {
-                                        to: publish_action.to.clone(),
+                                        to: publish_action.to,
                                         message: publish_action.message,
                                         on_ack: MonadEvent::Ack {
                                             peer: publish_action.to,
@@ -439,12 +439,12 @@ where
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
-            vote_state: VoteState::new(),
+            vote_state: VoteState::default(),
             high_qc: genesis_qc,
             ledger: L::new(),
             mempool: M::new(),
             pacemaker: Pacemaker::new(delta, Round(1), None, HashMap::new()),
-            safety: Safety::new(),
+            safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
 
             keypair,
@@ -483,16 +483,13 @@ where
 
         let vote_msg = self.safety.make_vote::<S, T, H>(&p.block, &p.last_round_tc);
 
-        match vote_msg {
-            Some(v) => {
-                let next_leader = validators.get_leader(round + Round(1));
-                let send_cmd = ConsensusCommand::Send {
-                    to: PeerId(next_leader.0),
-                    message: ConsensusMessage::Vote(v),
-                };
-                cmds.push(send_cmd);
-            }
-            None => (),
+        if let Some(v) = vote_msg {
+            let next_leader = validators.get_leader(round + Round(1));
+            let send_cmd = ConsensusCommand::Send {
+                to: PeerId(next_leader.0),
+                message: ConsensusMessage::Vote(v),
+            };
+            cmds.push(send_cmd);
         }
 
         cmds

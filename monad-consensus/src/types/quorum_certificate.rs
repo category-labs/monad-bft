@@ -15,7 +15,7 @@ pub struct QuorumCertificate<T> {
     signature_hash: Hash,
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct QcInfo {
     pub vote: VoteInfo,
     pub ledger_commit: LedgerCommitInfo,

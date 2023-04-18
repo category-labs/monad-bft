@@ -1,6 +1,8 @@
 use monad_consensus::types::block::{Block, TransactionList};
+use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::message::ProposalMessage;
-use monad_consensus::types::quorum_certificate::QuorumCertificate;
+use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
+use monad_consensus::types::voting::VoteInfo;
 use monad_consensus::validation::error::Error;
 use monad_consensus::validation::hashing::*;
 use monad_consensus::validation::signing::ValidatorMember;
@@ -12,7 +14,18 @@ use monad_validator::validator::Validator;
 fn setup_block(author: NodeId, block_round: u64, qc_round: u64) -> Block<MockSignatures> {
     let txns = TransactionList(vec![1, 2, 3, 4]);
     let round = Round(block_round);
-    let mut qc = QuorumCertificate::<MockSignatures>::new(Default::default(), MockSignatures);
+    let mut qc = QuorumCertificate::<MockSignatures>::new(
+        QcInfo {
+            vote: VoteInfo {
+                id: BlockId([0x00_u8; 32]),
+                round: Round(0),
+                parent_id: BlockId([0x00_u8; 32]),
+                parent_round: Round(0),
+            },
+            ledger_commit: LedgerCommitInfo::default(),
+        },
+        MockSignatures,
+    );
     qc.info.vote.round = Round(qc_round);
 
     Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc)

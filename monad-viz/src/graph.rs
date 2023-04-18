@@ -37,10 +37,9 @@ pub trait Graph {
     type Event;
     type NodeId;
 
-    fn state<'s>(
-        &'s self,
-    ) -> Vec<NodeState<'s, Self::NodeId, Self::State, Self::Message, Self::MessageId, Self::Event>>;
-
+    fn state(
+        &self,
+    ) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::MessageId, Self::Event>>;
     fn tick(&self) -> Duration;
     fn min_tick(&self) -> Duration;
     fn max_tick(&self) -> Duration;
@@ -99,10 +98,9 @@ where
     type Event = S::Event;
     type NodeId = PeerId;
 
-    fn state<'s>(
-        &'s self,
-    ) -> Vec<NodeState<'s, Self::NodeId, S, S::Message, <S::Message as Message>::Id, S::Event>>
-    {
+    fn state(
+        &self,
+    ) -> Vec<NodeState<Self::NodeId, S, S::Message, <S::Message as Message>::Id, S::Event>> {
         let mut state =
             self.nodes
                 .states()
@@ -111,32 +109,32 @@ where
                     id: peer_id,
                     state,
                     pending_events: std::iter::empty()
-                        .chain(executor.pending_timer().into_iter().map(|timer_event| {
+                        .chain(executor.pending_timer().iter().map(|timer_event| {
                             NodeEvent::Timer {
                                 scheduled_time: timer_event.scheduled_tick,
                                 trip_time: timer_event.tick,
                                 event: &timer_event.event,
                             }
                         }))
-                        .chain(
-                            executor
-                                .pending_messages()
-                                .into_iter()
-                                .map(|message_event| NodeEvent::Message {
-                                    tx_time: message_event.tx_tick,
-                                    rx_time: message_event.tick,
-                                    tx_peer: &message_event.from,
-                                    message: &message_event.t,
-                                }),
-                        )
-                        .chain(executor.pending_acks().into_iter().map(|ack_event| {
-                            NodeEvent::Ack {
-                                tx_time: ack_event.tx_tick,
-                                rx_time: ack_event.tick,
-                                tx_peer: &ack_event.from,
-                                message_id: &ack_event.t,
+                        .chain(executor.pending_messages().iter().map(|message_event| {
+                            NodeEvent::Message {
+                                tx_time: message_event.tx_tick,
+                                rx_time: message_event.tick,
+                                tx_peer: &message_event.from,
+                                message: &message_event.t,
                             }
                         }))
+                        .chain(
+                            executor
+                                .pending_acks()
+                                .iter()
+                                .map(|ack_event| NodeEvent::Ack {
+                                    tx_time: ack_event.tx_tick,
+                                    rx_time: ack_event.tick,
+                                    tx_peer: &ack_event.from,
+                                    message_id: &ack_event.t,
+                                }),
+                        )
                         .collect(),
                 })
                 .collect::<Vec<_>>();

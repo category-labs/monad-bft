@@ -4,7 +4,7 @@ use monad_types::*;
 
 use crate::validation::hashing::{Hashable, Hasher};
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct VoteInfo {
     pub id: BlockId,
     pub round: Round,
@@ -24,7 +24,7 @@ impl Hashable for VoteInfo {
 #[cfg(test)]
 mod test {
     use crate::validation::hashing::{Hasher, Sha256Hash};
-    use monad_types::Hash;
+    use monad_types::{BlockId, Hash, Round};
 
     use super::VoteInfo;
     use sha2::Digest;
@@ -41,7 +41,12 @@ mod test {
 
     #[test]
     fn voteinfo_hash() {
-        let vi = VoteInfo::default();
+        let vi = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(0),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        };
 
         let h1 = Sha256Hash::hash_object(&vi);
         let h2 = hash_vote(&vi);

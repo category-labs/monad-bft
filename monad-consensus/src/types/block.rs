@@ -40,8 +40,9 @@ impl<T: SignatureCollection> Block<T> {
             round,
             payload: txns.clone(),
             qc: qc.clone(),
-            id: Default::default(),
+            id: BlockId([0x00_u8; 32]),
         };
+        // FIXME make this less jank
         b.id = BlockId(H::hash_object(&b));
         b
     }

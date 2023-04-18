@@ -92,7 +92,7 @@ impl LeaderElection for WeightedRoundRobin {
 
     fn update_voting_power(&mut self, addr: &NodeId, new_voting_power: i64) -> bool {
         self.panic_if_empty();
-        let v = match self.voters.iter_mut().filter(|v| addr == &v.address).next() {
+        let v = match self.voters.iter_mut().find(|v| addr == &v.address) {
             Some(v) => v,
             None => return false,
         };

@@ -5,7 +5,6 @@ use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_crypto::Signature;
 use monad_types::Hash;
 use monad_types::NodeId;
-use monad_types::Round;
 use monad_validator::validator::Validator;
 
 use crate::types::message::ProposalMessage;

@@ -46,9 +46,9 @@ impl From<&Hash> for ProtoHash {
 impl TryFrom<ProtoHash> for Hash {
     type Error = ProtoError;
     fn try_from(value: ProtoHash) -> Result<Self, Self::Error> {
-        Ok(value
+        value
             .hash
             .try_into()
-            .map_err(|e: Vec<_>| Self::Error::WrongHashLen(format!("{}", e.len())))?)
+            .map_err(|e: Vec<_>| Self::Error::WrongHashLen(format!("{}", e.len())))
     }
 }

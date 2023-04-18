@@ -154,12 +154,12 @@ where
     }
 }
 
-impl<E, M> MockExecutor<E, M>
+impl<E, M> Default for MockExecutor<E, M>
 where
     E: Unpin,
     M: Message<Event = E>,
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             tick: Duration::default(),
 
@@ -222,11 +222,10 @@ where
 
         for (to, message, on_ack) in to_publish {
             let id = message.id();
-            if to_unpublish.contains(&(to.clone(), id.clone())) {
+            if to_unpublish.contains(&(to, id.clone())) {
                 continue;
             }
-            self.outbound_messages
-                .push_back((to.clone(), message.clone()));
+            self.outbound_messages.push_back((to, message.clone()));
             let entry = self.sent_messages.entry(to).or_default().entry(id);
             match entry {
                 Entry::Occupied(_) => panic!("can't double publish!"),
@@ -250,7 +249,7 @@ where
              }| {
                 !self
                     .sent_messages
-                    .entry(from.clone())
+                    .entry(*from)
                     .or_default()
                     .contains_key(ack)
             },
@@ -282,7 +281,7 @@ where
                         tx_tick: _,
                     } = this.inbound_messages.pop().unwrap();
 
-                    this.received_messages.push((from.clone(), message.id()));
+                    this.received_messages.push((from, message.id()));
 
                     message.event(from)
                 }
@@ -313,8 +312,8 @@ where
 pub struct MockTimer<E> {
     event: Option<E>,
 }
-impl<E> MockTimer<E> {
-    pub fn new() -> Self {
+impl<E> Default for MockTimer<E> {
+    fn default() -> Self {
         Self { event: None }
     }
 }
@@ -485,7 +484,7 @@ mod tests {
     where
         S: State,
     {
-        let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
+        let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::default();
 
         let (mut state, mut init_commands) = S::init(config);
         let mut event_log = init_events.clone();

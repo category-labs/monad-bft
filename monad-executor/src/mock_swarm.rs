@@ -17,7 +17,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
         let mut states = HashMap::new();
 
         for (pubkey, config) in peers {
-            let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::new();
+            let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::default();
             let (state, init_commands) = S::init(config);
             executor.exec(init_commands);
             states.insert(PeerId(pubkey), (executor, state));
@@ -55,7 +55,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
             })
             .min_by_key(|(_, _, _, tick)| *tick)
         {
-            let id = id.clone();
+            let id = *id;
             let event = futures::executor::block_on(executor.next()).unwrap();
             let commands = state.update(event.clone());
 
@@ -80,7 +80,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
             };
             to_state.send_message(
                 tick + (self.compute_latency)(peer_id, &to),
-                peer_id.clone(),
+                *peer_id,
                 outbound_message,
                 tick,
             );
@@ -93,13 +93,13 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
             };
             to_state.send_ack(
                 tick + (self.compute_latency)(peer_id, &to),
-                peer_id.clone(),
+                *peer_id,
                 message_id,
                 tick,
             );
         }
 
-        self.states.insert(peer_id.clone(), (executor, state));
+        self.states.insert(*peer_id, (executor, state));
     }
 
     pub fn states(&self) -> &HashMap<PeerId, (MockExecutor<S::Event, S::Message>, S)> {

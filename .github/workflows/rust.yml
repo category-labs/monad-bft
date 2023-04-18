@@ -20,6 +20,23 @@ jobs:
       run: |
         sudo apt install libx11-dev libxi-dev libgl1-mesa-dev gcc-mingw-w64 libasound2-dev
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo build --verbose
     - name: Run tests
-      run: cargo test --release --verbose
+      run: cargo test --verbose
+    - name: Lint
+      run: >
+        cargo clippy --
+        -A clippy::type_complexity
+        -A clippy::int_plus_one
+        -D clippy::suspicious
+        -D clippy::style
+        -D clippy::clone_on_copy
+        -D clippy::iter_kv_map
+        -D clippy::unnecessary_cast
+        -D clippy::filter_next
+        -D clippy::needless_lifetimes
+        -D clippy::useless_conversion
+        -D clippy::needless_question_mark
+        -D clippy::bool_comparison
+        -D unused_imports
+

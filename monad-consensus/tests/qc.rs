@@ -13,11 +13,19 @@ extern crate monad_testutil;
 fn comparison() {
     let ci = LedgerCommitInfo::default();
 
-    let mut vi_1 = VoteInfo::default();
-    vi_1.round = Round(2);
+    let vi_1 = VoteInfo {
+        id: BlockId([0x00_u8; 32]),
+        round: Round(2),
+        parent_id: BlockId([0x00_u8; 32]),
+        parent_round: Round(0),
+    };
 
-    let mut vi_2 = VoteInfo::default();
-    vi_2.round = Round(3);
+    let vi_2 = VoteInfo {
+        id: BlockId([0x00_u8; 32]),
+        round: Round(3),
+        parent_id: BlockId([0x00_u8; 32]),
+        parent_round: Round(0),
+    };
 
     let qc_1 = QuorumCertificate::<monad_testutil::signing::MockSignatures>::new(
         QcInfo {
