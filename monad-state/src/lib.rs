@@ -103,28 +103,12 @@ impl Serializable for MonadMessage {
     }
 }
 
-// FIXME this is a hack that we should refactor - SignatureType should be generic
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MonadMessageId(SignatureType);
-
-impl Serializable for MonadMessageId {
-    type ReadError = MonadReadError;
-
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
-        todo!("proto deserialize message_id")
-    }
-
-    fn serialize(&self) -> Vec<u8> {
-        todo!("proto serialize message_id")
-    }
-}
-
 impl Message for MonadMessage {
     type Event = MonadEvent;
-    type Id = MonadMessageId;
+    type Id = SignatureType;
 
     fn id(&self) -> Self::Id {
-        MonadMessageId(*match self {
+        *match self {
             Self::Verified(msg) => match msg {
                 VerifiedConsensusMessage::Proposal(msg) => msg.author_signature(),
                 VerifiedConsensusMessage::Vote(msg) => msg.author_signature(),
@@ -135,7 +119,7 @@ impl Message for MonadMessage {
                 SignedConsensusMessage::Vote(msg) => msg.author_signature(),
                 SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
             },
-        })
+        }
     }
 
     fn event(self, from: PeerId) -> Self::Event {

@@ -60,7 +60,7 @@ pub trait State: Sized {
     fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>>;
 }
 
-pub trait Serializable: Sized + Send + 'static {
+pub trait Serializable: Sized + Send + Sync + 'static {
     type ReadError: Error + Send + Sync;
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError>;
@@ -68,7 +68,7 @@ pub trait Serializable: Sized + Send + 'static {
 }
 
 pub trait Message: Clone + Unpin {
-    type Event;
+    type Event: Unpin;
     type Id: Eq + Hash + Clone + Unpin;
 
     fn id(&self) -> Self::Id;
