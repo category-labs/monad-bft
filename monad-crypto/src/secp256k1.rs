@@ -128,7 +128,10 @@ mod tests {
         let keypair = KeyPair::from_slice(&privkey).unwrap();
 
         let pubkey_bytes = keypair.pubkey().into_bytes();
-        assert!(pubkey_bytes == PubKey::from_slice(&pubkey_bytes).unwrap().into_bytes());
+        assert_eq!(
+            pubkey_bytes,
+            PubKey::from_slice(&pubkey_bytes).unwrap().into_bytes()
+        );
     }
 
     #[test]
@@ -147,7 +150,7 @@ mod tests {
         let generated_eth_address = output[12..].to_vec();
 
         let expected_eth_address = hex::decode("ff7F1B7DbaaF35259dDa7cb42564CB7507C1D88d").unwrap();
-        assert!(generated_eth_address == expected_eth_address);
+        assert_eq!(generated_eth_address, expected_eth_address);
     }
 
     #[test]

@@ -142,23 +142,14 @@ mod tests {
 
     impl Message for TestMessage {
         type Event = TestMessage;
-        type ReadError = ();
         type Id = TestMessage;
-
-        fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
-            todo!()
-        }
-
-        fn serialize(&self) -> Vec<u8> {
-            todo!()
-        }
 
         fn id(&self) -> Self::Id {
             self.clone()
         }
 
         fn event(self, _from: PeerId) -> Self::Event {
-            todo!()
+            unreachable!()
         }
     }
 

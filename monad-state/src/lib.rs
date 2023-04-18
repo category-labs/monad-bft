@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::time::Duration;
 use std::{collections::HashMap, fmt::Debug};
 
@@ -27,7 +28,7 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
     NopSignature, Signature,
 };
-use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
+use monad_executor::{Command, Message, PeerId, RouterCommand, Serializable, State, TimerCommand};
 use monad_types::{NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
@@ -81,25 +82,49 @@ pub enum MonadMessage {
     Unverified(SignedConsensusMessage<SignatureType, SignatureCollectionType>),
 }
 
-impl Message for MonadMessage {
-    type Event = MonadEvent;
-    type ReadError = ();
+#[derive(Debug)]
+pub struct MonadReadError;
+impl std::fmt::Display for MonadReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as Debug>::fmt(self, f)
+    }
+}
+impl Error for MonadReadError {}
 
-    type Id = SignatureType;
+impl Serializable for MonadMessage {
+    type ReadError = MonadReadError;
 
-    fn deserialize(from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
-        // MUST assert that output is valid and came from the `from` PeerId
-        // `from` must somehow be guaranteed to be staked at this point so that subsequent
-        // malformed stuff (that gets added to event log) can be slashed? TODO
+    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
         todo!("proto deserialize")
     }
 
     fn serialize(&self) -> Vec<u8> {
         todo!("proto serialize")
     }
+}
+
+// FIXME this is a hack that we should refactor - SignatureType should be generic
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MonadMessageId(SignatureType);
+
+impl Serializable for MonadMessageId {
+    type ReadError = MonadReadError;
+
+    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
+        todo!("proto deserialize message_id")
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        todo!("proto serialize message_id")
+    }
+}
+
+impl Message for MonadMessage {
+    type Event = MonadEvent;
+    type Id = MonadMessageId;
 
     fn id(&self) -> Self::Id {
-        *match self {
+        MonadMessageId(*match self {
             Self::Verified(msg) => match msg {
                 VerifiedConsensusMessage::Proposal(msg) => msg.author_signature(),
                 VerifiedConsensusMessage::Vote(msg) => msg.author_signature(),
@@ -110,10 +135,14 @@ impl Message for MonadMessage {
                 SignedConsensusMessage::Vote(msg) => msg.author_signature(),
                 SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
             },
-        }
+        })
     }
 
     fn event(self, from: PeerId) -> Self::Event {
+        // MUST assert that output is valid and came from the `from` PeerId
+        // `from` must somehow be guaranteed to be staked at this point so that subsequent
+        // malformed stuff (that gets added to event log) can be slashed? TODO
+
         let unverified_msg = match self {
             Self::Unverified(msg) => msg,
             // the verified branch only used in tests to simulate serde

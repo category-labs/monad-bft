@@ -343,14 +343,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{HashMap, HashSet},
-        time::Duration,
-    };
+    use std::{collections::HashSet, time::Duration};
 
     use futures::StreamExt;
 
-    use monad_crypto::secp256k1::{KeyPair, PubKey};
+    use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
 
     use crate::{
@@ -374,7 +371,6 @@ mod tests {
         IncrementNumTimeout,
         IncrementNumAck,
     }
-    struct LongAckParseError;
 
     impl State for LongAckState {
         type Config = ();
@@ -438,17 +434,7 @@ mod tests {
     struct LongAckMessage(u64);
     impl Message for LongAckMessage {
         type Event = LongAckEvent;
-        type ReadError = LongAckParseError;
         type Id = u64;
-
-        fn deserialize(_from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
-            let arr: [u8; 8] = message.try_into().map_err(|_| LongAckParseError)?;
-            Ok(Self(u64::from_ne_bytes(arr)))
-        }
-
-        fn serialize(&self) -> Vec<u8> {
-            self.0.to_ne_bytes().to_vec()
-        }
 
         fn id(&self) -> Self::Id {
             self.0
@@ -611,7 +597,6 @@ mod tests {
         Vote { peer: PeerId, round: u64 },
         Ack { peer: PeerId, round: u64 },
     }
-    struct SimpleChainEventParseError;
 
     impl State for SimpleChainState {
         type Config = (Vec<PeerId>, PeerId);
@@ -689,21 +674,10 @@ mod tests {
     struct SimpleChainMessage {
         round: u64,
     }
+
     impl Message for SimpleChainMessage {
         type Event = SimpleChainEvent;
-        type ReadError = SimpleChainEventParseError;
         type Id = u64;
-
-        fn deserialize(_from: PeerId, message: &[u8]) -> Result<Self, Self::ReadError> {
-            let arr: [u8; 8] = message.try_into().map_err(|_| SimpleChainEventParseError)?;
-            Ok(Self {
-                round: u64::from_ne_bytes(arr),
-            })
-        }
-
-        fn serialize(&self) -> Vec<u8> {
-            self.round.to_ne_bytes().to_vec()
-        }
 
         fn id(&self) -> Self::Id {
             self.round
