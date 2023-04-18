@@ -8,4 +8,6 @@ pub enum Error {
     InvalidSignature,
     /// Signature author doesn't match sender
     AuthorNotSender,
+    /// There are high qc rounds larger than the TC round
+    InvalidTcRound,
 }

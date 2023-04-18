@@ -186,21 +186,45 @@ where
     V: SignatureCollection,
 {
     if let Some(tc) = tc {
-        for a in tc.high_qc_rounds.iter() {
-            // TODO fix this hashing..
-            let mut h = H::new();
-            h.update(tc.round);
-            h.update(a.0.qc_round);
-            let msg = h.hash();
-
-            let pubkey = get_pubkey(&msg, &a.1)?;
-            pubkey.valid_pubkey(validators)?;
-
-            a.1.verify(&msg, &pubkey)
-                .map_err(|_| Error::InvalidSignature)?;
-        }
+        verify_tc::<S, H>(validators, tc)?;
     }
 
+    verify_qc::<V, H>(validators, qc)?;
+
+    Ok(())
+}
+
+fn verify_tc<S, H>(validators: &ValidatorMember, tc: &TimeoutCertificate<S>) -> Result<(), Error>
+where
+    S: Signature,
+    H: Hasher,
+{
+    for t in tc.high_qc_rounds.iter() {
+        if t.0.qc_round >= tc.round {
+            return Err(Error::InvalidTcRound);
+        }
+
+        // TODO fix this hashing..
+        let mut h = H::new();
+        h.update(tc.round);
+        h.update(t.0.qc_round);
+        let msg = h.hash();
+
+        let pubkey = get_pubkey(&msg, &t.1)?;
+        pubkey.valid_pubkey(validators)?;
+
+        t.1.verify(&msg, &pubkey)
+            .map_err(|_| Error::InvalidSignature)?;
+    }
+
+    Ok(())
+}
+
+fn verify_qc<V, H>(validators: &ValidatorMember, qc: &QuorumCertificate<V>) -> Result<(), Error>
+where
+    V: SignatureCollection,
+    H: Hasher,
+{
     let qc_msg = H::hash_object(&qc.info.ledger_commit);
     let pubkeys = qc
         .signatures
@@ -255,5 +279,57 @@ impl ValidatorPubKey for PubKey {
         } else {
             Err(Error::InvalidAuthor)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::types::timeout::{HighQcRound, TimeoutCertificate};
+    use crate::validation::error::Error;
+    use crate::validation::{hashing::*, signing::ValidatorMember};
+    use monad_crypto::secp256k1::SecpSignature;
+    use monad_testutil::signing::get_key;
+    use monad_types::{NodeId, Round};
+    use monad_validator::validator::Validator;
+    use test_case::test_case;
+
+    use super::verify_tc;
+
+    #[test_case(4 => matches Err(_) ; "TC has an older round")]
+    #[test_case(6 => matches Err(_); "TC has a newer round")]
+    #[test_case(5 => matches Ok(()); "TC has the correct round")]
+    fn tc_comprised_of_old_tmo(round: u64) -> Result<(), Error> {
+        let mut vset = ValidatorMember::new();
+        let keypair = get_key("6");
+
+        vset.insert(
+            NodeId(keypair.pubkey()),
+            Validator {
+                pubkey: keypair.pubkey(),
+                stake: 1,
+            },
+        );
+
+        let high_qc_rounds = vec![
+            HighQcRound { qc_round: Round(1) },
+            HighQcRound { qc_round: Round(2) },
+            HighQcRound { qc_round: Round(3) },
+        ]
+        .iter()
+        .map(|x| {
+            let mut h = Sha256Hash::new();
+            h.update(Round(5));
+            h.update(x.qc_round);
+            let msg = h.hash();
+            (*x, keypair.sign(&msg))
+        })
+        .collect();
+
+        let tc = TimeoutCertificate {
+            round: Round(round),
+            high_qc_rounds,
+        };
+
+        verify_tc::<SecpSignature, Sha256Hash>(&vset, &tc)
     }
 }
