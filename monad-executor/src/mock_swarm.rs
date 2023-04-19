@@ -6,7 +6,7 @@ use monad_crypto::secp256k1::PubKey;
 use crate::{executor::mock::MockExecutor, Executor, PeerId, State};
 
 pub struct Nodes<S: State, L: Fn(&PeerId, &PeerId) -> Duration> {
-    states: HashMap<PeerId, (MockExecutor<S::Event, S::Message>, S)>,
+    states: HashMap<PeerId, (MockExecutor<S::Event, S::Message, S::OutboundMessage>, S)>,
     compute_latency: L,
 }
 
@@ -17,7 +17,8 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
         let mut states = HashMap::new();
 
         for (pubkey, config) in peers {
-            let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::default();
+            let mut executor: MockExecutor<S::Event, S::Message, S::OutboundMessage> =
+                MockExecutor::default();
             let (state, init_commands) = S::init(config);
             executor.exec(init_commands);
             states.insert(PeerId(pubkey), (executor, state));
@@ -81,7 +82,7 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
             to_state.send_message(
                 tick + (self.compute_latency)(peer_id, &to),
                 *peer_id,
-                outbound_message,
+                outbound_message.into(),
                 tick,
             );
         }
@@ -102,7 +103,9 @@ impl<S: State, L: Fn(&PeerId, &PeerId) -> Duration> Nodes<S, L> {
         self.states.insert(*peer_id, (executor, state));
     }
 
-    pub fn states(&self) -> &HashMap<PeerId, (MockExecutor<S::Event, S::Message>, S)> {
+    pub fn states(
+        &self,
+    ) -> &HashMap<PeerId, (MockExecutor<S::Event, S::Message, S::OutboundMessage>, S)> {
         &self.states
     }
 }

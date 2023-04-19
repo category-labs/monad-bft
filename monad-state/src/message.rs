@@ -1,22 +1,42 @@
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    marker::PhantomData,
+};
 
 use monad_executor::{Message, PeerId};
 use monad_types::Round;
 
-pub struct MessageState<M: Message> {
+pub struct MessageState<M: Message, OM: Into<M> + Clone> {
     messages: VecDeque<HashSet<(PeerId, M::Id)>>,
     round: Round, // round # of messages.back()
     // min round == round - messages.len() + 1
     peers: Vec<PeerId>,
+    _marker: PhantomData<OM>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct MessageActionPublish<M>
+pub struct MessageActionPublish<M, OM>
 where
     M: Message,
+    OM: Into<M>,
 {
     pub to: PeerId,
-    pub message: M,
+    pub message: OM,
+    _marker: PhantomData<M>,
+}
+
+impl<M, OM> MessageActionPublish<M, OM>
+where
+    M: Message,
+    OM: Into<M>,
+{
+    fn new(to: PeerId, message: OM) -> Self {
+        Self {
+            to,
+            message,
+            _marker: PhantomData,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,9 +48,10 @@ where
     pub id: M::Id,
 }
 
-impl<M> MessageState<M>
+impl<M, OM> MessageState<M, OM>
 where
     M: Message,
+    OM: Into<M> + Clone,
 {
     pub fn new(max_rounds_cached: u64, peers: Vec<PeerId>) -> Self {
         let mut messages: VecDeque<_> = std::iter::repeat(HashSet::new())
@@ -41,6 +62,7 @@ where
             messages,
             round: Round(0),
             peers,
+            _marker: PhantomData,
         }
     }
 
@@ -90,16 +112,16 @@ where
         commands
     }
 
-    pub fn send(&mut self, peer: PeerId, message: M) -> MessageActionPublish<M> {
+    pub fn send(&mut self, peer: PeerId, message: OM) -> MessageActionPublish<M, OM> {
         self.messages
             .back_mut()
             .unwrap()
-            .insert((peer, message.id()));
+            .insert((peer, message.clone().into().id()));
 
-        MessageActionPublish { to: peer, message }
+        MessageActionPublish::new(peer, message)
     }
 
-    pub fn broadcast(&mut self, message: M) -> Vec<MessageActionPublish<M>> {
+    pub fn broadcast(&mut self, message: OM) -> Vec<MessageActionPublish<M, OM>> {
         let mut commands = Vec::new();
         for peer in self.peers.to_vec() {
             commands.push(self.send(peer, message.clone()));
@@ -155,7 +177,7 @@ mod tests {
 
     #[test]
     fn init() {
-        let state = MessageState::<TestMessage>::new(5, Vec::new());
+        let state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
         assert_eq!(state.max_rounds_cached(), 5);
         assert_eq!(state.min_round(), Round(0));
         assert_eq!(state.max_round(), Round(0));
@@ -163,7 +185,7 @@ mod tests {
 
     #[test]
     fn set_round() {
-        let mut state = MessageState::<TestMessage>::new(5, Vec::new());
+        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
         let _ = state.set_round(Round(10), Vec::new());
         assert_eq!(state.max_rounds_cached(), 5);
         assert_eq!(state.min_round(), Round(6));
@@ -172,7 +194,7 @@ mod tests {
 
     #[test]
     fn send() {
-        let mut state = MessageState::<TestMessage>::new(5, Vec::new());
+        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
         let action = state.send(PeerId(node_id().0), TestMessage);
 
         assert_eq!(action.to, PeerId(node_id().0));
@@ -181,7 +203,7 @@ mod tests {
 
     #[test]
     fn set_round_eviction() {
-        let mut state = MessageState::<TestMessage>::new(5, Vec::new());
+        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
         let _ = state.send(PeerId(node_id().0), TestMessage);
 
         let evicted = state.set_round(Round(10), Vec::new());
@@ -196,7 +218,7 @@ mod tests {
 
     #[test]
     fn handle_ack() {
-        let mut state = MessageState::<TestMessage>::new(5, Vec::new());
+        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
         let _ = state.send(PeerId(node_id().0), TestMessage);
 
         let evicted = state.handle_ack(Round(0), PeerId(node_id().0), TestMessage);
@@ -211,7 +233,7 @@ mod tests {
 
     #[test]
     fn evicted_handle_ack() {
-        let mut state = MessageState::<TestMessage>::new(5, Vec::new());
+        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
         let _ = state.send(PeerId(node_id().0), TestMessage);
 
         let _ = state.set_round(Round(10), Vec::new());

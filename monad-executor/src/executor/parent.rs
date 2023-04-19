@@ -14,14 +14,15 @@ pub struct ParentExecutor<R, T> {
     pub timer: T,
 }
 
-impl<E, M, R, T> Executor for ParentExecutor<R, T>
+impl<E, M, OM, R, T> Executor for ParentExecutor<R, T>
 where
     M: Message<Event = E>,
-    R: Executor<Command = RouterCommand<E, M>>,
+    OM: Into<M>,
+    R: Executor<Command = RouterCommand<E, M, OM>>,
     T: Executor<Command = TimerCommand<E>>,
 {
-    type Command = Command<E, M>;
-    fn exec(&mut self, commands: Vec<Command<E, M>>) {
+    type Command = Command<E, M, OM>;
+    fn exec(&mut self, commands: Vec<Command<E, M, OM>>) {
         let (router_cmds, timer_cmds) = Command::split_commands(commands);
         self.router.exec(router_cmds);
         self.timer.exec(timer_cmds);

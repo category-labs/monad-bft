@@ -1,12 +1,12 @@
 use libp2p::{request_response::ProtocolSupport, swarm::NetworkBehaviour};
-use monad_executor::{Message, Serializable};
+use monad_executor::{Deserializable, Message, Serializable};
 
 mod codec;
 
 #[derive(NetworkBehaviour)]
 pub(crate) struct Behavior<M>
 where
-    M: Message + Serializable,
+    M: Message + Serializable + Deserializable,
 {
     pub identify: libp2p::identify::Behaviour,
     pub request_response: libp2p::request_response::Behaviour<codec::ReliableMessageCodec<M>>,
@@ -18,7 +18,7 @@ const REQUEST_RESPONSE_KEEPALIVE: std::time::Duration = std::time::Duration::fro
 
 impl<M> Behavior<M>
 where
-    M: Message + Serializable,
+    M: Message + Serializable + Deserializable,
 {
     pub(crate) fn new(pubkey: &libp2p::identity::PublicKey) -> Self {
         let identify = libp2p::identify::Behaviour::new(libp2p::identify::Config::new(

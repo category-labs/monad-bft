@@ -12,10 +12,11 @@ use crate::{state::PeerId, Command, Executor, Message, RouterCommand, TimerComma
 
 use futures::Stream;
 
-pub struct MockExecutor<E, M>
+pub struct MockExecutor<E, M, OM>
 where
     E: Unpin,
     M: Message<Event = E>,
+    OM: Into<M>,
 {
     tick: Duration,
 
@@ -26,7 +27,7 @@ where
     inbound_ack: BinaryHeap<SequencedPeerEvent<M::Id>>,
 
     // caller pop_front outbounds from this (via MockExecutor::receive_*)
-    outbound_messages: VecDeque<(PeerId, M)>,
+    outbound_messages: VecDeque<(PeerId, OM)>,
     outbound_ack: VecDeque<(PeerId, M::Id)>,
 
     sent_messages: HashMap<PeerId, HashMap<M::Id, E>>,
@@ -78,10 +79,11 @@ enum ExecutorEventType {
     Timer,
 }
 
-impl<E, M> MockExecutor<E, M>
+impl<E, M, OM> MockExecutor<E, M, OM>
 where
     E: Unpin,
     M: Message<Event = E>,
+    OM: Into<M>,
 {
     pub fn tick(&self) -> Duration {
         self.tick
@@ -105,7 +107,7 @@ where
             tx_tick,
         });
     }
-    pub fn receive_message(&mut self) -> Option<(PeerId, M)> {
+    pub fn receive_message(&mut self) -> Option<(PeerId, OM)> {
         self.outbound_messages.pop_front()
     }
     pub fn receive_ack(&mut self) -> Option<(PeerId, M::Id)> {
@@ -154,10 +156,11 @@ where
     }
 }
 
-impl<E, M> Default for MockExecutor<E, M>
+impl<E, M, OM> Default for MockExecutor<E, M, OM>
 where
     E: Unpin,
     M: Message<Event = E>,
+    OM: Into<M>,
 {
     fn default() -> Self {
         Self {
@@ -177,12 +180,13 @@ where
     }
 }
 
-impl<E, M> Executor for MockExecutor<E, M>
+impl<E, M, OM> Executor for MockExecutor<E, M, OM>
 where
     E: Unpin,
     M: Message<Event = E>,
+    OM: Into<M> + Clone,
 {
-    type Command = Command<E, M>;
+    type Command = Command<E, M, OM>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         // we must have processed received messages at this point, so we can send out acks
         self.outbound_ack.extend(
@@ -221,7 +225,7 @@ where
         }
 
         for (to, message, on_ack) in to_publish {
-            let id = message.id();
+            let id = message.clone().into().id();
             if to_unpublish.contains(&(to, id.clone())) {
                 continue;
             }
@@ -259,11 +263,12 @@ where
     }
 }
 
-impl<E, M> Stream for MockExecutor<E, M>
+impl<E, M, OM> Stream for MockExecutor<E, M, OM>
 where
     E: Unpin,
     M: Message<Event = E>,
     M::Id: Unpin,
+    OM: Into<M> + Unpin,
 {
     type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -375,9 +380,15 @@ mod tests {
     impl State for LongAckState {
         type Config = ();
         type Event = LongAckEvent;
+        type OutboundMessage = LongAckMessage;
         type Message = LongAckMessage;
 
-        fn init(_config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+        fn init(
+            _config: Self::Config,
+        ) -> (
+            Self,
+            Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>>,
+        ) {
             let init_self = Self {
                 num_ack: 0,
                 num_timeouts: 0,
@@ -397,7 +408,10 @@ mod tests {
 
             (init_self, init_cmds)
         }
-        fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
+        fn update(
+            &mut self,
+            event: Self::Event,
+        ) -> Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>> {
             let mut commands = Vec::new();
             match event {
                 LongAckEvent::IncrementNumAck => {
@@ -445,8 +459,8 @@ mod tests {
         }
     }
 
-    fn simulate_peer<E: Unpin, M: Message<Event = E>>(
-        executor: &mut MockExecutor<E, M>,
+    fn simulate_peer<E: Unpin, M: Message<Event = E>, OM: Into<M>>(
+        executor: &mut MockExecutor<E, M, OM>,
         message_delays: &mut impl Iterator<Item = Duration>,
     ) {
         while let Some((to, outbound_message)) = executor.receive_message() {
@@ -454,7 +468,7 @@ mod tests {
             executor.send_ack(
                 executor.tick() + message_delays.next().unwrap(),
                 to,
-                outbound_message.id(),
+                outbound_message.into().id(),
                 executor.tick(),
             )
         }
@@ -470,7 +484,8 @@ mod tests {
     where
         S: State,
     {
-        let mut executor: MockExecutor<S::Event, S::Message> = MockExecutor::default();
+        let mut executor: MockExecutor<S::Event, S::Message, S::OutboundMessage> =
+            MockExecutor::default();
 
         let (mut state, mut init_commands) = S::init(config);
         let mut event_log = init_events.clone();
@@ -601,9 +616,15 @@ mod tests {
     impl State for SimpleChainState {
         type Config = (Vec<PeerId>, PeerId);
         type Event = SimpleChainEvent;
+        type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
 
-        fn init(config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+        fn init(
+            config: Self::Config,
+        ) -> (
+            Self,
+            Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>>,
+        ) {
             let (pubkeys, me) = config;
 
             let init_cmds = pubkeys
@@ -630,7 +651,10 @@ mod tests {
 
             (init_self, init_cmds)
         }
-        fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
+        fn update(
+            &mut self,
+            event: Self::Event,
+        ) -> Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>> {
             let mut commands = Vec::new();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {

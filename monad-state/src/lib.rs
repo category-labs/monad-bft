@@ -28,7 +28,9 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
     NopSignature, Signature,
 };
-use monad_executor::{Command, Message, PeerId, RouterCommand, Serializable, State, TimerCommand};
+use monad_executor::{
+    Command, Deserializable, Message, PeerId, RouterCommand, Serializable, State, TimerCommand,
+};
 use monad_types::{NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
@@ -45,7 +47,7 @@ type LeaderElectionType = WeightedRoundRobin;
 type HasherType = Sha256Hash;
 
 pub struct MonadState {
-    message_state: MessageState<MonadMessage>,
+    message_state: MessageState<MonadMessage, VerifiedMonadMessage>,
 
     consensus_state: ConsensusState<
         SignatureType,
@@ -77,10 +79,10 @@ pub enum MonadEvent {
 }
 
 #[derive(Debug, Clone)]
-pub enum MonadMessage {
-    Verified(VerifiedConsensusMessage<SignatureType, SignatureCollectionType>),
-    Unverified(SignedConsensusMessage<SignatureType, SignatureCollectionType>),
-}
+pub struct VerifiedMonadMessage(VerifiedConsensusMessage<SignatureType, SignatureCollectionType>);
+
+#[derive(Debug, Clone)]
+pub struct MonadMessage(SignedConsensusMessage<SignatureType, SignatureCollectionType>);
 
 #[derive(Debug)]
 pub struct MonadReadError;
@@ -91,15 +93,23 @@ impl std::fmt::Display for MonadReadError {
 }
 impl Error for MonadReadError {}
 
-impl Serializable for MonadMessage {
+impl Serializable for VerifiedMonadMessage {
+    fn serialize(&self) -> Vec<u8> {
+        todo!("proto serialize")
+    }
+}
+
+impl Deserializable for MonadMessage {
     type ReadError = MonadReadError;
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
         todo!("proto deserialize")
     }
+}
 
-    fn serialize(&self) -> Vec<u8> {
-        todo!("proto serialize")
+impl From<VerifiedMonadMessage> for MonadMessage {
+    fn from(value: VerifiedMonadMessage) -> Self {
+        MonadMessage(value.0.into())
     }
 }
 
@@ -108,17 +118,10 @@ impl Message for MonadMessage {
     type Id = SignatureType;
 
     fn id(&self) -> Self::Id {
-        *match self {
-            Self::Verified(msg) => match msg {
-                VerifiedConsensusMessage::Proposal(msg) => msg.author_signature(),
-                VerifiedConsensusMessage::Vote(msg) => msg.author_signature(),
-                VerifiedConsensusMessage::Timeout(msg) => msg.author_signature(),
-            },
-            Self::Unverified(msg) => match msg {
-                SignedConsensusMessage::Proposal(msg) => msg.author_signature(),
-                SignedConsensusMessage::Vote(msg) => msg.author_signature(),
-                SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
-            },
+        *match &self.0 {
+            SignedConsensusMessage::Proposal(msg) => msg.author_signature(),
+            SignedConsensusMessage::Vote(msg) => msg.author_signature(),
+            SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
         }
     }
 
@@ -127,14 +130,9 @@ impl Message for MonadMessage {
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
 
-        let unverified_msg = match self {
-            Self::Unverified(msg) => msg,
-            // the verified branch only used in tests to simulate serde
-            Self::Verified(msg) => msg.into(),
-        };
         Self::Event::ConsensusEvent(ConsensusEvent::Message {
             sender: from.0,
-            unverified_message: unverified_msg,
+            unverified_message: self.0,
         })
     }
 }
@@ -153,8 +151,14 @@ impl State for MonadState {
     type Config = MonadConfig;
     type Event = MonadEvent;
     type Message = MonadMessage;
+    type OutboundMessage = VerifiedMonadMessage;
 
-    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Event, Self::Message>>) {
+    fn init(
+        config: Self::Config,
+    ) -> (
+        Self,
+        Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>>,
+    ) {
         // create my keys and validator structs
         let validator_list = config
             .validators
@@ -196,7 +200,10 @@ impl State for MonadState {
         (monad_state, init_cmds)
     }
 
-    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Event, Self::Message>> {
+    fn update(
+        &mut self,
+        event: Self::Event,
+    ) -> Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>> {
         match event {
             MonadEvent::Ack { peer, id, round } => self
                 .message_state
@@ -277,11 +284,11 @@ impl State for MonadState {
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Send { to, message } => {
-                            let message = MonadMessage::Verified(
+                            let message = VerifiedMonadMessage(
                                 message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
                             let publish_action = self.message_state.send(to, message);
-                            let id = publish_action.message.id();
+                            let id = Self::Message::from(publish_action.message.clone()).id();
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
                                 to: publish_action.to,
                                 message: publish_action.message,
@@ -296,12 +303,13 @@ impl State for MonadState {
                             }))
                         }
                         ConsensusCommand::Broadcast { message } => {
-                            let message = MonadMessage::Verified(
+                            let message = VerifiedMonadMessage(
                                 message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
                             cmds.extend(self.message_state.broadcast(message).into_iter().map(
                                 |publish_action| {
-                                    let id = publish_action.message.id();
+                                    let id =
+                                        Self::Message::from(publish_action.message.clone()).id();
                                     Command::RouterCommand(RouterCommand::Publish {
                                         to: publish_action.to,
                                         message: publish_action.message,
