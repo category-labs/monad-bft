@@ -90,6 +90,14 @@ where
                 libp2p::swarm::SwarmEvent::Behaviour(behavior::BehaviorEvent::RequestResponse(
                     libp2p::request_response::Event::Message { peer, message },
                 )) => {
+                    let pubkey = match monad_crypto::secp256k1::PubKey::try_from(peer) {
+                        Ok(pubkey) => pubkey,
+                        Err(_) => {
+                            // We don't need to repsond if the peer isn't using a valid secp256k1 key
+                            // TODO do we block peer or something?
+                            continue;
+                        }
+                    };
                     let service = self.deref_mut();
                     match message {
                         libp2p::request_response::Message::Request {
@@ -107,7 +115,7 @@ where
                             return Poll::Ready(Some(
                                 Arc::try_unwrap(request)
                                     .expect("more than 1 copies of Arc<Message>")
-                                    .event(todo!("libp2p::PeerId -> monad::PeerId")),
+                                    .event(monad_executor::PeerId(pubkey)),
                             ));
                         }
                         libp2p::request_response::Message::Response {

@@ -10,7 +10,7 @@ include!(concat!(env!("OUT_DIR"), "/monad_proto.basic.rs"));
 impl From<&NodeId> for ProtoNodeId {
     fn from(nodeid: &NodeId) -> Self {
         ProtoNodeId {
-            id: nodeid.0.into_bytes(),
+            id: nodeid.0.bytes(),
         }
     }
 }

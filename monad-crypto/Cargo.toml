@@ -10,6 +10,12 @@ rand = "0.8.5"
 secp256k1 = { version = "0.26", features = ["global-context", "recovery"] }
 sha2 = "0.10"
 
+libp2p-identity = { version = "0.1", features = ["secp256k1"], optional = true }
+multihash = { version = "0.17", features = ["identity"], optional = true }
+
 [dev-dependencies]
 hex = "0.4"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
+
+[features]
+libp2p-identity = ["dep:libp2p-identity", "dep:multihash"]

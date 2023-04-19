@@ -53,8 +53,12 @@ impl PubKey {
             .map_err(Error)
     }
 
-    pub fn into_bytes(&self) -> Vec<u8> {
+    pub fn bytes(&self) -> Vec<u8> {
         self.0.serialize_uncompressed().to_vec()
+    }
+
+    fn bytes_compressed(&self) -> Vec<u8> {
+        self.0.serialize().to_vec()
     }
 
     pub fn verify(&self, msg: &[u8], signature: &SecpSignature) -> Result<(), Error> {
@@ -96,6 +100,38 @@ impl SecpSignature {
     }
 }
 
+#[cfg(feature = "libp2p-identity")]
+impl TryFrom<libp2p_identity::PeerId> for PubKey {
+    type Error = multihash::Error;
+    fn try_from(peer_id: libp2p_identity::PeerId) -> Result<Self, Self::Error> {
+        let bytes = peer_id.to_bytes();
+        let multihash = multihash::Multihash::from_bytes(&bytes)?;
+
+        // code 0 == Identity
+        if multihash.code() != 0 {
+            return Err(multihash::Error::UnsupportedCode(multihash.code()));
+        }
+
+        let pubkey = Self::from_slice(multihash.digest())
+            .map_err(|_| multihash::Error::InvalidSize(multihash.code()))?;
+
+        Ok(pubkey)
+    }
+}
+
+#[cfg(feature = "libp2p-identity")]
+impl From<&PubKey> for libp2p_identity::PeerId {
+    fn from(pubkey: &PubKey) -> Self {
+        let multihash = multihash::Multihash::wrap(
+            0, // code 0 == Identity
+            &pubkey.bytes_compressed(),
+        )
+        .expect("internal pubkey -> multihash should never fail");
+        libp2p_identity::PeerId::from_multihash(multihash)
+            .expect("internal pubkey -> peer_id should never fail")
+    }
+}
+
 impl Signature for SecpSignature {
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self {
         keypair.sign(msg)
@@ -127,10 +163,10 @@ mod tests {
                 .unwrap();
         let keypair = KeyPair::from_slice(&privkey).unwrap();
 
-        let pubkey_bytes = keypair.pubkey().into_bytes();
+        let pubkey_bytes = keypair.pubkey().bytes();
         assert_eq!(
             pubkey_bytes,
-            PubKey::from_slice(&pubkey_bytes).unwrap().into_bytes()
+            PubKey::from_slice(&pubkey_bytes).unwrap().bytes()
         );
     }
 
@@ -143,7 +179,7 @@ mod tests {
 
         let mut hasher = tiny_keccak::Keccak::v256();
         // pubkey() returns 65 bytes, ignore first one
-        hasher.update(&keypair.pubkey().into_bytes()[1..]);
+        hasher.update(&keypair.pubkey().bytes()[1..]);
         let mut output = [0u8; 32];
         hasher.finalize(&mut output);
 
@@ -179,7 +215,7 @@ mod tests {
 
         let recovered_key = signature.recover_pubkey(msg).unwrap();
 
-        assert!(keypair.pubkey().into_bytes() == recovered_key.into_bytes());
+        assert!(keypair.pubkey().bytes() == recovered_key.bytes());
     }
 
     #[test]
@@ -195,5 +231,19 @@ mod tests {
         let ser = signature.serialize();
         let deser = SecpSignature::deserialize(&ser);
         assert_eq!(signature, deser.unwrap());
+    }
+
+    #[cfg(feature = "libp2p-identity")]
+    #[test]
+    // THIS MUST PASS!! don't comment this test out >:(
+    fn test_pubkey_peerid_roundtrip() {
+        let privkey =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let keypair = KeyPair::from_slice(&privkey).unwrap();
+
+        let pubkey = keypair.pubkey();
+        let peer_id: libp2p_identity::PeerId = (&pubkey).into();
+        assert_eq!(pubkey, PubKey::try_from(peer_id).unwrap());
     }
 }

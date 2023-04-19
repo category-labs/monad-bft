@@ -52,10 +52,10 @@ async fn main() {
             config_gen,
             |node_1, node_2| {
                 let mut ck = 0;
-                for b in node_1.0.into_bytes() {
+                for b in node_1.0.bytes() {
                     ck ^= b;
                 }
-                for b in node_2.0.into_bytes() {
+                for b in node_2.0.bytes() {
                     ck ^= b;
                 }
                 Duration::from_millis(ck as u64 % 100)

@@ -44,7 +44,7 @@ use sha2::Digest;
 
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let mut hasher = sha2::Sha256::new();
-    hasher.update(b.author.0.into_bytes());
+    hasher.update(b.author.0.bytes());
     hasher.update(b.round);
     hasher.update(&b.payload.0);
     hasher.update(b.qc.info.vote.id.0);
