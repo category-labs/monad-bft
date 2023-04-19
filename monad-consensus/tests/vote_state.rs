@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use monad_consensus::types::voting::VoteInfo;
 use monad_types::{BlockId, Round};
 use test_case::test_case;
@@ -20,26 +18,20 @@ use monad_validator::validator::Validator;
 use monad_validator::validator_set::ValidatorSet;
 
 fn create_signed_vote_message(
-    vote_hash: &str,
     keypair: &KeyPair,
+    vote_round: Round,
 ) -> Unverified<SecpSignature, VoteMessage> {
-    let mut vote_info_hash = [0; 32];
-    let mut b: &mut [u8] = &mut vote_info_hash;
-
-    b.write(vote_hash.as_bytes()).unwrap();
-
-    let lci = LedgerCommitInfo {
-        commit_state_hash: Some(Default::default()),
-        vote_info_hash: vote_info_hash,
+    let vi = VoteInfo {
+        id: BlockId([0x00_u8; 32]),
+        round: vote_round,
+        parent_id: BlockId([0x00_u8; 32]),
+        parent_round: Round(0),
     };
 
+    let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi);
+
     let vm = VoteMessage {
-        vote_info: VoteInfo {
-            id: BlockId([0x00_u8; 32]),
-            round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
-            parent_round: Round(0),
-        },
+        vote_info: vi,
         ledger_commit_info: lci,
     };
 
@@ -70,7 +62,7 @@ fn setup_ctx(
 
     let mut votes = Vec::new();
     for i in 0..num_nodes {
-        let svm = create_signed_vote_message("foobar", &keys[i as usize]);
+        let svm = create_signed_vote_message(&keys[i as usize], Round(0));
         let vm = svm
             .verify::<Sha256Hash>(&valset.get_members(), &keys[i as usize].pubkey())
             .unwrap();
@@ -131,14 +123,14 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
     let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
     let mut qcs = Vec::new();
 
-    for _ in 0..num_rounds {
+    for k in 0..num_rounds {
         for i in 0..num_nodes {
             let qc =
                 voteset.process_vote::<MockLeaderElection, Sha256Hash>(&votes[i as usize], &valset);
             qcs.push(qc);
         }
 
-        voteset.start_new_round();
+        voteset.start_new_round(Round(k.into()) + Round(1));
     }
 
     let valid_qc: Vec<&Option<QuorumCertificate<AggregateSignatures<SecpSignature>>>> =

@@ -490,7 +490,7 @@ where
         v: &Verified<T::SignatureType, VoteMessage>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
-        if self.pacemaker.get_current_round() != v.vote_info.round {
+        if v.vote_info.round < self.pacemaker.get_current_round() {
             return Default::default();
         }
 
@@ -581,7 +581,8 @@ where
         &mut self,
         last_round_tc: Option<TimeoutCertificate<S>>,
     ) -> Vec<ConsensusCommand<S, T>> {
-        self.vote_state.start_new_round();
+        self.vote_state
+            .start_new_round(self.pacemaker.get_current_round());
 
         let txns: TransactionList = self.mempool.get_transactions(10000);
         let b = Block::new::<H>(
