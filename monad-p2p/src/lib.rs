@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fmt,
     ops::DerefMut,
     sync::Arc,
     task::Poll,
 };
 
 use futures::{Stream, StreamExt};
-use monad_executor::{Message, Serializable};
+use monad_executor::{Deserializable, Message, Serializable};
 
 use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 
@@ -15,7 +16,7 @@ use behavior::Behavior;
 
 pub struct Service<M>
 where
-    M: Message + Serializable,
+    M: Message + Serializable + Deserializable,
 {
     swarm: libp2p::Swarm<Behavior<M>>,
 
@@ -27,7 +28,7 @@ where
 
 impl<M> Service<M>
 where
-    M: Message + Serializable,
+    M: Message + Serializable + Deserializable,
 {
     pub fn without_executor(identity: libp2p::identity::Keypair) -> Self {
         let transport = libp2p::core::transport::MemoryTransport::default()
@@ -96,7 +97,7 @@ where
 
 impl<M> Stream for Service<M>
 where
-    M: Message + Serializable,
+    M: Message + Serializable + Deserializable + fmt::Debug,
 {
     type Item = M::Event;
 
@@ -180,7 +181,7 @@ mod tests {
     use std::{array::TryFromSliceError, collections::HashSet};
 
     use crate::Service;
-    use monad_executor::{Message, Serializable};
+    use monad_executor::{Deserializable, Message, Serializable};
 
     use futures::StreamExt;
 
@@ -207,15 +208,17 @@ mod tests {
         }
     }
     impl Serializable for TestMessage {
+        fn serialize(&self) -> Vec<u8> {
+            self.0.to_le_bytes().to_vec()
+        }
+    }
+
+    impl Deserializable for TestMessage {
         type ReadError = TryFromSliceError;
 
         fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
             let message: [u8; 8] = message.try_into()?;
             Ok(TestMessage(u64::from_le_bytes(message)))
-        }
-
-        fn serialize(&self) -> Vec<u8> {
-            self.0.to_le_bytes().to_vec()
         }
     }
 

@@ -9,7 +9,7 @@ pub mod mock_swarm;
 
 // driver loop
 async fn run<S: State>(
-    mut executor: impl Executor<Command = Command<S::Event, S::Message>>
+    mut executor: impl Executor<Command = Command<S::Event, S::Message, S::OutboundMessage>>
         + Stream<Item = S::Event>
         + Unpin,
     config: S::Config,

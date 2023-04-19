@@ -1,7 +1,7 @@
 use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use monad_executor::{Message, Serializable};
+use monad_executor::{Deserializable, Message, Serializable};
 
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response::Codec;
@@ -28,7 +28,7 @@ where
 #[async_trait]
 impl<M> Codec for ReliableMessageCodec<M>
 where
-    M: Message + Serializable,
+    M: Message + Serializable + Deserializable,
 {
     type Protocol = String;
     // TODO can we avoid Arc?
