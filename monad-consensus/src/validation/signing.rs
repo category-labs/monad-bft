@@ -225,6 +225,11 @@ where
     V: SignatureCollection,
     H: Hasher,
 {
+    if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
+        // TODO: collect author for evidence?
+        return Err(Error::InvalidSignature);
+    }
+
     let qc_msg = H::hash_object(&qc.info.ledger_commit);
     let pubkeys = qc
         .signatures
@@ -284,16 +289,21 @@ impl ValidatorPubKey for PubKey {
 
 #[cfg(test)]
 mod test {
+    use crate::signatures::aggregate_signature::AggregateSignatures;
+    use crate::types::ledger::LedgerCommitInfo;
+    use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
+    use crate::types::signature::SignatureCollection;
     use crate::types::timeout::{HighQcRound, TimeoutCertificate};
+    use crate::types::voting::VoteInfo;
     use crate::validation::error::Error;
     use crate::validation::{hashing::*, signing::ValidatorMember};
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::signing::get_key;
-    use monad_types::{NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round};
     use monad_validator::validator::Validator;
     use test_case::test_case;
 
-    use super::verify_tc;
+    use super::{verify_qc, verify_tc};
 
     #[test_case(4 => matches Err(_) ; "TC has an older round")]
     #[test_case(6 => matches Err(_); "TC has a newer round")]
@@ -331,5 +341,51 @@ mod test {
         };
 
         verify_tc::<SecpSignature, Sha256Hash>(&vset, &tc)
+    }
+
+    #[test]
+    fn qc_verifcation_vote_doesnt_match() {
+        let vi = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(0),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        };
+
+        let lci = LedgerCommitInfo::new::<Sha256Hash>(Some([0xad_u8; 32]), &vi);
+
+        let mut vset = ValidatorMember::new();
+        let keypair = get_key("6");
+
+        vset.insert(
+            NodeId(keypair.pubkey()),
+            Validator {
+                pubkey: keypair.pubkey(),
+                stake: 1,
+            },
+        );
+
+        let msg = Sha256Hash::hash_object(&lci);
+        let s = keypair.sign(&msg);
+
+        let mut sigs = AggregateSignatures::new();
+        sigs.add_signature(s);
+
+        let vi2 = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(1),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        };
+
+        let qc = QuorumCertificate::new(
+            QcInfo {
+                vote: vi2,
+                ledger_commit: lci,
+            },
+            sigs,
+        );
+
+        assert!(verify_qc::<AggregateSignatures<SecpSignature>, Sha256Hash>(&vset, &qc).is_err());
     }
 }

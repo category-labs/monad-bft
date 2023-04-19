@@ -92,10 +92,7 @@ mod test {
             parent_id: BlockId(vec![43; 32].try_into().unwrap()),
             parent_round: Round(2),
         };
-        let lci = LedgerCommitInfo {
-            commit_state_hash: None,
-            vote_info_hash: vec![42; 32].try_into().unwrap(),
-        };
+        let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
 
         let qcinfo = QcInfo {
             vote: vi,

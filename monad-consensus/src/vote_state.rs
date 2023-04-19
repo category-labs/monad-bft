@@ -45,6 +45,11 @@ where
             return None;
         }
 
+        if H::hash_object(&v.vote_info) != v.ledger_commit_info.vote_info_hash {
+            // TODO: collect author for evidence?
+            return None;
+        }
+
         let vote_idx = H::hash_object(&v.ledger_commit_info);
 
         let round_pending_votes = self.pending_votes.entry(round).or_insert(HashMap::new());
@@ -86,11 +91,13 @@ mod test {
     use crate::validation::hashing::Sha256Hash;
     use crate::validation::signing::Verified;
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_testutil::signing::get_key;
     use monad_testutil::signing::*;
     use monad_testutil::validators::MockLeaderElection;
     use monad_types::{BlockId, Round};
     use monad_validator::validator::Validator;
     use monad_validator::validator_set::ValidatorSet;
+    use monad_validator::weighted_round_robin::WeightedRoundRobin;
 
     use super::VoteState;
 
@@ -183,5 +190,62 @@ mod test {
         votestate.start_new_round(Round(5));
 
         assert_eq!(votestate.pending_votes.len(), 4);
+    }
+
+    #[test]
+    fn vote_idx_doesnt_match() {
+        let mut vote_state = VoteState::<AggregateSignatures<SecpSignature>>::default();
+        let keypair = get_key("6");
+        let val = Validator {
+            pubkey: keypair.pubkey(),
+            stake: 1,
+        };
+
+        let vset = ValidatorSet::new(vec![val]).unwrap();
+
+        let mut vi = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(0),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        };
+
+        let vm = VoteMessage {
+            vote_info: vi,
+            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some([0xad_u8; 32]), &vi),
+        };
+        let svm = Verified::new::<Sha256Hash>(vm, &keypair);
+
+        // add a valid vote message
+        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(&svm, &vset);
+        assert_eq!(vote_state.pending_votes.len(), 1);
+
+        // pretend a qc was not created so we can add more votes without reseting the vote state
+        vote_state.qc_created.clear();
+
+        // add an invalid vote message (the vote_info doesn't match what created the ledger_commit_info)
+        vi = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(5),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(4),
+        };
+
+        let vi2 = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: Round(1),
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: Round(0),
+        };
+
+        let invalid_vm = VoteMessage {
+            vote_info: vi,
+            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some([0xae_u8; 32]), &vi2),
+        };
+        let invalid_svm = Verified::new::<Sha256Hash>(invalid_vm, &keypair);
+        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(&invalid_svm, &vset);
+
+        // confirms the invalid vote message was not added to pending votes
+        assert_eq!(vote_state.pending_votes.len(), 1);
     }
 }
