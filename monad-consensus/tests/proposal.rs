@@ -41,7 +41,7 @@ fn test_proposal_hash() {
         last_round_tc: None,
     };
 
-    let keypair = get_key("a");
+    let keypair = get_key(0);
 
     vset.insert(
         NodeId(keypair.pubkey()),
@@ -67,7 +67,7 @@ fn test_proposal_missing_tc() {
         last_round_tc: None,
     };
 
-    let keypair = get_key("6");
+    let keypair = get_key(6);
 
     vset.insert(
         NodeId(keypair.pubkey()),
@@ -97,7 +97,7 @@ fn test_proposal_invalid_qc() {
         last_round_tc: None,
     };
 
-    let keypair = get_key("6");
+    let keypair = get_key(6);
 
     vset.insert(
         NodeId(keypair.pubkey()),
@@ -108,7 +108,7 @@ fn test_proposal_invalid_qc() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, &msg, &get_key("7"));
+    let sp = TestSigner::sign_object(proposal, &msg, &get_key(7));
 
     assert_eq!(
         sp.verify::<Sha256Hash>(&vset, &keypair.pubkey())

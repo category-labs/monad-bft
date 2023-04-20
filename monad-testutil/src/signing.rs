@@ -40,7 +40,7 @@ impl SignatureCollection for MockSignatures {
     }
 }
 
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let mut hasher = sha2::Sha256::new();
@@ -54,8 +54,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
 }
 
 pub fn node_id() -> NodeId {
-    let mut privkey =
-        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
+    let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
     NodeId(keypair.pubkey())
 }
@@ -108,7 +107,9 @@ impl TestSigner<SecpSignature> {
     }
 }
 
-pub fn get_key(seed: &str) -> KeyPair {
-    let mut privkey = hex::decode(seed.repeat(64)).unwrap();
-    KeyPair::from_bytes(&mut privkey).unwrap()
+pub fn get_key(seed: u64) -> KeyPair {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.to_le_bytes());
+    let mut hash = hasher.finalize();
+    KeyPair::from_bytes(&mut hash).unwrap()
 }

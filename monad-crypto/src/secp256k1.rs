@@ -209,9 +209,7 @@ mod tests {
 
     #[test]
     fn test_pubkey_roundtrip() {
-        let mut privkey =
-            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-                .unwrap();
+        let mut privkey: [u8; 32] = [127; 32];
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let pubkey_bytes = keypair.pubkey().bytes();
@@ -242,9 +240,7 @@ mod tests {
 
     #[test]
     fn test_verify() {
-        let mut privkey =
-            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-                .unwrap();
+        let mut privkey: [u8; 32] = [127; 32];
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
@@ -256,9 +252,7 @@ mod tests {
 
     #[test]
     fn test_recovery() {
-        let mut privkey =
-            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-                .unwrap();
+        let mut privkey: [u8; 32] = [127; 32];
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
@@ -271,9 +265,7 @@ mod tests {
 
     #[test]
     fn test_signature_serde() {
-        let mut privkey =
-            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-                .unwrap();
+        let mut privkey: [u8; 32] = [127; 32];
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
@@ -288,9 +280,7 @@ mod tests {
     #[test]
     // THIS MUST PASS!! don't comment this test out >:(
     fn test_pubkey_peerid_roundtrip() {
-        let mut privkey =
-            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-                .unwrap();
+        let mut privkey: [u8; 32] = [127; 32];
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let pubkey = keypair.pubkey();
@@ -302,9 +292,7 @@ mod tests {
     #[test]
     // THIS MUST PASS!! don't comment this test out >:(
     fn test_keypair_pubkey_peerid_roundtrip() {
-        let mut privkey =
-            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-                .unwrap();
+        let mut privkey: [u8; 32] = [127; 32];
         let (monad_keypair, libp2p_keypair) = KeyPair::libp2p_from_bytes(&mut privkey).unwrap();
 
         let monad_pubkey = monad_keypair.pubkey();

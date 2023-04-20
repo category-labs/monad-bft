@@ -10,7 +10,6 @@ monad-crypto = { path = "../monad-crypto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
-hex = "0.4.3"
 sha2 = "0.10.6"
 test-case = "3.0.0"
 zerocopy = "0.6.1"

@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hex = "0.4.3"
 monad-consensus = {path = "../monad-consensus"}
 monad-crypto = {path = "../monad-crypto"}
 monad-types = {path = "../monad-types"}

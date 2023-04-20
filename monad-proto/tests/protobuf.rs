@@ -56,7 +56,7 @@ mod test {
             vote_info: vi,
             ledger_commit_info: lci,
         };
-        let keypairs = vec![get_key("a")];
+        let keypairs = vec![get_key(0)];
         let author_keypair = &keypairs[0];
         let validators = setup_validator_member(&keypairs);
 

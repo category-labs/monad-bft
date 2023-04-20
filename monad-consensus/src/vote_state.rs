@@ -195,7 +195,7 @@ mod test {
     #[test]
     fn vote_idx_doesnt_match() {
         let mut vote_state = VoteState::<AggregateSignatures<SecpSignature>>::default();
-        let keypair = get_key("6");
+        let keypair = get_key(6);
         let val = Validator {
             pubkey: keypair.pubkey(),
             stake: 1,

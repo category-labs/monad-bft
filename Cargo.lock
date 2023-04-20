@@ -1612,7 +1612,6 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
- "hex",
  "monad-consensus",
  "monad-crypto",
  "monad-testutil",
@@ -1624,7 +1623,6 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
- "hex",
  "monad-crypto",
  "monad-testutil",
  "monad-types",
@@ -1673,7 +1671,6 @@ dependencies = [
 name = "monad-proto"
 version = "0.1.0"
 dependencies = [
- "hex",
  "monad-consensus",
  "monad-crypto",
  "monad-testutil",
@@ -1702,7 +1699,6 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
- "hex",
  "monad-consensus",
  "monad-crypto",
  "monad-types",
@@ -1722,7 +1718,6 @@ dependencies = [
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
- "hex",
  "log",
  "monad-crypto",
  "monad-types",

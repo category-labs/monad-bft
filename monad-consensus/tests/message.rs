@@ -83,8 +83,7 @@ fn proposal_msg_hash() {
 
     let txns = TransactionList(vec![1, 2, 3, 4]);
 
-    let mut privkey =
-        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
+    let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
     let author = NodeId(keypair.pubkey());
     let round = Round(234);
@@ -124,7 +123,7 @@ fn max_high_qc() {
     .iter()
     .map(|x| {
         let msg = Sha256Hash::hash_object(x);
-        let keypair = get_key("a");
+        let keypair = get_key(0);
 
         (*x, keypair.sign(&msg))
     })
@@ -155,8 +154,7 @@ fn test_vote_message() {
         ledger_commit_info: lci,
     };
 
-    let mut privkey =
-        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
+    let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();

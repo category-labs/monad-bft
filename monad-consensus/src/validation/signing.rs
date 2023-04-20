@@ -310,7 +310,7 @@ mod test {
     #[test_case(5 => matches Ok(()); "TC has the correct round")]
     fn tc_comprised_of_old_tmo(round: u64) -> Result<(), Error> {
         let mut vset = ValidatorMember::new();
-        let keypair = get_key("6");
+        let keypair = get_key(6);
 
         vset.insert(
             NodeId(keypair.pubkey()),
@@ -355,7 +355,7 @@ mod test {
         let lci = LedgerCommitInfo::new::<Sha256Hash>(Some([0xad_u8; 32]), &vi);
 
         let mut vset = ValidatorMember::new();
-        let keypair = get_key("6");
+        let keypair = get_key(6);
 
         vset.insert(
             NodeId(keypair.pubkey()),

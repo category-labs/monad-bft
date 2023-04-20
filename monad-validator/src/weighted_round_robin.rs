@@ -147,12 +147,12 @@ mod tests {
             .collect()
     }
 
-    fn get_key1() -> Vec<u8> {
-        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap()
+    fn get_key1() -> [u8; 32] {
+        [126; 32]
     }
 
-    fn get_key2() -> Vec<u8> {
-        hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap()
+    fn get_key2() -> [u8; 32] {
+        [127; 32]
     }
 
     // expected schedule (basic round robin)
