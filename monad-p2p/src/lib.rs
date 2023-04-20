@@ -190,12 +190,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{array::TryFromSliceError, collections::HashSet};
+    use std::{
+        array::TryFromSliceError,
+        collections::{BTreeMap, HashSet},
+    };
 
     use crate::Service;
+    use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
     use monad_executor::{Deserializable, Message, Serializable};
 
-    use futures::StreamExt;
+    use futures::{FutureExt, StreamExt};
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct TestMessage(u64);
@@ -243,7 +247,8 @@ mod tests {
     fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage, TestMessage>) {
         let keypair = libp2p::identity::Keypair::generate_secp256k1();
         let public = keypair.public();
-        let service = Service::<TestMessage, TestMessage>::without_executor(keypair);
+        let mut service = Service::<TestMessage, TestMessage>::without_executor(keypair);
+        while service.next().now_or_never().is_some() {}
         let libp2p_peer_id = public.to_peer_id();
         (
             monad_executor::PeerId(libp2p_peer_id.try_into().unwrap()),
@@ -251,8 +256,41 @@ mod tests {
         )
     }
 
+    fn create_random_nodes(
+        num: usize,
+    ) -> BTreeMap<monad_executor::PeerId, Service<TestMessage, TestMessage>> {
+        let mut nodes: BTreeMap<_, _> = std::iter::repeat_with(create_random_node)
+            .take(num)
+            .collect();
+
+        let peers: Vec<_> = nodes.keys().copied().collect();
+
+        for peer_1 in &peers {
+            let mut node_1 = nodes.remove(peer_1).unwrap();
+            for peer_2 in &peers {
+                if peer_1 == peer_2 {
+                    continue;
+                }
+                let node_2 = nodes.get_mut(peer_2).unwrap();
+
+                let dial_opts = DialOpts::peer_id(*node_2.swarm.local_peer_id())
+                    .addresses(node_2.swarm.listeners().cloned().collect())
+                    .condition(PeerCondition::Always) // is this what we want?
+                    .build();
+                node_1.swarm.dial(dial_opts).unwrap();
+
+                // poll futures
+                while node_1.next().now_or_never().is_some() {}
+                while node_2.next().now_or_never().is_some() {}
+            }
+            nodes.insert(*peer_1, node_1);
+        }
+
+        nodes
+    }
+
     #[test]
-    fn test_self() {
+    fn test_send_self() {
         let (peer_id, mut service) = create_random_node();
         let message = TestMessage(0);
         let on_ack_event = TestEvent::Ack(peer_id, message.id());
@@ -266,6 +304,44 @@ mod tests {
         while !expected_events.is_empty() {
             let event = futures::executor::block_on(service.next()).unwrap();
             expected_events.remove(&event);
+        }
+    }
+
+    #[test]
+    fn test_send_other() {
+        let mut nodes = create_random_nodes(2);
+        let (peer_id_1, peer_id_2) = {
+            let mut peer_ids = nodes.keys().copied();
+            (peer_ids.next().unwrap(), peer_ids.next().unwrap())
+        };
+        let message = TestMessage(0);
+        let on_ack_event = TestEvent::Ack(peer_id_2, message.id());
+        {
+            let service_1 = nodes.get_mut(&peer_id_1).unwrap();
+            service_1.publish_message(&peer_id_2, message.clone(), on_ack_event.clone());
+        }
+
+        let mut expected_events: HashSet<_> = vec![
+            (peer_id_1, on_ack_event),
+            (peer_id_2, TestEvent::Message(peer_id_1, message)),
+        ]
+        .into_iter()
+        .collect();
+
+        while !expected_events.is_empty() {
+            // this future resolves to the next available event (across all nodes)
+            let fut = futures::future::select_all(
+                nodes
+                    .iter_mut()
+                    .map(|(peer_id, node)| {
+                        let fut = async { (*peer_id, node.next().await.unwrap()) };
+                        Box::pin(fut)
+                    })
+                    .into_iter(),
+            );
+            let ((peer_id, event), _, _) = futures::executor::block_on(fut);
+
+            expected_events.remove(&(peer_id, event));
         }
     }
 }
