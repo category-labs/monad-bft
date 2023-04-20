@@ -32,6 +32,7 @@ jobs:
         -D clippy::suspicious
         -D clippy::style
         -D clippy::clone_on_copy
+        -D clippy::redundant_clone
         -D clippy::iter_kv_map
         -D clippy::unnecessary_cast
         -D clippy::filter_next

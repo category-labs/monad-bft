@@ -72,5 +72,6 @@ pub trait Message: Clone + Unpin {
     type Id: Eq + Hash + Clone + Unpin;
 
     fn id(&self) -> Self::Id;
+    // TODO PeerId -> &PeerId
     fn event(self, from: PeerId) -> Self::Event;
 }

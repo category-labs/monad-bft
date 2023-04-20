@@ -1,9 +1,14 @@
-use std::{collections::HashMap, fmt::Debug, ops::DerefMut, sync::Arc, task::Poll};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::DerefMut,
+    sync::Arc,
+    task::Poll,
+};
 
 use futures::{Stream, StreamExt};
 use monad_executor::{Message, Serializable};
 
-use libp2p::{request_response::RequestId, swarm::SwarmBuilder, PeerId, Transport};
+use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 
 mod behavior;
 use behavior::Behavior;
@@ -15,17 +20,19 @@ where
     swarm: libp2p::Swarm<Behavior<M>>,
 
     outbound_messages: HashMap<RequestId, (Arc<M>, M::Event)>,
-    outbound_messages_lookup: HashMap<(PeerId, M::Id), RequestId>,
+    outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
+
+    self_events: VecDeque<M::Event>,
 }
 
 impl<M> Service<M>
 where
     M: Message + Serializable,
 {
-    pub fn without_executor(identity: &libp2p::identity::Keypair) -> Self {
+    pub fn without_executor(identity: libp2p::identity::Keypair) -> Self {
         let transport = libp2p::core::transport::MemoryTransport::default()
             .upgrade(libp2p::core::upgrade::Version::V1Lazy)
-            .authenticate(libp2p::noise::NoiseAuthenticated::xx(identity).unwrap())
+            .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
             .multiplex(libp2p::mplex::MplexConfig::new())
             .boxed();
 
@@ -40,30 +47,41 @@ where
             swarm,
             outbound_messages: HashMap::new(),
             outbound_messages_lookup: HashMap::new(),
+
+            self_events: VecDeque::new(),
         }
     }
 
-    pub fn publish_message(&mut self, to: &PeerId, message: M, on_ack: M::Event) {
+    pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: M, on_ack: M::Event) {
+        let to_libp2p: libp2p::PeerId = (&to.0).into();
+        if self.swarm.local_peer_id() == &to_libp2p {
+            // we need special case send to self
+            // this is because dialing to self will fail
+            self.self_events.push_back(message.event(*to));
+            self.self_events.push_back(on_ack);
+            return;
+        }
         let message = Arc::new(message);
         let id = message.id();
         let request_id = self
             .swarm
             .behaviour_mut()
             .request_response
-            .send_request(to, message.clone());
+            .send_request(&to_libp2p, message.clone());
         self.outbound_messages.insert(request_id, (message, on_ack));
         self.outbound_messages_lookup
-            .insert((*to, id.clone()), request_id);
+            .insert((to_libp2p, id), request_id);
         assert_eq!(
             self.outbound_messages.len(),
             self.outbound_messages_lookup.len()
         );
     }
 
-    pub fn unpublish_message(&mut self, to: &PeerId, message_id: &M::Id) {
+    pub fn unpublish_message(&mut self, to: &monad_executor::PeerId, message_id: &M::Id) {
+        let to: libp2p::PeerId = (&to.0).into();
         if let Some(request_id) = self
             .outbound_messages_lookup
-            .remove(&(*to, message_id.clone()))
+            .remove(&(to, message_id.clone()))
         {
             self.outbound_messages
                 .remove(&request_id)
@@ -78,7 +96,7 @@ where
 
 impl<M> Stream for Service<M>
 where
-    M: Message + Serializable + Debug,
+    M: Message + Serializable,
 {
     type Item = M::Event;
 
@@ -86,6 +104,9 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        if let Some(event) = self.self_events.pop_front() {
+            return Poll::Ready(Some(event));
+        }
         while let Poll::Ready(Some(event)) = self.swarm.poll_next_unpin(cx) {
             match event {
                 libp2p::swarm::SwarmEvent::Behaviour(behavior::BehaviorEvent::RequestResponse(
@@ -115,7 +136,9 @@ where
                                 .send_response(channel, ());
                             return Poll::Ready(Some(
                                 Arc::try_unwrap(request)
-                                    .expect("more than 1 copies of Arc<Message>")
+                                    .unwrap_or_else(|_| {
+                                        panic!("more than 1 copies of Arc<Message>")
+                                    })
                                     .event(monad_executor::PeerId(pubkey)),
                             ));
                         }
@@ -139,15 +162,89 @@ where
                     libp2p::request_response::Event::OutboundFailure {
                         peer: _,
                         request_id: _,
-                        error: _,
+                        error: e,
                     },
                 )) => {
-                    todo!("schedule retry")
+                    todo!("TODO schedule retry: {:?}", e)
                 }
                 _ => {}
             }
         }
         // because libp2p::Swarm will never yield Poll::Ready(None), we can safely return Pending
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{array::TryFromSliceError, collections::HashSet};
+
+    use crate::Service;
+    use monad_executor::{Message, Serializable};
+
+    use futures::StreamExt;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct TestMessage(u64);
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    enum TestEvent {
+        Message(monad_executor::PeerId, TestMessage),
+        Ack(monad_executor::PeerId, <TestMessage as Message>::Id),
+    }
+
+    impl Message for TestMessage {
+        type Event = TestEvent;
+
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.0
+        }
+
+        fn event(self, from: monad_executor::PeerId) -> Self::Event {
+            Self::Event::Message(from, self)
+        }
+    }
+    impl Serializable for TestMessage {
+        type ReadError = TryFromSliceError;
+
+        fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
+            let message: [u8; 8] = message.try_into()?;
+            Ok(TestMessage(u64::from_le_bytes(message)))
+        }
+
+        fn serialize(&self) -> Vec<u8> {
+            self.0.to_le_bytes().to_vec()
+        }
+    }
+
+    fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage>) {
+        let keypair = libp2p::identity::Keypair::generate_secp256k1();
+        let public = keypair.public();
+        let service = Service::<TestMessage>::without_executor(keypair);
+        let libp2p_peer_id = public.to_peer_id();
+        (
+            monad_executor::PeerId(libp2p_peer_id.try_into().unwrap()),
+            service,
+        )
+    }
+
+    #[test]
+    fn test_self() {
+        let (peer_id, mut service) = create_random_node();
+        let message = TestMessage(0);
+        let on_ack_event = TestEvent::Ack(peer_id, message.id());
+        service.publish_message(&peer_id, message.clone(), on_ack_event.clone());
+
+        let mut expected_events: HashSet<_> =
+            vec![TestEvent::Message(peer_id, message), on_ack_event]
+                .into_iter()
+                .collect();
+
+        while !expected_events.is_empty() {
+            let event = futures::executor::block_on(service.next()).unwrap();
+            expected_events.remove(&event);
+        }
     }
 }
