@@ -15,3 +15,8 @@ monad-validator = { path = "../monad-validator" }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}
+criterion = "0.4"
+
+[[bench]]
+name = "two_node_benchmark"
+harness = false
