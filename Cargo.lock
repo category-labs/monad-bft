@@ -1645,6 +1645,7 @@ dependencies = [
  "secp256k1",
  "sha2 0.10.6",
  "tiny-keccak",
+ "zeroize",
 ]
 
 [[package]]

@@ -121,7 +121,7 @@ mod test {
         let mut privkey =
             hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
                 .unwrap();
-        let keypair1 = KeyPair::from_slice(&privkey).unwrap();
+        let keypair1 = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let v1 = Validator {
             pubkey: keypair1.pubkey().clone(),
@@ -136,7 +136,7 @@ mod test {
         privkey = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
             .unwrap();
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&privkey).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut privkey).unwrap().pubkey(),
             stake: 2,
         };
 
@@ -147,31 +147,35 @@ mod test {
         let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
         assert!(vs.is_member(&NodeId(keypair1.pubkey())));
 
-        let pkey3 = hex::decode("cfe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
-        let pubkey3 = KeyPair::from_slice(&pkey3).unwrap().pubkey();
+        let mut pkey3 =
+            hex::decode("cfe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
         assert!(!vs.is_member(&NodeId(pubkey3)));
     }
 
     #[test]
     fn test_super_maj() {
-        let pkey1 = hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
-        let pkey2 = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
+        let mut pkey1 =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let mut pkey2 =
+            hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
         let v1 = Validator {
-            pubkey: KeyPair::from_slice(&pkey1).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut pkey1).unwrap().pubkey(),
             stake: 1,
         };
 
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&pkey2).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut pkey2).unwrap().pubkey(),
             stake: 3,
         };
 
-        let pkey3 = hex::decode("cfe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
-        let pubkey3 = KeyPair::from_slice(&pkey3).unwrap().pubkey();
+        let mut pkey3 =
+            hex::decode("cfe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
 
         let validators = vec![v1.clone(), v2.clone()];
         let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
@@ -183,17 +187,19 @@ mod test {
 
     #[test]
     fn test_honest_vote() {
-        let pkey1 = hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
-        let pkey2 = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
+        let mut pkey1 =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let mut pkey2 =
+            hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
         let v1 = Validator {
-            pubkey: KeyPair::from_slice(&pkey1).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut pkey1).unwrap().pubkey(),
             stake: 1,
         };
 
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&pkey2).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut pkey2).unwrap().pubkey(),
             stake: 2,
         };
 
@@ -205,17 +211,19 @@ mod test {
 
     #[test]
     fn test_get_leader() {
-        let pkey1 = hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
-        let pubkey1 = KeyPair::from_slice(&pkey1).unwrap().pubkey();
+        let mut pkey1 =
+            hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let pubkey1 = KeyPair::from_bytes(&mut pkey1).unwrap().pubkey();
         let v1 = Validator {
             pubkey: pubkey1,
             stake: 1,
         };
 
-        let pkey2 = hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
-            .unwrap();
-        let pubkey2 = KeyPair::from_slice(&pkey2).unwrap().pubkey();
+        let mut pkey2 =
+            hex::decode("afe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
+                .unwrap();
+        let pubkey2 = KeyPair::from_bytes(&mut pkey2).unwrap().pubkey();
         let v2 = Validator {
             pubkey: pubkey2,
             stake: 1,

@@ -54,9 +54,9 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
 }
 
 pub fn node_id() -> NodeId {
-    let privkey =
+    let mut privkey =
         hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
-    let keypair = KeyPair::from_slice(&privkey).unwrap();
+    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
     NodeId(keypair.pubkey())
 }
 
@@ -64,8 +64,8 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
     assert!(num_keys < 255);
     let mut res = Vec::new();
     for i in 0..num_keys {
-        let k: [u8; 32] = [(i + 1) as u8; 32];
-        let keypair = KeyPair::from_slice(&k).unwrap();
+        let mut k: [u8; 32] = [(i + 1) as u8; 32];
+        let keypair = KeyPair::from_bytes(&mut k).unwrap();
 
         res.push(keypair);
     }
@@ -78,7 +78,7 @@ pub fn get_genesis_config<H: Hasher, T: SignatureCollection>(keys: &Vec<KeyPair>
     let genesis_prime_qc = QuorumCertificate::<T>::genesis_prime_qc::<H>();
     let genesis_block = Block::<T>::new::<H>(
         // FIXME init from genesis config, don't use random key
-        NodeId(KeyPair::from_slice(&[0xBE_u8; 32]).unwrap().pubkey()),
+        NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
         Round(0),
         &genesis_txn,
         &genesis_prime_qc,
@@ -109,6 +109,6 @@ impl TestSigner<SecpSignature> {
 }
 
 pub fn get_key(seed: &str) -> KeyPair {
-    let privkey = hex::decode(seed.repeat(64)).unwrap();
-    KeyPair::from_slice(&privkey).unwrap()
+    let mut privkey = hex::decode(seed.repeat(64)).unwrap();
+    KeyPair::from_bytes(&mut privkey).unwrap()
 }

@@ -159,11 +159,11 @@ mod tests {
     #[test]
     fn test_basic_round_robin() {
         let v1 = Validator {
-            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
             stake: 1,
         };
         let validators = vec![v1, v2];
@@ -183,11 +183,11 @@ mod tests {
     #[test]
     fn test_weighted_round_robin() {
         let v1 = Validator {
-            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
             stake: 2,
         };
         let validators = vec![v1, v2];
@@ -213,11 +213,11 @@ mod tests {
     #[test]
     fn test_agreement() {
         let v1 = Validator {
-            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
             stake: 3,
         };
         let validators = vec![v1, v2];
@@ -237,11 +237,11 @@ mod tests {
     #[test]
     fn test_increment_views_equivalent() {
         let v1 = Validator {
-            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
             stake: 1,
         };
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
             stake: 3,
         };
         let validators = vec![v1, v2];
@@ -262,11 +262,11 @@ mod tests {
     #[test]
     fn test_update_stake() {
         let mut v1 = Validator {
-            pubkey: KeyPair::from_slice(&get_key1()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
             stake: 10,
         };
         let v2 = Validator {
-            pubkey: KeyPair::from_slice(&get_key2()).unwrap().pubkey(),
+            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
             stake: 10,
         };
 

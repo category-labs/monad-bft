@@ -83,9 +83,9 @@ fn proposal_msg_hash() {
 
     let txns = TransactionList(vec![1, 2, 3, 4]);
 
-    let privkey =
+    let mut privkey =
         hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
-    let keypair = KeyPair::from_slice(&privkey).unwrap();
+    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
     let author = NodeId(keypair.pubkey());
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new(
@@ -155,9 +155,9 @@ fn test_vote_message() {
         ledger_commit_info: lci,
     };
 
-    let privkey =
+    let mut privkey =
         hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530").unwrap();
-    let keypair = KeyPair::from_slice(&privkey).unwrap();
+    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
 

@@ -197,10 +197,10 @@ mod test {
     type QC = QuorumCertificate<MockSignatures>;
 
     fn node_id() -> NodeId {
-        let privkey =
+        let mut privkey =
             hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
                 .unwrap();
-        let keypair = KeyPair::from_slice(&privkey).unwrap();
+        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
         NodeId(keypair.pubkey())
     }
 

@@ -20,10 +20,10 @@ impl<M> Behavior<M>
 where
     M: Message + Serializable,
 {
-    pub(crate) fn new(identity: &libp2p::identity::Keypair) -> Self {
+    pub(crate) fn new(pubkey: &libp2p::identity::PublicKey) -> Self {
         let identify = libp2p::identify::Behaviour::new(libp2p::identify::Config::new(
             IDENTIFY_PROTO_NAME.to_string(),
-            identity.public(),
+            pubkey.clone(),
         ));
 
         let mut request_response_config = libp2p::request_response::Config::default();

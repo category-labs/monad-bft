@@ -12,4 +12,4 @@ monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 futures = "0.3"
 async-trait = "0.1"
 
-libp2p = { version = "0.51", features = ["macros", "mplex", "noise", "identify", "request-response"] }
+libp2p = { version = "0.51", features = ["macros", "mplex", "noise", "identify", "request-response", "secp256k1"] }

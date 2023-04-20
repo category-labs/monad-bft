@@ -28,10 +28,11 @@ where
             .authenticate(libp2p::noise::NoiseAuthenticated::xx(identity).unwrap())
             .multiplex(libp2p::mplex::MplexConfig::new())
             .boxed();
-        let local_peer_id: libp2p::PeerId = identity.public().into();
 
-        let behavior = Behavior::new(identity);
+        let pubkey = identity.public();
+        let behavior = Behavior::new(&pubkey);
 
+        let local_peer_id: libp2p::PeerId = pubkey.into();
         let mut swarm = SwarmBuilder::without_executor(transport, behavior, local_peer_id).build();
         swarm.listen_on("/memory/0".parse().unwrap()).unwrap();
 
