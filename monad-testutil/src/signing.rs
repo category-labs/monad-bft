@@ -60,12 +60,9 @@ pub fn node_id() -> NodeId {
 }
 
 pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
-    assert!(num_keys < 255);
     let mut res = Vec::new();
     for i in 0..num_keys {
-        let mut k: [u8; 32] = [(i + 1) as u8; 32];
-        let keypair = KeyPair::from_bytes(&mut k).unwrap();
-
+        let keypair = get_key(i.into());
         res.push(keypair);
     }
 
