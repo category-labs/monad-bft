@@ -6,24 +6,24 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use monad_executor::{Deserializable, Message, Serializable};
+use monad_executor::{Deserializable, Executor, Message, RouterCommand, Serializable};
 
 use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 
 mod behavior;
 use behavior::Behavior;
 
+use crate::behavior::WrappedMessage;
+
 pub struct Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
-
-    M: Serializable, // FIXME
 {
     swarm: libp2p::Swarm<Behavior<M, OM>>,
 
-    outbound_messages: HashMap<RequestId, (Arc<OM>, M::Event)>,
+    outbound_messages: HashMap<RequestId, (Arc<WrappedMessage<M, OM>>, M::Event)>,
     outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
 
     self_events: VecDeque<M::Event>,
@@ -33,9 +33,9 @@ impl<M, OM> Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
-    OM: Into<M> + AsRef<M> + Serializable + Send + Sync + 'static,
+    OM: Serializable + Send + Sync + 'static,
 
-    M: Serializable, // FIXME
+    OM: Into<M> + AsRef<M>,
 {
     pub fn without_executor(identity: libp2p::identity::Keypair) -> Self {
         let transport = libp2p::core::transport::MemoryTransport::default()
@@ -70,12 +70,12 @@ where
             return;
         }
         let id = message.as_ref().id();
-        let message = Arc::new(message);
-        let request_id = self.swarm.behaviour_mut().request_response.send_request(
-            &to_libp2p,
-            // FIXME shouldn't need to this type stuff...
-            Arc::new((*message).as_ref().clone()),
-        );
+        let message = Arc::new(WrappedMessage::Send(message));
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&to_libp2p, message.clone());
         self.outbound_messages.insert(request_id, (message, on_ack));
         self.outbound_messages_lookup
             .insert((to_libp2p, id), request_id);
@@ -102,14 +102,38 @@ where
     }
 }
 
+impl<M, OM> Executor for Service<M, OM>
+where
+    M: Message + Deserializable + Send + Sync + 'static,
+    <M as Deserializable>::ReadError: 'static,
+    OM: Serializable + Send + Sync + 'static,
+
+    OM: Into<M> + AsRef<M>,
+{
+    type Command = RouterCommand<M, OM>;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        for command in commands {
+            match command {
+                RouterCommand::Publish {
+                    to,
+                    message,
+                    on_ack,
+                } => self.publish_message(&to, message, on_ack),
+                RouterCommand::Unpublish { to, id } => self.unpublish_message(&to, &id),
+            }
+        }
+    }
+}
+
 impl<M, OM> Stream for Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
     OM: AsRef<M> + Serializable + Send + Sync + 'static,
-    Self: Unpin,
 
-    M: Serializable, // FIXME
+    OM: Into<M> + AsRef<M>,
+    Self: Unpin,
 {
     type Item = M::Event;
 
@@ -128,7 +152,7 @@ where
                     let pubkey = match monad_crypto::secp256k1::PubKey::try_from(peer) {
                         Ok(pubkey) => pubkey,
                         Err(_) => {
-                            // We don't need to repsond if the peer isn't using a valid secp256k1 key
+                            // We don't need to respond if the peer isn't using a valid secp256k1 key
                             // TODO do we block peer or something?
                             continue;
                         }
@@ -164,7 +188,7 @@ where
                             {
                                 service
                                     .outbound_messages_lookup
-                                    .remove(&(peer, (*message).as_ref().id()))
+                                    .remove(&(peer, message.id()))
                                     .expect("outbound_messages_lookup out of sync");
                                 return Poll::Ready(Some(on_ack));
                             }

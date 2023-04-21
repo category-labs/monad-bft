@@ -1,7 +1,7 @@
 use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use monad_executor::{Deserializable, Serializable};
+use monad_executor::{Deserializable, Message, PeerId, Serializable};
 
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response::Codec;
@@ -25,19 +25,63 @@ impl<M, OM> Default for ReliableMessageCodec<M, OM> {
     }
 }
 
+// FIXME this is a hack to get around only 1 type for Codec::Request
+pub enum WrappedMessage<M, OM> {
+    Receive(M),
+    Send(OM),
+}
+impl<M, OM> WrappedMessage<M, OM>
+where
+    M: Message,
+    OM: Into<M> + AsRef<M>,
+{
+    pub fn id(&self) -> M::Id {
+        match self {
+            WrappedMessage::Receive(m) => m.id(),
+            WrappedMessage::Send(om) => om.as_ref().id(),
+        }
+    }
+
+    pub fn event(self, peer_id: PeerId) -> M::Event {
+        match self {
+            WrappedMessage::Receive(m) => m.event(peer_id),
+            WrappedMessage::Send(om) => om.into().event(peer_id),
+        }
+    }
+}
+
+impl<M, OM> Serializable for WrappedMessage<M, OM>
+where
+    OM: Serializable,
+{
+    fn serialize(&self) -> Vec<u8> {
+        match self {
+            WrappedMessage::Send(om) => om.serialize(),
+            WrappedMessage::Receive(_) => unreachable!("only Send is serializable"),
+        }
+    }
+}
+impl<M, OM> Deserializable for WrappedMessage<M, OM>
+where
+    M: Deserializable,
+{
+    type ReadError = M::ReadError;
+
+    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
+        Ok(WrappedMessage::Receive(M::deserialize(message)?))
+    }
+}
+
 #[async_trait]
 impl<M, OM> Codec for ReliableMessageCodec<M, OM>
 where
     M: Deserializable + Send + Sync,
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync,
-
-    M: Serializable, // FIXME - do we need to fork request_response to have different
-                     // OutboundRequest and InboundRequest types...?
 {
     type Protocol = String;
     // TODO can we avoid Arc?
-    type Request = Arc<M>;
+    type Request = Arc<WrappedMessage<M, OM>>;
     type Response = ();
 
     async fn read_request<T>(
@@ -50,8 +94,8 @@ where
     {
         let mut bytes = Vec::new();
         io.read_to_end(&mut bytes).await?;
-        let message =
-            M::deserialize(&bytes).map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+        let message = WrappedMessage::deserialize(&bytes)
+            .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
         Ok(Arc::new(message))
     }
 

@@ -177,7 +177,7 @@ where
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
 
-    fn init(config: Self::Config) -> (Self, Vec<Command<Self>>) {
+    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
         // create my keys and validator structs
         let validator_list = config
             .validators
@@ -219,7 +219,7 @@ where
         (monad_state, init_cmds)
     }
 
-    fn update(&mut self, event: Self::Event) -> Vec<Command<Self>> {
+    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Message, Self::OutboundMessage>> {
         match event {
             MonadEvent::Ack { peer, id, round } => self
                 .message_state

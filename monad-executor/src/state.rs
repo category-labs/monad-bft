@@ -11,18 +11,18 @@ impl std::fmt::Debug for PeerId {
     }
 }
 
-pub enum RouterCommand<S>
+pub enum RouterCommand<M, OM>
 where
-    S: State,
+    M: Message,
 {
     Publish {
         to: PeerId,
-        message: S::OutboundMessage,
-        on_ack: S::Event,
+        message: OM,
+        on_ack: M::Event,
     },
     Unpublish {
         to: PeerId,
-        id: <S::Message as Message>::Id,
+        id: M::Id,
     },
 }
 
@@ -40,21 +40,21 @@ pub trait Executor {
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
 
-pub enum Command<S>
+pub enum Command<M, OM>
 where
-    S: State,
+    M: Message,
 {
-    RouterCommand(RouterCommand<S>),
-    TimerCommand(TimerCommand<S::Event>),
+    RouterCommand(RouterCommand<M, OM>),
+    TimerCommand(TimerCommand<M::Event>),
 }
 
-impl<S> Command<S>
+impl<M, OM> Command<M, OM>
 where
-    S: State,
+    M: Message,
 {
     pub fn split_commands(
         commands: Vec<Self>,
-    ) -> (Vec<RouterCommand<S>>, Vec<TimerCommand<S::Event>>) {
+    ) -> (Vec<RouterCommand<M, OM>>, Vec<TimerCommand<M::Event>>) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         for command in commands {
@@ -73,8 +73,8 @@ pub trait State: Sized {
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
     type Message: Message<Event = Self::Event>;
 
-    fn init(config: Self::Config) -> (Self, Vec<Command<Self>>);
-    fn update(&mut self, event: Self::Event) -> Vec<Command<Self>>;
+    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>);
+    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Message, Self::OutboundMessage>>;
 }
 
 pub trait Serializable {

@@ -190,7 +190,7 @@ impl<S> Executor for MockExecutor<S>
 where
     S: State,
 {
-    type Command = Command<S>;
+    type Command = Command<S::Message, S::OutboundMessage>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         // we must have processed received messages at this point, so we can send out acks
         self.outbound_ack.extend(
@@ -385,7 +385,9 @@ mod tests {
         type OutboundMessage = LongAckMessage;
         type Message = LongAckMessage;
 
-        fn init(_config: Self::Config) -> (Self, Vec<Command<Self>>) {
+        fn init(
+            _config: Self::Config,
+        ) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
             let init_self = Self {
                 num_ack: 0,
                 num_timeouts: 0,
@@ -405,7 +407,10 @@ mod tests {
 
             (init_self, init_cmds)
         }
-        fn update(&mut self, event: Self::Event) -> Vec<Command<Self>> {
+        fn update(
+            &mut self,
+            event: Self::Event,
+        ) -> Vec<Command<Self::Message, Self::OutboundMessage>> {
             let mut commands = Vec::new();
             match event {
                 LongAckEvent::IncrementNumAck => {
@@ -618,7 +623,9 @@ mod tests {
         type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
 
-        fn init(config: Self::Config) -> (Self, Vec<Command<Self>>) {
+        fn init(
+            config: Self::Config,
+        ) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
             let (pubkeys, me) = config;
 
             let init_cmds = pubkeys
@@ -645,7 +652,10 @@ mod tests {
 
             (init_self, init_cmds)
         }
-        fn update(&mut self, event: Self::Event) -> Vec<Command<Self>> {
+        fn update(
+            &mut self,
+            event: Self::Event,
+        ) -> Vec<Command<Self::Message, Self::OutboundMessage>> {
             let mut commands = Vec::new();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {
