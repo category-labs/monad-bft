@@ -86,6 +86,36 @@ where
     ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
 
+#[cfg(feature = "proto")]
+impl monad_executor::Deserializable
+    for MonadEvent<
+        monad_crypto::secp256k1::SecpSignature,
+        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
+            monad_crypto::secp256k1::SecpSignature,
+        >,
+    >
+{
+    type ReadError = monad_proto::error::ProtoError;
+
+    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
+        crate::convert::interface::deserialize_event(data)
+    }
+}
+
+#[cfg(feature = "proto")]
+impl monad_executor::Serializable
+    for MonadEvent<
+        monad_crypto::secp256k1::SecpSignature,
+        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
+            monad_crypto::secp256k1::SecpSignature,
+        >,
+    >
+{
+    fn serialize(&self) -> Vec<u8> {
+        crate::convert::interface::serialize_event(self)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>);
 

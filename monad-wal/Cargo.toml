@@ -29,3 +29,6 @@ monad-types = { path = "../monad-types" }
 name = "raw_bench"
 harness = false
 
+[[bench]]
+name = "event_bench"
+harness = false

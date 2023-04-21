@@ -7,7 +7,7 @@ mod test {
     use monad_consensus::{
         signatures::aggregate_signature::AggregateSignatures,
         types::{
-            block::{Block, TransactionList},
+            block::TransactionList,
             consensus_message::ConsensusMessage,
             ledger::LedgerCommitInfo,
             message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -21,7 +21,8 @@ mod test {
             signing::{ValidatorMember, Verified},
         },
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::secp256k1::KeyPair;
+    use monad_testutil::block::setup_block;
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator::Validator;
@@ -141,48 +142,18 @@ mod test {
         assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
     }
 
-    fn setup_block(
-        author: NodeId,
-        block_round: u64,
-        qc_round: u64,
-        keypairs: &Vec<KeyPair>,
-    ) -> Block<AggregateSignatures<SecpSignature>> {
-        let txns = TransactionList(vec![1, 2, 3, 4]);
-        let round = Round(block_round);
-
-        let vi = VoteInfo {
-            id: BlockId(Hash([42_u8; 32].into())),
-            round: Round(qc_round),
-            parent_id: BlockId(Hash([43_u8; 32].into())),
-            parent_round: Round(0),
-        };
-        let lci = LedgerCommitInfo {
-            commit_state_hash: None,
-            vote_info_hash: Sha256Hash::hash_object(&vi),
-        };
-
-        let qcinfo = QcInfo {
-            vote: vi,
-            ledger_commit: lci,
-        };
-        let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
-
-        let mut aggsig = AggregateSignatures::new();
-        for keypair in keypairs.iter() {
-            aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
-        }
-
-        let qc = QuorumCertificate::<AggregateSignatures<SecpSignature>>::new(qcinfo, aggsig);
-
-        Block::<AggregateSignatures<SecpSignature>>::new::<Sha256Hash>(author, round, &txns, &qc)
-    }
-
     #[test]
     fn test_proposal_qc() {
         let keypairs = create_keys(2);
         let author_keypair = &keypairs[0];
         let vmember = setup_validator_member(&keypairs);
-        let blk = setup_block(NodeId(author_keypair.pubkey()), 233, 232, &keypairs);
+        let blk = setup_block(
+            NodeId(author_keypair.pubkey()),
+            233,
+            232,
+            TransactionList(vec![1, 2, 3, 4]),
+            &keypairs,
+        );
         let proposal = ConsensusMessage::Proposal(ProposalMessage {
             block: blk,
             last_round_tc: None,
@@ -202,7 +173,13 @@ mod test {
         let keypairs = create_keys(2);
         let vmember = setup_validator_member(&keypairs);
         let author_keypair = &keypairs[0];
-        let blk = setup_block(NodeId(author_keypair.pubkey()), 233, 231, &keypairs);
+        let blk = setup_block(
+            NodeId(author_keypair.pubkey()),
+            233,
+            231,
+            TransactionList(vec![1, 2, 3, 4]),
+            &keypairs,
+        );
 
         let tc_round = Round(232);
         let high_qc_round = HighQcRound {
