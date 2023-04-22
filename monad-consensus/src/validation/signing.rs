@@ -20,9 +20,8 @@ use crate::validation::message::well_formed;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verified<S, M> {
-    obj: M,
     author: NodeId,
-    author_signature: S,
+    message: Unverified<S, M>,
 }
 
 impl<S: Signature, M> Verified<S, M> {
@@ -30,7 +29,7 @@ impl<S: Signature, M> Verified<S, M> {
         &self.author
     }
     pub fn author_signature(&self) -> &S {
-        &self.author_signature
+        self.message.author_signature()
     }
 }
 
@@ -39,9 +38,8 @@ impl<S: Signature, M: Hashable> Verified<S, M> {
         let hash = H::hash_object(&msg);
         let signature = S::sign(&hash, keypair);
         Self {
-            obj: msg,
             author: NodeId(keypair.pubkey()),
-            author_signature: signature,
+            message: Unverified::new(msg, signature),
         }
     }
 }
@@ -50,7 +48,7 @@ impl<S, M> Deref for Verified<S, M> {
     type Target = M;
 
     fn deref(&self) -> &Self::Target {
-        &self.obj
+        &self.message.obj
     }
 }
 
@@ -74,11 +72,8 @@ impl<S: Signature, M> Unverified<S, M> {
 }
 
 impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
-    fn from(value: Verified<S, M>) -> Self {
-        Self {
-            obj: value.obj,
-            author_signature: value.author_signature,
-        }
+    fn from(verified: Verified<S, M>) -> Self {
+        verified.message
     }
 }
 
@@ -100,9 +95,8 @@ where
         verify_certificates::<S, H, _>(validators, &self.obj.last_round_tc, &self.obj.block.qc)?;
 
         let result = Verified {
-            obj: self.obj,
             author: NodeId(author),
-            author_signature: self.author_signature,
+            message: self,
         };
 
         Ok(result)
@@ -130,9 +124,8 @@ impl<S: Signature> Unverified<S, VoteMessage> {
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
 
         let result = Verified {
-            obj: self.obj,
             author: NodeId(author),
-            author_signature: self.author_signature,
+            message: self,
         };
 
         Ok(result)
@@ -159,9 +152,8 @@ where
         )?;
 
         let result = Verified {
-            obj: self.obj,
             author: NodeId(author),
-            author_signature: self.author_signature,
+            message: self,
         };
         Ok(result)
     }

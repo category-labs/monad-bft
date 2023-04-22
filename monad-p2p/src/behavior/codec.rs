@@ -1,23 +1,23 @@
 use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use monad_executor::{Deserializable, Message, Serializable};
+use monad_executor::{Deserializable, Serializable};
 
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response::Codec;
 
-#[derive(Clone)]
-pub(crate) struct ReliableMessageCodec<M>
-where
-    M: Message + Serializable,
-{
-    _marker: PhantomData<M>,
+pub(crate) struct ReliableMessageCodec<M, OM> {
+    _marker: PhantomData<fn(OM) -> M>,
+}
+impl<M, OM> Clone for ReliableMessageCodec<M, OM> {
+    fn clone(&self) -> Self {
+        Self {
+            _marker: self._marker,
+        }
+    }
 }
 
-impl<M> Default for ReliableMessageCodec<M>
-where
-    M: Message + Serializable,
-{
+impl<M, OM> Default for ReliableMessageCodec<M, OM> {
     fn default() -> Self {
         Self {
             _marker: PhantomData,
@@ -26,9 +26,14 @@ where
 }
 
 #[async_trait]
-impl<M> Codec for ReliableMessageCodec<M>
+impl<M, OM> Codec for ReliableMessageCodec<M, OM>
 where
-    M: Message + Serializable + Deserializable,
+    M: Deserializable + Send + Sync,
+    <M as Deserializable>::ReadError: 'static,
+    OM: Serializable + Send + Sync,
+
+    M: Serializable, // FIXME - do we need to fork request_response to have different
+                     // OutboundRequest and InboundRequest types...?
 {
     type Protocol = String;
     // TODO can we avoid Arc?

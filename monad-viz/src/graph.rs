@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use monad_crypto::secp256k1::PubKey;
-use monad_executor::{mock_swarm::Nodes, Message, PeerId};
+use monad_executor::{executor::mock::MockExecutor, mock_swarm::Nodes, Message, PeerId};
 
 pub enum NodeEvent<'s, Id, M, MId, E> {
     Message {
@@ -65,6 +65,7 @@ where
 impl<S, C, L> NodesSimulation<S, C, L>
 where
     S: monad_executor::State,
+    MockExecutor<S>: Unpin,
     C: Fn() -> Vec<(PubKey, S::Config)>,
     L: Fn(&PeerId, &PeerId) -> Duration + Clone,
 {
@@ -89,6 +90,7 @@ where
 impl<S, C, L> Graph for NodesSimulation<S, C, L>
 where
     S: monad_executor::State,
+    MockExecutor<S>: Unpin,
     C: Fn() -> Vec<(PubKey, S::Config)>,
     L: Fn(&PeerId, &PeerId) -> Duration + Clone,
 {

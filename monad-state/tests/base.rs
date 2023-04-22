@@ -1,12 +1,16 @@
 use std::{collections::HashSet, time::Duration};
 
 use monad_consensus::{
+    signatures::aggregate_signature::AggregateSignatures,
     types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
 };
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::{secp256k1::KeyPair, NopSignature};
 use monad_executor::mock_swarm::Nodes;
-use monad_state::{MonadConfig, MonadState, SignatureCollectionType};
+use monad_state::{MonadConfig, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
+
+type SignatureType = NopSignature;
+type SignatureCollectionType = AggregateSignatures<SignatureType>;
 
 pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
     let keys = create_keys(num_nodes as u32);
@@ -28,7 +32,7 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
         })
         .collect::<Vec<_>>();
 
-    let mut nodes = Nodes::<MonadState, _>::new(
+    let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
         pubkeys.into_iter().zip(state_configs).collect(),
         |_node_1, _node_2| Duration::from_millis(1),
     );

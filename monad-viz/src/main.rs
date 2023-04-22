@@ -8,11 +8,13 @@ use graph::NodeEvent;
 use graph::NodesSimulation;
 
 use macroquad::prelude::*;
+use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
 use monad_consensus::{
     types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
 };
 use monad_crypto::secp256k1::KeyPair;
-use monad_state::{MonadConfig, MonadState, SignatureCollectionType};
+use monad_crypto::NopSignature;
+use monad_state::{MonadConfig, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
 
 fn window_conf() -> Conf {
@@ -21,6 +23,9 @@ fn window_conf() -> Conf {
         ..Default::default()
     }
 }
+
+type SignatureType = NopSignature;
+type SignatureCollectionType = AggregateSignatures<SignatureType>;
 
 #[macroquad::main(window_conf)]
 async fn main() {
@@ -48,7 +53,7 @@ async fn main() {
 
             pubkeys.into_iter().zip(state_configs).collect()
         };
-        NodesSimulation::<MonadState, _, _>::new(
+        NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _>::new(
             config_gen,
             |node_1, node_2| {
                 let mut ck = 0;

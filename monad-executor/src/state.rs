@@ -4,13 +4,19 @@ use monad_crypto::secp256k1::PubKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
-pub enum RouterCommand<E, M, OM>
+pub enum RouterCommand<S>
 where
-    M: Message<Event = E>,
-    OM: Into<M>,
+    S: State,
 {
-    Publish { to: PeerId, message: OM, on_ack: E },
-    Unpublish { to: PeerId, id: M::Id },
+    Publish {
+        to: PeerId,
+        message: S::OutboundMessage,
+        on_ack: S::Event,
+    },
+    Unpublish {
+        to: PeerId,
+        id: <S::Message as Message>::Id,
+    },
 }
 
 pub enum TimerCommand<E> {
@@ -27,23 +33,21 @@ pub trait Executor {
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
 
-pub enum Command<E, M, OM>
+pub enum Command<S>
 where
-    M: Message<Event = E>,
-    OM: Into<M>,
+    S: State,
 {
-    RouterCommand(RouterCommand<E, M, OM>),
-    TimerCommand(TimerCommand<E>),
+    RouterCommand(RouterCommand<S>),
+    TimerCommand(TimerCommand<S::Event>),
 }
 
-impl<E, M, OM> Command<E, M, OM>
+impl<S> Command<S>
 where
-    OM: Into<M>,
-    M: Message<Event = E>,
+    S: State,
 {
     pub fn split_commands(
         commands: Vec<Self>,
-    ) -> (Vec<RouterCommand<E, M, OM>>, Vec<TimerCommand<E>>) {
+    ) -> (Vec<RouterCommand<S>>, Vec<TimerCommand<S::Event>>) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         for command in commands {
@@ -58,35 +62,27 @@ where
 
 pub trait State: Sized {
     type Config;
-    type Event: Clone + Unpin;
-    type OutboundMessage: Into<Self::Message> + Clone + Unpin;
+    type Event: Clone;
+    type OutboundMessage: Into<Self::Message> + Clone;
     type Message: Message<Event = Self::Event>;
 
-    fn init(
-        config: Self::Config,
-    ) -> (
-        Self,
-        Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>>,
-    );
-    fn update(
-        &mut self,
-        event: Self::Event,
-    ) -> Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>>;
+    fn init(config: Self::Config) -> (Self, Vec<Command<Self>>);
+    fn update(&mut self, event: Self::Event) -> Vec<Command<Self>>;
 }
 
 pub trait Serializable {
     fn serialize(&self) -> Vec<u8>;
 }
 
-pub trait Deserializable: Sized + Send + Sync + 'static {
+pub trait Deserializable: Sized {
     type ReadError: Error + Send + Sync;
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError>;
 }
 
-pub trait Message: Clone + Unpin {
-    type Event: Unpin;
-    type Id: Eq + Hash + Clone + Unpin;
+pub trait Message: Clone {
+    type Event;
+    type Id: Eq + Hash + Clone;
 
     fn id(&self) -> Self::Id;
     // TODO PeerId -> &PeerId

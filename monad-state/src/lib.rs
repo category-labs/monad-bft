@@ -1,11 +1,9 @@
-use std::error::Error;
 use std::time::Duration;
 use std::{collections::HashMap, fmt::Debug};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
-    signatures::aggregate_signature::AggregateSignatures,
     types::{
         block::{Block, TransactionList},
         consensus_message::{SignedConsensusMessage, VerifiedConsensusMessage},
@@ -26,11 +24,9 @@ use monad_consensus::{
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
-    NopSignature, Signature,
+    Signature,
 };
-use monad_executor::{
-    Command, Deserializable, Message, PeerId, RouterCommand, Serializable, State, TimerCommand,
-};
+use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
 use monad_types::{NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
@@ -41,81 +37,109 @@ use message::MessageState;
 
 mod message;
 
-pub type SignatureType = NopSignature;
-pub type SignatureCollectionType = AggregateSignatures<SignatureType>;
 type LeaderElectionType = WeightedRoundRobin;
 type HasherType = Sha256Hash;
 
-pub struct MonadState {
-    message_state: MessageState<MonadMessage, VerifiedMonadMessage>,
+pub struct MonadState<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
-    consensus_state: ConsensusState<
-        SignatureType,
-        SignatureCollectionType,
-        InMemoryLedger<SignatureCollectionType>,
-        SimulationMempool,
-    >,
+    consensus_state: ConsensusState<ST, SCT, InMemoryLedger<SCT>, SimulationMempool>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
-impl MonadState {
+impl<ST, SCT> MonadState<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
     pub fn pubkey(&self) -> PubKey {
         self.consensus_state.nodeid.0
     }
 
-    pub fn ledger(&self) -> &Vec<Block<SignatureCollectionType>> {
+    pub fn ledger(&self) -> &Vec<Block<SCT>> {
         self.consensus_state.ledger.get_blocks()
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum MonadEvent {
+pub enum MonadEvent<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
     Ack {
         peer: PeerId,
-        id: <MonadMessage as Message>::Id,
+        id: <MonadMessage<ST, SCT> as Message>::Id,
         round: Round,
     },
-    ConsensusEvent(ConsensusEvent<SignatureType, SignatureCollectionType>),
+    ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
 
 #[derive(Debug, Clone)]
-pub struct VerifiedMonadMessage(VerifiedConsensusMessage<SignatureType, SignatureCollectionType>);
+pub struct VerifiedMonadMessage<ST, SCT>(VerifiedConsensusMessage<ST, SCT>)
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>;
 
 #[derive(Debug, Clone)]
-pub struct MonadMessage(SignedConsensusMessage<SignatureType, SignatureCollectionType>);
+pub struct MonadMessage<ST, SCT>(SignedConsensusMessage<ST, SCT>)
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>;
 
-#[derive(Debug)]
-pub struct MonadReadError;
-impl std::fmt::Display for MonadReadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <Self as Debug>::fmt(self, f)
-    }
-}
-impl Error for MonadReadError {}
-
-impl Serializable for VerifiedMonadMessage {
+#[cfg(feature = "proto")]
+impl monad_executor::Serializable
+    for VerifiedMonadMessage<
+        monad_crypto::secp256k1::SecpSignature,
+        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
+            monad_crypto::secp256k1::SecpSignature,
+        >,
+    >
+{
     fn serialize(&self) -> Vec<u8> {
-        todo!("proto serialize")
+        monad_proto::types::message::serialize_verified_consensus_message(&self.0)
     }
 }
 
-impl Deserializable for MonadMessage {
-    type ReadError = MonadReadError;
+#[cfg(feature = "proto")]
+impl monad_executor::Deserializable
+    for MonadMessage<
+        monad_crypto::secp256k1::SecpSignature,
+        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
+            monad_crypto::secp256k1::SecpSignature,
+        >,
+    >
+{
+    type ReadError = monad_proto::error::ProtoError;
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
-        todo!("proto deserialize")
+        Ok(MonadMessage(
+            monad_proto::types::message::deserialize_unverified_consensus_message(message)?,
+        ))
     }
 }
 
-impl From<VerifiedMonadMessage> for MonadMessage {
-    fn from(value: VerifiedMonadMessage) -> Self {
+impl<ST, SCT> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         MonadMessage(value.0.into())
     }
 }
 
-impl Message for MonadMessage {
-    type Event = MonadEvent;
-    type Id = SignatureType;
+impl<ST, SCT> Message for MonadMessage<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    type Event = MonadEvent<ST, SCT>;
+    type Id = ST;
 
     fn id(&self) -> Self::Id {
         *match &self.0 {
@@ -137,28 +161,27 @@ impl Message for MonadMessage {
     }
 }
 
-pub struct MonadConfig {
+pub struct MonadConfig<SCT> {
     pub validators: Vec<PubKey>,
     pub key: KeyPair,
 
     pub delta: Duration,
-    pub genesis_block: Block<SignatureCollectionType>,
+    pub genesis_block: Block<SCT>,
     pub genesis_vote_info: VoteInfo,
-    pub genesis_signatures: SignatureCollectionType,
+    pub genesis_signatures: SCT,
 }
 
-impl State for MonadState {
-    type Config = MonadConfig;
-    type Event = MonadEvent;
-    type Message = MonadMessage;
-    type OutboundMessage = VerifiedMonadMessage;
+impl<ST, SCT> State for MonadState<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    type Config = MonadConfig<SCT>;
+    type Event = MonadEvent<ST, SCT>;
+    type Message = MonadMessage<ST, SCT>;
+    type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
 
-    fn init(
-        config: Self::Config,
-    ) -> (
-        Self,
-        Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>>,
-    ) {
+    fn init(config: Self::Config) -> (Self, Vec<Command<Self>>) {
         // create my keys and validator structs
         let validator_list = config
             .validators
@@ -200,10 +223,7 @@ impl State for MonadState {
         (monad_state, init_cmds)
     }
 
-    fn update(
-        &mut self,
-        event: Self::Event,
-    ) -> Vec<Command<Self::Event, Self::Message, Self::OutboundMessage>> {
+    fn update(&mut self, event: Self::Event) -> Vec<Command<Self>> {
         match event {
             MonadEvent::Ack { peer, id, round } => self
                 .message_state
@@ -218,9 +238,7 @@ impl State for MonadState {
                 .collect(),
 
             MonadEvent::ConsensusEvent(consensus_event) => {
-                let consensus_commands: Vec<
-                    ConsensusCommand<SignatureType, SignatureCollectionType>,
-                > = match consensus_event {
+                let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(pacemaker_expire) => self
                         .consensus_state
                         .pacemaker
@@ -361,8 +379,12 @@ pub enum ConsensusMessage<S, T> {
     Timeout(TimeoutMessage<S, T>),
 }
 
-impl<T: SignatureCollection> ConsensusMessage<SignatureType, T> {
-    fn sign<H: Hasher>(self, keypair: &KeyPair) -> VerifiedConsensusMessage<SignatureType, T> {
+impl<ST, SCT> ConsensusMessage<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    fn sign<H: Hasher>(self, keypair: &KeyPair) -> VerifiedConsensusMessage<ST, SCT> {
         match self {
             ConsensusMessage::Proposal(msg) => {
                 VerifiedConsensusMessage::Proposal(Verified::new::<H>(msg, keypair))

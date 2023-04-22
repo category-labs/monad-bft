@@ -1,10 +1,12 @@
+use std::hash::Hash;
+
 use rand::Rng;
 
 use crate::secp256k1::{Error, KeyPair, PubKey};
 
 pub mod secp256k1;
 
-pub trait Signature: Copy + Clone + std::fmt::Debug {
+pub trait Signature: Copy + Clone + Eq + Hash + std::fmt::Debug {
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
 
     fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error>;

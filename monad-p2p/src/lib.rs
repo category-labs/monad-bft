@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, VecDeque},
-    fmt,
     ops::DerefMut,
     sync::Arc,
     task::Poll,
@@ -14,21 +13,29 @@ use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 mod behavior;
 use behavior::Behavior;
 
-pub struct Service<M>
+pub struct Service<M, OM>
 where
-    M: Message + Serializable + Deserializable,
-{
-    swarm: libp2p::Swarm<Behavior<M>>,
+    M: Message + Deserializable + Send + Sync + 'static,
+    <M as Deserializable>::ReadError: 'static,
+    OM: Serializable + Send + Sync + 'static,
 
-    outbound_messages: HashMap<RequestId, (Arc<M>, M::Event)>,
+    M: Serializable, // FIXME
+{
+    swarm: libp2p::Swarm<Behavior<M, OM>>,
+
+    outbound_messages: HashMap<RequestId, (Arc<OM>, M::Event)>,
     outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
 
     self_events: VecDeque<M::Event>,
 }
 
-impl<M> Service<M>
+impl<M, OM> Service<M, OM>
 where
-    M: Message + Serializable + Deserializable,
+    M: Message + Deserializable + Send + Sync + 'static,
+    <M as Deserializable>::ReadError: 'static,
+    OM: Into<M> + AsRef<M> + Serializable + Send + Sync + 'static,
+
+    M: Serializable, // FIXME
 {
     pub fn without_executor(identity: libp2p::identity::Keypair) -> Self {
         let transport = libp2p::core::transport::MemoryTransport::default()
@@ -53,22 +60,22 @@ where
         }
     }
 
-    pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: M, on_ack: M::Event) {
+    pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: OM, on_ack: M::Event) {
         let to_libp2p: libp2p::PeerId = (&to.0).into();
         if self.swarm.local_peer_id() == &to_libp2p {
             // we need special case send to self
             // this is because dialing to self will fail
-            self.self_events.push_back(message.event(*to));
+            self.self_events.push_back(message.into().event(*to));
             self.self_events.push_back(on_ack);
             return;
         }
+        let id = message.as_ref().id();
         let message = Arc::new(message);
-        let id = message.id();
-        let request_id = self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&to_libp2p, message.clone());
+        let request_id = self.swarm.behaviour_mut().request_response.send_request(
+            &to_libp2p,
+            // FIXME shouldn't need to this type stuff...
+            Arc::new((*message).as_ref().clone()),
+        );
         self.outbound_messages.insert(request_id, (message, on_ack));
         self.outbound_messages_lookup
             .insert((to_libp2p, id), request_id);
@@ -95,9 +102,14 @@ where
     }
 }
 
-impl<M> Stream for Service<M>
+impl<M, OM> Stream for Service<M, OM>
 where
-    M: Message + Serializable + Deserializable + fmt::Debug,
+    M: Message + Deserializable + Send + Sync + 'static,
+    <M as Deserializable>::ReadError: 'static,
+    OM: AsRef<M> + Serializable + Send + Sync + 'static,
+    Self: Unpin,
+
+    M: Serializable, // FIXME
 {
     type Item = M::Event;
 
@@ -152,7 +164,7 @@ where
                             {
                                 service
                                     .outbound_messages_lookup
-                                    .remove(&(peer, message.id()))
+                                    .remove(&(peer, (*message).as_ref().id()))
                                     .expect("outbound_messages_lookup out of sync");
                                 return Poll::Ready(Some(on_ack));
                             }
@@ -221,11 +233,16 @@ mod tests {
             Ok(TestMessage(u64::from_le_bytes(message)))
         }
     }
+    impl AsRef<TestMessage> for TestMessage {
+        fn as_ref(&self) -> &TestMessage {
+            &self
+        }
+    }
 
-    fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage>) {
+    fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage, TestMessage>) {
         let keypair = libp2p::identity::Keypair::generate_secp256k1();
         let public = keypair.public();
-        let service = Service::<TestMessage>::without_executor(keypair);
+        let service = Service::<TestMessage, TestMessage>::without_executor(keypair);
         let libp2p_peer_id = public.to_peer_id();
         (
             monad_executor::PeerId(libp2p_peer_id.try_into().unwrap()),
