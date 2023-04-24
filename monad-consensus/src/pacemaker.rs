@@ -11,7 +11,7 @@ use crate::{
         signature::SignatureCollection,
         timeout::{HighQcRound, TimeoutCertificate},
     },
-    validation::{safety::Safety, signing::Verified},
+    validation::safety::Safety,
 };
 
 pub struct Pacemaker<S, T> {
@@ -21,7 +21,7 @@ pub struct Pacemaker<S, T> {
     last_round_tc: Option<TimeoutCertificate<S>>,
 
     // only need to store for current round
-    pending_timeouts: HashMap<NodeId, Verified<S, TimeoutMessage<S, T>>>,
+    pending_timeouts: HashMap<NodeId, (TimeoutMessage<S, T>, S)>,
 
     // used to not duplicate broadcast/tc
     phase: PhaseHonest,
@@ -55,13 +55,12 @@ where
         delta: Duration,
         current_round: Round,
         last_round_tc: Option<TimeoutCertificate<S>>,
-        pending_timeouts: HashMap<NodeId, Verified<S, TimeoutMessage<S, T>>>,
     ) -> Self {
         Self {
             delta,
             current_round,
             last_round_tc,
-            pending_timeouts,
+            pending_timeouts: HashMap::new(),
 
             phase: PhaseHonest::Zero,
         }
@@ -123,7 +122,9 @@ where
         validators: &ValidatorSet<L>,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
-        tmo: Verified<S, TimeoutMessage<S, T>>,
+        author: NodeId,
+        signature: S,
+        tmo: TimeoutMessage<S, T>,
     ) -> (Option<TimeoutCertificate<S>>, Vec<PacemakerCommand<S, T>>) {
         let mut ret_commands = Vec::new();
 
@@ -134,7 +135,8 @@ where
         assert_eq!(tm_info.round, self.current_round);
 
         // it's fine to overwrite if already exists
-        self.pending_timeouts.insert(*tmo.author(), tmo.clone());
+        self.pending_timeouts
+            .insert(author, (tmo.clone(), signature));
 
         let timeouts = self.pending_timeouts.keys().copied().collect();
 
@@ -150,13 +152,13 @@ where
                 high_qc_rounds: self
                     .pending_timeouts
                     .values()
-                    .map(|tmo| {
+                    .map(|(tmo, signature)| {
                         assert_eq!(tmo.tminfo.round, tm_info.round);
                         (
                             HighQcRound {
                                 qc_round: tmo.tminfo.high_qc.info.vote.round,
                             },
-                            *tmo.author_signature(),
+                            *signature,
                         )
                     })
                     .collect(),

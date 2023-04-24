@@ -9,7 +9,7 @@ use crate::{
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature::SignatureCollection,
     },
-    validation::{hashing::Hasher, signing::Verified},
+    validation::hashing::Hasher,
 };
 
 // accumulate votes and create a QC if enough votes are received
@@ -36,7 +36,9 @@ where
     #[must_use]
     pub fn process_vote<V: LeaderElection, H: Hasher>(
         &mut self,
-        v: &Verified<T::SignatureType, VoteMessage>,
+        author: &NodeId,
+        signature: &T::SignatureType,
+        v: &VoteMessage,
         validators: &ValidatorSet<V>,
     ) -> Option<QuorumCertificate<T>> {
         let round = v.vote_info.round;
@@ -57,8 +59,8 @@ where
             .entry(vote_idx)
             .or_insert((T::new(), Vec::new()));
 
-        pending_entry.0.add_signature(*v.author_signature());
-        pending_entry.1.push(*v.author());
+        pending_entry.0.add_signature(*signature);
+        pending_entry.1.push(*author);
 
         if validators.has_super_majority_votes(&pending_entry.1) {
             assert!(!self.qc_created.contains(&round));
@@ -147,7 +149,12 @@ mod test {
         // add one vote for rounds 0-3
         for i in 0..4 {
             let svm = create_signed_vote_message(&keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<_, Sha256Hash>(&svm, &valset);
+            let _qc = votestate.process_vote::<_, Sha256Hash>(
+                svm.author(),
+                svm.author_signature(),
+                &svm,
+                &valset,
+            );
         }
 
         assert_eq!(votestate.pending_votes.len(), 4);
@@ -156,7 +163,12 @@ mod test {
         // removed
         for i in 0..4 {
             let svm = create_signed_vote_message(&keys[i], Round(4));
-            let _qc = votestate.process_vote::<_, Sha256Hash>(&svm, &valset);
+            let _qc = votestate.process_vote::<_, Sha256Hash>(
+                svm.author(),
+                svm.author_signature(),
+                &svm,
+                &valset,
+            );
         }
         votestate.start_new_round(Round(5));
 
@@ -171,12 +183,22 @@ mod test {
         // add one vote for rounds 0-3 and 5-8
         for i in 0..4 {
             let svm = create_signed_vote_message(&keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<_, Sha256Hash>(&svm, &valset);
+            let _qc = votestate.process_vote::<_, Sha256Hash>(
+                svm.author(),
+                svm.author_signature(),
+                &svm,
+                &valset,
+            );
         }
 
         for i in 5..9 {
             let svm = create_signed_vote_message(&keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<_, Sha256Hash>(&svm, &valset);
+            let _qc = votestate.process_vote::<_, Sha256Hash>(
+                svm.author(),
+                svm.author_signature(),
+                &svm,
+                &valset,
+            );
         }
 
         assert_eq!(votestate.pending_votes.len(), 8);
@@ -185,7 +207,12 @@ mod test {
         // removed
         for i in 0..4 {
             let svm = create_signed_vote_message(&keys[i], Round(4));
-            let _qc = votestate.process_vote::<_, Sha256Hash>(&svm, &valset);
+            let _qc = votestate.process_vote::<_, Sha256Hash>(
+                svm.author(),
+                svm.author_signature(),
+                &svm,
+                &valset,
+            );
         }
         votestate.start_new_round(Round(5));
 
@@ -217,7 +244,12 @@ mod test {
         let svm = Verified::new::<Sha256Hash>(vm, &keypair);
 
         // add a valid vote message
-        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(&svm, &vset);
+        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(
+            svm.author(),
+            svm.author_signature(),
+            &svm,
+            &vset,
+        );
         assert_eq!(vote_state.pending_votes.len(), 1);
 
         // pretend a qc was not created so we can add more votes without reseting the vote state
@@ -243,7 +275,12 @@ mod test {
             ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some([0xae_u8; 32]), &vi2),
         };
         let invalid_svm = Verified::new::<Sha256Hash>(invalid_vm, &keypair);
-        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(&invalid_svm, &vset);
+        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(
+            invalid_svm.author(),
+            invalid_svm.author_signature(),
+            &invalid_svm,
+            &vset,
+        );
 
         // confirms the invalid vote message was not added to pending votes
         assert_eq!(vote_state.pending_votes.len(), 1);

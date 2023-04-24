@@ -1,11 +1,10 @@
 #[cfg(test)]
 mod test {
-
     use monad_consensus::{
         signatures::aggregate_signature::AggregateSignatures,
         types::{
             block::{Block, TransactionList},
-            consensus_message::{SignedConsensusMessage, VerifiedConsensusMessage},
+            consensus_message::ConsensusMessage,
             ledger::LedgerCommitInfo,
             message::{ProposalMessage, TimeoutMessage, VoteMessage},
             quorum_certificate::{QcInfo, QuorumCertificate},
@@ -52,28 +51,20 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: vec![42; 32].try_into().unwrap(),
         };
-        let votemsg = VoteMessage {
+        let votemsg = ConsensusMessage::Vote(VoteMessage {
             vote_info: vi,
             ledger_commit_info: lci,
-        };
+        });
         let keypairs = vec![get_key(0)];
         let author_keypair = &keypairs[0];
         let validators = setup_validator_member(&keypairs);
 
         let verified_votemsg = Verified::new::<Sha256Hash>(votemsg.clone(), author_keypair);
-        let verified_consensus_msg: VerifiedConsensusMessage<
-            SecpSignature,
-            AggregateSignatures<SecpSignature>,
-        > = VerifiedConsensusMessage::Vote(verified_votemsg.clone());
 
-        let rx_buf = serialize_verified_consensus_message(&verified_consensus_msg);
+        let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
-        let rx_vote = match rx_msg {
-            SignedConsensusMessage::Vote(msg) => msg,
-            _ => panic!("Expect Vote variant"),
-        };
-        let verified_rx_vote = rx_vote
+        let verified_rx_vote = rx_msg
             .verify::<Sha256Hash>(&validators, &author_keypair.pubkey())
             .unwrap();
 
@@ -131,24 +122,17 @@ mod test {
             high_qc_rounds: high_qc_rounds,
         };
 
-        let tmo_message = TimeoutMessage {
+        let tmo_message = ConsensusMessage::Timeout(TimeoutMessage {
             tminfo: tmo_info,
             last_round_tc: Some(tc),
-        };
+        });
         let verified_tmo_message = Verified::new::<Sha256Hash>(tmo_message, &author_keypair);
-        let verified_consensus_msg =
-            VerifiedConsensusMessage::Timeout(verified_tmo_message.clone());
 
-        let rx_buf = serialize_verified_consensus_message(&verified_consensus_msg);
+        let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
-        let rx_tmo_msg = match rx_msg {
-            SignedConsensusMessage::Timeout(msg) => msg,
-            _ => panic!("Expect Timeout Variant"),
-        };
-
         let verified_rx_tmo_messaage =
-            rx_tmo_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+            rx_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
 
         assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
     }
@@ -195,25 +179,18 @@ mod test {
         let author_keypair = &keypairs[0];
         let vmember = setup_validator_member(&keypairs);
         let blk = setup_block(NodeId(author_keypair.pubkey()), 233, 232, &keypairs);
-        let proposal = ProposalMessage {
+        let proposal = ConsensusMessage::Proposal(ProposalMessage {
             block: blk,
             last_round_tc: None,
-        };
-        let verified_proposal = Verified::new::<Sha256Hash>(proposal, author_keypair);
-        let verified_msg = VerifiedConsensusMessage::Proposal(verified_proposal.clone());
+        });
+        let verified_msg = Verified::new::<Sha256Hash>(proposal, author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        let rx_proposal = match rx_msg {
-            SignedConsensusMessage::Proposal(msg) => msg,
-            _ => panic!("Expected Proposal variant"),
-        };
+        let verified_rx_msg = rx_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
 
-        let verified_rx_proposal =
-            rx_proposal.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
-
-        assert_eq!(verified_proposal, verified_rx_proposal.unwrap());
+        assert_eq!(verified_msg, verified_rx_msg.unwrap());
     }
 
     #[test]
@@ -243,25 +220,17 @@ mod test {
             high_qc_rounds: high_qc_rounds,
         };
 
-        let proposal = ProposalMessage {
+        let msg = ConsensusMessage::Proposal(ProposalMessage {
             block: blk,
             last_round_tc: Some(tc),
-        };
-        let verified_proposal = Verified::new::<Sha256Hash>(proposal, &author_keypair);
-
-        let verified_msg = VerifiedConsensusMessage::Proposal(verified_proposal.clone());
+        });
+        let verified_msg = Verified::new::<Sha256Hash>(msg, &author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        let rx_proposal = match rx_msg {
-            SignedConsensusMessage::Proposal(msg) => msg,
-            _ => panic!("Expected Proposal variant"),
-        };
+        let verified_rx_msg = rx_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
 
-        let verified_rx_proposal =
-            rx_proposal.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
-
-        assert_eq!(verified_proposal, verified_rx_proposal.unwrap());
+        assert_eq!(verified_msg, verified_rx_msg.unwrap());
     }
 }

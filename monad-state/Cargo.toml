@@ -20,6 +20,8 @@ monad-validator = { path = "../monad-validator" }
 
 monad-proto = { path = "../monad-proto", optional = true }
 
+ref-cast = "1.0"
+
 [features]
 proto = ["dep:monad-proto"]
 

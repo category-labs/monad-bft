@@ -63,7 +63,7 @@ where
 pub trait State: Sized {
     type Config;
     type Event: Clone;
-    type OutboundMessage: Into<Self::Message> + Clone;
+    type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
     type Message: Message<Event = Self::Event>;
 
     fn init(config: Self::Config) -> (Self, Vec<Command<Self>>);

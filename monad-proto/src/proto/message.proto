@@ -14,19 +14,9 @@ message ProtoVoteMessage {
   monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit_info = 2;
 }
 
-message ProtoUnverifiedVoteMessage {
-  ProtoVoteMessage vote_msg = 1;
-  monad_proto.signing.ProtoSecpSignature author_signature = 2;
-}
-
 message ProtoTimeoutMessage {
   monad_proto.timeout.ProtoTimeoutInfoAggSig tminfo = 1;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
-}
-
-message ProtoUnverifiedTimeoutMessage {
-  ProtoTimeoutMessage tmo_msg = 1;
-  monad_proto.signing.ProtoSecpSignature author_signature = 2;
 }
 
 message ProtoProposalMessageAggSig {
@@ -34,15 +24,11 @@ message ProtoProposalMessageAggSig {
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
 }
 
-message ProtoUnverifiedProposalMessageAggSig {
-  ProtoProposalMessageAggSig proposal = 1;
-  monad_proto.signing.ProtoSecpSignature author_signature = 2;
-}
-
 message ProtoUnverifiedConsensusMessage {
   oneof OneofMessage {
-    ProtoUnverifiedProposalMessageAggSig proposal = 1;
-    ProtoUnverifiedTimeoutMessage timeout = 2;
-    ProtoUnverifiedVoteMessage vote = 3;
+    ProtoProposalMessageAggSig proposal = 1;
+    ProtoTimeoutMessage timeout = 2;
+    ProtoVoteMessage vote = 3;
   }
+  monad_proto.signing.ProtoSecpSignature author_signature = 4;
 }

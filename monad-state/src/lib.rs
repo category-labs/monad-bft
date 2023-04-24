@@ -1,12 +1,13 @@
+use std::fmt::Debug;
 use std::time::Duration;
-use std::{collections::HashMap, fmt::Debug};
 
 use monad_blocktree::blocktree::BlockTree;
+use monad_consensus::types::consensus_message::ConsensusMessage;
+use monad_consensus::validation::signing::Unverified;
 use monad_consensus::{
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
     types::{
         block::{Block, TransactionList},
-        consensus_message::{SignedConsensusMessage, VerifiedConsensusMessage},
         ledger::{InMemoryLedger, Ledger},
         mempool::{Mempool, SimulationMempool},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -34,6 +35,7 @@ use monad_validator::{
 };
 
 use message::MessageState;
+use ref_cast::RefCast;
 
 mod message;
 
@@ -80,16 +82,12 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct VerifiedMonadMessage<ST, SCT>(VerifiedConsensusMessage<ST, SCT>)
-where
-    ST: Signature,
-    SCT: SignatureCollection<SignatureType = ST>;
+pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>);
 
+#[derive(RefCast)]
+#[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct MonadMessage<ST, SCT>(SignedConsensusMessage<ST, SCT>)
-where
-    ST: Signature,
-    SCT: SignatureCollection<SignatureType = ST>;
+pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
 impl monad_executor::Serializable
@@ -123,13 +121,15 @@ impl monad_executor::Deserializable
     }
 }
 
-impl<ST, SCT> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT>
-where
-    ST: Signature,
-    SCT: SignatureCollection<SignatureType = ST>,
-{
+impl<ST, SCT> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         MonadMessage(value.0.into())
+    }
+}
+
+impl<ST, SCT> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
+    fn as_ref(&self) -> &MonadMessage<ST, SCT> {
+        MonadMessage::ref_cast(self.0.as_ref())
     }
 }
 
@@ -142,11 +142,7 @@ where
     type Id = ST;
 
     fn id(&self) -> Self::Id {
-        *match &self.0 {
-            SignedConsensusMessage::Proposal(msg) => msg.author_signature(),
-            SignedConsensusMessage::Vote(msg) => msg.author_signature(),
-            SignedConsensusMessage::Timeout(msg) => msg.author_signature(),
-        }
+        *self.0.author_signature()
     }
 
     fn event(self, from: PeerId) -> Self::Event {
@@ -253,50 +249,40 @@ where
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
-                    } => match unverified_message {
-                        SignedConsensusMessage::Proposal(msg) => {
-                            let proposal =
-                                msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
-
-                            match proposal {
-                                Ok(p) => self
-                                    .consensus_state
-                                    .handle_proposal_message::<Sha256Hash, _>(
-                                        &p,
-                                        &mut self.validator_set,
-                                    ),
-                                Err(e) => todo!(),
-                            }
+                    } => {
+                        let verified_message = match unverified_message
+                            .verify::<HasherType>(self.validator_set.get_members(), &sender)
+                        {
+                            Ok(m) => m,
+                            Err(_) => todo!(),
+                        };
+                        let (author, signature, verified_message) = verified_message.destructure();
+                        match verified_message {
+                            ConsensusMessage::Proposal(msg) => self
+                                .consensus_state
+                                .handle_proposal_message::<Sha256Hash, _>(
+                                    author,
+                                    msg,
+                                    &mut self.validator_set,
+                                ),
+                            ConsensusMessage::Vote(msg) => self
+                                .consensus_state
+                                .handle_vote_message::<HasherType, LeaderElectionType>(
+                                    author,
+                                    signature,
+                                    msg,
+                                    &mut self.validator_set,
+                                ),
+                            ConsensusMessage::Timeout(msg) => self
+                                .consensus_state
+                                .handle_timeout_message::<HasherType, _>(
+                                    author,
+                                    signature,
+                                    msg,
+                                    &mut self.validator_set,
+                                ),
                         }
-                        SignedConsensusMessage::Vote(msg) => {
-                            let vote =
-                                msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
-
-                            match vote {
-                                Ok(p) => self
-                                    .consensus_state
-                                    .handle_vote_message::<HasherType, LeaderElectionType>(
-                                        &p,
-                                        &mut self.validator_set,
-                                    ),
-                                Err(_) => todo!(),
-                            }
-                        }
-                        SignedConsensusMessage::Timeout(msg) => {
-                            let timeout =
-                                msg.verify::<HasherType>(self.validator_set.get_members(), &sender);
-
-                            match timeout {
-                                Ok(p) => self
-                                    .consensus_state
-                                    .handle_timeout_message::<HasherType, _>(
-                                        p,
-                                        &mut self.validator_set,
-                                    ),
-                                Err(e) => todo!("{:?}", e),
-                            }
-                        }
-                    },
+                    }
                 };
                 let mut cmds = Vec::new();
                 for consensus_command in consensus_commands {
@@ -367,43 +353,9 @@ where
 pub enum ConsensusEvent<S, T> {
     Message {
         sender: PubKey,
-        unverified_message: SignedConsensusMessage<S, T>,
+        unverified_message: Unverified<S, ConsensusMessage<S, T>>,
     },
     Timeout(PacemakerTimerExpire),
-}
-
-#[derive(Debug, Clone)]
-pub enum ConsensusMessage<S, T> {
-    Proposal(ProposalMessage<S, T>),
-    Vote(VoteMessage),
-    Timeout(TimeoutMessage<S, T>),
-}
-
-impl<ST, SCT> ConsensusMessage<ST, SCT>
-where
-    ST: Signature,
-    SCT: SignatureCollection<SignatureType = ST>,
-{
-    fn sign<H: Hasher>(self, keypair: &KeyPair) -> VerifiedConsensusMessage<ST, SCT> {
-        match self {
-            ConsensusMessage::Proposal(msg) => {
-                VerifiedConsensusMessage::Proposal(Verified::new::<H>(msg, keypair))
-            }
-            ConsensusMessage::Vote(msg) => {
-                // FIXME:
-                // implemented Hashable for VoteMsg, which only hash the ledger commit info
-                // it can be confusing as we are hashing only part of the message
-                // in the signature refactoring, we might want a clean split between:
-                //      integrity sig: sign over the entire serialized struct
-                //      protocol sig: signatures outlined in the protocol
-                // TimeoutMsg doesn't have a protocol sig
-                VerifiedConsensusMessage::Vote(Verified::new::<H>(msg, keypair))
-            }
-            ConsensusMessage::Timeout(msg) => {
-                VerifiedConsensusMessage::Timeout(Verified::new::<H>(msg, keypair))
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -463,7 +415,7 @@ where
             high_qc: genesis_qc,
             ledger: L::new(),
             mempool: M::new(),
-            pacemaker: Pacemaker::new(delta, Round(1), None, HashMap::new()),
+            pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
 
@@ -473,7 +425,8 @@ where
 
     fn handle_proposal_message<H: Hasher, V: LeaderElection>(
         &mut self,
-        p: &Verified<S, ProposalMessage<S, T>>,
+        author: NodeId,
+        p: ProposalMessage<S, T>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
         let mut cmds = Vec::new();
@@ -493,7 +446,7 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = *validators.get_leader(round);
 
-        if p.block.round != round || p.author() != &leader || p.block.author != leader {
+        if p.block.round != round || author != leader || p.block.author != leader {
             return cmds;
         }
 
@@ -517,14 +470,18 @@ where
 
     fn handle_vote_message<H: Hasher, V: LeaderElection>(
         &mut self,
-        v: &Verified<T::SignatureType, VoteMessage>,
+        author: NodeId,
+        signature: T::SignatureType,
+        v: VoteMessage,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
         if v.vote_info.round < self.pacemaker.get_current_round() {
             return Default::default();
         }
 
-        let qc = self.vote_state.process_vote::<V, H>(v, validators);
+        let qc = self
+            .vote_state
+            .process_vote::<V, H>(&author, &signature, &v, validators);
 
         let mut cmds = Vec::new();
         if let Some(qc) = qc {
@@ -539,7 +496,9 @@ where
 
     fn handle_timeout_message<H: Hasher, V: LeaderElection>(
         &mut self,
-        p: Verified<S, TimeoutMessage<S, T>>,
+        author: NodeId,
+        signature: S,
+        p: TimeoutMessage<S, T>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
         let mut cmds = Vec::new();
@@ -556,9 +515,14 @@ where
             cmds.extend(advance_round_cmds);
         }
 
-        let (tc, remote_timeout_cmds) =
-            self.pacemaker
-                .process_remote_timeout(validators, &mut self.safety, &self.high_qc, p);
+        let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout(
+            validators,
+            &mut self.safety,
+            &self.high_qc,
+            author,
+            signature,
+            p,
+        );
         cmds.extend(remote_timeout_cmds.into_iter().map(Into::into));
         if let Some(tc) = tc {
             let advance_round_cmds = self

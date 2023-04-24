@@ -229,7 +229,7 @@ where
         }
 
         for (to, message, on_ack) in to_publish {
-            let id = message.clone().into().id();
+            let id = message.as_ref().id();
             if to_unpublish.contains(&(to, id.clone())) {
                 continue;
             }
@@ -440,6 +440,11 @@ mod tests {
 
     #[derive(Clone)]
     struct LongAckMessage(u64);
+    impl AsRef<Self> for LongAckMessage {
+        fn as_ref(&self) -> &Self {
+            &self
+        }
+    }
     impl Message for LongAckMessage {
         type Event = LongAckEvent;
         type Id = u64;
@@ -683,6 +688,11 @@ mod tests {
     #[derive(Clone)]
     struct SimpleChainMessage {
         round: u64,
+    }
+    impl AsRef<Self> for SimpleChainMessage {
+        fn as_ref(&self) -> &Self {
+            &self
+        }
     }
 
     impl Message for SimpleChainMessage {

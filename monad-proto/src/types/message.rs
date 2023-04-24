@@ -1,8 +1,8 @@
+use std::ops::Deref;
+
+use monad_consensus::types::consensus_message::ConsensusMessage;
 use prost::Message;
 
-use monad_consensus::types::consensus_message::{
-    SignedConsensusMessage, VerifiedConsensusMessage as ConsensusTypeVerifiedMessage,
-};
 use monad_consensus::types::message::{
     ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
 };
@@ -13,16 +13,12 @@ use crate::error::ProtoError;
 
 use super::signing::AggSecpSignature;
 
-type VerifiedVoteMessage = Verified<SecpSignature, VoteMessage>;
-type UnverifiedVoteMessage = Unverified<SecpSignature, VoteMessage>;
 type TimeoutMessage = ConsensusTypeTmoMsg<SecpSignature, AggSecpSignature>;
-type VerifiedTimeoutMessage = Verified<SecpSignature, TimeoutMessage>;
-type UnverifiedTimeoutMessage = Unverified<SecpSignature, TimeoutMessage>;
 type ProposalMessage = ConsensusTypePropMsg<SecpSignature, AggSecpSignature>;
-type VerifiedProposalMessage = Verified<SecpSignature, ProposalMessage>;
-type UnverifiedProposalMessage = Unverified<SecpSignature, ProposalMessage>;
-type VerifiedConsensusMessage = ConsensusTypeVerifiedMessage<SecpSignature, AggSecpSignature>;
-type UnverifiedConsensusMessage = SignedConsensusMessage<SecpSignature, AggSecpSignature>;
+type VerifiedConsensusMessage =
+    Verified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
+type UnverifiedConsensusMessage =
+    Unverified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
 
 include!(concat!(env!("OUT_DIR"), "/monad_proto.message.rs"));
 
@@ -56,34 +52,6 @@ impl TryFrom<ProtoVoteMessage> for VoteMessage {
     }
 }
 
-impl From<&VerifiedVoteMessage> for ProtoUnverifiedVoteMessage {
-    fn from(value: &VerifiedVoteMessage) -> Self {
-        Self {
-            vote_msg: Some((&(**value)).into()),
-            author_signature: Some(value.author_signature().into()),
-        }
-    }
-}
-
-impl TryFrom<ProtoUnverifiedVoteMessage> for UnverifiedVoteMessage {
-    type Error = ProtoError;
-    fn try_from(value: ProtoUnverifiedVoteMessage) -> Result<Self, Self::Error> {
-        let msg: VoteMessage = value
-            .vote_msg
-            .ok_or(Self::Error::MissingRequiredField(
-                "Unverified<VoteMessage>.obj".to_owned(),
-            ))?
-            .try_into()?;
-        let signature: SecpSignature = value
-            .author_signature
-            .ok_or(Self::Error::MissingRequiredField(
-                "Unverified<VoteMessage>.signature".to_owned(),
-            ))?
-            .try_into()?;
-        Ok(Unverified::new(msg, signature))
-    }
-}
-
 impl From<&TimeoutMessage> for ProtoTimeoutMessage {
     fn from(value: &TimeoutMessage) -> Self {
         ProtoTimeoutMessage {
@@ -106,35 +74,6 @@ impl TryFrom<ProtoTimeoutMessage> for TimeoutMessage {
 
             last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
         })
-    }
-}
-
-impl From<&VerifiedTimeoutMessage> for ProtoUnverifiedTimeoutMessage {
-    fn from(value: &VerifiedTimeoutMessage) -> Self {
-        Self {
-            tmo_msg: Some((&(**value)).into()),
-            author_signature: Some(value.author_signature().into()),
-        }
-    }
-}
-
-impl TryFrom<ProtoUnverifiedTimeoutMessage> for UnverifiedTimeoutMessage {
-    type Error = ProtoError;
-    fn try_from(value: ProtoUnverifiedTimeoutMessage) -> Result<Self, Self::Error> {
-        Ok(Self::new(
-            value
-                .tmo_msg
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Unverified<TimeoutMessage<AggregateSignatures>>.obj".to_owned(),
-                ))?
-                .try_into()?,
-            value
-                .author_signature
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Unverified<TimeoutMessage<AggregateSignatures>>.author_signature".to_owned(),
-                ))?
-                .try_into()?,
-        ))
     }
 }
 
@@ -163,53 +102,22 @@ impl TryFrom<ProtoProposalMessageAggSig> for ProposalMessage {
     }
 }
 
-impl From<&VerifiedProposalMessage> for ProtoUnverifiedProposalMessageAggSig {
-    fn from(value: &VerifiedProposalMessage) -> Self {
-        Self {
-            proposal: Some((&(**value)).into()),
-            author_signature: Some(value.author_signature().into()),
-        }
-    }
-}
-
-impl TryFrom<ProtoUnverifiedProposalMessageAggSig> for UnverifiedProposalMessage {
-    type Error = ProtoError;
-    fn try_from(value: ProtoUnverifiedProposalMessageAggSig) -> Result<Self, Self::Error> {
-        Ok(Self::new(
-            value
-                .proposal
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Unverified<ProposalMessage<AggregateSignatures>>.proposal".to_owned(),
-                ))?
-                .try_into()?,
-            value
-                .author_signature
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Unverified<ProposalMessage<AggregateSignatures>>.author_signature".to_owned(),
-                ))?
-                .try_into()?,
-        ))
-    }
-}
-
 impl From<&VerifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
     fn from(value: &VerifiedConsensusMessage) -> Self {
-        match value {
-            ConsensusTypeVerifiedMessage::Proposal(msg) => Self {
-                oneof_message: Some(proto_unverified_consensus_message::OneofMessage::Proposal(
-                    msg.into(),
-                )),
-            },
-            ConsensusTypeVerifiedMessage::Timeout(msg) => Self {
-                oneof_message: Some(proto_unverified_consensus_message::OneofMessage::Timeout(
-                    msg.into(),
-                )),
-            },
-            ConsensusTypeVerifiedMessage::Vote(msg) => Self {
-                oneof_message: Some(proto_unverified_consensus_message::OneofMessage::Vote(
-                    msg.into(),
-                )),
-            },
+        let oneof_message = match value.deref() {
+            ConsensusMessage::Proposal(msg) => {
+                proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
+            }
+            ConsensusMessage::Vote(msg) => {
+                proto_unverified_consensus_message::OneofMessage::Vote(msg.into())
+            }
+            ConsensusMessage::Timeout(msg) => {
+                proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
+            }
+        };
+        Self {
+            oneof_message: Some(oneof_message),
+            author_signature: Some(value.author_signature().into()),
         }
     }
 }
@@ -218,20 +126,27 @@ impl TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage {
     type Error = ProtoError;
 
     fn try_from(value: ProtoUnverifiedConsensusMessage) -> Result<Self, Self::Error> {
-        Ok(match value.oneof_message {
+        let message = match value.oneof_message {
             Some(proto_unverified_consensus_message::OneofMessage::Proposal(msg)) => {
-                Self::Proposal(msg.try_into()?)
+                ConsensusMessage::Proposal(msg.try_into()?)
             }
             Some(proto_unverified_consensus_message::OneofMessage::Timeout(msg)) => {
-                Self::Timeout(msg.try_into()?)
+                ConsensusMessage::Timeout(msg.try_into()?)
             }
             Some(proto_unverified_consensus_message::OneofMessage::Vote(msg)) => {
-                Self::Vote(msg.try_into()?)
+                ConsensusMessage::Vote(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
-                "UnverifiedConsensusMessage".to_owned(),
+                "Unverified<ConsensusMessage>.oneofmessage".to_owned(),
             ))?,
-        })
+        };
+        let signature: SecpSignature = value
+            .author_signature
+            .ok_or(Self::Error::MissingRequiredField(
+                "Unverified<ConsensusMessage>.signature".to_owned(),
+            ))?
+            .try_into()?;
+        Ok(Unverified::new(message, signature))
     }
 }
 

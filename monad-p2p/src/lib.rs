@@ -233,9 +233,10 @@ mod tests {
             Ok(TestMessage(u64::from_le_bytes(message)))
         }
     }
+
     impl AsRef<TestMessage> for TestMessage {
         fn as_ref(&self) -> &TestMessage {
-            &self
+            self
         }
     }
 

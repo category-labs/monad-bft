@@ -1,26 +1,49 @@
-use crate::types::message::{ProposalMessage, TimeoutMessage, VoteMessage};
-use crate::validation::signing::{Unverified, Verified};
+use monad_crypto::{secp256k1::KeyPair, Signature};
 
-#[derive(Debug, Clone)]
-pub enum SignedConsensusMessage<S, T> {
-    Proposal(Unverified<S, ProposalMessage<S, T>>),
-    Vote(Unverified<S, VoteMessage>),
-    Timeout(Unverified<S, TimeoutMessage<S, T>>),
+use crate::{
+    types::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    validation::{
+        hashing::{Hashable, Hasher},
+        signing::Verified,
+    },
+};
+
+use super::signature::SignatureCollection;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConsensusMessage<ST, SCT> {
+    Proposal(ProposalMessage<ST, SCT>),
+    Vote(VoteMessage),
+    Timeout(TimeoutMessage<ST, SCT>),
 }
 
-#[derive(Debug, Clone)]
-pub enum VerifiedConsensusMessage<S, T> {
-    Proposal(Verified<S, ProposalMessage<S, T>>),
-    Vote(Verified<S, VoteMessage>),
-    Timeout(Verified<S, TimeoutMessage<S, T>>),
-}
-
-impl<S, T> From<VerifiedConsensusMessage<S, T>> for SignedConsensusMessage<S, T> {
-    fn from(value: VerifiedConsensusMessage<S, T>) -> Self {
-        match value {
-            VerifiedConsensusMessage::Proposal(msg) => Self::Proposal(msg.into()),
-            VerifiedConsensusMessage::Vote(msg) => Self::Vote(msg.into()),
-            VerifiedConsensusMessage::Timeout(msg) => Self::Timeout(msg.into()),
+impl<ST, SCT> Hashable for ConsensusMessage<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            ConsensusMessage::Proposal(m) => m.hash(state),
+            // FIXME:
+            // implemented Hashable for VoteMsg, which only hash the ledger commit info
+            // it can be confusing as we are hashing only part of the message
+            // in the signature refactoring, we might want a clean split between:
+            //      integrity sig: sign over the entire serialized struct
+            //      protocol sig: signatures outlined in the protocol
+            // TimeoutMsg doesn't have a protocol sig
+            ConsensusMessage::Vote(m) => m.hash(state),
+            ConsensusMessage::Timeout(m) => m.hash(state),
         }
+    }
+}
+
+impl<ST, SCT> ConsensusMessage<ST, SCT>
+where
+    ST: Signature,
+    SCT: SignatureCollection<SignatureType = ST>,
+{
+    pub fn sign<H: Hasher>(self, keypair: &KeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {
+        Verified::new::<H>(self, keypair)
     }
 }

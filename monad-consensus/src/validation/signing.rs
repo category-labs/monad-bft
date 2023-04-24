@@ -7,6 +7,7 @@ use monad_types::Hash;
 use monad_types::NodeId;
 use monad_validator::validator::Validator;
 
+use crate::types::consensus_message::ConsensusMessage;
 use crate::types::message::ProposalMessage;
 use crate::types::message::TimeoutMessage;
 use crate::types::message::VoteMessage;
@@ -42,6 +43,10 @@ impl<S: Signature, M: Hashable> Verified<S, M> {
             message: Unverified::new(msg, signature),
         }
     }
+
+    pub fn destructure(self) -> (NodeId, S, M) {
+        (self.author, self.message.author_signature, self.message.obj)
+    }
 }
 
 impl<S, M> Deref for Verified<S, M> {
@@ -49,6 +54,12 @@ impl<S, M> Deref for Verified<S, M> {
 
     fn deref(&self) -> &Self::Target {
         &self.message.obj
+    }
+}
+
+impl<S, M> AsRef<Unverified<S, M>> for Verified<S, M> {
+    fn as_ref(&self) -> &Unverified<S, M> {
+        &self.message
     }
 }
 
@@ -74,6 +85,58 @@ impl<S: Signature, M> Unverified<S, M> {
 impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
     fn from(verified: Verified<S, M>) -> Self {
         verified.message
+    }
+}
+
+impl<S, T> Unverified<S, ConsensusMessage<S, T>>
+where
+    S: Signature,
+    T: SignatureCollection,
+{
+    // A verified proposal is one which is well-formed and has valid
+    // signatures for the present TC or QC
+    pub fn verify<H: Hasher>(
+        self,
+        validators: &ValidatorMember,
+        sender: &PubKey,
+    ) -> Result<Verified<S, ConsensusMessage<S, T>>, Error> {
+        // FIXME this feels wrong... it feels like the enum variant should factor into the hash so
+        //       signatures can't be reused across variant members
+        Ok(match self.obj {
+            ConsensusMessage::Proposal(m) => {
+                let verified =
+                    Unverified::new(m, self.author_signature).verify::<H>(validators, sender)?;
+                Verified {
+                    author: verified.author,
+                    message: Unverified::new(
+                        ConsensusMessage::Proposal(verified.message.obj),
+                        verified.message.author_signature,
+                    ),
+                }
+            }
+            ConsensusMessage::Vote(m) => {
+                let verified =
+                    Unverified::new(m, self.author_signature).verify::<H>(validators, sender)?;
+                Verified {
+                    author: verified.author,
+                    message: Unverified::new(
+                        ConsensusMessage::Vote(verified.message.obj),
+                        verified.message.author_signature,
+                    ),
+                }
+            }
+            ConsensusMessage::Timeout(m) => {
+                let verified =
+                    Unverified::new(m, self.author_signature).verify::<H>(validators, sender)?;
+                Verified {
+                    author: verified.author,
+                    message: Unverified::new(
+                        ConsensusMessage::Timeout(verified.message.obj),
+                        verified.message.author_signature,
+                    ),
+                }
+            }
+        })
     }
 }
 

@@ -100,8 +100,13 @@ fn test_votes(num_nodes: u32) {
     let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
-        let qc =
-            voteset.process_vote::<MockLeaderElection, Sha256Hash>(&votes[i as usize], &valset);
+        let v = &votes[i as usize];
+        let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
+            v.author(),
+            v.author_signature(),
+            &v,
+            &valset,
+        );
         qcs.push(qc);
     }
     let valid_qc: Vec<&Option<QuorumCertificate<AggregateSignatures<SecpSignature>>>> =
@@ -125,8 +130,13 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 
     for k in 0..num_rounds {
         for i in 0..num_nodes {
-            let qc =
-                voteset.process_vote::<MockLeaderElection, Sha256Hash>(&votes[i as usize], &valset);
+            let v = &votes[i as usize];
+            let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
+                v.author(),
+                v.author_signature(),
+                &v,
+                &valset,
+            );
             qcs.push(qc);
         }
 
@@ -152,8 +162,13 @@ fn test_minority(num_nodes: u32) {
     let majority = 2 * num_nodes / 3 + 1;
 
     for i in 0..majority - 1 {
-        let qc =
-            voteset.process_vote::<MockLeaderElection, Sha256Hash>(&votes[i as usize], &valset);
+        let v = &votes[i as usize];
+        let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
+            v.author(),
+            v.author_signature(),
+            &v,
+            &valset,
+        );
         qcs.push(qc);
     }
 
