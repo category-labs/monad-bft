@@ -34,6 +34,7 @@ enum PhaseHonest {
     Supermajority,
 }
 
+#[derive(Debug)]
 pub enum PacemakerCommand<S, T> {
     Broadcast(TimeoutMessage<S, T>),
     Schedule {

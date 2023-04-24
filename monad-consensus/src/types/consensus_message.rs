@@ -21,7 +21,7 @@ pub enum ConsensusMessage<ST, SCT> {
 
 impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &*self {
+        match self {
             ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
             ConsensusMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
             ConsensusMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),

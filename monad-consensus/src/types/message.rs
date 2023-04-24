@@ -10,7 +10,7 @@ use super::{
     voting::VoteInfo,
 };
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteMessage {
     pub vote_info: VoteInfo,
     pub ledger_commit_info: LedgerCommitInfo,

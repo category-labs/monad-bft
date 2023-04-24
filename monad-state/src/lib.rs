@@ -360,7 +360,7 @@ pub enum ConsensusEvent<S, T> {
 
 impl<S: Debug, T: Debug> Debug for ConsensusEvent<S, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &*self {
+        match self {
             ConsensusEvent::Message {
                 sender,
                 unverified_message,
@@ -634,5 +634,196 @@ impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for Cons
             },
             PacemakerCommand::Unschedule => ConsensusCommand::Unschedule,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use monad_consensus::pacemaker::PacemakerTimerExpire;
+    use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+    use monad_consensus::types::ledger::LedgerCommitInfo;
+    use monad_consensus::types::message::VoteMessage;
+    use monad_consensus::types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
+    use monad_consensus::types::signature::SignatureCollection;
+    use monad_consensus::types::voting::VoteInfo;
+    use monad_consensus::validation::hashing::Sha256Hash;
+    use monad_consensus::validation::signing::Verified;
+    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::{NopSignature, Signature};
+    use monad_testutil::proposal::ProposalGen;
+    use monad_testutil::signing::{create_keys, get_genesis_config};
+    use monad_types::{BlockId, Round};
+    use monad_validator::{
+        validator::Validator, validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin,
+    };
+
+    use crate::{
+        ConsensusCommand, ConsensusMessage, ConsensusState, InMemoryLedger, SimulationMempool,
+    };
+
+    fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>() -> (
+        Vec<KeyPair>,
+        ValidatorSet<WeightedRoundRobin>,
+        ConsensusState<ST, SCT, InMemoryLedger<SCT>, SimulationMempool>,
+    ) {
+        let keys = create_keys(4);
+        let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(&keys);
+
+        let validator_list = pubkeys
+            .into_iter()
+            .map(|pubkey| Validator { pubkey, stake: 1 })
+            .collect::<Vec<_>>();
+
+        let val_set: ValidatorSet<WeightedRoundRobin> =
+            ValidatorSet::new(validator_list.clone()).expect("initial validator set init failed");
+
+        let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
+            genesis_vote_info(genesis_block.get_id()),
+            genesis_sigs,
+        );
+
+        let mut key = create_keys(1);
+        let consensus_state =
+            ConsensusState::<ST, SCT, InMemoryLedger<SCT>, SimulationMempool>::new(
+                key[0].pubkey(),
+                genesis_block,
+                genesis_qc,
+                Duration::from_secs(1),
+                key.remove(0),
+            );
+
+        (keys, val_set, consensus_state)
+    }
+
+    // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
+    #[test]
+    fn lock_qc_high() {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+
+        assert_eq!(state.high_qc.info.vote.round, Round(0));
+
+        let expected_qc_high_round = Round(5);
+
+        let vi = VoteInfo {
+            id: BlockId([0x00_u8; 32]),
+            round: expected_qc_high_round,
+            parent_id: BlockId([0x00_u8; 32]),
+            parent_round: expected_qc_high_round - Round(1),
+        };
+        let vm = VoteMessage {
+            vote_info: vi,
+            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(None, &vi),
+        };
+
+        let v1 = Verified::<_, VoteMessage>::new::<Sha256Hash>(vm, &keys[1]);
+        let v2 = Verified::<_, VoteMessage>::new::<Sha256Hash>(vm, &keys[2]);
+        let v3 = Verified::<_, VoteMessage>::new::<Sha256Hash>(vm, &keys[3]);
+
+        state.handle_vote_message::<Sha256Hash, _>(
+            *v1.author(),
+            *v1.author_signature(),
+            *v1,
+            &mut valset,
+        );
+        state.handle_vote_message::<Sha256Hash, _>(
+            *v2.author(),
+            *v2.author_signature(),
+            *v2,
+            &mut valset,
+        );
+
+        // less than 2f+1, so expect not locked
+        assert_eq!(state.high_qc.info.vote.round, Round(0));
+
+        state.handle_vote_message::<Sha256Hash, _>(
+            *v3.author(),
+            *v3.author_signature(),
+            *v3,
+            &mut valset,
+        );
+        assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
+    }
+
+    // When a node locally timesout on a round, it no longer produces votes in that round
+    #[test]
+    fn timeout_stops_voting() {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let p1 = propgen.next_proposal(&keys, &mut valset);
+
+        // local timeout for state in Round 1
+        assert_eq!(state.pacemaker.get_current_round(), Round(1));
+        let _ =
+            state
+                .pacemaker
+                .handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
+
+        // check no vote commands result from receiving the proposal for round 1
+
+        let (author, _, verified_message) = p1.destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Send {
+                to: _,
+                message: ConsensusMessage::Vote(_),
+            } => true,
+            _ => false,
+        });
+
+        assert!(result.is_none());
+    }
+
+    // TODO: remove the should_panic once we handle block requests for skipped blocks
+    #[test]
+    #[should_panic]
+    fn enter_proposalmsg_round() {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+
+        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p1.destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Send {
+                to: _,
+                message: ConsensusMessage::Vote(_),
+            } => true,
+            _ => false,
+        });
+
+        assert_eq!(state.pacemaker.get_current_round(), Round(1));
+        assert!(result.is_some());
+
+        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p2.destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Send {
+                to: _,
+                message: ConsensusMessage::Vote(_),
+            } => true,
+            _ => false,
+        });
+
+        assert_eq!(state.pacemaker.get_current_round(), Round(2));
+        assert!(result.is_some());
+
+        for _ in 0..4 {
+            propgen.next_proposal(&keys, &mut valset);
+        }
+        let p7 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p7.destructure();
+        state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        assert_eq!(state.pacemaker.get_current_round(), Round(7));
     }
 }
