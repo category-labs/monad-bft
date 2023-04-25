@@ -20,7 +20,7 @@ type VerifiedConsensusMessage =
 type UnverifiedConsensusMessage =
     Unverified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.message.rs"));
+pub(crate) use crate::proto::message::*;
 
 impl From<&VoteMessage> for ProtoVoteMessage {
     fn from(value: &VoteMessage) -> Self {

@@ -2,7 +2,7 @@ use monad_consensus::types::ledger::LedgerCommitInfo;
 
 use crate::error::ProtoError;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.ledger.rs"));
+pub(crate) use crate::proto::ledger::*;
 
 impl From<&LedgerCommitInfo> for ProtoLedgerCommitInfo {
     fn from(value: &LedgerCommitInfo) -> Self {

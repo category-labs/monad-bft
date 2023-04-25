@@ -5,9 +5,9 @@ use monad_crypto::secp256k1::SecpSignature;
 
 use crate::error::ProtoError;
 
-pub(crate) type AggSecpSignature = AggregateSignatures<SecpSignature>;
+pub type AggSecpSignature = AggregateSignatures<SecpSignature>;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.signing.rs"));
+pub(crate) use crate::proto::signing::*;
 
 impl From<&SecpSignature> for ProtoSecpSignature {
     fn from(value: &SecpSignature) -> Self {

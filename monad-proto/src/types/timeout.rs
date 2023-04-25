@@ -11,7 +11,7 @@ type HighQcRoundSigTuple = (HighQcRound, SecpSignature);
 type TimeoutCertificate = ConsensusTC<SecpSignature>;
 type TimeoutInfo = ConsensusTmoInfo<AggSecpSignature>;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.timeout.rs"));
+pub(crate) use crate::proto::timeout::*;
 
 impl From<&HighQcRound> for ProtoHighQcRound {
     fn from(value: &HighQcRound) -> Self {

@@ -7,7 +7,7 @@ use crate::error::ProtoError;
 
 use super::signing::AggSecpSignature;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.block.rs"));
+pub(crate) use crate::proto::block::*;
 
 impl From<&TransactionList> for ProtoTransactionList {
     fn from(value: &TransactionList) -> Self {

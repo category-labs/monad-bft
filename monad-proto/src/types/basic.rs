@@ -5,12 +5,28 @@ use monad_types::{Hash, NodeId, Round};
 
 use crate::error::ProtoError;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.basic.rs"));
+pub(crate) use crate::proto::basic::*;
+
+impl From<&PubKey> for ProtoPubkey {
+    fn from(value: &PubKey) -> Self {
+        Self {
+            pubkey: value.bytes(),
+        }
+    }
+}
+
+impl TryFrom<ProtoPubkey> for PubKey {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoPubkey) -> Result<Self, Self::Error> {
+        Ok(PubKey::from_slice(value.pubkey.as_bytes())?)
+    }
+}
 
 impl From<&NodeId> for ProtoNodeId {
     fn from(nodeid: &NodeId) -> Self {
-        ProtoNodeId {
-            id: nodeid.0.bytes(),
+        Self {
+            pubkey: Some((&(nodeid.0)).into()),
         }
     }
 }
@@ -18,7 +34,12 @@ impl From<&NodeId> for ProtoNodeId {
 impl TryFrom<ProtoNodeId> for NodeId {
     type Error = ProtoError;
     fn try_from(value: ProtoNodeId) -> Result<Self, Self::Error> {
-        Ok(Self(PubKey::from_slice(value.id.as_bytes())?))
+        Ok(Self(
+            value
+                .pubkey
+                .ok_or(ProtoError::MissingRequiredField("NodeId.0".to_owned()))?
+                .try_into()?,
+        ))
     }
 }
 

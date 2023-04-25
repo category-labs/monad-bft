@@ -6,10 +6,7 @@ use super::signing::AggSecpSignature;
 
 type QuorumCertificate = ConsensusQC<AggSecpSignature>;
 
-include!(concat!(
-    env!("OUT_DIR"),
-    "/monad_proto.quorum_certificate.rs"
-));
+pub(crate) use crate::proto::quorum_certificate::*;
 
 impl From<&QcInfo> for ProtoQcInfo {
     fn from(qcinfo: &QcInfo) -> Self {

@@ -3,7 +3,7 @@ use monad_types::{BlockId, Round};
 
 use crate::error::ProtoError;
 
-include!(concat!(env!("OUT_DIR"), "/monad_proto.voting.rs"));
+pub(crate) use crate::proto::voting::*;
 
 impl From<&VoteInfo> for ProtoVoteInfo {
     fn from(vi: &VoteInfo) -> Self {

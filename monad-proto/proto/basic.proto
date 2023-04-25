@@ -2,8 +2,12 @@ syntax = "proto3";
 
 package monad_proto.basic;
 
+message ProtoPubkey {
+  bytes pubkey = 1;
+}
+
 message ProtoNodeId {
-  bytes id = 1;
+  ProtoPubkey pubkey = 1;
 }
 
 message ProtoRound {
@@ -13,3 +17,4 @@ message ProtoRound {
 message ProtoHash {
   bytes hash = 1;
 }
+
