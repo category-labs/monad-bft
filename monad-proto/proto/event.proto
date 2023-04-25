@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package monad_proto.event;
+
+import "basic.proto";
+import "message.proto";
+import "pacemaker.proto";
+import "signing.proto";
+
+message ProtoPeerId {
+  monad_proto.basic.ProtoPubkey pubkey = 1;
+}
+
+// this type doesn't have a pair rust type
+// conversion is done in ProtoMonadEvent
+message ProtoAckEvent {
+  ProtoPeerId peer = 1;
+  monad_proto.signing.ProtoSecpSignature id = 2;
+  monad_proto.basic.ProtoRound round = 3;
+}
+
+// this type doesn't have a pair rust type
+// conversion is done in ProtoConsensusEvent
+message ProtoMessageWithSender {
+  monad_proto.basic.ProtoPubkey sender = 1;
+  monad_proto.message.ProtoUnverifiedConsensusMessage unverified_message = 2;
+}
+
+message ProtoConsensusEvent {
+  oneof event {
+    ProtoMessageWithSender message = 1;
+    monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
+  }
+}
+
+message ProtoMonadEvent{
+  oneof event {
+    ProtoAckEvent ack = 1;
+    ProtoConsensusEvent consensus_event = 2;
+  }
+}

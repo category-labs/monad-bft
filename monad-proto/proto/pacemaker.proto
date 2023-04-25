@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package monad_proto.pacemaker;
+
+message ProtoPacemakerTimerExpire {
+  // intentionally empty
+}
+
+

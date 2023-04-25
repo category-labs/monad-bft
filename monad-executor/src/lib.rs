@@ -7,6 +7,9 @@ pub mod executor;
 
 pub mod mock_swarm;
 
+#[cfg(feature = "proto")]
+pub mod convert;
+
 // driver loop
 async fn run<S: State>(
     mut executor: impl Executor<Command = Command<S::Message, S::OutboundMessage>>

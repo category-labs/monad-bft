@@ -1,0 +1,84 @@
+#[cfg(all(test, feature = "proto"))]
+mod test {
+    use monad_consensus::types::consensus_message::ConsensusMessage;
+    use monad_consensus::types::ledger::LedgerCommitInfo;
+    use monad_consensus::types::message::VoteMessage;
+    use monad_consensus::types::voting::VoteInfo;
+    use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
+    use monad_consensus::{
+        convert::signing::AggSecpSignature, pacemaker::PacemakerTimerExpire,
+        validation::signing::Unverified,
+    };
+    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_executor::PeerId;
+    use monad_state::{
+        convert::interface::{deserialize_event, serialize_event},
+        ConsensusEvent, MonadEvent,
+    };
+    use monad_testutil::signing::get_key;
+    use monad_types::BlockId;
+    use monad_types::{Hash, Round};
+
+    #[test]
+    fn test_ack_event() {
+        let keypair = get_key(1);
+        let pubkey = keypair.pubkey();
+        let msg_hash = Hash([0x01_u8; 32].into());
+        let event: MonadEvent<SecpSignature, AggSecpSignature> = MonadEvent::Ack {
+            peer: PeerId(pubkey),
+            id: keypair.sign(msg_hash.as_ref()),
+            round: Round(10),
+        };
+
+        let buf = serialize_event(&event);
+        let rx_event = deserialize_event(&buf);
+
+        assert_eq!(event, rx_event.unwrap());
+    }
+
+    #[test]
+    fn test_consensus_timeout_event() {
+        let event = MonadEvent::ConsensusEvent(
+            ConsensusEvent::<SecpSignature, AggSecpSignature>::Timeout(PacemakerTimerExpire {}),
+        );
+
+        let buf = serialize_event(&event);
+        let rx_event = deserialize_event(&buf);
+
+        assert_eq!(event, rx_event.unwrap());
+    }
+
+    #[test]
+    fn test_consensus_message_event() {
+        let keypair: KeyPair = get_key(0);
+        let vi = VoteInfo {
+            id: BlockId(Hash([42_u8; 32].into())),
+            round: Round(1),
+            parent_id: BlockId(Hash([43_u8; 32].into())),
+            parent_round: Round(2),
+        };
+        let lci = LedgerCommitInfo {
+            commit_state_hash: None,
+            vote_info_hash: Hash([42_u8; 32].into()),
+        };
+        let votemsg: ConsensusMessage<SecpSignature, AggSecpSignature> =
+            ConsensusMessage::Vote(VoteMessage {
+                vote_info: vi,
+                ledger_commit_info: lci,
+            });
+        let votemsg_hash = Sha256Hash::hash_object(&votemsg);
+        let sig = keypair.sign(votemsg_hash.as_ref());
+
+        let unverified_votemsg = Unverified::new(votemsg, sig);
+
+        let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
+            sender: keypair.pubkey(),
+            unverified_message: unverified_votemsg,
+        });
+
+        let buf = serialize_event(&event);
+        let rx_event = deserialize_event(&buf);
+
+        assert_eq!(event, rx_event.unwrap());
+    }
+}

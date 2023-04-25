@@ -3,10 +3,16 @@ use std::ops::Deref;
 
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_crypto::Signature;
+#[cfg(feature = "proto")]
+use monad_proto::proto::message::{
+    proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
+};
 use monad_types::Hash;
 use monad_types::NodeId;
 use monad_validator::validator::Validator;
 
+#[cfg(feature = "proto")]
+use crate::convert::message::UnverifiedConsensusMessage;
 use crate::types::consensus_message::ConsensusMessage;
 use crate::types::message::ProposalMessage;
 use crate::types::message::TimeoutMessage;
@@ -322,6 +328,27 @@ fn verify_author(
 // Extract the PubKey from the Signature if possible
 fn get_pubkey(msg: &[u8], sig: &impl Signature) -> Result<PubKey, Error> {
     sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
+}
+
+#[cfg(feature = "proto")]
+impl From<&UnverifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
+    fn from(value: &UnverifiedConsensusMessage) -> Self {
+        let oneof_message = match &value.obj {
+            ConsensusMessage::Proposal(msg) => {
+                proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
+            }
+            ConsensusMessage::Vote(msg) => {
+                proto_unverified_consensus_message::OneofMessage::Vote(msg.into())
+            }
+            ConsensusMessage::Timeout(msg) => {
+                proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
+            }
+        };
+        Self {
+            author_signature: Some(value.author_signature().into()),
+            oneof_message: Some(oneof_message),
+        }
+    }
 }
 
 pub type ValidatorMember = HashMap<NodeId, Validator>;

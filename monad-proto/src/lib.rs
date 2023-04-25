@@ -21,4 +21,6 @@ pub mod proto {
     include_proto!(quorum_certificate);
     include_proto!(block);
     include_proto!(message);
+    include_proto!(event);
+    include_proto!(pacemaker);
 }

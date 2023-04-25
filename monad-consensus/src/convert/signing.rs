@@ -4,7 +4,7 @@ use monad_proto::proto::signing::*;
 
 use crate::signatures::aggregate_signature::AggregateSignatures;
 
-pub(super) type AggSecpSignature = AggregateSignatures<SecpSignature>;
+pub type AggSecpSignature = AggregateSignatures<SecpSignature>;
 
 impl From<&AggSecpSignature> for ProtoAggSig {
     fn from(value: &AggSecpSignature) -> Self {

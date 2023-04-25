@@ -14,9 +14,9 @@ use super::signing::AggSecpSignature;
 
 type TimeoutMessage = ConsensusTypeTmoMsg<SecpSignature, AggSecpSignature>;
 type ProposalMessage = ConsensusTypePropMsg<SecpSignature, AggSecpSignature>;
-pub(super) type VerifiedConsensusMessage =
+pub(crate) type VerifiedConsensusMessage =
     Verified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
-pub(super) type UnverifiedConsensusMessage =
+pub(crate) type UnverifiedConsensusMessage =
     Unverified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
 
 impl From<&VoteMessage> for ProtoVoteMessage {

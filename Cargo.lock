@@ -2662,6 +2662,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "monad-crypto",
+ "monad-proto",
  "monad-testutil",
  "tokio",
 ]
@@ -2702,6 +2703,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "prost",
  "ref-cast",
  "tracing",
  "tracing-subscriber",

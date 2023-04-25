@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package monad_proto.message;
 
-import "basic.proto";
 import "block.proto";
 import "ledger.proto";
 import "signing.proto";

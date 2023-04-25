@@ -44,7 +44,7 @@ pub enum PacemakerCommand<S, T> {
     Unschedule,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PacemakerTimerExpire;
 
 impl<S, T> Pacemaker<S, T>

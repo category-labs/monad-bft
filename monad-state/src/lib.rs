@@ -39,6 +39,9 @@ use ref_cast::RefCast;
 
 use tracing::{span, Level};
 
+#[cfg(feature = "proto")]
+pub mod convert;
+
 mod message;
 
 type LeaderElectionType = WeightedRoundRobin;
@@ -69,7 +72,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
 where
     ST: Signature,
@@ -354,7 +357,7 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusEvent<S, T> {
     Message {
         sender: PubKey,
