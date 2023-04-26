@@ -349,13 +349,29 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ConsensusEvent<S, T> {
     Message {
         sender: PubKey,
         unverified_message: Unverified<S, ConsensusMessage<S, T>>,
     },
     Timeout(PacemakerTimerExpire),
+}
+
+impl<S: Debug, T: Debug> Debug for ConsensusEvent<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &*self {
+            ConsensusEvent::Message {
+                sender,
+                unverified_message,
+            } => f
+                .debug_struct("Message")
+                .field("sender", &sender)
+                .field("msg", &unverified_message)
+                .finish(),
+            ConsensusEvent::Timeout(p) => p.fmt(f),
+        }
+    }
 }
 
 #[derive(Debug)]

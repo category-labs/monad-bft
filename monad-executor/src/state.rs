@@ -2,8 +2,15 @@ use std::{error::Error, hash::Hash};
 
 use monad_crypto::secp256k1::PubKey;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
+
+impl std::fmt::Debug for PeerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub enum RouterCommand<S>
 where
     S: State,

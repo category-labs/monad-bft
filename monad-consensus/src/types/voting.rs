@@ -4,12 +4,23 @@ use monad_types::*;
 
 use crate::validation::hashing::{Hashable, Hasher};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteInfo {
     pub id: BlockId,
     pub round: Round,
     pub parent_id: BlockId,
     pub parent_round: Round,
+}
+
+impl std::fmt::Debug for VoteInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoteInfo")
+            .field("id", &self.id)
+            .field("r", &self.round)
+            .field("pid", &self.parent_id)
+            .field("pr", &self.parent_round)
+            .finish()
+    }
 }
 
 impl Hashable for VoteInfo {

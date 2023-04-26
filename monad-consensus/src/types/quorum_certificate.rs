@@ -8,17 +8,35 @@ use crate::validation::hashing::Hasher;
 pub const GENESIS_PRIME_QC_HASH: Hash = [0xAA; 32];
 
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct QuorumCertificate<T> {
     pub info: QcInfo,
     pub signatures: T,
     signature_hash: Hash,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QC")
+            .field("info", &self.info)
+            .field("sigs", &self.signatures)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct QcInfo {
     pub vote: VoteInfo,
     pub ledger_commit: LedgerCommitInfo,
+}
+
+impl std::fmt::Debug for QcInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QcInfo")
+            .field("v", &self.vote)
+            .field("lc", &self.ledger_commit)
+            .finish()
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

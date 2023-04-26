@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use monad_crypto::{secp256k1::KeyPair, Signature};
 
 use crate::{
@@ -10,11 +12,21 @@ use crate::{
 
 use super::signature::SignatureCollection;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusMessage<ST, SCT> {
     Proposal(ProposalMessage<ST, SCT>),
     Vote(VoteMessage),
     Timeout(TimeoutMessage<ST, SCT>),
+}
+
+impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &*self {
+            ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
+            ConsensusMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
+            ConsensusMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
+        }
+    }
 }
 
 impl<ST, SCT> Hashable for ConsensusMessage<ST, SCT>

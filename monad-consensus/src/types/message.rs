@@ -10,10 +10,19 @@ use super::{
     voting::VoteInfo,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VoteMessage {
     pub vote_info: VoteInfo,
     pub ledger_commit_info: LedgerCommitInfo,
+}
+
+impl std::fmt::Debug for VoteMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoteMessage")
+            .field("info", &self.vote_info)
+            .field("lc", &self.ledger_commit_info)
+            .finish()
+    }
 }
 
 impl Hashable for VoteMessage {

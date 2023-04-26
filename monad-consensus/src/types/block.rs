@@ -6,16 +6,33 @@ use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::signature::SignatureCollection;
 use crate::validation::hashing::{Hashable, Hasher};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct TransactionList(pub Vec<u8>);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl std::fmt::Debug for TransactionList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Txns").field(&self.0).finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct Block<T> {
     pub author: NodeId,
     pub round: Round,
     pub payload: TransactionList,
     pub qc: QuorumCertificate<T>,
     id: BlockId,
+}
+
+impl<T> std::fmt::Debug for Block<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Block")
+            .field("author", &self.author)
+            .field("round", &self.round)
+            .field("qc_info", &self.qc.info)
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T: SignatureCollection> Hashable for Block<T> {

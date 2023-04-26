@@ -5,7 +5,7 @@ use crate::Signature;
 
 use zeroize::Zeroize;
 
-#[derive(Copy, Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -17,6 +17,18 @@ pub struct Error(secp256k1::Error);
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl std::fmt::Debug for PubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let ser = self.bytes();
+        write!(
+            f,
+            "{:02x}{:02x}..{:02x}{:02x}",
+            ser[0], ser[1], ser[30], ser[31]
+        )?;
+        Ok(())
     }
 }
 
