@@ -1,17 +1,17 @@
-use monad_consensus::types::timeout::{
-    HighQcRound, TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
-};
 use monad_crypto::secp256k1::SecpSignature;
+use monad_proto::error::ProtoError;
+use monad_proto::proto::timeout::*;
 
-use crate::error::ProtoError;
+use crate::types::timeout::{
+    HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple, TimeoutCertificate as ConsensusTC,
+    TimeoutInfo as ConsensusTmoInfo,
+};
 
 use super::signing::AggSecpSignature;
 
-type HighQcRoundSigTuple = (HighQcRound, SecpSignature);
+type HighQcRoundSigTuple = TypeHighQcRoundSigTuple<SecpSignature>;
 type TimeoutCertificate = ConsensusTC<SecpSignature>;
 type TimeoutInfo = ConsensusTmoInfo<AggSecpSignature>;
-
-pub(crate) use crate::proto::timeout::*;
 
 impl From<&HighQcRound> for ProtoHighQcRound {
     fn from(value: &HighQcRound) -> Self {
@@ -38,8 +38,8 @@ impl TryFrom<ProtoHighQcRound> for HighQcRound {
 impl From<&HighQcRoundSigTuple> for ProtoHighQcRoundSigTuple {
     fn from(value: &HighQcRoundSigTuple) -> Self {
         Self {
-            high_qc_round: Some((&value.0).into()),
-            author_signature: Some((&value.1).into()),
+            high_qc_round: Some((&value.high_qc_round).into()),
+            author_signature: Some((&value.author_signature).into()),
         }
     }
 }
@@ -47,20 +47,20 @@ impl From<&HighQcRoundSigTuple> for ProtoHighQcRoundSigTuple {
 impl TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple {
     type Error = ProtoError;
     fn try_from(value: ProtoHighQcRoundSigTuple) -> Result<Self, Self::Error> {
-        Ok((
-            value
+        Ok(Self {
+            high_qc_round: value
                 .high_qc_round
                 .ok_or(Self::Error::MissingRequiredField(
                     "Unverified<HighQcRound>.obj".to_owned(),
                 ))?
                 .try_into()?,
-            value
+            author_signature: value
                 .author_signature
                 .ok_or(Self::Error::MissingRequiredField(
                     "Unverified<HighQcRound>.author_signature".to_owned(),
                 ))?
                 .try_into()?,
-        ))
+        })
     }
 }
 

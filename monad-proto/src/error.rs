@@ -1,4 +1,3 @@
-use monad_crypto::secp256k1;
 use std::fmt;
 #[derive(Debug, Clone)]
 pub enum ProtoError {
@@ -6,7 +5,7 @@ pub enum ProtoError {
     WrongHashLen(String),
     MissingRequiredField(String),
     InvalidNodeId(String),
-    Secp256k1Error(secp256k1::Error),
+    Secp256k1Error(String),
     SignatureHashMismatch(String),
 }
 
@@ -35,11 +34,5 @@ impl std::error::Error for ProtoError {
 impl From<prost::DecodeError> for ProtoError {
     fn from(value: prost::DecodeError) -> Self {
         Self::DecodeError(value)
-    }
-}
-
-impl From<secp256k1::Error> for ProtoError {
-    fn from(value: secp256k1::Error) -> Self {
-        Self::Secp256k1Error(value)
     }
 }

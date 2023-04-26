@@ -101,7 +101,7 @@ impl monad_executor::Serializable
     >
 {
     fn serialize(&self) -> Vec<u8> {
-        monad_proto::types::message::serialize_verified_consensus_message(&self.0)
+        monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
     }
 }
 
@@ -118,7 +118,7 @@ impl monad_executor::Deserializable
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
         Ok(MonadMessage(
-            monad_proto::types::message::deserialize_unverified_consensus_message(message)?,
+            monad_consensus::convert::interface::deserialize_unverified_consensus_message(message)?,
         ))
     }
 }
@@ -661,7 +661,7 @@ mod test {
     use monad_crypto::{NopSignature, Signature};
     use monad_testutil::proposal::ProposalGen;
     use monad_testutil::signing::{create_keys, get_genesis_config};
-    use monad_types::{BlockId, Round};
+    use monad_types::{BlockId, Hash, Round};
     use monad_validator::{
         validator::Validator, validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin,
     };
@@ -716,9 +716,9 @@ mod test {
         let expected_qc_high_round = Round(5);
 
         let vi = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: expected_qc_high_round,
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
         };
         let vm = VoteMessage {

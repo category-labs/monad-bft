@@ -15,9 +15,9 @@ fn setup_block(author: NodeId, block_round: u64, qc_round: u64) -> Block<MockSig
     let txns = TransactionList(vec![1, 2, 3, 4]);
     let round = Round(block_round);
     let vi = VoteInfo {
-        id: BlockId([0x00_u8; 32]),
+        id: BlockId(Hash([0x00_u8; 32])),
         round: Round(qc_round),
-        parent_id: BlockId([0x00_u8; 32]),
+        parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
     };
     let qc = QuorumCertificate::<MockSignatures>::new(
@@ -52,7 +52,7 @@ fn test_proposal_hash() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, &msg, &keypair);
+    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
 
     assert!(sp.verify::<Sha256Hash>(&vset, &keypair.pubkey()).is_ok());
 }
@@ -78,7 +78,7 @@ fn test_proposal_missing_tc() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, &msg, &keypair);
+    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
 
     assert_eq!(
         sp.verify::<Sha256Hash>(&vset, &keypair.pubkey())
@@ -108,7 +108,7 @@ fn test_proposal_invalid_qc() {
     );
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, &msg, &get_key(7));
+    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &get_key(7));
 
     assert_eq!(
         sp.verify::<Sha256Hash>(&vset, &keypair.pubkey())

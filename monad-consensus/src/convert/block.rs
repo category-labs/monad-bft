@@ -1,13 +1,12 @@
-use monad_consensus::{
+use monad_proto::error::ProtoError;
+use monad_proto::proto::block::*;
+
+use crate::{
     types::block::{Block, TransactionList},
     validation::hashing::Sha256Hash,
 };
 
-use crate::error::ProtoError;
-
 use super::signing::AggSecpSignature;
-
-pub(crate) use crate::proto::block::*;
 
 impl From<&TransactionList> for ProtoTransactionList {
     fn from(value: &TransactionList) -> Self {

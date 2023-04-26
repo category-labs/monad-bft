@@ -1,5 +1,9 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "proto"))]
 mod test {
+    use monad_consensus::convert::interface::{
+        deserialize_unverified_consensus_message, serialize_verified_consensus_message,
+    };
+    use monad_consensus::types::timeout::HighQcRoundSigTuple;
     use monad_consensus::{
         signatures::aggregate_signature::AggregateSignatures,
         types::{
@@ -18,11 +22,8 @@ mod test {
         },
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_proto::types::message::{
-        deserialize_unverified_consensus_message, serialize_verified_consensus_message,
-    };
     use monad_testutil::signing::{create_keys, get_key};
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator::Validator;
 
     fn setup_validator_member(keypairs: &Vec<KeyPair>) -> ValidatorMember {
@@ -42,14 +43,14 @@ mod test {
     #[test]
     fn test_vote_message() {
         let vi = VoteInfo {
-            id: BlockId(vec![42; 32].try_into().unwrap()),
+            id: BlockId(Hash([42_u8; 32].into())),
             round: Round(1),
-            parent_id: BlockId(vec![43; 32].try_into().unwrap()),
+            parent_id: BlockId(Hash([43_u8; 32].into())),
             parent_round: Round(2),
         };
         let lci = LedgerCommitInfo {
             commit_state_hash: None,
-            vote_info_hash: vec![42; 32].try_into().unwrap(),
+            vote_info_hash: Hash([42_u8; 32].into()),
         };
         let votemsg = ConsensusMessage::Vote(VoteMessage {
             vote_info: vi,
@@ -78,9 +79,9 @@ mod test {
         let author_keypair = &keypairs[0];
 
         let vi = VoteInfo {
-            id: BlockId(vec![42; 32].try_into().unwrap()),
+            id: BlockId(Hash([42_u8; 32].into())),
             round: Round(1),
-            parent_id: BlockId(vec![43; 32].try_into().unwrap()),
+            parent_id: BlockId(Hash([43_u8; 32].into())),
             parent_round: Round(2),
         };
         let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
@@ -94,7 +95,7 @@ mod test {
 
         let mut aggsig = AggregateSignatures::new();
         for keypair in keypairs.iter() {
-            aggsig.add_signature(keypair.sign(&qcinfo_hash));
+            aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
         }
 
         let qc = QuorumCertificate::new(qcinfo, aggsig);
@@ -114,7 +115,10 @@ mod test {
 
         let mut high_qc_rounds = Vec::new();
         for keypair in keypairs.iter() {
-            high_qc_rounds.push((high_qc_round, keypair.sign(&high_qc_round_hash)));
+            high_qc_rounds.push(HighQcRoundSigTuple {
+                high_qc_round: high_qc_round,
+                author_signature: keypair.sign(high_qc_round_hash.as_ref()),
+            });
         }
 
         let tc = TimeoutCertificate {
@@ -147,9 +151,9 @@ mod test {
         let round = Round(block_round);
 
         let vi = VoteInfo {
-            id: BlockId(vec![42; 32].try_into().unwrap()),
+            id: BlockId(Hash([42_u8; 32].into())),
             round: Round(qc_round),
-            parent_id: BlockId(vec![43; 32].try_into().unwrap()),
+            parent_id: BlockId(Hash([43_u8; 32].into())),
             parent_round: Round(0),
         };
         let lci = LedgerCommitInfo {
@@ -165,7 +169,7 @@ mod test {
 
         let mut aggsig = AggregateSignatures::new();
         for keypair in keypairs.iter() {
-            aggsig.add_signature(keypair.sign(&qcinfo_hash));
+            aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
         }
 
         let qc = QuorumCertificate::<AggregateSignatures<SecpSignature>>::new(qcinfo, aggsig);
@@ -212,7 +216,10 @@ mod test {
         let mut high_qc_rounds = Vec::new();
 
         for keypair in keypairs.iter() {
-            high_qc_rounds.push((high_qc_round, keypair.sign(&high_qc_round_hash)));
+            high_qc_rounds.push(HighQcRoundSigTuple {
+                high_qc_round: high_qc_round,
+                author_signature: keypair.sign(high_qc_round_hash.as_ref()),
+            });
         }
 
         let tc = TimeoutCertificate {

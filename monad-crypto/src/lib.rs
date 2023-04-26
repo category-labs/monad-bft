@@ -4,6 +4,9 @@ use rand::Rng;
 
 use crate::secp256k1::{Error, KeyPair, PubKey};
 
+#[cfg(feature = "proto")]
+pub mod convert;
+
 pub mod secp256k1;
 
 pub trait Signature: Copy + Clone + Eq + Hash + std::fmt::Debug {

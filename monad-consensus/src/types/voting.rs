@@ -47,15 +47,15 @@ mod test {
         hasher.update(v.parent_id.0);
         hasher.update(v.parent_round);
 
-        hasher.finalize().into()
+        Hash(hasher.finalize().into())
     }
 
     #[test]
     fn voteinfo_hash() {
         let vi = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 

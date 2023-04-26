@@ -1,27 +1,7 @@
-use zerocopy::AsBytes;
+use monad_proto::error::ProtoError;
+use monad_proto::proto::basic::{ProtoBlockId, ProtoHash, ProtoNodeId, ProtoRound};
 
-use monad_crypto::secp256k1::PubKey;
-use monad_types::{Hash, NodeId, Round};
-
-use crate::error::ProtoError;
-
-pub(crate) use crate::proto::basic::*;
-
-impl From<&PubKey> for ProtoPubkey {
-    fn from(value: &PubKey) -> Self {
-        Self {
-            pubkey: value.bytes(),
-        }
-    }
-}
-
-impl TryFrom<ProtoPubkey> for PubKey {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPubkey) -> Result<Self, Self::Error> {
-        Ok(PubKey::from_slice(value.pubkey.as_bytes())?)
-    }
-}
+use crate::{BlockId, Hash, NodeId, Round};
 
 impl From<&NodeId> for ProtoNodeId {
     fn from(nodeid: &NodeId) -> Self {
@@ -67,9 +47,31 @@ impl From<&Hash> for ProtoHash {
 impl TryFrom<ProtoHash> for Hash {
     type Error = ProtoError;
     fn try_from(value: ProtoHash) -> Result<Self, Self::Error> {
-        value
-            .hash
-            .try_into()
-            .map_err(|e: Vec<_>| Self::Error::WrongHashLen(format!("{}", e.len())))
+        Ok(Self(value.hash.try_into().map_err(|e: Vec<_>| {
+            Self::Error::WrongHashLen(format!("{}", e.len()))
+        })?))
+    }
+}
+
+impl From<&BlockId> for ProtoBlockId {
+    fn from(value: &BlockId) -> Self {
+        Self {
+            bid: Some((&(value.0)).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoBlockId> for BlockId {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockId) -> Result<Self, Self::Error> {
+        Ok(Self(
+            value
+                .bid
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ProtoBlockId.bid".to_owned(),
+                ))?
+                .try_into()?,
+        ))
     }
 }

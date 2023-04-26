@@ -18,3 +18,7 @@ message ProtoHash {
   bytes hash = 1;
 }
 
+message ProtoBlockId  {
+  ProtoHash bid = 1;
+}
+

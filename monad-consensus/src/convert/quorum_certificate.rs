@@ -1,12 +1,11 @@
-use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC};
+use monad_proto::error::ProtoError;
+use monad_proto::proto::quorum_certificate::*;
 
-use crate::error::ProtoError;
+use crate::types::quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC};
 
 use super::signing::AggSecpSignature;
 
 type QuorumCertificate = ConsensusQC<AggSecpSignature>;
-
-pub(crate) use crate::proto::quorum_certificate::*;
 
 impl From<&QcInfo> for ProtoQcInfo {
     fn from(qcinfo: &QcInfo) -> Self {

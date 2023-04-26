@@ -96,7 +96,7 @@ mod test {
     use monad_testutil::signing::get_key;
     use monad_testutil::signing::*;
     use monad_testutil::validators::MockLeaderElection;
-    use monad_types::{BlockId, Round};
+    use monad_types::{BlockId, Hash, Round};
     use monad_validator::validator::Validator;
     use monad_validator::validator_set::ValidatorSet;
     use monad_validator::weighted_round_robin::WeightedRoundRobin;
@@ -123,9 +123,9 @@ mod test {
         vote_round: Round,
     ) -> Verified<SecpSignature, VoteMessage> {
         let vi = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: vote_round,
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
@@ -231,15 +231,15 @@ mod test {
         let vset = ValidatorSet::new(vec![val]).unwrap();
 
         let mut vi = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
         let vm = VoteMessage {
             vote_info: vi,
-            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some([0xad_u8; 32]), &vi),
+            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi),
         };
         let svm = Verified::new::<Sha256Hash>(vm, &keypair);
 
@@ -257,22 +257,25 @@ mod test {
 
         // add an invalid vote message (the vote_info doesn't match what created the ledger_commit_info)
         vi = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(5),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(4),
         };
 
         let vi2 = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(1),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
         let invalid_vm = VoteMessage {
             vote_info: vi,
-            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some([0xae_u8; 32]), &vi2),
+            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(
+                Some(Hash([0xae_u8; 32])),
+                &vi2,
+            ),
         };
         let invalid_svm = Verified::new::<Sha256Hash>(invalid_vm, &keypair);
         let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(

@@ -37,7 +37,7 @@ impl<S: Signature, M> Verified<S, M> {
 impl<S: Signature, M: Hashable> Verified<S, M> {
     pub fn new<H: Hasher>(msg: M, keypair: &KeyPair) -> Self {
         let hash = H::hash_object(&msg);
-        let signature = S::sign(&hash, keypair);
+        let signature = S::sign(hash.as_ref(), keypair);
         Self {
             author: NodeId(keypair.pubkey()),
             message: Unverified::new(msg, signature),
@@ -255,20 +255,21 @@ where
     H: Hasher,
 {
     for t in tc.high_qc_rounds.iter() {
-        if t.0.qc_round >= tc.round {
+        if t.high_qc_round.qc_round >= tc.round {
             return Err(Error::InvalidTcRound);
         }
 
         // TODO fix this hashing..
         let mut h = H::new();
         h.update(tc.round);
-        h.update(t.0.qc_round);
+        t.high_qc_round.hash(&mut h);
         let msg = h.hash();
 
-        let pubkey = get_pubkey(&msg, &t.1)?;
+        let pubkey = get_pubkey(msg.as_ref(), &t.author_signature)?;
         pubkey.valid_pubkey(validators)?;
 
-        t.1.verify(&msg, &pubkey)
+        t.author_signature
+            .verify(msg.as_ref(), &pubkey)
             .map_err(|_| Error::InvalidSignature)?;
     }
 
@@ -288,7 +289,7 @@ where
     let qc_msg = H::hash_object(&qc.info.ledger_commit);
     let pubkeys = qc
         .signatures
-        .get_pubkeys(&qc_msg)
+        .get_pubkeys(qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
     for p in pubkeys.iter() {
@@ -296,7 +297,7 @@ where
     }
 
     qc.signatures
-        .verify_signatures(&qc_msg)
+        .verify_signatures(qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
     Ok(())
@@ -308,8 +309,8 @@ fn verify_author(
     msg: &Hash,
     sig: &impl Signature,
 ) -> Result<PubKey, Error> {
-    let pubkey = get_pubkey(msg, sig)?.valid_pubkey(validators)?;
-    sig.verify(msg, &pubkey)
+    let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
+    sig.verify(msg.as_ref(), &pubkey)
         .map_err(|_| Error::InvalidSignature)?;
     if sender != &pubkey {
         Err(Error::AuthorNotSender)
@@ -348,13 +349,13 @@ mod test {
     use crate::types::ledger::LedgerCommitInfo;
     use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
     use crate::types::signature::SignatureCollection;
-    use crate::types::timeout::{HighQcRound, TimeoutCertificate};
+    use crate::types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate};
     use crate::types::voting::VoteInfo;
     use crate::validation::error::Error;
     use crate::validation::{hashing::*, signing::ValidatorMember};
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::signing::get_key;
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator::Validator;
     use test_case::test_case;
 
@@ -384,9 +385,12 @@ mod test {
         .map(|x| {
             let mut h = Sha256Hash::new();
             h.update(Round(5));
-            h.update(x.qc_round);
+            x.hash(&mut h);
             let msg = h.hash();
-            (*x, keypair.sign(&msg))
+            HighQcRoundSigTuple {
+                high_qc_round: *x,
+                author_signature: keypair.sign(msg.as_ref()),
+            }
         })
         .collect();
 
@@ -401,13 +405,13 @@ mod test {
     #[test]
     fn qc_verifcation_vote_doesnt_match() {
         let vi = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
-        let lci = LedgerCommitInfo::new::<Sha256Hash>(Some([0xad_u8; 32]), &vi);
+        let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);
 
         let mut vset = ValidatorMember::new();
         let keypair = get_key(6);
@@ -421,15 +425,15 @@ mod test {
         );
 
         let msg = Sha256Hash::hash_object(&lci);
-        let s = keypair.sign(&msg);
+        let s = keypair.sign(msg.as_ref());
 
         let mut sigs = AggregateSignatures::new();
         sigs.add_signature(s);
 
         let vi2 = VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(1),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 

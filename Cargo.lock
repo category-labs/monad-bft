@@ -2614,9 +2614,11 @@ name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
  "monad-crypto",
+ "monad-proto",
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "prost",
  "sha2 0.10.6",
  "test-case",
  "tracing",
@@ -2629,11 +2631,13 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libp2p-identity",
+ "monad-proto",
  "multihash",
  "rand 0.8.5",
  "secp256k1",
  "sha2 0.10.6",
  "tiny-keccak",
+ "zerocopy",
  "zeroize",
 ]
 
@@ -2678,15 +2682,11 @@ dependencies = [
 name = "monad-proto"
 version = "0.1.0"
 dependencies = [
- "monad-consensus",
- "monad-crypto",
  "monad-testutil",
- "monad-types",
  "monad-validator",
  "prost",
  "prost-build",
  "protobuf-src",
- "zerocopy",
 ]
 
 [[package]]
@@ -2724,6 +2724,7 @@ name = "monad-types"
 version = "0.1.0"
 dependencies = [
  "monad-crypto",
+ "monad-proto",
  "zerocopy",
 ]
 

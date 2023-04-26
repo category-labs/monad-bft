@@ -24,16 +24,22 @@ impl Hashable for HighQcRound {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HighQcRoundSigTuple<S> {
+    pub high_qc_round: HighQcRound,
+    pub author_signature: S,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutCertificate<S> {
     pub round: Round,
-    pub high_qc_rounds: Vec<(HighQcRound, S)>,
+    pub high_qc_rounds: Vec<HighQcRoundSigTuple<S>>,
 }
 
 impl<S> TimeoutCertificate<S> {
     pub fn max_round(&self) -> Round {
         self.high_qc_rounds
             .iter()
-            .map(|v| v.0.qc_round)
+            .map(|v| v.high_qc_round.qc_round)
             .max()
             // TODO can we unwrap here?
             .unwrap_or(Round(0))

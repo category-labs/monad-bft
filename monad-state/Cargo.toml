@@ -24,7 +24,7 @@ ref-cast = "1.0"
 tracing = "0.1"
 
 [features]
-proto = ["dep:monad-proto"]
+proto = ["dep:monad-proto", "monad-consensus/proto", "monad-crypto/proto", "monad-types/proto"]
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}

@@ -11,7 +11,6 @@ macro_rules! include_proto {
 }
 
 pub mod error;
-pub mod types;
 
 pub mod proto {
     include_proto!(basic);

@@ -1,3 +1,6 @@
+#[cfg(feature = "proto")]
+pub mod convert;
+
 pub mod pacemaker;
 pub mod signatures;
 pub mod types;

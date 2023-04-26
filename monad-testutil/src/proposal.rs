@@ -70,7 +70,7 @@ impl<T: SignatureCollection> ProposalGen<T> {
         let mut sigs = T::new();
         let msg = Sha256Hash::hash_object(&lci);
         for k in keys {
-            let s = T::SignatureType::sign(&msg, k);
+            let s = T::SignatureType::sign(msg.as_ref(), k);
             sigs.add_signature(s);
         }
 

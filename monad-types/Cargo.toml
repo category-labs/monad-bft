@@ -12,5 +12,9 @@ bench = false
 
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
+monad-proto = { path = "../monad-proto", optional = true}
 
 zerocopy = "0.6.1"
+
+[features]
+proto = ["dep:monad-proto", "monad-crypto/proto"]

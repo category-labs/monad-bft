@@ -1,26 +1,23 @@
 use std::ops::Deref;
 
-use monad_consensus::types::consensus_message::ConsensusMessage;
-use prost::Message;
+use monad_crypto::secp256k1::SecpSignature;
+use monad_proto::error::ProtoError;
+use monad_proto::proto::message::*;
 
-use monad_consensus::types::message::{
+use crate::types::consensus_message::ConsensusMessage;
+use crate::types::message::{
     ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
 };
-use monad_consensus::validation::signing::{Unverified, Verified};
-use monad_crypto::secp256k1::SecpSignature;
-
-use crate::error::ProtoError;
+use crate::validation::signing::{Unverified, Verified};
 
 use super::signing::AggSecpSignature;
 
 type TimeoutMessage = ConsensusTypeTmoMsg<SecpSignature, AggSecpSignature>;
 type ProposalMessage = ConsensusTypePropMsg<SecpSignature, AggSecpSignature>;
-type VerifiedConsensusMessage =
+pub(super) type VerifiedConsensusMessage =
     Verified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
-type UnverifiedConsensusMessage =
+pub(super) type UnverifiedConsensusMessage =
     Unverified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
-
-pub(crate) use crate::proto::message::*;
 
 impl From<&VoteMessage> for ProtoVoteMessage {
     fn from(value: &VoteMessage) -> Self {
@@ -148,16 +145,4 @@ impl TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage {
             .try_into()?;
         Ok(Unverified::new(message, signature))
     }
-}
-
-pub fn serialize_verified_consensus_message(msg: &VerifiedConsensusMessage) -> Vec<u8> {
-    let proto_msg: ProtoUnverifiedConsensusMessage = msg.into();
-    proto_msg.encode_to_vec()
-}
-
-pub fn deserialize_unverified_consensus_message(
-    data: &[u8],
-) -> Result<UnverifiedConsensusMessage, ProtoError> {
-    let msg = ProtoUnverifiedConsensusMessage::decode(data)?;
-    msg.try_into()
 }
