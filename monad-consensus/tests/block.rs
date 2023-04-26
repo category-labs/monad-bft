@@ -14,8 +14,8 @@ fn block_hash_id() {
     let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
             vote: VoteInfo {
-                id: BlockId([0x00_u8; 32]),
-                parent_id: BlockId([0x00_u8; 32]),
+                id: BlockId(Hash([0x00_u8; 32])),
+                parent_id: BlockId(Hash([0x00_u8; 32])),
                 round: Round(0),
                 parent_round: Round(0),
             },

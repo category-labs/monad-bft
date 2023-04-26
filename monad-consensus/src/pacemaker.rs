@@ -9,7 +9,7 @@ use crate::{
         message::TimeoutMessage,
         quorum_certificate::QuorumCertificate,
         signature::SignatureCollection,
-        timeout::{HighQcRound, TimeoutCertificate},
+        timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
     },
     validation::safety::Safety,
 };
@@ -154,12 +154,12 @@ where
                     .values()
                     .map(|(tmo, signature)| {
                         assert_eq!(tmo.tminfo.round, tm_info.round);
-                        (
-                            HighQcRound {
+                        HighQcRoundSigTuple {
+                            high_qc_round: HighQcRound {
                                 qc_round: tmo.tminfo.high_qc.info.vote.round,
                             },
-                            *signature,
-                        )
+                            author_signature: *signature,
+                        }
                     })
                     .collect(),
             });

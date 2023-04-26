@@ -5,7 +5,7 @@ use crate::types::signature::SignatureCollection;
 use crate::types::voting::*;
 use crate::validation::hashing::Hasher;
 
-pub const GENESIS_PRIME_QC_HASH: Hash = [0xAA; 32];
+pub const GENESIS_PRIME_QC_HASH: Hash = Hash([0xAA; 32]);
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]

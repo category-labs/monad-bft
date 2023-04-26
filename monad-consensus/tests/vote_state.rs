@@ -14,6 +14,7 @@ use monad_consensus::vote_state::VoteState;
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
 use monad_testutil::validators::MockLeaderElection;
+use monad_types::Hash;
 use monad_validator::validator::Validator;
 use monad_validator::validator_set::ValidatorSet;
 
@@ -22,9 +23,9 @@ fn create_signed_vote_message(
     vote_round: Round,
 ) -> Unverified<SecpSignature, VoteMessage> {
     let vi = VoteInfo {
-        id: BlockId([0x00_u8; 32]),
+        id: BlockId(Hash([0x00_u8; 32])),
         round: vote_round,
-        parent_id: BlockId([0x00_u8; 32]),
+        parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
     };
 
@@ -36,7 +37,7 @@ fn create_signed_vote_message(
     };
 
     let msg = Sha256Hash::hash_object(&vm.ledger_commit_info);
-    let svm = TestSigner::sign_object(vm, &msg, keypair);
+    let svm = TestSigner::sign_object(vm, msg.as_ref(), keypair);
 
     svm
 }

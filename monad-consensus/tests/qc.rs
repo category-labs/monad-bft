@@ -14,16 +14,16 @@ fn comparison() {
     let ci = LedgerCommitInfo::default();
 
     let vi_1 = VoteInfo {
-        id: BlockId([0x00_u8; 32]),
+        id: BlockId(Hash([0x00_u8; 32])),
         round: Round(2),
-        parent_id: BlockId([0x00_u8; 32]),
+        parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
     };
 
     let vi_2 = VoteInfo {
-        id: BlockId([0x00_u8; 32]),
+        id: BlockId(Hash([0x00_u8; 32])),
         round: Round(3),
-        parent_id: BlockId([0x00_u8; 32]),
+        parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
     };
 

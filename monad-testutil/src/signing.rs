@@ -50,7 +50,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.update(b.qc.info.vote.id.0);
     hasher.update(b.qc.signatures.get_hash());
 
-    hasher.finalize().into()
+    Hash(hasher.finalize().into())
 }
 
 pub fn node_id() -> NodeId {
@@ -88,7 +88,7 @@ pub fn get_genesis_config<H: Hasher, T: SignatureCollection>(keys: &Vec<KeyPair>
     let mut sigs = T::new();
     let msg = H::hash_object(&genesis_lci);
     for k in keys {
-        let s = T::SignatureType::sign(&msg, k);
+        let s = T::SignatureType::sign(msg.as_ref(), k);
         sigs.add_signature(s);
     }
 

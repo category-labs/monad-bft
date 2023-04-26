@@ -188,7 +188,7 @@ mod test {
     use monad_consensus::validation::hashing::Sha256Hash;
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, Hash, NodeId, Round};
 
     use super::BlockTree;
     use super::BlockTreeError;
@@ -212,9 +212,9 @@ mod test {
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
-                        id: BlockId([0x00_u8; 32]),
+                        id: BlockId(Hash([0x00_u8; 32])),
                         round: Round(0),
-                        parent_id: BlockId([0x00_u8; 32]),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
@@ -226,7 +226,7 @@ mod test {
         let v1 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
@@ -266,7 +266,7 @@ mod test {
         let v3 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
@@ -286,7 +286,7 @@ mod test {
         let v4 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 
@@ -458,9 +458,9 @@ mod test {
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
-                        id: BlockId([0x00_u8; 32]),
+                        id: BlockId(Hash([0x00_u8; 32])),
                         round: Round(0),
-                        parent_id: BlockId([0x00_u8; 32]),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
@@ -472,7 +472,7 @@ mod test {
         let v1 = VoteInfo {
             id: g.get_id(),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         };
 

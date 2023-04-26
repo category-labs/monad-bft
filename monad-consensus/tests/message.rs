@@ -6,7 +6,9 @@ use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::message::VoteMessage;
 use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
-use monad_consensus::types::timeout::{HighQcRound, TimeoutCertificate, TimeoutInfo};
+use monad_consensus::types::timeout::{
+    HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo,
+};
 use monad_consensus::validation::hashing::*;
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
@@ -24,9 +26,9 @@ fn vote_msg_hash(cs: Option<Hash>) {
 
     let vm = VoteMessage {
         vote_info: VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         },
         ledger_commit_info: lci,
@@ -37,7 +39,7 @@ fn vote_msg_hash(cs: Option<Hash>) {
     hasher.update(vm.vote_info.round.as_bytes());
     hasher.update(vm.vote_info.parent_id.0.as_bytes());
     hasher.update(vm.vote_info.parent_round.as_bytes());
-    let h1: Hash = hasher.finalize_reset().into();
+    let h1: Hash = Hash(hasher.finalize_reset().into());
 
     let h2 = Sha256Hash::hash_object(&vm.vote_info);
 
@@ -51,9 +53,9 @@ fn timeout_msg_hash() {
         high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
                 vote: VoteInfo {
-                    id: BlockId([0x00_u8; 32]),
+                    id: BlockId(Hash([0x00_u8; 32])),
                     round: Round(0),
-                    parent_id: BlockId([0x00_u8; 32]),
+                    parent_id: BlockId(Hash([0x00_u8; 32])),
                     parent_round: Round(0),
                 },
                 ledger_commit: Default::default(),
@@ -70,7 +72,7 @@ fn timeout_msg_hash() {
     let mut hasher = sha2::Sha256::new();
     hasher.update(tm.tminfo.round);
     hasher.update(tm.tminfo.high_qc.info.vote.round);
-    let h1: Hash = hasher.finalize_reset().into();
+    let h1: Hash = Hash(hasher.finalize_reset().into());
 
     let h2 = Sha256Hash::hash_object(&tm);
 
@@ -90,9 +92,9 @@ fn proposal_msg_hash() {
     let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
             vote: VoteInfo {
-                id: BlockId([0x00_u8; 32]),
+                id: BlockId(Hash([0x00_u8; 32])),
                 round: Round(0),
-                parent_id: BlockId([0x00_u8; 32]),
+                parent_id: BlockId(Hash([0x00_u8; 32])),
                 parent_round: Round(0),
             },
             ledger_commit: LedgerCommitInfo::default(),
@@ -124,8 +126,10 @@ fn max_high_qc() {
     .map(|x| {
         let msg = Sha256Hash::hash_object(x);
         let keypair = get_key(0);
-
-        (*x, keypair.sign(&msg))
+        HighQcRoundSigTuple {
+            high_qc_round: *x,
+            author_signature: keypair.sign(msg.as_ref()),
+        }
     })
     .collect();
 
@@ -146,9 +150,9 @@ fn test_vote_message() {
 
     let vm = VoteMessage {
         vote_info: VoteInfo {
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
-            parent_id: BlockId([0x00_u8; 32]),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
         },
         ledger_commit_info: lci,
@@ -160,10 +164,10 @@ fn test_vote_message() {
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
 
     let msg = Sha256Hash::hash_object(&vm.vote_info);
-    let svm = TestSigner::sign_object(vm, &msg, &keypair);
+    let svm = TestSigner::sign_object(vm, msg.as_ref(), &keypair);
 
     assert_eq!(
-        svm.author_signature().recover_pubkey(&msg).unwrap(),
+        svm.author_signature().recover_pubkey(msg.as_ref()).unwrap(),
         keypair.pubkey()
     );
 

@@ -1,6 +1,6 @@
 use zerocopy::AsBytes;
 
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, Hash as HashType, NodeId, Round};
 
 use crate::types::quorum_certificate::QuorumCertificate;
 use crate::types::signature::SignatureCollection;
@@ -40,7 +40,7 @@ impl<T: SignatureCollection> Block<T> {
             round,
             payload: txns.clone(),
             qc: qc.clone(),
-            id: BlockId([0x00_u8; 32]),
+            id: BlockId(HashType([0x00_u8; 32])),
         };
         // FIXME make this less jank
         b.id = BlockId(H::hash_object(&b));

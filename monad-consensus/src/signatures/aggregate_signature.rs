@@ -32,7 +32,7 @@ impl<S: Signature> SignatureCollection for AggregateSignatures<S> {
             hasher.update(v.serialize());
         }
 
-        hasher.finalize().into()
+        Hash(hasher.finalize().into())
     }
 
     fn add_signature(&mut self, sig: Self::SignatureType) {

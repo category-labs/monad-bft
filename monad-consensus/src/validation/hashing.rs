@@ -26,6 +26,6 @@ impl Hasher for Sha256Hash {
         self.0.update(data);
     }
     fn hash(self) -> Hash {
-        self.0.finalize().into()
+        Hash(self.0.finalize().into())
     }
 }

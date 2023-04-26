@@ -1,11 +1,27 @@
 use std::ops::Add;
 use std::ops::AddAssign;
+use std::ops::Deref;
 use std::ops::Sub;
 
 use monad_crypto::secp256k1::PubKey;
 use zerocopy::AsBytes;
 
-pub type Hash = [u8; 32];
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Hash(pub [u8; 32]);
+
+impl Deref for Hash {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for Hash {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, AsBytes)]
