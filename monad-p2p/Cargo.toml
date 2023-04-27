@@ -11,10 +11,14 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-executor = { path = "../monad-executor" }
+monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
+monad-executor = { path = "../monad-executor" }
 
 futures = "0.3"
 async-trait = "0.1"
 
 libp2p = { version = "0.51", features = ["macros", "mplex", "noise", "identify", "request-response", "secp256k1"] }
+
+[features]
+tokio = ["libp2p/tokio"]

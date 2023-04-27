@@ -8,11 +8,11 @@ use crate::{Executor, TimerCommand};
 
 use futures::{FutureExt, Stream};
 
-struct TokioTimer<E> {
+pub struct TokioTimer<E> {
     state: Option<(Pin<Box<tokio::time::Sleep>>, E)>,
 }
-impl<E> TokioTimer<E> {
-    pub fn new() -> Self {
+impl<E> Default for TokioTimer<E> {
+    fn default() -> Self {
         Self { state: None }
     }
 }

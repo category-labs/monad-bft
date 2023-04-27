@@ -72,7 +72,9 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
     res
 }
 
-pub fn get_genesis_config<H: Hasher, T: SignatureCollection>(keys: &Vec<KeyPair>) -> (Block<T>, T) {
+pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
+    keys: impl Iterator<Item = &'k KeyPair>,
+) -> (Block<T>, T) {
     let genesis_txn = TransactionList::default();
     let genesis_prime_qc = QuorumCertificate::<T>::genesis_prime_qc::<H>();
     let genesis_block = Block::<T>::new::<H>(

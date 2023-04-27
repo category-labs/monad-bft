@@ -5,10 +5,10 @@ use std::{
     task::Poll,
 };
 
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use monad_executor::{Deserializable, Executor, Message, RouterCommand, Serializable};
 
-use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
+use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Multiaddr, Transport};
 
 mod behavior;
 use behavior::Behavior;
@@ -38,6 +38,7 @@ where
     OM: Into<M> + AsRef<M>,
 {
     pub fn without_executor(identity: libp2p::identity::Keypair) -> Self {
+        // TODO most of the stuff in here can be factored out
         let transport = libp2p::core::transport::MemoryTransport::default()
             .upgrade(libp2p::core::upgrade::Version::V1Lazy)
             .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
@@ -51,6 +52,13 @@ where
         let mut swarm = SwarmBuilder::without_executor(transport, behavior, local_peer_id).build();
         swarm.listen_on("/memory/0".parse().unwrap()).unwrap();
 
+        // wait for address
+        // TODO should we make this a future instead?
+        while !matches!(
+            swarm.next().now_or_never(),
+            Some(Some(libp2p::swarm::SwarmEvent::NewListenAddr { .. }))
+        ) {}
+
         Self {
             swarm,
             outbound_messages: HashMap::new(),
@@ -58,6 +66,47 @@ where
 
             self_events: VecDeque::new(),
         }
+    }
+
+    #[cfg(feature = "tokio")]
+    pub fn with_tokio_executor(identity: libp2p::identity::Keypair) -> Self {
+        // TODO most of the stuff in here can be factored out
+        let transport = libp2p::core::transport::MemoryTransport::default()
+            .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+            .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
+            .multiplex(libp2p::mplex::MplexConfig::new())
+            .boxed();
+
+        let pubkey = identity.public();
+        let behavior = Behavior::new(&pubkey);
+
+        let local_peer_id: libp2p::PeerId = pubkey.into();
+        let mut swarm =
+            SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id).build();
+        swarm.listen_on("/memory/0".parse().unwrap()).unwrap();
+
+        // TODO wait for address to be assigned
+
+        Self {
+            swarm,
+            outbound_messages: HashMap::new(),
+            outbound_messages_lookup: HashMap::new(),
+
+            self_events: VecDeque::new(),
+        }
+    }
+
+    pub fn add_peer(&mut self, peer: &libp2p::PeerId, address: Multiaddr) {
+        self.swarm
+            .behaviour_mut()
+            .request_response
+            .add_address(peer, address)
+    }
+    pub fn local_peer_id(&self) -> &libp2p::PeerId {
+        self.swarm.local_peer_id()
+    }
+    pub fn listeners(&self) -> impl Iterator<Item = &Multiaddr> {
+        self.swarm.listeners()
     }
 
     pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: OM, on_ack: M::Event) {
@@ -197,12 +246,17 @@ where
                 }
                 libp2p::swarm::SwarmEvent::Behaviour(behavior::BehaviorEvent::RequestResponse(
                     libp2p::request_response::Event::OutboundFailure {
-                        peer: _,
+                        peer,
                         request_id: _,
                         error: e,
                     },
                 )) => {
-                    todo!("TODO schedule retry: {:?}", e)
+                    todo!(
+                        "TODO ({:?}) schedule retry to: {:?}, err: {:?}",
+                        self.swarm.local_peer_id(),
+                        peer,
+                        e
+                    )
                 }
                 _ => {}
             }
@@ -220,10 +274,9 @@ mod tests {
     };
 
     use crate::Service;
-    use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
     use monad_executor::{Deserializable, Message, Serializable};
 
-    use futures::{FutureExt, StreamExt};
+    use futures::StreamExt;
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct TestMessage(u64);
@@ -271,8 +324,7 @@ mod tests {
     fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage, TestMessage>) {
         let keypair = libp2p::identity::Keypair::generate_secp256k1();
         let public = keypair.public();
-        let mut service = Service::<TestMessage, TestMessage>::without_executor(keypair);
-        while service.next().now_or_never().is_some() {}
+        let service = Service::<TestMessage, TestMessage>::without_executor(keypair);
         let libp2p_peer_id = public.to_peer_id();
         (
             monad_executor::PeerId(libp2p_peer_id.try_into().unwrap()),
@@ -295,17 +347,11 @@ mod tests {
                 if peer_1 == peer_2 {
                     continue;
                 }
-                let node_2 = nodes.get_mut(peer_2).unwrap();
+                let node_2 = nodes.get(peer_2).unwrap();
 
-                let dial_opts = DialOpts::peer_id(*node_2.swarm.local_peer_id())
-                    .addresses(node_2.swarm.listeners().cloned().collect())
-                    .condition(PeerCondition::Always) // is this what we want?
-                    .build();
-                node_1.swarm.dial(dial_opts).unwrap();
-
-                // poll futures
-                while node_1.next().now_or_never().is_some() {}
-                while node_2.next().now_or_never().is_some() {}
+                for address in node_2.swarm.listeners().cloned() {
+                    node_1.add_peer(node_2.local_peer_id(), address)
+                }
             }
             nodes.insert(*peer_1, node_1);
         }

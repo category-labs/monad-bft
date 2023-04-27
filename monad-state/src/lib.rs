@@ -670,7 +670,7 @@ mod test {
     ) {
         let keys = create_keys(4);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(&keys);
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
 
         let validator_list = pubkeys
             .into_iter()

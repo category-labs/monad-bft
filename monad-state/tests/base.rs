@@ -20,7 +20,7 @@ pub fn get_configs(
     let keys = create_keys(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, SignatureCollectionType>(&keys);
+        get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
 
     let state_configs = keys
         .into_iter()
