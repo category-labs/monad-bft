@@ -430,6 +430,9 @@ where
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
         let mut cmds = Vec::new();
+        if p.block.round < self.pacemaker.get_current_round() {
+            return cmds;
+        }
 
         let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
         cmds.extend(process_certificate_cmds);
@@ -498,15 +501,18 @@ where
         &mut self,
         author: NodeId,
         signature: S,
-        p: TimeoutMessage<S, T>,
+        tm: TimeoutMessage<S, T>,
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
         let mut cmds = Vec::new();
+        if tm.tminfo.round < self.pacemaker.get_current_round() {
+            return cmds;
+        }
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.tminfo.high_qc);
+        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc);
         cmds.extend(process_certificate_cmds);
 
-        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
+        if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
@@ -521,7 +527,7 @@ where
             &self.high_qc,
             author,
             signature,
-            p,
+            tm,
         );
         cmds.extend(remote_timeout_cmds.into_iter().map(Into::into));
         if let Some(tc) = tc {
