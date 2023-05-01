@@ -71,6 +71,10 @@ where
         self.current_round
     }
 
+    pub fn next_round(&self) -> Round {
+        self.current_round + Round(1)
+    }
+
     fn get_round_timer(&self) -> Duration {
         self.delta * 4
     }

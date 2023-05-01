@@ -1,4 +1,5 @@
 use monad_consensus::types::block::Block;
+use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::types::signature::SignatureCollection;
 use monad_types::BlockId;
 use monad_types::Round;
@@ -171,6 +172,10 @@ impl<T: SignatureCollection> BlockTree<T> {
         self.tree.insert(new_bid, BlockTreeBlock::new(b));
         self.high_round = new_round;
         Ok(())
+    }
+
+    pub fn has_parent(&self, qc: &QuorumCertificate<T>) -> bool {
+        self.tree.contains_key(&qc.info.vote.id)
     }
 
     pub fn debug_print(&self) -> std::io::Result<()> {

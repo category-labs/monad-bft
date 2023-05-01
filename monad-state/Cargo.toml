@@ -31,6 +31,7 @@ proto = ["dep:monad-proto", "dep:prost", "monad-consensus/proto", "monad-crypto/
 monad-testutil = { path = "../monad-testutil"}
 tracing-subscriber = "0.3"
 criterion = "0.4"
+itertools = "0.10.5"
 
 [[bench]]
 name = "two_node_benchmark"

@@ -236,8 +236,12 @@ where
             self.outbound_messages.push_back((to, message));
             let entry = self.sent_messages.entry(to).or_default().entry(id);
             match entry {
-                Entry::Occupied(_) => panic!("can't double publish!"),
-                Entry::Vacant(v) => v.insert(on_ack),
+                Entry::Occupied(_) => {
+                    panic!("can't double publish! {:?}", to)
+                }
+                Entry::Vacant(v) => {
+                    v.insert(on_ack);
+                }
             };
         }
 
@@ -696,7 +700,7 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
+    #[derive(Debug, Clone)]
     struct SimpleChainMessage {
         round: u64,
     }
@@ -742,7 +746,7 @@ mod tests {
             Vec::new(),
         );
 
-        while let Some((duration, id, event)) = nodes.step() {
+        while let Some((duration, id, event, _)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")
         }
     }

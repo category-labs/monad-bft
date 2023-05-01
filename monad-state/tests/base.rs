@@ -1,12 +1,12 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, io::Write, time::Duration};
 
 use monad_consensus::{
     signatures::aggregate_signature::AggregateSignatures,
     types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
 };
 use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature};
-use monad_executor::mock_swarm::Nodes;
-use monad_state::{MonadConfig, MonadState};
+use monad_executor::{mock_swarm::Nodes, Message, PeerId, State};
+use monad_state::{ConsensusEvent, MonadConfig, MonadEvent, MonadMessage, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_types::BlockId;
 
@@ -69,7 +69,7 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
         Vec::new(),
     );
 
-    while let Some((duration, id, event)) = nodes.step() {
+    while let Some((duration, id, event, _)) = nodes.step() {
         if nodes.states().values().next().unwrap().1.ledger().len() > num_blocks {
             break;
         }
@@ -83,6 +83,77 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
             state
                 .ledger()
                 .into_iter()
+                .map(|b| b.get_id())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    node_ledger_verification(&node_blocks);
+}
+
+pub fn run_one_delayed_node(num_nodes: u16, num_blocks: usize, reverse: bool) {
+    let (pubkeys, state_configs) = get_configs(num_nodes, 2);
+
+    assert!(num_nodes >= 2, "test requires 2 or more nodes");
+
+    let first_node = PeerId(*pubkeys.first().unwrap());
+    let other_node = PeerId(*pubkeys.last().unwrap());
+
+    let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
+        pubkeys.into_iter().zip(state_configs).collect(),
+        |_node_1, _node_2| Duration::from_millis(1),
+        vec![first_node],
+    );
+
+    let mut filtered_msgs = Vec::new();
+    let mut expected_num_blocks = 0;
+    while let Some((duration, id, event, fm)) = nodes.step() {
+        filtered_msgs.extend(fm);
+
+        if nodes.states().get(&other_node).unwrap().1.ledger().len() > num_blocks {
+            expected_num_blocks = nodes.states().get(&other_node).unwrap().1.ledger().len();
+            break;
+        }
+    }
+
+    let mut cnt = 0;
+    let iter_direction = if reverse {
+        itertools::Either::Right(filtered_msgs.into_iter().rev())
+    } else {
+        itertools::Either::Left(filtered_msgs.into_iter())
+    };
+
+    for (sender, msg) in iter_direction {
+        let event = MonadMessage::from(msg).event(sender);
+        println!("updating with event {:#?}", event);
+        nodes
+            .mut_states()
+            .get_mut(&first_node)
+            .unwrap()
+            .1
+            .update(event);
+
+        cnt += 1;
+        println!(
+            "round: {:?}\n, ledger state: {:?}\nblocktree: {:?}",
+            nodes
+                .states()
+                .get(&first_node)
+                .unwrap()
+                .1
+                .pacemaker()
+                .get_current_round(),
+            nodes.states().get(&first_node).unwrap().1.ledger(),
+            nodes.states().get(&first_node).unwrap().1.blocktree(),
+        );
+    }
+
+    let node_blocks = nodes
+        .states()
+        .values()
+        .map(|(_, state)| {
+            state
+                .ledger()
+                .iter()
                 .map(|b| b.get_id())
                 .collect::<Vec<_>>()
         })
@@ -108,7 +179,7 @@ pub fn run_nodes_msg_delays(num_nodes: u16, num_blocks: usize) {
         Vec::new(),
     );
 
-    while let Some((duration, id, event)) = nodes.step() {
+    while let Some((duration, id, event, _)) = nodes.step() {
         if nodes.states().values().next().unwrap().1.ledger().len() > num_blocks {
             break;
         }

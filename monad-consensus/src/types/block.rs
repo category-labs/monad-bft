@@ -67,4 +67,8 @@ impl<T: SignatureCollection> Block<T> {
     pub fn get_id(&self) -> BlockId {
         self.id
     }
+
+    pub fn get_parent_id(&self) -> BlockId {
+        self.qc.info.vote.id
+    }
 }

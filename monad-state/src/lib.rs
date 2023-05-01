@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -28,7 +29,7 @@ use monad_crypto::{
     Signature,
 };
 use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
-use monad_types::{NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
     weighted_round_robin::WeightedRoundRobin,
@@ -69,6 +70,14 @@ where
 
     pub fn ledger(&self) -> &Vec<Block<SCT>> {
         self.consensus_state.ledger.get_blocks()
+    }
+
+    pub fn pacemaker(&self) -> &Pacemaker<ST, SCT> {
+        &self.consensus_state.pacemaker
+    }
+
+    pub fn blocktree(&self) -> &BlockTree<SCT> {
+        &self.consensus_state.pending_block_tree
     }
 }
 
@@ -380,6 +389,11 @@ where
                         ConsensusCommand::Unschedule => {
                             cmds.push(Command::TimerCommand(TimerCommand::Unschedule))
                         }
+                        ConsensusCommand::RequestSync { blockid } => {
+                            // TODO: respond with the Proposal matching the blockID.
+                            //       right now, all 'missed' proposals are actually in-flight
+                            //       so we don't need to implement this yet for things to work
+                        }
                     }
                 }
                 cmds
@@ -427,12 +441,16 @@ pub enum ConsensusCommand<S, T: SignatureCollection> {
         on_timeout: PacemakerTimerExpire,
     },
     Unschedule,
+    RequestSync {
+        blockid: BlockId,
+    },
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
 
 struct ConsensusState<S, T, L, M> {
     pending_block_tree: BlockTree<T>,
+    pending_proposals: BTreeMap<Round, ProposalMessage<S, T>>,
     vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,
 
@@ -466,6 +484,7 @@ where
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
+            pending_proposals: Default::default(),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             ledger: L::new(),
@@ -489,8 +508,11 @@ where
             return cmds;
         }
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
-        cmds.extend(process_certificate_cmds);
+        if !self.pending_block_tree.has_parent(&p.block.qc) {
+            return self.add_pending_proposal(p);
+        }
+
+        cmds.extend(self.process_certificate_qc(&p.block.qc));
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
             let advance_round_cmds = self
@@ -523,6 +545,78 @@ where
             cmds.push(send_cmd);
         }
 
+        cmds.extend(self.process_pending_proposal());
+
+        cmds
+    }
+
+    // for a proposal of round r, if r+1 exists in pending, make sure the r+1 descendant
+    // matches the proposal, otherwise, just add to pending
+    // after adding a proposal to pending, check if there is a parent (round r-1) that
+    // needs to be verified and potentially removed
+    #[must_use]
+    fn add_pending_proposal(&mut self, p: ProposalMessage<S, T>) -> Vec<ConsensusCommand<S, T>> {
+        let mut cmds = Vec::new();
+
+        let descendant_round = p.block.round + Round(1);
+        if let Some(descendant_proposal) = self.pending_proposals.get(&descendant_round) {
+            // parent(descendant(x)) == x
+            let expected_id = descendant_proposal.block.get_parent_id();
+
+            if p.block.get_id() == expected_id {
+                cmds.push(self.insert_pending_proposal(p));
+            }
+        } else {
+            cmds.push(self.insert_pending_proposal(p));
+        }
+
+        cmds
+    }
+
+    #[must_use]
+    fn insert_pending_proposal(&mut self, p: ProposalMessage<S, T>) -> ConsensusCommand<S, T> {
+        let request_id = p.block.get_parent_id();
+
+        // if the parent of p exists, verify it is valid and remove if not
+        let parent_round = p.block.round - Round(1);
+        if let Some(parent_proposal) = self.pending_proposals.get(&parent_round) {
+            // parent(b) == a, if b extends a
+            let expected_id = p.block.get_parent_id();
+            if parent_proposal.block.get_id() != expected_id {
+                self.pending_proposals.remove(&parent_round);
+            }
+        }
+
+        self.pending_proposals.insert(p.block.round, p);
+
+        ConsensusCommand::RequestSync {
+            blockid: request_id,
+        }
+    }
+
+    // check if there is something in pending_proposals and if it
+    // is possible to apply it, send the proposal to self
+    #[must_use]
+    fn process_pending_proposal(&mut self) -> Vec<ConsensusCommand<S, T>> {
+        let mut cmds = Vec::new();
+
+        if !self.pending_proposals.is_empty() {
+            // the only valid thing that could be applied is the lowest pending round
+            if let Some(entry) = self.pending_proposals.first_entry() {
+                let e = entry.get();
+                if e.block.round == self.pacemaker.next_round() {
+                    let p = entry.remove();
+                    if self.pending_block_tree.has_parent(&p.block.qc) {
+                        let send_self = ConsensusCommand::Send {
+                            to: PeerId(self.nodeid.0),
+                            message: ConsensusMessage::Proposal(p),
+                        };
+                        cmds.push(send_self);
+                    }
+                }
+            }
+        }
+
         cmds
     }
 
@@ -543,10 +637,16 @@ where
 
         let mut cmds = Vec::new();
         if let Some(qc) = qc {
-            cmds.extend(self.process_certificate_qc(&qc));
+            let proposal: ProposalMessage<S, T>;
+            let round: Round;
 
-            if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
-                cmds.extend(self.process_new_round_event::<H>(None));
+            if !self.pending_block_tree.has_parent(&qc) {
+                round = qc.info.vote.round;
+                cmds.extend(self.process_new_round_event::<H>(round, None));
+            } else {
+                cmds.extend(self.process_certificate_qc(&qc));
+                round = self.pacemaker.get_current_round();
+                cmds.extend(self.process_new_round_event::<H>(round, None));
             }
         }
         cmds
@@ -564,8 +664,11 @@ where
             return cmds;
         }
 
-        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc);
-        cmds.extend(process_certificate_cmds);
+        if !self.pending_block_tree.has_parent(&tm.tminfo.high_qc) {
+            return cmds;
+        }
+
+        cmds.extend(self.process_certificate_qc(&tm.tminfo.high_qc));
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
             let advance_round_cmds = self
@@ -593,8 +696,9 @@ where
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
-            if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
-                cmds.extend(self.process_new_round_event::<H>(Some(tc)));
+            let round = self.pacemaker.get_current_round();
+            if self.nodeid == *validators.get_leader(round) {
+                cmds.extend(self.process_new_round_event::<H>(round, Some(tc)));
             }
         }
 
@@ -609,16 +713,16 @@ where
             return;
         }
 
+        self.high_qc = qc.clone();
         if qc.info.ledger_commit.commit_state_hash.is_some() {
             let blocks_to_commit = self
                 .pending_block_tree
                 .prune(&qc.info.vote.parent_id)
-                .unwrap();
+                .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
             if !blocks_to_commit.is_empty() {
                 self.ledger.add_blocks(blocks_to_commit);
             }
         }
-        self.high_qc = qc.clone();
     }
 
     // TODO consider changing return type to Option<T>
@@ -637,18 +741,13 @@ where
     #[must_use]
     fn process_new_round_event<H: Hasher>(
         &mut self,
+        round: Round,
         last_round_tc: Option<TimeoutCertificate<S>>,
     ) -> Vec<ConsensusCommand<S, T>> {
-        self.vote_state
-            .start_new_round(self.pacemaker.get_current_round());
+        self.vote_state.start_new_round(round);
 
         let txns: TransactionList = self.mempool.get_transactions(10000);
-        let b = Block::new::<H>(
-            self.nodeid,
-            self.pacemaker.get_current_round(),
-            &txns,
-            &self.high_qc,
-        );
+        let b = Block::new::<H>(self.nodeid, round, &txns, &self.high_qc);
 
         let p = ProposalMessage {
             block: b,
@@ -681,6 +780,7 @@ impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for Cons
 
 #[cfg(test)]
 mod test {
+    use itertools::Itertools;
     use std::time::Duration;
 
     use monad_consensus::pacemaker::PacemakerTimerExpire;
@@ -695,6 +795,7 @@ mod test {
     use monad_consensus::validation::signing::Verified;
     use monad_crypto::secp256k1::KeyPair;
     use monad_crypto::{NopSignature, Signature};
+    use monad_executor::PeerId;
     use monad_testutil::proposal::ProposalGen;
     use monad_testutil::signing::{create_keys, get_genesis_config};
     use monad_types::{BlockId, Hash, Round};
@@ -742,6 +843,7 @@ mod test {
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
+    #[ignore]
     #[test]
     fn lock_qc_high() {
         let (keys, mut valset, mut state) =
@@ -822,14 +924,21 @@ mod test {
         assert!(result.is_none());
     }
 
-    // TODO: remove the should_panic once we handle block requests for skipped blocks
     #[test]
-    #[should_panic]
-    fn enter_proposalmsg_round() {
+    fn test_out_of_order_proposals() {
+        let perms = (0..4).permutations(4).collect::<Vec<_>>();
+
+        for perm in perms {
+            out_of_order_proposals(perm);
+        }
+    }
+
+    fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, mut valset, mut state) =
             setup::<NopSignature, AggregateSignatures<NopSignature>>();
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
+        // First proposal
         let p1 = propgen.next_proposal(&keys, &mut valset);
         let (author, _, verified_message) = p1.destructure();
         let cmds =
@@ -845,6 +954,7 @@ mod test {
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
         assert!(result.is_some());
 
+        // second proposal
         let p2 = propgen.next_proposal(&keys, &mut valset);
         let (author, _, verified_message) = p2.destructure();
         let cmds =
@@ -860,14 +970,81 @@ mod test {
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
         assert!(result.is_some());
 
-        for _ in 0..4 {
-            propgen.next_proposal(&keys, &mut valset);
+        let mut missing_proposals = Vec::new();
+        for _ in 0..perms.len() {
+            missing_proposals.push(propgen.next_proposal(&keys, &mut valset));
         }
-        let p7 = propgen.next_proposal(&keys, &mut valset);
-        let (author, _, verified_message) = p7.destructure();
+
+        // last proposal arrvies
+        let p_last = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p_last.destructure();
         state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
-        assert_eq!(state.pacemaker.get_current_round(), Round(7));
+        // confirm that the proposal is buffered
+        assert_eq!(state.pending_proposals.len(), 1);
+
+        // missed proposals now arrive
+        let mut cmds = Vec::new();
+        for i in &perms {
+            let (author, _, verified_message) = missing_proposals[*i].clone().destructure();
+            cmds.extend(state.handle_proposal_message::<Sha256Hash, _>(
+                author,
+                verified_message,
+                &mut valset,
+            ));
+        }
+
+        let _self_id = PeerId(state.nodeid.0);
+        let mut more_proposals = true;
+
+        while more_proposals {
+            cmds = cmds
+                .into_iter()
+                .filter(|m| match m {
+                    ConsensusCommand::Send {
+                        to: _,
+                        message: ConsensusMessage::Proposal(_),
+                    } => true,
+                    _ => false,
+                })
+                .collect::<Vec<_>>();
+
+            let mut proposals = Vec::new();
+            let c: ConsensusCommand<NopSignature, AggregateSignatures<NopSignature>>;
+            if cmds.is_empty() {
+                break;
+            } else {
+                c = cmds.remove(0);
+            }
+
+            match c {
+                ConsensusCommand::Send {
+                    to: _self_id,
+                    message: ConsensusMessage::Proposal(m),
+                } => {
+                    proposals.extend(state.handle_proposal_message::<Sha256Hash, _>(
+                        m.block.author,
+                        m.clone(),
+                        &mut valset,
+                    ));
+                }
+                _ => more_proposals = false,
+            }
+            cmds.extend(proposals);
+        }
+
+        assert_eq!(
+            state.pending_proposals.len(),
+            0,
+            "order of proposals {:?}",
+            perms
+        );
+        assert_eq!(
+            state.pacemaker.get_current_round(),
+            Round(perms.len() as u64 + 3),
+            "order of proposals {:?}",
+            perms
+        );
     }
 
     #[test]

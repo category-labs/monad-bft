@@ -2713,6 +2713,7 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "itertools",
  "monad-blocktree",
  "monad-consensus",
  "monad-crypto",

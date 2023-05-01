@@ -57,7 +57,14 @@ where
             .min()
     }
 
-    pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
+    pub fn step(
+        &mut self,
+    ) -> Option<(
+        Duration,
+        PeerId,
+        S::Event,
+        Vec<(PeerId, <S as State>::OutboundMessage)>,
+    )> {
         if let Some((id, executor, state, tick)) = self
             .states
             .iter_mut()
@@ -73,22 +80,27 @@ where
 
             executor.exec(commands);
 
-            self.simulate_peer(&id, tick);
+            let filtered_msgs = self.simulate_peer(&id, tick);
 
-            Some((tick, id, event))
+            Some((tick, id, event, filtered_msgs))
         } else {
             None
         }
     }
 
-    fn simulate_peer(&mut self, peer_id: &PeerId, tick: Duration) {
+    fn simulate_peer(
+        &mut self,
+        peer_id: &PeerId,
+        tick: Duration,
+    ) -> Vec<(PeerId, <S as State>::OutboundMessage)> {
         let (mut executor, state) = self.states.remove(peer_id).unwrap();
+        let mut filtered_messages = Vec::new();
 
         while let Some((to, outbound_message)) = executor.receive_message() {
             if self.filter_list.contains(&to) {
+                filtered_messages.push((*peer_id, outbound_message));
                 continue;
             }
-
             let to_state = if &to == peer_id {
                 &mut executor
             } else {
@@ -106,7 +118,6 @@ where
             if self.filter_list.contains(&to) {
                 continue;
             }
-
             let to_state = if &to == peer_id {
                 &mut executor
             } else {
@@ -122,9 +133,15 @@ where
         }
 
         self.states.insert(*peer_id, (executor, state));
+
+        filtered_messages
     }
 
     pub fn states(&self) -> &HashMap<PeerId, (MockExecutor<S>, S)> {
         &self.states
+    }
+
+    pub fn mut_states(&mut self) -> &mut HashMap<PeerId, (MockExecutor<S>, S)> {
+        &mut self.states
     }
 }
