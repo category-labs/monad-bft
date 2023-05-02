@@ -70,6 +70,7 @@ where
 
         self.file_handle.write_all(&len_buf)?;
         self.file_handle.write_all(&msg_buf)?;
+        self.file_handle.sync_all()?;
         Ok(())
     }
 
@@ -78,6 +79,7 @@ where
         let mut buf = msg_buf.len().to_be_bytes().to_vec();
         buf.append(&mut msg_buf);
         self.file_handle.write_all(&buf)?;
+        self.file_handle.sync_all()?;
         Ok(())
     }
 

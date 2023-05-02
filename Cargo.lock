@@ -2757,6 +2757,7 @@ dependencies = [
 name = "monad-wal"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "monad-consensus",
  "monad-crypto",
  "monad-executor",

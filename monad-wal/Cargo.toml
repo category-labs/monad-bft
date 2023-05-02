@@ -5,14 +5,27 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
 [dependencies]
 monad-executor = { version = "0.1.0", path = "../monad-executor" }
 
 [dev-dependencies]
+criterion = "0.4.0"
+tempfile = "3.5.0"
+
 monad-consensus = { path = "../monad-consensus"}
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-state = { path = "../monad-state", features = ["proto"] }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
-tempfile = "3.5.0"
+
+
+[[bench]]
+name = "raw_bench"
+harness = false
+

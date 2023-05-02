@@ -26,6 +26,14 @@ impl AppendOnlyFile {
         self.file.write_all(data)
     }
 
+    pub fn sync_all(&self) -> io::Result<()> {
+        self.file.sync_all()
+    }
+
+    pub fn sync_data(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+
     pub fn set_len(&mut self, len: u64) -> io::Result<()> {
         self.file.set_len(len)
     }
