@@ -21,9 +21,9 @@ jobs:
         sudo apt install libx11-dev libxi-dev libgl1-mesa-dev gcc-mingw-w64 libasound2-dev
     - uses: Swatinem/rust-cache@v2
     - name: Check
-      run: cargo check --verbose
+      run: cargo check --verbose --features proto
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --verbose --features proto
     - name: Lint
       run: >
         cargo clippy --
