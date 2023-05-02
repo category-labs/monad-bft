@@ -5,6 +5,8 @@ use crate::{
     validation::hashing::{Hashable, Hasher},
 };
 
+use tracing::{event, Level};
+
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct LedgerCommitInfo {
     pub commit_state_hash: Option<Hash>,
@@ -80,6 +82,11 @@ impl<T: SignatureCollection> Ledger for InMemoryLedger<T> {
     }
 
     fn add_blocks(&mut self, blocks: Vec<Block<Self::Signatures>>) {
+        event!(
+            Level::DEBUG,
+            num_blocks = blocks.len(),
+            "appending to ledger"
+        );
         self.blockchain.extend(blocks);
     }
 }

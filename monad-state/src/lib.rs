@@ -37,6 +37,8 @@ use monad_validator::{
 use message::MessageState;
 use ref_cast::RefCast;
 
+use tracing::{span, Level};
+
 mod message;
 
 type LeaderElectionType = WeightedRoundRobin;
@@ -234,6 +236,9 @@ where
                 .collect(),
 
             MonadEvent::ConsensusEvent(consensus_event) => {
+                let span = span!(Level::TRACE, "consensus_event", ?consensus_event);
+
+                let _guard = span.enter();
                 let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(pacemaker_expire) => self
                         .consensus_state
@@ -260,7 +265,7 @@ where
                         match verified_message {
                             ConsensusMessage::Proposal(msg) => self
                                 .consensus_state
-                                .handle_proposal_message::<Sha256Hash, _>(
+                                .handle_proposal_message::<HasherType, _>(
                                     author,
                                     msg,
                                     &mut self.validator_set,
@@ -571,7 +576,9 @@ where
                 .pending_block_tree
                 .prune(&qc.info.vote.parent_id)
                 .unwrap();
-            self.ledger.add_blocks(blocks_to_commit);
+            if !blocks_to_commit.is_empty() {
+                self.ledger.add_blocks(blocks_to_commit);
+            }
         }
 
         if Rank(qc.info) > Rank(self.high_qc.info) {

@@ -18,6 +18,7 @@ monad-validator = { path = "../monad-validator" }
 sha2 = "0.10.6"
 test-case = "3.0.0"
 zerocopy = "0.6.1"
+tracing = "0.1"
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}

@@ -21,12 +21,14 @@ monad-validator = { path = "../monad-validator" }
 monad-proto = { path = "../monad-proto", optional = true }
 
 ref-cast = "1.0"
+tracing = "0.1"
 
 [features]
 proto = ["dep:monad-proto"]
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}
+tracing-subscriber = "0.3"
 criterion = "0.4"
 
 [[bench]]
