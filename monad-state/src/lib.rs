@@ -214,6 +214,7 @@ where
 
     fn init(config: Self::Config) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
         // create my keys and validator structs
+        // FIXME stake should be configurable
         let validator_list = config
             .validators
             .into_iter()

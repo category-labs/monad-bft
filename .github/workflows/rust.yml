@@ -41,3 +41,4 @@ jobs:
         -D clippy::needless_question_mark
         -D clippy::bool_comparison
         -D unused_imports
+        -D unused_parens

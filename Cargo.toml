@@ -6,6 +6,7 @@ members = [
     "monad-crypto",
     "monad-executor",
     "monad-driver",
+    "monad-node",
     "monad-p2p",
     "monad-proto",
     "monad-state",

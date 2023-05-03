@@ -9,12 +9,14 @@ use futures::{FutureExt, Stream, StreamExt};
 use monad_executor::{Executor, Message, RouterCommand};
 use monad_types::{Deserializable, Serializable};
 
-use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Multiaddr, Transport};
+use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 
 mod behavior;
 use behavior::Behavior;
 
 use crate::behavior::WrappedMessage;
+
+pub type Multiaddr = libp2p::Multiaddr;
 
 pub struct Service<M, OM>
 where
@@ -70,9 +72,11 @@ where
     }
 
     #[cfg(feature = "tokio")]
-    pub fn with_tokio_executor(identity: libp2p::identity::Keypair) -> Self {
-        // TODO most of the stuff in here can be factored out
-        let transport = libp2p::core::transport::MemoryTransport::default()
+    pub async fn with_tokio_executor(
+        identity: libp2p::identity::Keypair,
+        address: Multiaddr,
+    ) -> Self {
+        let transport = libp2p::tcp::tokio::Transport::default()
             .upgrade(libp2p::core::upgrade::Version::V1Lazy)
             .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
             .multiplex(libp2p::mplex::MplexConfig::new())
@@ -84,9 +88,13 @@ where
         let local_peer_id: libp2p::PeerId = pubkey.into();
         let mut swarm =
             SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id).build();
-        swarm.listen_on("/memory/0".parse().unwrap()).unwrap();
+        swarm.listen_on(address).unwrap();
 
-        // TODO wait for address to be assigned
+        // TODO is it ok to discard these events until NewListenAddr
+        while !matches!(
+            swarm.next().await,
+            Some(libp2p::swarm::SwarmEvent::NewListenAddr { .. })
+        ) {}
 
         Self {
             swarm,

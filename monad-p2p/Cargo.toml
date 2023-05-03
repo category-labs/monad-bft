@@ -22,4 +22,4 @@ async-trait = "0.1"
 libp2p = { version = "0.51", features = ["macros", "mplex", "noise", "identify", "request-response", "secp256k1"] }
 
 [features]
-tokio = ["libp2p/tokio"]
+tokio = ["libp2p/tcp", "libp2p/tokio"]
