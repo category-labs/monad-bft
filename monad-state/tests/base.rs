@@ -61,8 +61,6 @@ fn node_ledger_verification(node_blocks: &Vec<Vec<BlockId>>) {
 }
 
 pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
-    tracing_subscriber::fmt::init();
-
     let (pubkeys, state_configs) = get_configs(num_nodes, 2);
 
     let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
@@ -92,8 +90,6 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
 }
 
 pub fn run_nodes_msg_delays(num_nodes: u16, num_blocks: usize) {
-    tracing_subscriber::fmt::init();
-
     let (pubkeys, state_configs) = get_configs(num_nodes, 101);
 
     let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
