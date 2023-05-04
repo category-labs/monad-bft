@@ -1,6 +1,7 @@
-use std::fs::create_dir_all;
-
 use criterion::{criterion_group, criterion_main, Criterion};
+use std::fs::create_dir_all;
+use tempfile::{tempdir, TempDir};
+
 use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus::types::message::TimeoutMessage;
 use monad_consensus::types::quorum_certificate::QcInfo;
@@ -33,7 +34,7 @@ use monad_testutil::{
 };
 use monad_types::{BlockId, Hash, NodeId, Round};
 use monad_wal::wal::WALogger;
-use tempfile::{tempdir, TempDir};
+use monad_wal::PersistenceLogger;
 
 const N_VALIDATORS: usize = 400;
 

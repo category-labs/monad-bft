@@ -6,6 +6,7 @@ use tempfile::{tempdir, TempDir};
 
 use monad_executor::{Deserializable, Serializable};
 use monad_wal::wal::*;
+use monad_wal::PersistenceLogger;
 
 const VOTE_SIZE: usize = 400;
 const BLOCK_SIZE: usize = 32 * 10000;

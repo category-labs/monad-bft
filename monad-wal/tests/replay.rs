@@ -4,6 +4,7 @@ mod test {
 
     use monad_executor::{Deserializable, Message, Serializable, State};
     use monad_wal::wal::WALogger;
+    use monad_wal::PersistenceLogger;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEvent {

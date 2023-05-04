@@ -1,41 +1,52 @@
-use std::io;
+use std::error::Error;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::{fmt::Debug, io};
 
 use monad_executor::{Deserializable, Serializable};
 
 use crate::aof::AppendOnlyFile;
+use crate::PersistenceLogger;
 
 #[derive(Debug)]
-pub enum WALError<M: Deserializable> {
+pub enum WALError<E: Error> {
     IOError(io::Error),
-    DeserError(<M as Deserializable>::ReadError),
+    DeserError(E),
 }
 
-impl<M> From<io::Error> for WALError<M>
+impl<E> From<io::Error> for WALError<E>
 where
-    M: Deserializable,
+    E: Error,
 {
     fn from(value: io::Error) -> Self {
         Self::IOError(value)
     }
 }
 
-// the logger only accepts one type of message
-// we can refactor M to Verified/Unverified type if we write to WAL after verifying the message
+impl<E> std::fmt::Display for WALError<E>
+where
+    E: Error,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as Debug>::fmt(self, f)
+    }
+}
+
+impl<E> std::error::Error for WALError<E> where E: Error {}
+
 #[derive(Debug)]
-pub struct WALogger<M: Serializable + Deserializable> {
+pub struct WALogger<M: Serializable + Deserializable + Debug> {
     _marker: PhantomData<M>,
     file_handle: AppendOnlyFile,
 }
 
-impl<M> WALogger<M>
-where
-    M: Serializable + Deserializable,
-{
+impl<M: Serializable + Deserializable + Debug> PersistenceLogger for WALogger<M> {
+    type Event = M;
+    type Error = WALError<<M as Deserializable>::ReadError>;
+
     // this definition of the new function means that we can only have one type of message in this WAL
     // should enforce this in `push`/have WALogger parametrized by the message type
-    pub fn new(file_path: PathBuf) -> Result<(Self, Vec<M>), WALError<M>> {
+    fn new(file_path: PathBuf) -> Result<(Self, Vec<Self::Event>), Self::Error> {
         // read the events to replay, then append-only
         let file = AppendOnlyFile::new(file_path)?;
         let mut logger = Self {
@@ -64,7 +75,19 @@ where
         }
     }
 
-    pub fn push_two_write(&mut self, message: &M) -> Result<(), WALError<M>> {
+    fn push(&mut self, message: &Self::Event) -> Result<(), Self::Error> {
+        self.push(message)
+    }
+}
+
+impl<M> WALogger<M>
+where
+    M: Serializable + Deserializable + Debug,
+{
+    pub fn push_two_write(
+        &mut self,
+        message: &M,
+    ) -> Result<(), <Self as PersistenceLogger>::Error> {
         let msg_buf = message.serialize();
         let len_buf = msg_buf.len().to_be_bytes().to_vec();
 
@@ -74,7 +97,7 @@ where
         Ok(())
     }
 
-    pub fn push(&mut self, message: &M) -> Result<(), WALError<M>> {
+    pub fn push(&mut self, message: &M) -> Result<(), <Self as PersistenceLogger>::Error> {
         let mut msg_buf = message.serialize();
         let mut buf = msg_buf.len().to_be_bytes().to_vec();
         buf.append(&mut msg_buf);
@@ -83,7 +106,7 @@ where
         Ok(())
     }
 
-    fn load_one(&mut self) -> Result<(M, u64), WALError<M>> {
+    fn load_one(&mut self) -> Result<(M, u64), <Self as PersistenceLogger>::Error> {
         let mut len_buf = [0u8; 8];
         self.file_handle.read_exact(&mut len_buf)?;
         let len = usize::from_be_bytes(len_buf);
