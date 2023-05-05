@@ -836,4 +836,30 @@ mod test {
 
         assert_eq!(state.pacemaker.get_current_round(), Round(7));
     }
+
+    #[test]
+    fn duplicate_proposals() {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+
+        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p1.clone().destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Send {
+                to: _,
+                message: ConsensusMessage::Vote(_),
+            } => true,
+            _ => false,
+        });
+        assert!(result.is_some());
+
+        // send duplicate of p1, expect it to be ignored and no output commands
+        let (author, _, verified_message) = p1.clone().destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        assert!(cmds.is_empty());
+    }
 }

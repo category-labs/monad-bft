@@ -33,6 +33,7 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
+#[derive(Debug)]
 pub struct BlockTreeBlock<T> {
     block: Block<T>,
     children: Vec<BlockId>,
@@ -142,17 +143,19 @@ impl<T: SignatureCollection> BlockTree<T> {
         self.root = *new_root;
 
         // garbage collect old blocks
-        // remove any blocks lower than round `n`
-        // should only keep `n`, `n+1` blocks
-        self.tree.retain(|_, b| b.block.round >= new_root_round);
+        // remove any blocks less than or equal to round `n`
+        // should only keep the new root at round `n`, and `n+1` blocks
+        self.tree
+            .retain(|_, b| b.block.round > new_root_round || b.block.get_id() == self.root);
 
         commit.reverse();
         Ok(commit)
     }
 
     pub fn add(&mut self, b: Block<T>) -> Result<()> {
-        // blocks must be inserted in increasing rounds
-        assert!(b.round > self.high_round);
+        if self.tree.contains_key(&b.get_id()) {
+            return Ok(());
+        }
 
         let new_bid = b.get_id();
         let new_round = b.round;
@@ -514,5 +517,154 @@ mod test {
             blocktree.add(b2.clone()).unwrap_err(),
             BlockTreeError::ParentNotPresent(_)
         );
+    }
+
+    #[test]
+    fn equal_level_branching() {
+        let txlist = TransactionList(vec![]);
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(0),
+            &txlist,
+            &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let v1 = VoteInfo {
+            id: g.get_id(),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let b1 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(1),
+            &TransactionList(vec![1]),
+            &QC::new(
+                QcInfo {
+                    vote: v1,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let b2 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(1),
+            &TransactionList(vec![2]),
+            &QC::new(
+                QcInfo {
+                    vote: v1,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let v2 = VoteInfo {
+            id: b1.get_id(),
+            round: Round(1),
+            parent_id: g.get_id(),
+            parent_round: Round(0),
+        };
+
+        let b3 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(2),
+            &TransactionList(vec![3]),
+            &QC::new(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        // Initial blocktree
+        //        g
+        //   /    |
+        //  b1    b2
+        //  |
+        //  b3
+        let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
+        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.add(b3.clone()).is_ok());
+
+        // prune called on b1, we expect new tree to be
+        // b1
+        // |
+        // b3
+        // and the commit blocks should only contain b1 (not b2)
+        let commit = blocktree.prune(&b1.get_id()).unwrap();
+        matches!(
+            blocktree.prune(&b2.get_id()).unwrap_err(),
+            BlockTreeError::BlockNotExist(_)
+        );
+        assert_eq!(commit.len(), 1);
+        assert_eq!(commit[0].get_id(), b1.get_id());
+    }
+
+    #[test]
+    fn duplicate_blocks() {
+        let txlist = TransactionList(vec![]);
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(0),
+            &txlist,
+            &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let v1 = VoteInfo {
+            id: g.get_id(),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let b1 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(1),
+            &TransactionList(vec![1]),
+            &QC::new(
+                QcInfo {
+                    vote: v1,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
+        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1.clone()).is_ok());
+
+        assert_eq!(blocktree.tree.len(), 2);
+        assert_eq!(blocktree.tree[&blocktree.root].children.len(), 1);
     }
 }
