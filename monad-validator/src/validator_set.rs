@@ -69,15 +69,19 @@ impl<T: LeaderElection> ValidatorSet<T> {
         self.validators.contains_key(addr)
     }
 
-    pub fn has_super_majority_votes(&self, addrs: &Vec<NodeId>) -> bool {
-        assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
+    pub fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
+    where
+        I: IntoIterator<Item = &'a NodeId>,
+    {
+        let mut duplicates = HashSet::new();
+
         let mut voter_stake: i64 = 0;
         for addr in addrs {
             if let Some(v) = self.validators.get(addr) {
-                voter_stake += v.stake
+                voter_stake += v.stake;
+                assert!(duplicates.insert(addr));
             }
         }
-
         voter_stake >= self.total_stake * 2 / 3 + 1
     }
 
@@ -94,7 +98,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
         // FIXME switch back to weighted round robin
         let mut validators = self.validators.iter().collect::<Vec<_>>();
         validators.sort_by_key(|(pubkey, _)| *pubkey);
-        validators[(round.0 as usize % self.validators.len())].0
+        validators[round.0 as usize % self.validators.len()].0
         // if round < self.round {
         //     panic!("round reversed {:?}->{:?}", self.round, round);
         // }

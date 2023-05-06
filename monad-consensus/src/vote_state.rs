@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use monad_types::{Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
@@ -16,7 +16,7 @@ use crate::{
 // only one QC should be created in a round using the first supermajority of votes received
 // At the end of a round, older rounds can be cleaned up
 pub struct VoteState<T> {
-    pending_votes: BTreeMap<Round, HashMap<Hash, (T, Vec<NodeId>)>>,
+    pending_votes: BTreeMap<Round, HashMap<Hash, (T, HashSet<NodeId>)>>,
     qc_created: BTreeSet<Round>,
 }
 
@@ -57,10 +57,10 @@ where
         let round_pending_votes = self.pending_votes.entry(round).or_insert(HashMap::new());
         let pending_entry = round_pending_votes
             .entry(vote_idx)
-            .or_insert((T::new(), Vec::new()));
+            .or_insert((T::new(), HashSet::new()));
 
         pending_entry.0.add_signature(*signature);
-        pending_entry.1.push(*author);
+        pending_entry.1.insert(*author);
 
         if validators.has_super_majority_votes(&pending_entry.1) {
             assert!(!self.qc_created.contains(&round));
@@ -287,5 +287,21 @@ mod test {
 
         // confirms the invalid vote message was not added to pending votes
         assert_eq!(vote_state.pending_votes.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_votes() {
+        let mut votestate = VoteState::<AggregateSignatures<SecpSignature>>::default();
+        let (keys, valset) = create_valset(4);
+
+        // create a vote for round 0 from one node, but add it supermajority number of times
+        // this should not result in QC creation
+        let svm = create_signed_vote_message(&keys[0], Round(0));
+        let (author, sig, msg) = svm.destructure();
+
+        for _ in 0..4 {
+            let qc = votestate.process_vote::<_, Sha256Hash>(&author, &sig, &msg, &valset);
+            assert!(qc.is_none());
+        }
     }
 }
