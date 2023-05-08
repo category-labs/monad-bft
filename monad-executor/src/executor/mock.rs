@@ -356,6 +356,7 @@ mod tests {
 
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
+    use monad_types::{Deserializable, Serializable};
 
     use crate::{
         executor::mock::MockExecutor,

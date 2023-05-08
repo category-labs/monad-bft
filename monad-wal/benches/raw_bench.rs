@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::fs::create_dir_all;
 use tempfile::{tempdir, TempDir};
 
-use monad_executor::{Deserializable, Serializable};
+use monad_types::{Deserializable, Serializable};
 use monad_wal::wal::*;
 use monad_wal::PersistenceLogger;
 

@@ -5,7 +5,7 @@ pub mod wal;
 use std::path::PathBuf;
 use std::{error::Error, fmt::Debug};
 
-use monad_executor::{Deserializable, Serializable};
+use monad_types::{Deserializable, Serializable};
 
 // the persistence layer only accepts one type of message
 // we can refactor M to Verified/Unverified type if we write to WAL after verifying the message

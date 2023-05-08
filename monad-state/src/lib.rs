@@ -87,7 +87,7 @@ where
 }
 
 #[cfg(feature = "proto")]
-impl monad_executor::Deserializable
+impl monad_types::Deserializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<
@@ -103,7 +103,7 @@ impl monad_executor::Deserializable
 }
 
 #[cfg(feature = "proto")]
-impl monad_executor::Serializable
+impl monad_types::Serializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<
@@ -125,7 +125,7 @@ pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>
 pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl monad_executor::Serializable
+impl monad_types::Serializable
     for VerifiedMonadMessage<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<
@@ -139,7 +139,7 @@ impl monad_executor::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl monad_executor::Deserializable
+impl monad_types::Deserializable
     for MonadMessage<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<

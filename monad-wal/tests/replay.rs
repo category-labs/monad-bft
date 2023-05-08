@@ -2,7 +2,8 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions, path::PathBuf};
 
-    use monad_executor::{Deserializable, Message, Serializable, State};
+    use monad_executor::{Message, State};
+    use monad_types::{Deserializable, Serializable};
     use monad_wal::wal::WALogger;
     use monad_wal::PersistenceLogger;
 

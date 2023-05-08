@@ -14,6 +14,7 @@ bench = false
 monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-executor = { path = "../monad-executor" }
+monad-types = { path = "../monad-types" }
 
 futures = "0.3"
 async-trait = "0.1"

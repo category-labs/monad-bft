@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::{fmt::Debug, io};
 
-use monad_executor::{Deserializable, Serializable};
+use monad_types::{Deserializable, Serializable};
 
 use crate::aof::AppendOnlyFile;
 use crate::PersistenceLogger;

@@ -2664,6 +2664,7 @@ dependencies = [
  "monad-crypto",
  "monad-proto",
  "monad-testutil",
+ "monad-types",
  "tokio",
 ]
 
@@ -2677,6 +2678,7 @@ dependencies = [
  "monad-consensus",
  "monad-crypto",
  "monad-executor",
+ "monad-types",
 ]
 
 [[package]]

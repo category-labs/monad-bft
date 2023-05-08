@@ -1,7 +1,8 @@
 use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use monad_executor::{Deserializable, Message, PeerId, Serializable};
+use monad_executor::{Message, PeerId};
+use monad_types::{Deserializable, Serializable};
 
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response::Codec;

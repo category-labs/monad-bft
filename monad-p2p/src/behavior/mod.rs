@@ -1,5 +1,5 @@
 use libp2p::{request_response::ProtocolSupport, swarm::NetworkBehaviour};
-use monad_executor::{Deserializable, Serializable};
+use monad_types::{Deserializable, Serializable};
 
 mod codec;
 pub use codec::WrappedMessage;

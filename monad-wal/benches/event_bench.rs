@@ -26,12 +26,13 @@ use monad_consensus::{
     },
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-use monad_executor::{PeerId, Serializable};
+use monad_executor::PeerId;
 use monad_state::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
     block::setup_block,
     signing::{create_keys, get_key},
 };
+use monad_types::Serializable;
 use monad_types::{BlockId, Hash, NodeId, Round};
 use monad_wal::wal::WALogger;
 use monad_wal::PersistenceLogger;

@@ -1,4 +1,4 @@
-use std::{error::Error, hash::Hash};
+use std::hash::Hash;
 
 use monad_crypto::secp256k1::PubKey;
 
@@ -75,16 +75,6 @@ pub trait State: Sized {
 
     fn init(config: Self::Config) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>);
     fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Message, Self::OutboundMessage>>;
-}
-
-pub trait Serializable {
-    fn serialize(&self) -> Vec<u8>;
-}
-
-pub trait Deserializable: Sized {
-    type ReadError: Error + Send + Sync;
-
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError>;
 }
 
 pub trait Message: Clone {

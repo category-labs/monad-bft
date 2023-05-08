@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use monad_executor::{Deserializable, Serializable};
+use monad_types::{Deserializable, Serializable};
 
 use crate::PersistenceLogger;
 

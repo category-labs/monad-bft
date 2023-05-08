@@ -11,7 +11,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-executor = { path = "../monad-executor" }
+monad-types = { path = "../monad-types" }
 
 [dev-dependencies]
 criterion = "0.4.0"

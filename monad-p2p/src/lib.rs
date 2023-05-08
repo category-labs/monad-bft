@@ -6,7 +6,8 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_executor::{Deserializable, Executor, Message, RouterCommand, Serializable};
+use monad_executor::{Executor, Message, RouterCommand};
+use monad_types::{Deserializable, Serializable};
 
 use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Multiaddr, Transport};
 
@@ -274,7 +275,8 @@ mod tests {
     };
 
     use crate::Service;
-    use monad_executor::{Deserializable, Message, Serializable};
+    use monad_executor::Message;
+    use monad_types::{Deserializable, Serializable};
 
     use futures::StreamExt;
 
