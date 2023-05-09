@@ -1,11 +1,9 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use monad_types::{Deserializable, Serializable};
-
 use crate::PersistenceLogger;
 
-pub struct MockWALogger<M: Serializable + Deserializable> {
+pub struct MockWALogger<M> {
     _marker: PhantomData<M>,
 }
 
@@ -20,13 +18,17 @@ impl std::fmt::Display for MockWALoggerError {
 
 impl std::error::Error for MockWALoggerError {}
 
-impl<M: Serializable + Deserializable + Debug> PersistenceLogger for MockWALogger<M> {
+#[derive(Clone)]
+pub struct MockWALoggerConfig;
+
+impl<M> PersistenceLogger for MockWALogger<M> {
     type Event = M;
     type Error = MockWALoggerError;
+    type Config = MockWALoggerConfig;
 
-    fn new(_file_path: std::path::PathBuf) -> Result<(Self, Vec<Self::Event>), Self::Error> {
+    fn new(_config: Self::Config) -> Result<(Self, Vec<Self::Event>), Self::Error> {
         Ok((
-            MockWALogger {
+            Self {
                 _marker: PhantomData,
             },
             Vec::new(),

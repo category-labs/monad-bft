@@ -17,6 +17,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
+monad-wal = { path = "../monad-wal" }
 
 monad-proto = { path = "../monad-proto", optional = true }
 
@@ -31,6 +32,7 @@ proto = ["dep:monad-proto", "dep:prost", "monad-consensus/proto", "monad-crypto/
 monad-testutil = { path = "../monad-testutil"}
 tracing-subscriber = "0.3"
 criterion = "0.4"
+tempfile = "3.5.0"
 
 [[bench]]
 name = "two_node_benchmark"

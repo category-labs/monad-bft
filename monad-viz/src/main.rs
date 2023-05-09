@@ -15,8 +15,9 @@ use monad_consensus::{
 use monad_crypto::secp256k1::KeyPair;
 use monad_crypto::NopSignature;
 use monad_executor::mock_swarm::XorLatencyTransformer;
-use monad_state::{MonadConfig, MonadState};
+use monad_state::{MonadConfig, MonadEvent, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
+use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 fn window_conf() -> Conf {
     Conf {
@@ -27,10 +28,16 @@ fn window_conf() -> Conf {
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = AggregateSignatures<SignatureType>;
+type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let mut simulation = {
+    let mut simulation: NodesSimulation<
+        MonadState<SignatureType, SignatureCollectionType>,
+        _,
+        _,
+        PersistenceLoggerType,
+    > = {
         const NUM_NODES: u16 = 5;
         let config_gen = || {
             let keys = create_keys(NUM_NODES as u32);
@@ -52,10 +59,14 @@ async fn main() {
                 })
                 .collect::<Vec<_>>();
 
-            pubkeys.into_iter().zip(state_configs).collect()
+            pubkeys
+                .into_iter()
+                .zip(state_configs)
+                .zip(std::iter::repeat(MockWALoggerConfig {}))
+                .map(|((a, b), c)| (a, b, c))
+                .collect()
         };
-
-        NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _>::new(
+        NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _, _>::new(
             config_gen,
             XorLatencyTransformer(Duration::from_millis(100)),
             Duration::from_secs(4),

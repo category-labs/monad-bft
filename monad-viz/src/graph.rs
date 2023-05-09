@@ -6,7 +6,7 @@ use monad_executor::{
     mock_swarm::{Nodes, Transformer},
     Message, PeerId,
 };
-
+use monad_wal::PersistenceLogger;
 pub enum NodeEvent<'s, Id, M, MId, E> {
     Message {
         tx_time: Duration,
@@ -51,27 +51,29 @@ pub trait Graph {
     fn set_tick(&mut self, tick: Duration);
 }
 
-pub struct NodesSimulation<S, C, T>
+pub struct NodesSimulation<S, C, T, LGR>
 where
     S: monad_executor::State,
-    C: Fn() -> Vec<(PubKey, S::Config)>,
+    C: Fn() -> Vec<(PubKey, S::Config, LGR::Config)>,
     T: Transformer<S::Message>,
+    LGR: PersistenceLogger<Event = S::Event>,
 {
     init_configs_gen: C,
     init_transformer: T,
     max_tick: Duration,
 
     // TODO move stuff below into separate struct
-    nodes: Nodes<S, T>,
+    nodes: Nodes<S, T, LGR>,
     current_tick: Duration,
 }
 
-impl<S, C, T> NodesSimulation<S, C, T>
+impl<S, C, T, LGR> NodesSimulation<S, C, T, LGR>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
-    C: Fn() -> Vec<(PubKey, S::Config)>,
+    C: Fn() -> Vec<(PubKey, S::Config, LGR::Config)>,
     T: Transformer<S::Message> + Clone,
+    LGR: PersistenceLogger<Event = S::Event>,
 {
     pub fn new(configs_gen: C, transformer: T, max_tick: Duration) -> Self {
         let configs = configs_gen();
@@ -91,12 +93,13 @@ where
     }
 }
 
-impl<S, C, T> Graph for NodesSimulation<S, C, T>
+impl<S, C, T, LGR> Graph for NodesSimulation<S, C, T, LGR>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
-    C: Fn() -> Vec<(PubKey, S::Config)>,
+    C: Fn() -> Vec<(PubKey, S::Config, LGR::Config)>,
     T: Transformer<S::Message> + Clone,
+    LGR: PersistenceLogger<Event = S::Event>,
 {
     type State = S;
     type Message = S::Message;
@@ -111,7 +114,7 @@ where
             self.nodes
                 .states()
                 .iter()
-                .map(|(peer_id, (executor, state))| NodeState {
+                .map(|(peer_id, (executor, state, _))| NodeState {
                     id: peer_id,
                     state,
                     pending_events: std::iter::empty()

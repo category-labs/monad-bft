@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{fs::create_dir_all, time::Duration};
 
     use futures::StreamExt;
     use monad_consensus::{
@@ -11,14 +11,23 @@ mod tests {
     use monad_executor::{Executor, State};
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
+    use monad_wal::{
+        mock::{MockWALogger, MockWALoggerConfig},
+        PersistenceLogger,
+    };
+    use tempfile::tempdir;
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = AggregateSignatures<SignatureType>;
     type S = MonadState<SignatureType, SignatureCollectionType>;
+    type PersistenceLoggerType = MockWALogger<<S as State>::Event>;
 
     #[tokio::test]
     async fn libp2p_executor() {
         const NUM_NODES: u32 = 2;
+
+        let log_dir = tempdir().unwrap();
+        create_dir_all(log_dir.path()).unwrap();
 
         let mut node_configs = (0..NUM_NODES)
             .map(|i| {
@@ -29,14 +38,16 @@ mod tests {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
                     timer: monad_executor::executor::timer::TokioTimer::default(),
                 };
-                (key, executor)
+
+                let logger_config = MockWALoggerConfig {};
+                (key, executor, logger_config)
             })
             .collect::<Vec<_>>();
 
         // set up executors - dial each other
         for i in 0..NUM_NODES {
-            let (key, mut executor) = node_configs.pop().unwrap();
-            for (_, executor_to_dial) in &mut node_configs {
+            let (key, mut executor, logger_config) = node_configs.pop().unwrap();
+            for (_, executor_to_dial, _) in &mut node_configs {
                 let addresses = executor_to_dial
                     .router
                     .listeners()
@@ -50,22 +61,22 @@ mod tests {
                 }
             }
 
-            node_configs.push((key, executor));
+            node_configs.push((key, executor, logger_config));
             node_configs.swap(i as usize, NUM_NODES as usize - 1);
         }
 
         let pubkeys = node_configs
             .iter()
-            .map(|(key, _)| KeyPair::pubkey(key))
+            .map(|(key, _, _)| KeyPair::pubkey(key))
             .collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            node_configs.iter().map(|(key, _)| key),
+            node_configs.iter().map(|(key, _, _)| key),
         );
 
         let state_configs = node_configs
             .into_iter()
             .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|((key, exec), pubkeys)| {
+            .map(|((key, exec, logger_config), pubkeys)| {
                 (
                     exec,
                     MonadConfig {
@@ -77,29 +88,36 @@ mod tests {
                         genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                         genesis_signatures: genesis_sigs.clone(),
                     },
+                    PersistenceLoggerType::new(logger_config).unwrap(),
                 )
             })
             .collect::<Vec<_>>();
 
         let mut states = state_configs
             .into_iter()
-            .map(|(mut executor, config)| {
-                let (state, init_commands) = S::init(config);
+            .map(|(mut executor, config, (wal, replay_events))| {
+                let (mut state, mut init_commands) = S::init(config);
+
+                for event in replay_events {
+                    init_commands.extend(state.update(event));
+                }
+
                 executor.exec(init_commands);
-                (executor, state)
+                (executor, state, wal)
             })
             .collect::<Vec<_>>();
 
-        while states.iter().any(|(_, state)| state.ledger().len() < 10) {
-            let ((executor, state, event), _, _) =
-                futures::future::select_all(states.iter_mut().map(|(executor, state)| {
+        while states.iter().any(|(_, state, _)| state.ledger().len() < 10) {
+            let ((executor, state, event, wal), _, _) =
+                futures::future::select_all(states.iter_mut().map(|(executor, state, wal)| {
                     let fut = async {
                         let event = executor.next().await.unwrap();
-                        (executor, state, event)
+                        (executor, state, event, wal)
                     };
                     Box::pin(fut)
                 }))
                 .await;
+            wal.push(&event).unwrap();
             let commands = state.update(event);
             executor.exec(commands);
         }

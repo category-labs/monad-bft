@@ -350,12 +350,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, time::Duration};
+    use std::{collections::HashSet, fmt::Debug, time::Duration};
 
     use futures::StreamExt;
 
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
+    use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
     use crate::{
         executor::mock::MockExecutor,
@@ -617,6 +618,17 @@ mod tests {
         Ack { peer: PeerId, round: u64 },
     }
 
+    #[derive(Debug)]
+    struct ReadError {}
+
+    impl std::fmt::Display for ReadError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            <Self as Debug>::fmt(self, f)
+        }
+    }
+
+    impl std::error::Error for ReadError {}
+
     impl State for SimpleChainState {
         type Config = (Vec<PeerId>, PeerId);
         type Event = SimpleChainEvent;
@@ -731,12 +743,15 @@ mod tests {
         let state_configs = (0..NUM_NODES)
             .map(|idx| (pubkeys.clone(), pubkeys[idx as usize]))
             .collect::<Vec<_>>();
-        let mut nodes = Nodes::<SimpleChainState, _>::new(
-            pubkeys
-                .into_iter()
-                .map(|peer_id| peer_id.0)
-                .zip(state_configs)
-                .collect(),
+        let peers = pubkeys
+            .into_iter()
+            .map(|peer_id| peer_id.0)
+            .zip(state_configs)
+            .zip(std::iter::repeat(MockWALoggerConfig {}))
+            .map(|((a, b), c)| (a, b, c))
+            .collect();
+        let mut nodes = Nodes::<SimpleChainState, _, MockWALogger<SimpleChainEvent>>::new(
+            peers,
             LatencyTransformer(Duration::from_millis(50)),
         );
 

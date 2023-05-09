@@ -2,30 +2,32 @@ use std::{collections::HashSet, time::Duration};
 
 use monad_consensus::{
     signatures::aggregate_signature::AggregateSignatures,
-    types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
+    types::{quorum_certificate::genesis_vote_info, signature::SignatureCollection},
+    validation::hashing::Sha256Hash,
 };
 use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature};
 use monad_executor::{
     mock_swarm::{Nodes, Transformer},
     State,
 };
-use monad_state::{MonadConfig, MonadState};
+use monad_state::{MonadConfig, MonadEvent, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_types::BlockId;
+use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = AggregateSignatures<SignatureType>;
 type MS = MonadState<SignatureType, SignatureCollectionType>;
 type MM = <MS as State>::Message;
+type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
 
-pub fn get_configs(
+pub fn get_configs<SCT: SignatureCollection>(
     num_nodes: u16,
     delta: Duration,
-) -> (Vec<PubKey>, Vec<MonadConfig<SignatureCollectionType>>) {
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT>>) {
     let keys = create_keys(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+    let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
 
     let state_configs = keys
         .into_iter()
@@ -44,7 +46,7 @@ pub fn get_configs(
     (pubkeys, state_configs)
 }
 
-fn node_ledger_verification(node_blocks: &Vec<Vec<BlockId>>) {
+pub fn node_ledger_verification(node_blocks: &Vec<Vec<BlockId>>) {
     let mut counter = 0;
     loop {
         let counter_node_blocks = node_blocks
@@ -72,11 +74,13 @@ pub fn run_nodes<T: Transformer<MM>>(
     transformer: T,
 ) {
     let (pubkeys, state_configs) = get_configs(num_nodes, delta);
-
-    let mut nodes = Nodes::<MS, T>::new(
-        pubkeys.into_iter().zip(state_configs).collect(),
-        transformer,
-    );
+    let peers = pubkeys
+        .into_iter()
+        .zip(state_configs)
+        .zip(std::iter::repeat(MockWALoggerConfig {}))
+        .map(|((a, b), c)| (a, b, c))
+        .collect::<Vec<_>>();
+    let mut nodes = Nodes::<MS, T, PersistenceLoggerType>::new(peers, transformer);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes.states().values().next().unwrap().1.ledger().len() > num_blocks {
@@ -88,7 +92,7 @@ pub fn run_nodes<T: Transformer<MM>>(
     let node_blocks = nodes
         .states()
         .values()
-        .map(|(_, state)| {
+        .map(|(_, state, _)| {
             state
                 .ledger()
                 .iter()

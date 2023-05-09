@@ -2737,6 +2737,8 @@ dependencies = [
  "monad-p2p",
  "monad-state",
  "monad-testutil",
+ "monad-wal",
+ "tempfile",
  "tokio",
 ]
 
@@ -2749,6 +2751,7 @@ dependencies = [
  "monad-proto",
  "monad-testutil",
  "monad-types",
+ "monad-wal",
  "tokio",
 ]
 
@@ -2806,8 +2809,10 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "monad-wal",
  "prost",
  "ref-cast",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2818,9 +2823,11 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus",
  "monad-crypto",
+ "monad-executor",
  "monad-state",
  "monad-types",
  "monad-validator",
+ "monad-wal",
  "sha2 0.10.6",
 ]
 
@@ -2854,6 +2861,7 @@ dependencies = [
  "monad-executor",
  "monad-state",
  "monad-testutil",
+ "monad-wal",
 ]
 
 [[package]]

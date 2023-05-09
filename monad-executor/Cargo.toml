@@ -14,6 +14,7 @@ bench = false
 futures = "0.3"
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
+monad-wal = { path = "../monad-wal" }
 
 tokio = { version = "1.26", features = ["time"], optional = true }
 

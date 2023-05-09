@@ -1,5 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
+    fmt::Debug,
     marker::PhantomData,
 };
 
@@ -121,7 +122,11 @@ where
         MessageActionPublish::new(peer, message)
     }
 
-    pub fn broadcast(&mut self, message: OM) -> Vec<MessageActionPublish<M, OM>> {
+    pub fn broadcast(&mut self, message: OM) -> Vec<MessageActionPublish<M, OM>>
+    where
+        <M as monad_executor::Message>::Id: Debug,
+        OM: Debug,
+    {
         let mut commands = Vec::new();
         for peer in self.peers.to_vec() {
             commands.push(self.send(peer, message.clone()));
@@ -135,11 +140,15 @@ where
         round: Round,
         peer: PeerId,
         id: M::Id,
-    ) -> Option<MessageActionUnpublish<M>> {
+    ) -> Option<MessageActionUnpublish<M>>
+    where
+        <M as monad_executor::Message>::Id: Debug,
+    {
         let max_round = self.max_round();
         if round >= self.min_round() && round <= max_round {
             let back_idx = self.max_rounds_cached() - 1;
             let key = (peer, id);
+
             assert!(self.messages[(back_idx - (max_round - round).0) as usize].remove(&key));
             Some(MessageActionUnpublish {
                 to: key.0,

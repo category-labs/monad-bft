@@ -63,9 +63,10 @@ impl Bencher {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let file_path = tmpdir.path().join("wal");
+        let config = WALoggerConfig { file_path };
         Bencher {
             data: Datablob::new(byte_len),
-            logger: WALogger::<Datablob>::new(file_path).unwrap().0,
+            logger: WALogger::<Datablob>::new(config).unwrap().0,
             _tmpdir: tmpdir,
         }
     }

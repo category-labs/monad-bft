@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod test {
-    use std::{array::TryFromSliceError, fs::OpenOptions, path::PathBuf};
+    use std::{array::TryFromSliceError, fs::OpenOptions};
 
     use monad_executor::{Message, State};
     use monad_types::{Deserializable, Serializable};
-    use monad_wal::wal::WALogger;
+    use monad_wal::wal::{WALogger, WALoggerConfig};
     use monad_wal::PersistenceLogger;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,13 +32,6 @@ mod test {
     #[derive(Debug)]
     struct VecState {
         events: Vec<TestEvent>,
-        wal: WALogger<TestEvent>,
-    }
-
-    impl VecState {
-        fn persist_event(&mut self, event: &TestEvent) {
-            self.wal.push(event).unwrap()
-        }
     }
 
     impl PartialEq for VecState {
@@ -49,9 +42,7 @@ mod test {
 
     impl Eq for VecState {}
 
-    struct VecStateConfig {
-        wal_path: PathBuf,
-    }
+    struct VecStateConfig {}
 
     #[derive(Clone)]
     struct MockMessage;
@@ -83,20 +74,12 @@ mod test {
         type Message = MockMessage;
 
         fn init(
-            config: Self::Config,
+            _config: Self::Config,
         ) -> (
             Self,
             Vec<monad_executor::Command<Self::Message, Self::OutboundMessage>>,
         ) {
-            let (wal, events): (WALogger<_>, Vec<TestEvent>) =
-                WALogger::new(config.wal_path).unwrap();
-            let mut state = VecState {
-                events: Vec::new(),
-                wal,
-            };
-            for e in events {
-                state.update(e);
-            }
+            let state = VecState { events: Vec::new() };
             (state, Vec::new())
         }
 
@@ -125,25 +108,31 @@ mod test {
         use std::fs::create_dir_all;
         use tempfile::tempdir;
 
-        let events1 = generate_test_events(10);
-        let events1_len = events1.len();
-        let events2 = generate_test_events(7);
+        let input1 = generate_test_events(10);
+        let input1_len = input1.len();
+        let input2 = generate_test_events(7);
 
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let log1_path = tmpdir.path().join("wal1");
-        let config1 = VecStateConfig {
-            wal_path: log1_path.clone(),
+        let logger1_config = WALoggerConfig {
+            file_path: log1_path.clone(),
         };
 
-        let (mut state1, _) = VecState::init(config1);
+        let (mut logger1, events1): (WALogger<TestEvent>, _) =
+            WALogger::new(logger1_config).unwrap();
+        assert!(events1.is_empty());
+        let (mut state1, _) = VecState::init(VecStateConfig {});
+        for event in events1 {
+            state1.update(event);
+        }
 
         // driver loop (simulate executor by iterating events)
-        for (i, e) in events1.into_iter().enumerate() {
-            state1.persist_event(&e);
+        for (i, e) in input1.into_iter().enumerate() {
+            logger1.push(&e).unwrap();
             // simulate node failure when appending event by truncating the file
             // state is not updated
-            if i == events1_len - 1 {
+            if i == input1_len - 1 {
                 let file_len = fs::metadata(&log1_path).unwrap().len();
                 let payload_len = e.serialize().len() as u64;
 
@@ -173,17 +162,21 @@ mod test {
         let log2_path = tmpdir.path().join("wal2");
         let copied = fs::copy(&log1_path, &log2_path).unwrap();
         assert_eq!(log1_len, copied);
-
-        let config2 = VecStateConfig {
-            wal_path: log2_path.clone(),
+        let logger2_config = WALoggerConfig {
+            file_path: log2_path.clone(),
         };
 
-        let (mut state2, _) = VecState::init(config2);
+        let (mut logger2, events2) = WALogger::new(logger2_config).unwrap();
+        assert!(!events2.is_empty());
+        let (mut state2, _) = VecState::init(VecStateConfig {});
+        for event in events2 {
+            state2.update(event);
+        }
         assert_eq!(state1, state2);
 
         // another driver loop
-        for e in events2.into_iter() {
-            state2.persist_event(&e);
+        for e in input2.into_iter() {
+            logger2.push(&e).unwrap();
             state2.update(e);
         }
 
@@ -192,11 +185,16 @@ mod test {
         let log3_path = tmpdir.path().join("wal3");
         let copied = fs::copy(&log2_path, &log3_path).unwrap();
         assert_eq!(log2_len, copied);
-
-        let config3 = VecStateConfig {
-            wal_path: log3_path,
+        let logger3_config = WALoggerConfig {
+            file_path: log3_path,
         };
-        let (state3, _) = VecState::init(config3);
+
+        let (_, events3) = WALogger::new(logger3_config).unwrap();
+        assert!(!events3.is_empty());
+        let (mut state3, _) = VecState::init(VecStateConfig {});
+        for event in events3 {
+            state3.update(event);
+        }
         assert_eq!(state2, state3);
     }
 

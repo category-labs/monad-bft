@@ -34,6 +34,11 @@ where
 
 impl<E> std::error::Error for WALError<E> where E: Error {}
 
+#[derive(Clone)]
+pub struct WALoggerConfig {
+    pub file_path: PathBuf,
+}
+
 #[derive(Debug)]
 pub struct WALogger<M: Serializable + Deserializable + Debug> {
     _marker: PhantomData<M>,
@@ -43,12 +48,13 @@ pub struct WALogger<M: Serializable + Deserializable + Debug> {
 impl<M: Serializable + Deserializable + Debug> PersistenceLogger for WALogger<M> {
     type Event = M;
     type Error = WALError<<M as Deserializable>::ReadError>;
+    type Config = WALoggerConfig;
 
     // this definition of the new function means that we can only have one type of message in this WAL
     // should enforce this in `push`/have WALogger parametrized by the message type
-    fn new(file_path: PathBuf) -> Result<(Self, Vec<Self::Event>), Self::Error> {
+    fn new(config: Self::Config) -> Result<(Self, Vec<Self::Event>), Self::Error> {
         // read the events to replay, then append-only
-        let file = AppendOnlyFile::new(file_path)?;
+        let file = AppendOnlyFile::new(config.file_path)?;
         let mut logger = Self {
             _marker: PhantomData,
             file_handle: file,

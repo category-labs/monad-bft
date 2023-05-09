@@ -230,7 +230,7 @@ where
             config.genesis_signatures,
         );
 
-        let mut monad_state = Self {
+        let mut monad_state: MonadState<ST, SCT> = Self {
             message_state: MessageState::new(
                 10,
                 validator_list
@@ -537,7 +537,7 @@ where
             return Default::default();
         }
 
-        let qc = self
+        let qc: Option<QuorumCertificate<T>> = self
             .vote_state
             .process_vote::<V, H>(&author, &signature, &v, validators);
 

@@ -1,5 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion};
 use std::time::Duration;
+
+use criterion::{criterion_group, criterion_main, Criterion};
 
 use monad_executor::mock_swarm::LatencyTransformer;
 
@@ -12,6 +13,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 }
 
 criterion_group!(benches, criterion_benchmark);
+#[cfg(feature = "proto")]
 criterion_main!(benches);
 
 fn two_nodes() {

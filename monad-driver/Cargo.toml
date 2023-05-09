@@ -18,3 +18,5 @@ tokio = { version = "1.28", features = ["rt", "macros"] }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}
+monad-wal = { path = "../monad-wal" }
+tempfile = "3.5.0"

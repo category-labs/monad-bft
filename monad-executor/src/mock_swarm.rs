@@ -1,10 +1,9 @@
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::collections::{BTreeMap, HashSet};
+use std::time::Duration;
 
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
+use monad_wal::PersistenceLogger;
 
 use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
@@ -98,28 +97,36 @@ impl<M: Message> Transformer<M> for LayerTransformer<M> {
     }
 }
 
-pub struct Nodes<S: State, T: Transformer<S::Message>> {
-    states: HashMap<PeerId, (MockExecutor<S>, S)>,
+pub struct Nodes<S: State, T: Transformer<S::Message>, LGR: PersistenceLogger<Event = S::Event>> {
+    states: BTreeMap<PeerId, (MockExecutor<S>, S, LGR)>,
     transformer: T,
 }
 
-impl<S, T> Nodes<S, T>
+impl<S, T, LGR> Nodes<S, T, LGR>
 where
     S: State,
     T: Transformer<S::Message>,
+    LGR: PersistenceLogger<Event = S::Event>,
 
     MockExecutor<S>: Unpin,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config)>, transformer: T) -> Self {
+    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config)>, transformer: T) -> Self {
         assert!(!peers.is_empty());
 
-        let mut states = HashMap::new();
+        let mut states = BTreeMap::new();
 
-        for (pubkey, config) in peers {
+        for (pubkey, state_config, logger_config) in peers {
             let mut executor: MockExecutor<S> = MockExecutor::default();
-            let (state, init_commands) = S::init(config);
+            let (wal, replay_events) = LGR::new(logger_config).unwrap();
+            let (mut state, mut init_commands) = S::init(state_config);
+
+            for event in replay_events {
+                init_commands.extend(state.update(event));
+            }
+
             executor.exec(init_commands);
-            states.insert(PeerId(pubkey), (executor, state));
+
+            states.insert(PeerId(pubkey), (executor, state, wal));
         }
 
         let mut nodes = Self {
@@ -137,7 +144,7 @@ where
     pub fn next_tick(&self) -> Option<Duration> {
         self.states
             .iter()
-            .filter_map(|(_, (executor, _))| {
+            .filter_map(|(_, (executor, _, _))| {
                 let tick = executor.peek_event_tick()?;
                 Some(tick)
             })
@@ -145,17 +152,18 @@ where
     }
 
     pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
-        if let Some((id, executor, state, tick)) = self
+        if let Some((id, executor, state, wal, tick)) = self
             .states
             .iter_mut()
-            .filter_map(|(id, (executor, state))| {
+            .filter_map(|(id, (executor, state, wal))| {
                 let tick = executor.peek_event_tick()?;
-                Some((id, executor, state, tick))
+                Some((id, executor, state, wal, tick))
             })
-            .min_by_key(|(_, _, _, tick)| *tick)
+            .min_by_key(|(_, _, _, _, tick)| *tick)
         {
             let id = *id;
             let event = futures::executor::block_on(executor.next()).unwrap();
+            wal.push(&event).unwrap(); // FIXME: propagate the error
             let commands = state.update(event.clone());
 
             executor.exec(commands);
@@ -170,8 +178,8 @@ where
 
     fn simulate_peer(&mut self, peer_id: &PeerId, tick: Duration) {
         let outbounds = {
-            let mut outbounds = Vec::new();
-            let (mut executor, state) = self.states.remove(peer_id).unwrap();
+            let mut outbounds: Vec<(Duration, LinkMessage<<S as State>::Message>)> = Vec::new();
+            let (mut executor, state, wal) = self.states.remove(peer_id).unwrap();
 
             while let Some((to, outbound_message)) = executor.receive_message() {
                 let transformed = self.transformer.transform(LinkMessage {
@@ -196,7 +204,7 @@ where
                 outbounds.extend(transformed.into_iter());
             }
 
-            self.states.insert(*peer_id, (executor, state));
+            self.states.insert(*peer_id, (executor, state, wal));
             outbounds
         };
 
@@ -223,7 +231,7 @@ where
         }
     }
 
-    pub fn states(&self) -> &HashMap<PeerId, (MockExecutor<S>, S)> {
+    pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S>, S, LGR)> {
         &self.states
     }
 }

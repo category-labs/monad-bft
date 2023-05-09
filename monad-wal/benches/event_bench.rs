@@ -34,7 +34,7 @@ use monad_testutil::{
 };
 use monad_types::Serializable;
 use monad_types::{BlockId, Hash, NodeId, Round};
-use monad_wal::wal::WALogger;
+use monad_wal::wal::{WALogger, WALoggerConfig};
 use monad_wal::PersistenceLogger;
 
 const N_VALIDATORS: usize = 400;
@@ -51,10 +51,13 @@ impl MonadEventBencher {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let file_path = tmpdir.path().join("wal");
+        let config = WALoggerConfig {
+            file_path: file_path,
+        };
         println!("size of event: {}", event.serialize().len());
         Self {
             event: event,
-            logger: WALogger::<BenchEvent>::new(file_path).unwrap().0,
+            logger: WALogger::<BenchEvent>::new(config).unwrap().0,
             _tmpdir: tmpdir,
         }
     }
