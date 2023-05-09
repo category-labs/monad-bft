@@ -122,4 +122,10 @@ criterion_group!(
     bench_vote_two_write,
 );
 
+#[cfg(target_os = "linux")]
 criterion_main!(bench);
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    println!("Linux only benchmark");
+}

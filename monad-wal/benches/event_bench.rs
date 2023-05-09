@@ -240,4 +240,10 @@ criterion_group!(
     bench_ack
 );
 
+#[cfg(target_os = "linux")]
 criterion_main!(bench);
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    println!("Linux only benchmark");
+}
