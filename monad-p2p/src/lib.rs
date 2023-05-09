@@ -76,18 +76,37 @@ where
         identity: libp2p::identity::Keypair,
         address: Multiaddr,
     ) -> Self {
-        let transport = libp2p::tcp::tokio::Transport::default()
-            .upgrade(libp2p::core::upgrade::Version::V1Lazy)
-            .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
-            .multiplex(libp2p::mplex::MplexConfig::new())
-            .boxed();
+        use libp2p::multiaddr::Protocol;
+
+        let transport = libp2p::tcp::tokio::Transport::new(
+            libp2p::tcp::Config::new()
+                .nodelay(true)
+                .dial_bind_address(&std::net::SocketAddr::new(
+                    address
+                        .iter()
+                        .find_map(|protocol| match protocol {
+                            Protocol::Ip4(ip) => Some(ip.into()),
+                            _ => None,
+                        })
+                        .unwrap(),
+                    0,
+                )),
+        )
+        .upgrade(libp2p::core::upgrade::Version::V1Lazy)
+        // .authenticate(libp2p::plaintext::PlainText2Config {
+        //     local_public_key: identity.public(),
+        // })
+        .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
+        .multiplex(libp2p::mplex::MplexConfig::new())
+        .boxed();
 
         let pubkey = identity.public();
         let behavior = Behavior::new(&pubkey);
 
         let local_peer_id: libp2p::PeerId = pubkey.into();
-        let mut swarm =
-            SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id).build();
+        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id)
+            .substream_upgrade_protocol_override(libp2p::core::upgrade::Version::V1Lazy)
+            .build();
         swarm.listen_on(address).unwrap();
 
         // TODO is it ok to discard these events until NewListenAddr

@@ -18,7 +18,7 @@ secp256k1 = { version = "0.26", features = ["global-context", "recovery"] }
 sha2 = "0.10"
 zeroize = "1.3"
 
-libp2p-identity = { version = "0.1", features = ["secp256k1"], optional = true }
+libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }
 multihash = { version = "0.17", features = ["identity"], optional = true }
 zerocopy = "0.6.1"
 

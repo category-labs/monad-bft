@@ -13,7 +13,7 @@ monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
 monad-state = { path = "../monad-state", features = ["proto"] }
 
 futures = "0.3"
-libp2p = { version = "0.51" }
+libp2p = { workspace = true }
 tokio = { version = "1.28", features = ["rt", "macros"] }
 
 [dev-dependencies]

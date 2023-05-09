@@ -1,5 +1,9 @@
 use std::time::Duration;
 
+use clap::Parser;
+use futures_util::StreamExt;
+use tracing::instrument::Instrument;
+
 use monad_consensus::{
     signatures::aggregate_signature::AggregateSignatures,
     types::{
@@ -18,8 +22,6 @@ use monad_executor::{
     Executor, State,
 };
 use monad_p2p::Multiaddr;
-
-use futures_util::StreamExt;
 use monad_types::{NodeId, Round};
 
 type HasherType = Sha256Hash;
@@ -41,21 +43,35 @@ pub struct Config {
     pub genesis_signatures: SignatureCollectionType,
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    /// addresses
+    #[arg(short, long, required=true, num_args=1..)]
+    addresses: Vec<String>,
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    futures_util::future::select_all(testnet(4, Duration::from_secs(1)).map(|config| {
-        let fut = { run(config) };
-        Box::pin(fut)
-    }))
+    let args = Args::parse();
+
+    futures_util::future::select_all(testnet(args.addresses, Duration::from_secs(1)).map(
+        |config| {
+            let fut = {
+                let bind_address = config.bind_address.clone();
+                run(config).instrument(tracing::info_span!("node", ?bind_address))
+            };
+            Box::pin(fut)
+        },
+    ))
     .await;
 }
 
-fn testnet(num_nodes: usize, delta: Duration) -> impl Iterator<Item = Config> {
+fn testnet(addresses: Vec<String>, delta: Duration) -> impl Iterator<Item = Config> {
     let secrets = std::iter::repeat_with(rand::random::<[u8; 32]>)
         .map(Box::new)
-        .take(num_nodes)
+        .take(addresses.len())
         .collect::<Vec<_>>();
     let keys: Vec<_> = secrets
         .iter()
@@ -63,12 +79,9 @@ fn testnet(num_nodes: usize, delta: Duration) -> impl Iterator<Item = Config> {
         .map(|mut secret| KeyPair::libp2p_from_bytes(secret.as_mut_slice()).unwrap())
         .collect();
 
-    let addresses = (0..num_nodes)
-        .map(|idx| {
-            format!("/ip4/127.0.0.1/tcp/{}", 4700 + idx)
-                .parse()
-                .unwrap()
-        })
+    let addresses = addresses
+        .into_iter()
+        .map(|address| format!("/ip4/{}/tcp/4700", address).parse().unwrap())
         .collect::<Vec<Multiaddr>>();
 
     let peers = addresses

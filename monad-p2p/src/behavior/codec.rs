@@ -73,6 +73,8 @@ where
     }
 }
 
+type LengthEncoding = u32;
+
 #[async_trait]
 impl<M, OM> Codec for ReliableMessageCodec<M, OM>
 where
@@ -93,8 +95,12 @@ where
     where
         T: AsyncRead + Unpin + Send,
     {
+        let mut size = [0; std::mem::size_of::<LengthEncoding>()];
+        io.read_exact(&mut size).await?;
+
         let mut bytes = Vec::new();
-        io.read_to_end(&mut bytes).await?;
+        bytes.resize(LengthEncoding::from_le_bytes(size) as usize, 0);
+        io.read_exact(&mut bytes).await?;
         let message = WrappedMessage::deserialize(&bytes)
             .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
         Ok(Arc::new(message))
@@ -121,6 +127,8 @@ where
         T: AsyncWrite + Unpin + Send,
     {
         let bytes = req.serialize();
+        io.write_all((bytes.len() as LengthEncoding).to_le_bytes().as_slice())
+            .await?;
         io.write_all(&bytes).await?;
         Ok(())
     }

@@ -11,7 +11,7 @@ where
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
 {
-    pub identify: libp2p::identify::Behaviour,
+    // pub identify: libp2p::identify::Behaviour,
     pub request_response: libp2p::request_response::Behaviour<codec::ReliableMessageCodec<M, OM>>,
 }
 const IDENTIFY_PROTO_NAME: &str = "/monad/identify/0.0.1";
@@ -45,7 +45,7 @@ where
         );
 
         Self {
-            identify,
+            // identify,
             request_response,
         }
     }
