@@ -66,6 +66,7 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
     let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
         pubkeys.into_iter().zip(state_configs).collect(),
         |_node_1, _node_2| Duration::from_millis(1),
+        Vec::new(),
     );
 
     while let Some((duration, id, event)) = nodes.step() {
@@ -104,6 +105,7 @@ pub fn run_nodes_msg_delays(num_nodes: u16, num_blocks: usize) {
             }
             Duration::from_millis(ck as u64 % 600)
         },
+        Vec::new(),
     );
 
     while let Some((duration, id, event)) = nodes.step() {

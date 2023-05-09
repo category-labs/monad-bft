@@ -8,6 +8,7 @@ use crate::{executor::mock::MockExecutor, Executor, PeerId, State};
 pub struct Nodes<S: State, L: Fn(&PeerId, &PeerId) -> Duration> {
     states: HashMap<PeerId, (MockExecutor<S>, S)>,
     compute_latency: L,
+    filter_list: Vec<PeerId>,
 }
 
 impl<S, L> Nodes<S, L>
@@ -17,7 +18,11 @@ where
 
     MockExecutor<S>: Unpin,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config)>, compute_latency: L) -> Self {
+    pub fn new(
+        peers: Vec<(PubKey, S::Config)>,
+        compute_latency: L,
+        filter_list: Vec<PeerId>,
+    ) -> Self {
         assert!(!peers.is_empty());
 
         let mut states = HashMap::new();
@@ -32,6 +37,7 @@ where
         let mut nodes = Self {
             states,
             compute_latency,
+            filter_list,
         };
 
         for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
@@ -79,11 +85,16 @@ where
         let (mut executor, state) = self.states.remove(peer_id).unwrap();
 
         while let Some((to, outbound_message)) = executor.receive_message() {
+            if self.filter_list.contains(&to) {
+                continue;
+            }
+
             let to_state = if &to == peer_id {
                 &mut executor
             } else {
                 &mut self.states.get_mut(&to).unwrap().0
             };
+
             to_state.send_message(
                 tick + (self.compute_latency)(peer_id, &to),
                 *peer_id,
@@ -92,11 +103,16 @@ where
             );
         }
         while let Some((to, message_id)) = executor.receive_ack() {
+            if self.filter_list.contains(&to) {
+                continue;
+            }
+
             let to_state = if &to == peer_id {
                 &mut executor
             } else {
                 &mut self.states.get_mut(&to).unwrap().0
             };
+
             to_state.send_ack(
                 tick + (self.compute_latency)(peer_id, &to),
                 *peer_id,

@@ -76,13 +76,17 @@ where
             init_compute_latency: compute_latency.clone(),
             max_tick,
 
-            nodes: Nodes::new(configs, compute_latency),
+            nodes: Nodes::new(configs, compute_latency, Vec::new()),
             current_tick: Duration::from_secs(0),
         }
     }
 
     fn reset(&mut self) {
-        self.nodes = Nodes::new((self.init_configs_gen)(), self.init_compute_latency.clone());
+        self.nodes = Nodes::new(
+            (self.init_configs_gen)(),
+            self.init_compute_latency.clone(),
+            Vec::new(),
+        );
         self.current_tick = self.min_tick();
     }
 }

@@ -738,6 +738,7 @@ mod tests {
                 .zip(state_configs)
                 .collect(),
             |_from, _to| Duration::from_millis(50),
+            Vec::new(),
         );
 
         while let Some((duration, id, event)) = nodes.step() {
