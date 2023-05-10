@@ -8,9 +8,11 @@ use std::{
     time::Duration,
 };
 
-use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
+use crate::{state::PeerId, Command, Message, RouterCommand, State, TimerCommand};
+use monad_types::Executor;
 
 use futures::Stream;
+use monad_counter::counter::CounterService;
 
 pub struct MockExecutor<S>
 where
@@ -30,6 +32,8 @@ where
 
     sent_messages: HashMap<PeerId, HashMap<<S::Message as Message>::Id, S::Event>>,
     received_messages: Vec<(PeerId, <S::Message as Message>::Id)>,
+
+    counter: CounterService,
 }
 
 pub struct TimerEvent<E> {
@@ -182,6 +186,8 @@ where
 
             sent_messages: HashMap::new(),
             received_messages: Vec::new(),
+
+            counter: CounterService::new(),
         }
     }
 }
@@ -225,6 +231,7 @@ where
                 Command::RouterCommand(RouterCommand::Unpublish { to, id }) => {
                     to_unpublish.insert((to, id));
                 }
+                Command::CounterCommand(cmd) => self.counter.exec(vec![cmd]),
             }
         }
 
@@ -356,12 +363,12 @@ mod tests {
 
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
-    use monad_types::{Deserializable, Serializable};
+    use monad_types::Executor;
 
     use crate::{
         executor::mock::MockExecutor,
         mock_swarm::Nodes,
-        state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
+        state::{Command, PeerId, RouterCommand, State, TimerCommand},
         Message,
     };
 

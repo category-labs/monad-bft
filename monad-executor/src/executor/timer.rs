@@ -4,7 +4,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{Executor, TimerCommand};
+use monad_types::Executor;
+
+use crate::TimerCommand;
 
 use futures::{FutureExt, Stream};
 

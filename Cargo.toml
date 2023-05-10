@@ -4,6 +4,7 @@ members = [
     "monad-blocktree",
     "monad-consensus",
     "monad-crypto",
+    "monad-counter",
     "monad-executor",
     "monad-driver",
     "monad-p2p",

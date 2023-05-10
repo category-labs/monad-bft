@@ -6,8 +6,8 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_executor::{Executor, Message, RouterCommand};
-use monad_types::{Deserializable, Serializable};
+use monad_executor::{Message, RouterCommand};
+use monad_types::{Deserializable, Executor, Serializable};
 
 use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Multiaddr, Transport};
 

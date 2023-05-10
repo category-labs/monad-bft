@@ -12,8 +12,10 @@ bench = false
 
 [dependencies]
 futures = "0.3"
+monad-counter = { version = "0.1.0", path = "../monad-counter" }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
+monad-types = { version = "0.1.0", path = "../monad-types" }
 
 tokio = { version = "1.26", features = ["time"], optional = true }
 

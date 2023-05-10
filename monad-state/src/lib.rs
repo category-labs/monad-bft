@@ -28,7 +28,7 @@ use monad_crypto::{
     Signature,
 };
 use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
-use monad_types::{NodeId, Round};
+use monad_types::{CounterCommand, NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
     weighted_round_robin::WeightedRoundRobin,
@@ -379,6 +379,9 @@ where
                         ConsensusCommand::Unschedule => {
                             cmds.push(Command::TimerCommand(TimerCommand::Unschedule))
                         }
+                        ConsensusCommand::Counter { key } => {
+                            cmds.push(Command::CounterCommand(CounterCommand::Increment { key }))
+                        }
                     }
                 }
                 cmds
@@ -426,6 +429,9 @@ pub enum ConsensusCommand<S, T: SignatureCollection> {
         on_timeout: PacemakerTimerExpire,
     },
     Unschedule,
+    Counter {
+        key: String,
+    },
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
@@ -507,9 +513,14 @@ where
             return cmds;
         }
 
-        self.pending_block_tree
+        let counter_cmd = self
+            .pending_block_tree
             .add(p.block.clone())
             .expect("Failed to add block to blocktree");
+
+        cmds.push(ConsensusCommand::Counter {
+            key: counter_cmd.key,
+        });
 
         let vote_msg = self.safety.make_vote::<S, T, H>(&p.block, &p.last_round_tc);
 
@@ -603,12 +614,17 @@ where
     // If the qc has a commit_state_hash, commit the parent block and prune the
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
-    fn process_qc(&mut self, qc: &QuorumCertificate<T>) {
+    fn process_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<S, T>> {
+        let mut cmds = Vec::new();
+
         if qc.info.ledger_commit.commit_state_hash.is_some() {
-            let blocks_to_commit = self
+            let (blocks_to_commit, counter_cmd) = self
                 .pending_block_tree
                 .prune(&qc.info.vote.parent_id)
                 .unwrap();
+            cmds.push(ConsensusCommand::Counter {
+                key: counter_cmd.key,
+            });
             if !blocks_to_commit.is_empty() {
                 self.ledger.add_blocks(blocks_to_commit);
             }
@@ -617,18 +633,25 @@ where
         if Rank(qc.info) > Rank(self.high_qc.info) {
             self.high_qc = qc.clone();
         }
+        cmds
     }
 
     // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_certificate_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<S, T>> {
-        self.process_qc(qc);
+        let mut cmds = Vec::new();
 
-        self.pacemaker
-            .advance_round_qc(qc)
-            .map(Into::into)
-            .into_iter()
-            .collect()
+        cmds.extend(self.process_qc(qc));
+
+        cmds.extend(
+            self.pacemaker
+                .advance_round_qc(qc)
+                .map(Into::into)
+                .into_iter()
+                .collect::<Vec<_>>(),
+        );
+
+        cmds
     }
 
     // TODO consider changing return type to Option<T>
@@ -890,6 +913,14 @@ mod test {
         let (author, _, verified_message) = p1.clone().destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
-        assert!(cmds.is_empty());
+
+        let cmds_no_counter = cmds
+            .iter()
+            .filter(|&c| match c {
+                ConsensusCommand::Counter { key: _ } => false,
+                _ => true,
+            })
+            .collect::<Vec<_>>();
+        assert!(cmds_no_counter.is_empty());
     }
 }

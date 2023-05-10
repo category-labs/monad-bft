@@ -1,6 +1,7 @@
 use std::hash::Hash;
 
 use monad_crypto::secp256k1::PubKey;
+use monad_types::CounterCommand;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
@@ -35,17 +36,13 @@ pub enum TimerCommand<E> {
     Unschedule,
 }
 
-pub trait Executor {
-    type Command;
-    fn exec(&mut self, commands: Vec<Self::Command>);
-}
-
 pub enum Command<M, OM>
 where
     M: Message,
 {
     RouterCommand(RouterCommand<M, OM>),
     TimerCommand(TimerCommand<M::Event>),
+    CounterCommand(CounterCommand),
 }
 
 impl<M, OM> Command<M, OM>
@@ -54,16 +51,22 @@ where
 {
     pub fn split_commands(
         commands: Vec<Self>,
-    ) -> (Vec<RouterCommand<M, OM>>, Vec<TimerCommand<M::Event>>) {
+    ) -> (
+        Vec<RouterCommand<M, OM>>,
+        Vec<TimerCommand<M::Event>>,
+        Vec<CounterCommand>,
+    ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
+        let mut counter_cmds = Vec::new();
         for command in commands {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
+                Command::CounterCommand(cmd) => counter_cmds.push(cmd),
             }
         }
-        (router_cmds, timer_cmds)
+        (router_cmds, timer_cmds, counter_cmds)
     }
 }
 

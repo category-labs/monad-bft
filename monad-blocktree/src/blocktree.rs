@@ -1,5 +1,6 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::SignatureCollection;
+use monad_counter::counter::CounterServiceCommand;
 use monad_types::BlockId;
 use monad_types::Round;
 use ptree::print_tree;
@@ -120,11 +121,16 @@ impl<T: SignatureCollection> BlockTree<T> {
     ///     All the blocks that remains shouldn't be pruned -> complete
     ///
     /// Returns the blocks in increasing rounds
-    pub fn prune(&mut self, new_root: &BlockId) -> Result<Vec<Block<T>>> {
+    pub fn prune(&mut self, new_root: &BlockId) -> Result<(Vec<Block<T>>, CounterServiceCommand)> {
         // retain the new root block, remove all other committable block to avoid copying
         let mut commit: Vec<Block<T>> = Vec::new();
         if &self.root == new_root {
-            return Ok(commit);
+            return Ok((
+                commit,
+                CounterServiceCommand {
+                    key: "blocktree.prune.noop".to_owned(),
+                },
+            ));
         }
         let new_root_block = &self
             .tree
@@ -149,12 +155,19 @@ impl<T: SignatureCollection> BlockTree<T> {
             .retain(|_, b| b.block.round > new_root_round || b.block.get_id() == self.root);
 
         commit.reverse();
-        Ok(commit)
+        Ok((
+            commit,
+            CounterServiceCommand {
+                key: "blocktree.prune.success".to_owned(),
+            },
+        ))
     }
 
-    pub fn add(&mut self, b: Block<T>) -> Result<()> {
+    pub fn add(&mut self, b: Block<T>) -> Result<CounterServiceCommand> {
         if self.tree.contains_key(&b.get_id()) {
-            return Ok(());
+            return Ok(CounterServiceCommand {
+                key: "blocktree.add.duplicate".to_owned(),
+            });
         }
 
         let new_bid = b.get_id();
@@ -170,7 +183,9 @@ impl<T: SignatureCollection> BlockTree<T> {
             .push(new_bid);
         self.tree.insert(new_bid, BlockTreeBlock::new(b));
         self.high_round = new_round;
-        Ok(())
+        Ok(CounterServiceCommand {
+            key: "blocktree.add.success".to_owned(),
+        })
     }
 
     pub fn debug_print(&self) -> std::io::Result<()> {
@@ -385,10 +400,10 @@ mod test {
         println!("{:?}", blocktree);
 
         // pruning on the old root should return no committable blocks
-        let commit = blocktree.prune(&g.get_id()).unwrap();
+        let (commit, _) = blocktree.prune(&g.get_id()).unwrap();
         assert_eq!(commit.len(), 0);
 
-        let commit = blocktree.prune(&b5.get_id()).unwrap();
+        let (commit, _) = blocktree.prune(&b5.get_id()).unwrap();
         assert_eq!(
             Vec::from_iter(commit.iter().map(|b| b.get_id())),
             vec![b3.get_id(), b5.get_id()]
@@ -609,7 +624,7 @@ mod test {
         // |
         // b3
         // and the commit blocks should only contain b1 (not b2)
-        let commit = blocktree.prune(&b1.get_id()).unwrap();
+        let (commit, _) = blocktree.prune(&b1.get_id()).unwrap();
         matches!(
             blocktree.prune(&b2.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)

@@ -98,3 +98,12 @@ pub trait Deserializable: Sized {
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError>;
 }
+
+#[derive(Debug)]
+pub enum CounterCommand {
+    Increment { key: String },
+}
+pub trait Executor {
+    type Command;
+    fn exec(&mut self, commands: Vec<Self::Command>);
+}

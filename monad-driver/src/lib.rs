@@ -8,9 +8,10 @@ mod tests {
         types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_executor::{Executor, State};
+    use monad_executor::State;
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
+    use monad_types::Executor;
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = AggregateSignatures<SignatureType>;
@@ -28,6 +29,7 @@ mod tests {
                 let executor = monad_executor::executor::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
                     timer: monad_executor::executor::timer::TokioTimer::default(),
+                    counter: monad_counter::counter::CounterService::new(),
                 };
                 (key, executor)
             })

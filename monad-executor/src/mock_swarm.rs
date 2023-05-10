@@ -2,8 +2,9 @@ use std::{collections::HashMap, time::Duration};
 
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
+use monad_types::Executor;
 
-use crate::{executor::mock::MockExecutor, Executor, PeerId, State};
+use crate::{executor::mock::MockExecutor, PeerId, State};
 
 pub struct Nodes<S: State, L: Fn(&PeerId, &PeerId) -> Duration> {
     states: HashMap<PeerId, (MockExecutor<S>, S)>,

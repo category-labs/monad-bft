@@ -2603,6 +2603,7 @@ name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
  "monad-consensus",
+ "monad-counter",
  "monad-crypto",
  "monad-testutil",
  "monad-types",
@@ -2623,6 +2624,14 @@ dependencies = [
  "test-case",
  "tracing",
  "zerocopy",
+]
+
+[[package]]
+name = "monad-counter"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-types",
 ]
 
 [[package]]
@@ -2648,11 +2657,13 @@ dependencies = [
  "futures",
  "libp2p",
  "monad-consensus",
+ "monad-counter",
  "monad-crypto",
  "monad-executor",
  "monad-p2p",
  "monad-state",
  "monad-testutil",
+ "monad-types",
  "tokio",
 ]
 
@@ -2661,6 +2672,7 @@ name = "monad-executor"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "monad-counter",
  "monad-crypto",
  "monad-proto",
  "monad-testutil",

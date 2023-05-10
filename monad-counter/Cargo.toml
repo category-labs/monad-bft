@@ -1,0 +1,10 @@
+[package]
+name = "monad-counter"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3"
+monad-types = { version = "0.1.0", path = "../monad-types" }
