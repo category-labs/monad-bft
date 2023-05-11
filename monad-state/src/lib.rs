@@ -604,6 +604,10 @@ where
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     fn process_qc(&mut self, qc: &QuorumCertificate<T>) {
+        if Rank(qc.info) <= Rank(self.high_qc.info) {
+            return;
+        }
+
         if qc.info.ledger_commit.commit_state_hash.is_some() {
             let blocks_to_commit = self
                 .pending_block_tree
@@ -613,10 +617,7 @@ where
                 self.ledger.add_blocks(blocks_to_commit);
             }
         }
-
-        if Rank(qc.info) > Rank(self.high_qc.info) {
-            self.high_qc = qc.clone();
-        }
+        self.high_qc = qc.clone();
     }
 
     // TODO consider changing return type to Option<T>
@@ -684,9 +685,10 @@ mod test {
     use monad_consensus::pacemaker::PacemakerTimerExpire;
     use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
     use monad_consensus::types::ledger::LedgerCommitInfo;
-    use monad_consensus::types::message::VoteMessage;
+    use monad_consensus::types::message::{TimeoutMessage, VoteMessage};
     use monad_consensus::types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
     use monad_consensus::types::signature::SignatureCollection;
+    use monad_consensus::types::timeout::TimeoutInfo;
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::validation::hashing::Sha256Hash;
     use monad_consensus::validation::signing::Verified;
@@ -865,6 +867,51 @@ mod test {
         state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
         assert_eq!(state.pacemaker.get_current_round(), Round(7));
+    }
+
+    #[test]
+    fn old_qc_in_timeout_message() {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+
+        let mut qc2 = state.high_qc.clone();
+
+        for i in 1..5 {
+            let p = propgen.next_proposal(&keys, &mut valset);
+            let (author, _, verified_message) = p.clone().destructure();
+            let cmds = state.handle_proposal_message::<Sha256Hash, _>(
+                author,
+                verified_message,
+                &mut valset,
+            );
+            let result = cmds.iter().find(|&c| match c {
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                } => true,
+                _ => false,
+            });
+
+            if i == 3 {
+                qc2 = p.block.qc.clone();
+                assert_eq!(qc2.info.vote.round, Round(2));
+            }
+
+            assert_eq!(state.pacemaker.get_current_round(), Round(i));
+            assert!(result.is_some());
+        }
+
+        let byzantine_tm = TimeoutMessage {
+            tminfo: TimeoutInfo {
+                round: state.pacemaker.get_current_round(),
+                high_qc: qc2,
+            },
+            last_round_tc: None,
+        };
+        let signed_byzantine_tm = Verified::new::<Sha256Hash>(byzantine_tm, &keys[1]);
+        let (author, signature, tm) = signed_byzantine_tm.destructure();
+        state.handle_timeout_message::<Sha256Hash, _>(author, signature, tm, &mut valset);
     }
 
     #[test]
