@@ -27,7 +27,7 @@ where
 {
     pub fn new(genesis_qc: QuorumCertificate<T>) -> Self {
         ProposalGen {
-            round: Round(1),
+            round: Round(0),
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
             last_tc: None,
@@ -39,17 +39,19 @@ where
         keys: &Vec<KeyPair>,
         valset: &mut ValidatorSet<L>,
     ) -> Verified<T::SignatureType, ProposalMessage<T::SignatureType, T>> {
-        let leader_key = keys
-            .iter()
-            .find(|k| k.pubkey() == valset.get_leader(self.round).0)
-            .expect("key not in valset");
-
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
             &self.high_qc
         } else {
+            // entering new round from qc
+            self.round += Round(1);
             &self.qc
         };
+
+        let leader_key = keys
+            .iter()
+            .find(|k| k.pubkey() == valset.get_leader(self.round).0)
+            .expect("key not in valset");
 
         let block = Block::new::<Sha256Hash>(
             NodeId(leader_key.pubkey()),
@@ -58,7 +60,6 @@ where
             qc,
         );
 
-        self.round += Round(1);
         self.high_qc = self.qc.clone();
         self.qc = self.get_next_qc(keys, &block);
 
@@ -71,10 +72,23 @@ where
         Verified::new::<Sha256Hash>(proposal, leader_key)
     }
 
-    pub fn next_tc(
+    // next_tc uses the keys to generate a timeout certificate
+    // to ensure that the consensus state is consistent with the ProposalGen state
+    // call state.pacemaker.handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
+    // before adding the state's key to keys
+    pub fn next_tc<L: LeaderElection>(
         &mut self,
         keys: &Vec<KeyPair>,
+        valset: &mut ValidatorSet<L>,
     ) -> Vec<Verified<T::SignatureType, TimeoutMessage<S, T>>> {
+        let node_ids = keys
+            .iter()
+            .map(|keypair| NodeId(keypair.pubkey()))
+            .collect::<Vec<_>>();
+        if !valset.has_super_majority_votes(node_ids.iter()) {
+            return Vec::new();
+        }
+
         let mut tc = TimeoutCertificate::<S> {
             round: self.round,
             high_qc_rounds: Vec::new(),
@@ -105,6 +119,7 @@ where
             tmo_msgs.push(Verified::new::<Sha256Hash>(tmo_msg, key));
         }
 
+        // entering new round through tc
         self.round += Round(1);
         self.last_tc = Some(tc.clone());
         tmo_msgs

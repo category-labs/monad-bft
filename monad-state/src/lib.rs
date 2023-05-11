@@ -1140,4 +1140,137 @@ mod test {
             perms
         );
     }
+
+    #[test]
+    fn test_commit_rule_consecutive() {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+
+        // round 1 proposal
+        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p1.destructure();
+        let p1_cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        let p1_votes = p1_cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(p1_votes.len() == 1);
+        assert!(p1_votes[0].ledger_commit_info.commit_state_hash.is_some());
+
+        // round 2 proposal
+        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p2.destructure();
+        let p2_cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        let p2_votes = p2_cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(p2_votes.len() == 1);
+        // csh is some: the proposal and qc have consecutive rounds
+        assert!(p2_votes[0].ledger_commit_info.commit_state_hash.is_some());
+
+        let p3 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p3.destructure();
+
+        assert_eq!(state.ledger.get_blocks().len(), 0);
+        state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        assert_eq!(state.ledger.get_blocks().len(), 1);
+    }
+
+    #[test]
+    fn test_commit_rule_non_consecutive() {
+        use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+
+        // round 1 proposal
+        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p1.destructure();
+        state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        // round 2 proposal
+        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p2.destructure();
+        let p2_cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        let p2_votes = p2_cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(p2_votes.len() == 1);
+        assert!(p2_votes[0].ledger_commit_info.commit_state_hash.is_some());
+
+        // round 2 timeout
+        let pacemaker_cmds =
+            state
+                .pacemaker
+                .handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
+
+        let broadcast_cmd = pacemaker_cmds
+            .iter()
+            .find(|cmd| matches!(cmd, Broadcast(_)))
+            .unwrap();
+
+        let tmo_msg = if let Broadcast(tmo_msg) = broadcast_cmd {
+            tmo_msg
+        } else {
+            panic!()
+        };
+        assert_eq!(tmo_msg.tminfo.round, Round(2));
+
+        let _ = propgen.next_tc(&keys, &mut valset);
+
+        // round 3 proposal, has qc(1)
+        let p3 = propgen.next_proposal(&keys, &mut valset);
+        assert_eq!(p3.block.qc.info.vote.round, Round(1));
+        assert_eq!(p3.block.round, Round(3));
+        let (author, _, verified_message) = p3.destructure();
+        let p3_cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        let p3_votes = p3_cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(p3_votes.len() == 1);
+        // proposal and qc have non-consecutive rounds
+        assert!(p3_votes[0].ledger_commit_info.commit_state_hash.is_none());
+    }
 }

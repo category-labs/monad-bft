@@ -1,12 +1,11 @@
-use std::time::Duration;
-
-use monad_executor::mock_swarm::LatencyTransformer;
-
 mod base;
 
 #[cfg(feature = "proto")]
 #[test]
 fn two_nodes() {
+    use monad_executor::mock_swarm::LatencyTransformer;
+    use std::time::Duration;
+
     tracing_subscriber::fmt::init();
 
     base::run_nodes(
