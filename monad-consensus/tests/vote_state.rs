@@ -54,7 +54,7 @@ fn setup_ctx(
     let mut nodes = Vec::new();
     for i in 0..num_nodes {
         nodes.push(Validator {
-            pubkey: keys[i as usize].pubkey().clone(),
+            pubkey: keys[i as usize].pubkey(),
             stake: 1,
         });
     }
@@ -65,7 +65,7 @@ fn setup_ctx(
     for i in 0..num_nodes {
         let svm = create_signed_vote_message(&keys[i as usize], Round(0));
         let vm = svm
-            .verify::<Sha256Hash>(&valset.get_members(), &keys[i as usize].pubkey())
+            .verify::<Sha256Hash>(valset.get_members(), &keys[i as usize].pubkey())
             .unwrap();
 
         votes.push(vm);
@@ -105,7 +105,7 @@ fn test_votes(num_nodes: u32) {
         let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
             v.author(),
             v.author_signature(),
-            &v,
+            v,
             &valset,
         );
         qcs.push(qc);
@@ -135,7 +135,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
             let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
                 v.author(),
                 v.author_signature(),
-                &v,
+                v,
                 &valset,
             );
             qcs.push(qc);
@@ -167,7 +167,7 @@ fn test_minority(num_nodes: u32) {
         let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
             v.author(),
             v.author_signature(),
-            &v,
+            v,
             &valset,
         );
         qcs.push(qc);

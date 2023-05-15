@@ -82,7 +82,7 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
         .map(|(_, state)| {
             state
                 .ledger()
-                .into_iter()
+                .iter()
                 .map(|b| b.get_id())
                 .collect::<Vec<_>>()
         })
@@ -120,7 +120,7 @@ pub fn run_nodes_msg_delays(num_nodes: u16, num_blocks: usize) {
         .map(|(_, state)| {
             state
                 .ledger()
-                .into_iter()
+                .iter()
                 .map(|b| b.get_id())
                 .collect::<Vec<_>>()
         })

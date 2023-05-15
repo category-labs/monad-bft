@@ -721,7 +721,7 @@ mod test {
             .collect::<Vec<_>>();
 
         let val_set: ValidatorSet<WeightedRoundRobin> =
-            ValidatorSet::new(validator_list.clone()).expect("initial validator set init failed");
+            ValidatorSet::new(validator_list).expect("initial validator set init failed");
 
         let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
             genesis_vote_info(genesis_block.get_id()),
@@ -811,12 +811,14 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Send {
-                to: _,
-                message: ConsensusMessage::Vote(_),
-            } => true,
-            _ => false,
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                }
+            )
         });
 
         assert!(result.is_none());
@@ -834,12 +836,14 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Send {
-                to: _,
-                message: ConsensusMessage::Vote(_),
-            } => true,
-            _ => false,
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                }
+            )
         });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
@@ -849,12 +853,14 @@ mod test {
         let (author, _, verified_message) = p2.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Send {
-                to: _,
-                message: ConsensusMessage::Vote(_),
-            } => true,
-            _ => false,
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                }
+            )
         });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
@@ -886,12 +892,14 @@ mod test {
                 verified_message,
                 &mut valset,
             );
-            let result = cmds.iter().find(|&c| match c {
-                ConsensusCommand::Send {
-                    to: _,
-                    message: ConsensusMessage::Vote(_),
-                } => true,
-                _ => false,
+            let result = cmds.iter().find(|&c| {
+                matches!(
+                    c,
+                    ConsensusCommand::Send {
+                        to: _,
+                        message: ConsensusMessage::Vote(_),
+                    }
+                )
             });
 
             if i == 3 {
@@ -925,17 +933,19 @@ mod test {
         let (author, _, verified_message) = p1.clone().destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Send {
-                to: _,
-                message: ConsensusMessage::Vote(_),
-            } => true,
-            _ => false,
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                }
+            )
         });
         assert!(result.is_some());
 
         // send duplicate of p1, expect it to be ignored and no output commands
-        let (author, _, verified_message) = p1.clone().destructure();
+        let (author, _, verified_message) = p1.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
         assert!(cmds.is_empty());

@@ -161,7 +161,7 @@ fn test_vote_message() {
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
 
-    let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash.clone();
+    let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash;
 
     let msg = Sha256Hash::hash_object(&vm.vote_info);
     let svm = TestSigner::sign_object(vm, msg.as_ref(), &keypair);

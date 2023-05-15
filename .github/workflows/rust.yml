@@ -26,7 +26,7 @@ jobs:
       run: cargo test --verbose
     - name: Lint
       run: >
-        cargo clippy --
+        cargo clippy --tests --
         -A clippy::type_complexity
         -A clippy::int_plus_one
         -D clippy::suspicious

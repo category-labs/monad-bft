@@ -126,12 +126,12 @@ mod test {
         let keypair1 = KeyPair::from_bytes(&mut privkey).unwrap();
 
         let v1 = Validator {
-            pubkey: keypair1.pubkey().clone(),
+            pubkey: keypair1.pubkey(),
             stake: 1,
         };
 
         let v1_ = Validator {
-            pubkey: keypair1.pubkey().clone(),
+            pubkey: keypair1.pubkey(),
             stake: 2,
         };
 
@@ -141,7 +141,7 @@ mod test {
             stake: 2,
         };
 
-        let validators_duplicate = vec![v1.clone(), v1_];
+        let validators_duplicate = vec![v1, v1_];
         let _vs_err = ValidatorSet::<WeightedRoundRobin>::new(validators_duplicate).unwrap_err();
 
         let validators = vec![v1, v2];
@@ -170,7 +170,7 @@ mod test {
         let mut pkey3: [u8; 32] = [102; 32];
         let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
 
-        let validators = vec![v1.clone(), v2.clone()];
+        let validators = vec![v1, v2];
         let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
         assert!(vs.has_super_majority_votes(&vec![NodeId(v2.pubkey)]));
         assert!(!vs.has_super_majority_votes(&vec![NodeId(v1.pubkey)]));
@@ -192,7 +192,7 @@ mod test {
             stake: 2,
         };
 
-        let validators = vec![v1.clone(), v2.clone()];
+        let validators = vec![v1, v2];
         let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
         assert!(!vs.has_honest_vote(&vec![NodeId(v1.pubkey)]));
         assert!(vs.has_honest_vote(&vec![NodeId(v2.pubkey)]));
@@ -214,7 +214,7 @@ mod test {
             stake: 1,
         };
 
-        let validators = vec![v1.clone(), v2.clone()];
+        let validators = vec![v1, v2];
         let mut vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
         assert_eq!(vs.get_leader(Round(1)), &NodeId(pubkey2));
         assert_eq!(vs.get_leader(Round(3)), &NodeId(pubkey2));

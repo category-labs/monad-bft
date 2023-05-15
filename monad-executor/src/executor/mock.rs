@@ -356,7 +356,6 @@ mod tests {
 
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
-    use monad_types::{Deserializable, Serializable};
 
     use crate::{
         executor::mock::MockExecutor,
@@ -448,7 +447,7 @@ mod tests {
     struct LongAckMessage(u64);
     impl AsRef<Self> for LongAckMessage {
         fn as_ref(&self) -> &Self {
-            &self
+            self
         }
     }
     impl Message for LongAckMessage {
@@ -662,8 +661,8 @@ mod tests {
                 SimpleChainEvent::Vote { peer, round } => {
                     self.chain[round as usize].insert(peer);
 
-                    if self.chain.last().unwrap().len() > self.peers.len() as usize / 2
-                        && self.chain.len() < self.peers.len() as usize
+                    if self.chain.last().unwrap().len() > self.peers.len() / 2
+                        && self.chain.len() < self.peers.len()
                     {
                         // max NUM_NODES blocks
                         self.chain.push(HashSet::new());
@@ -702,7 +701,7 @@ mod tests {
     }
     impl AsRef<Self> for SimpleChainMessage {
         fn as_ref(&self) -> &Self {
-            &self
+            self
         }
     }
 
@@ -730,7 +729,7 @@ mod tests {
             .map(PeerId)
             .collect::<Vec<_>>();
         let state_configs = (0..NUM_NODES)
-            .map(|idx| (pubkeys.clone(), pubkeys[idx as usize].clone()))
+            .map(|idx| (pubkeys.clone(), pubkeys[idx as usize]))
             .collect::<Vec<_>>();
         let mut nodes = Nodes::<SimpleChainState, _>::new(
             pubkeys

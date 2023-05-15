@@ -23,7 +23,7 @@ mod test {
     fn test_ack_event() {
         let keypair = get_key(1);
         let pubkey = keypair.pubkey();
-        let msg_hash = Hash([0x01_u8; 32].into());
+        let msg_hash = Hash([0x01_u8; 32]);
         let event: MonadEvent<SecpSignature, AggSecpSignature> = MonadEvent::Ack {
             peer: PeerId(pubkey),
             id: keypair.sign(msg_hash.as_ref()),
@@ -52,14 +52,14 @@ mod test {
     fn test_consensus_message_event() {
         let keypair: KeyPair = get_key(0);
         let vi = VoteInfo {
-            id: BlockId(Hash([42_u8; 32].into())),
+            id: BlockId(Hash([42_u8; 32])),
             round: Round(1),
-            parent_id: BlockId(Hash([43_u8; 32].into())),
+            parent_id: BlockId(Hash([43_u8; 32])),
             parent_round: Round(2),
         };
         let lci = LedgerCommitInfo {
             commit_state_hash: None,
-            vote_info_hash: Hash([42_u8; 32].into()),
+            vote_info_hash: Hash([42_u8; 32]),
         };
         let votemsg: ConsensusMessage<SecpSignature, AggSecpSignature> =
             ConsensusMessage::Vote(VoteMessage {

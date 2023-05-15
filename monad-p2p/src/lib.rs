@@ -429,15 +429,10 @@ mod tests {
 
         while !expected_events.is_empty() {
             // this future resolves to the next available event (across all nodes)
-            let fut = futures::future::select_all(
-                nodes
-                    .iter_mut()
-                    .map(|(peer_id, node)| {
-                        let fut = async { (*peer_id, node.next().await.unwrap()) };
-                        Box::pin(fut)
-                    })
-                    .into_iter(),
-            );
+            let fut = futures::future::select_all(nodes.iter_mut().map(|(peer_id, node)| {
+                let fut = async { (*peer_id, node.next().await.unwrap()) };
+                Box::pin(fut)
+            }));
             let ((peer_id, event), _, _) = futures::executor::block_on(fut);
 
             expected_events.remove(&(peer_id, event));

@@ -27,7 +27,7 @@ mod test {
     use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator::Validator;
 
-    fn setup_validator_member(keypairs: &Vec<KeyPair>) -> ValidatorMember {
+    fn setup_validator_member(keypairs: &[KeyPair]) -> ValidatorMember {
         let mut vmember = ValidatorMember::new();
         for keypair in keypairs.iter() {
             vmember.insert(
@@ -44,14 +44,14 @@ mod test {
     #[test]
     fn test_vote_message() {
         let vi = VoteInfo {
-            id: BlockId(Hash([42_u8; 32].into())),
+            id: BlockId(Hash([42_u8; 32])),
             round: Round(1),
-            parent_id: BlockId(Hash([43_u8; 32].into())),
+            parent_id: BlockId(Hash([43_u8; 32])),
             parent_round: Round(2),
         };
         let lci = LedgerCommitInfo {
             commit_state_hash: None,
-            vote_info_hash: Hash([42_u8; 32].into()),
+            vote_info_hash: Hash([42_u8; 32]),
         };
         let votemsg = ConsensusMessage::Vote(VoteMessage {
             vote_info: vi,
@@ -61,7 +61,7 @@ mod test {
         let author_keypair = &keypairs[0];
         let validators = setup_validator_member(&keypairs);
 
-        let verified_votemsg = Verified::new::<Sha256Hash>(votemsg.clone(), author_keypair);
+        let verified_votemsg = Verified::new::<Sha256Hash>(votemsg, author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
@@ -80,9 +80,9 @@ mod test {
         let author_keypair = &keypairs[0];
 
         let vi = VoteInfo {
-            id: BlockId(Hash([42_u8; 32].into())),
+            id: BlockId(Hash([42_u8; 32])),
             round: Round(1),
-            parent_id: BlockId(Hash([43_u8; 32].into())),
+            parent_id: BlockId(Hash([43_u8; 32])),
             parent_round: Round(2),
         };
         let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
@@ -117,21 +117,21 @@ mod test {
         let mut high_qc_rounds = Vec::new();
         for keypair in keypairs.iter() {
             high_qc_rounds.push(HighQcRoundSigTuple {
-                high_qc_round: high_qc_round,
+                high_qc_round,
                 author_signature: keypair.sign(high_qc_round_hash.as_ref()),
             });
         }
 
         let tc = TimeoutCertificate {
             round: tc_round,
-            high_qc_rounds: high_qc_rounds,
+            high_qc_rounds,
         };
 
         let tmo_message = ConsensusMessage::Timeout(TimeoutMessage {
             tminfo: tmo_info,
             last_round_tc: Some(tc),
         });
-        let verified_tmo_message = Verified::new::<Sha256Hash>(tmo_message, &author_keypair);
+        let verified_tmo_message = Verified::new::<Sha256Hash>(tmo_message, author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
@@ -194,21 +194,21 @@ mod test {
 
         for keypair in keypairs.iter() {
             high_qc_rounds.push(HighQcRoundSigTuple {
-                high_qc_round: high_qc_round,
+                high_qc_round,
                 author_signature: keypair.sign(high_qc_round_hash.as_ref()),
             });
         }
 
         let tc = TimeoutCertificate {
             round: Round(232),
-            high_qc_rounds: high_qc_rounds,
+            high_qc_rounds,
         };
 
         let msg = ConsensusMessage::Proposal(ProposalMessage {
             block: blk,
             last_round_tc: Some(tc),
         });
-        let verified_msg = Verified::new::<Sha256Hash>(msg, &author_keypair);
+        let verified_msg = Verified::new::<Sha256Hash>(msg, author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();

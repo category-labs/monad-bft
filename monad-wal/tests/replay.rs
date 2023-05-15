@@ -72,7 +72,7 @@ mod test {
 
     impl AsRef<MockMessage> for MockMessage {
         fn as_ref(&self) -> &MockMessage {
-            &self
+            self
         }
     }
 
@@ -92,7 +92,7 @@ mod test {
                 WALogger::new(config.wal_path).unwrap();
             let mut state = VecState {
                 events: Vec::new(),
-                wal: wal,
+                wal,
             };
             for e in events {
                 state.update(e);

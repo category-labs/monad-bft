@@ -381,7 +381,7 @@ mod test {
         assert!(blocktree.add(b3.clone()).is_ok());
         assert!(blocktree.add(b4.clone()).is_ok());
         assert!(blocktree.add(b5.clone()).is_ok());
-        assert!(blocktree.add(b6.clone()).is_ok());
+        assert!(blocktree.add(b6).is_ok());
         println!("{:?}", blocktree);
 
         // pruning on the old root should return no committable blocks
@@ -425,7 +425,7 @@ mod test {
         //  |
         //  b7
 
-        assert!(blocktree.add(b7.clone()).is_ok());
+        assert!(blocktree.add(b7).is_ok());
 
         let v8 = VoteInfo {
             id: b5.get_id(),
@@ -447,7 +447,7 @@ mod test {
             ),
         );
 
-        assert!(blocktree.add(b8.clone()).is_ok());
+        assert!(blocktree.add(b8).is_ok());
         println!("{:?}", blocktree);
     }
 
@@ -514,7 +514,7 @@ mod test {
 
         let mut blocktree = BlockTree::new(g);
         matches!(
-            blocktree.add(b2.clone()).unwrap_err(),
+            blocktree.add(b2).unwrap_err(),
             BlockTreeError::ParentNotPresent(_)
         );
     }
@@ -599,10 +599,10 @@ mod test {
         //  b1    b2
         //  |
         //  b3
-        let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
+        let mut blocktree = BlockTree::<MockSignatures>::new(g);
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.add(b2.clone()).is_ok());
-        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.add(b3).is_ok());
 
         // prune called on b1, we expect new tree to be
         // b1
@@ -659,10 +659,10 @@ mod test {
             ),
         );
 
-        let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
+        let mut blocktree = BlockTree::<MockSignatures>::new(g);
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.add(b1).is_ok());
 
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(blocktree.tree[&blocktree.root].children.len(), 1);

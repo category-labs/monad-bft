@@ -140,7 +140,7 @@ mod tests {
 
     use super::WeightedRoundRobin;
 
-    fn collect_voting_powers(validators: &Vec<Validator>) -> Vec<(NodeId, i64)> {
+    fn collect_voting_powers(validators: &[Validator]) -> Vec<(NodeId, i64)> {
         validators
             .iter()
             .map(|v| (NodeId(v.pubkey), v.stake))

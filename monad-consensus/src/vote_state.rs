@@ -109,7 +109,7 @@ mod test {
         let mut nodes = Vec::new();
         for i in 0..num_nodes {
             nodes.push(Validator {
-                pubkey: keys[i as usize].pubkey().clone(),
+                pubkey: keys[i as usize].pubkey(),
                 stake: 1,
             });
         }
@@ -136,9 +136,7 @@ mod test {
             ledger_commit_info: lci,
         };
 
-        let svm = Verified::new::<Sha256Hash>(vm, &keypair);
-
-        svm
+        Verified::new::<Sha256Hash>(vm, keypair)
     }
 
     #[test]
@@ -161,8 +159,8 @@ mod test {
 
         // add supermajority number of votes for round 4, expecting older rounds to be
         // removed
-        for i in 0..4 {
-            let svm = create_signed_vote_message(&keys[i], Round(4));
+        for key in keys.iter().take(4) {
+            let svm = create_signed_vote_message(key, Round(4));
             let _qc = votestate.process_vote::<_, Sha256Hash>(
                 svm.author(),
                 svm.author_signature(),
@@ -205,8 +203,8 @@ mod test {
 
         // add supermajority number of votes for round 4, expecting older rounds to be
         // removed
-        for i in 0..4 {
-            let svm = create_signed_vote_message(&keys[i], Round(4));
+        for key in keys.iter().take(4) {
+            let svm = create_signed_vote_message(key, Round(4));
             let _qc = votestate.process_vote::<_, Sha256Hash>(
                 svm.author(),
                 svm.author_signature(),
