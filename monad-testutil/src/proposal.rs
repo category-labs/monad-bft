@@ -1,27 +1,36 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::message::ProposalMessage;
+use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
 use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::types::timeout::TimeoutCertificate;
+use monad_consensus::types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutInfo};
 use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
+use monad_consensus::validation::hashing::{Hashable, Hasher, Sha256Hash};
 use monad_consensus::validation::signing::Verified;
 use monad_crypto::secp256k1::KeyPair;
 use monad_crypto::Signature;
 use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
-pub struct ProposalGen<T> {
+pub struct ProposalGen<S, T> {
     round: Round,
     qc: QuorumCertificate<T>,
+    high_qc: QuorumCertificate<T>,
+    last_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<T: SignatureCollection> ProposalGen<T> {
+impl<S, T> ProposalGen<S, T>
+where
+    T: SignatureCollection<SignatureType = S>,
+    S: Signature,
+{
     pub fn new(genesis_qc: QuorumCertificate<T>) -> Self {
         ProposalGen {
             round: Round(1),
-            qc: genesis_qc,
+            qc: genesis_qc.clone(),
+            high_qc: genesis_qc,
+            last_tc: None,
         }
     }
 
@@ -35,22 +44,70 @@ impl<T: SignatureCollection> ProposalGen<T> {
             .find(|k| k.pubkey() == valset.get_leader(self.round).0)
             .expect("key not in valset");
 
+        // high_qc is the highest qc seen in a proposal
+        let qc = if self.last_tc.is_some() {
+            &self.high_qc
+        } else {
+            &self.qc
+        };
+
         let block = Block::new::<Sha256Hash>(
             NodeId(leader_key.pubkey()),
             self.round,
             &Default::default(),
-            &self.qc,
+            qc,
         );
 
         self.round += Round(1);
+        self.high_qc = self.qc.clone();
         self.qc = self.get_next_qc(keys, &block);
 
         let proposal = ProposalMessage {
             block,
-            last_round_tc: None::<TimeoutCertificate<T::SignatureType>>,
+            last_round_tc: self.last_tc.clone(),
         };
+        self.last_tc = None;
 
         Verified::new::<Sha256Hash>(proposal, leader_key)
+    }
+
+    pub fn next_tc(
+        &mut self,
+        keys: &Vec<KeyPair>,
+    ) -> Vec<Verified<T::SignatureType, TimeoutMessage<S, T>>> {
+        let mut tc = TimeoutCertificate::<S> {
+            round: self.round,
+            high_qc_rounds: Vec::new(),
+        };
+
+        let high_qc_round = HighQcRound {
+            qc_round: self.high_qc.info.vote.round,
+        };
+        let mut h = Sha256Hash::new();
+        h.update(tc.round);
+        high_qc_round.hash(&mut h);
+        let msg_hash = h.hash();
+
+        let mut tmo_msgs = Vec::new();
+        for key in keys {
+            let high_qc_sig_tuple = HighQcRoundSigTuple {
+                high_qc_round,
+                author_signature: S::sign(msg_hash.as_ref(), key),
+            };
+            tc.high_qc_rounds.push(high_qc_sig_tuple);
+            let tmo_msg = TimeoutMessage {
+                tminfo: TimeoutInfo {
+                    round: self.round,
+                    high_qc: self.high_qc.clone(),
+                },
+                last_round_tc: self.last_tc.clone(),
+            };
+            tmo_msgs.push(Verified::new::<Sha256Hash>(tmo_msg, key));
+        }
+
+        self.round += Round(1);
+        self.last_tc = Some(tc.clone());
+        tmo_msgs
     }
 
     fn get_next_qc(&self, keys: &Vec<KeyPair>, block: &Block<T>) -> QuorumCertificate<T> {

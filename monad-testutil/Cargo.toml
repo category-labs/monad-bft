@@ -11,7 +11,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus = {path = "../monad-consensus"}
+monad-consensus = { path = "../monad-consensus" }
 monad-crypto = {path = "../monad-crypto"}
 monad-state = {path = "../monad-state"}
 monad-types = {path = "../monad-types"}
