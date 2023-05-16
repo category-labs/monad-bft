@@ -359,7 +359,7 @@ mod tests {
 
     use crate::{
         executor::mock::MockExecutor,
-        mock_swarm::Nodes,
+        mock_swarm::{LatencyTransformer, Nodes},
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         Message,
     };
@@ -737,8 +737,7 @@ mod tests {
                 .map(|peer_id| peer_id.0)
                 .zip(state_configs)
                 .collect(),
-            |_from, _to| Duration::from_millis(50),
-            Vec::new(),
+            LatencyTransformer(Duration::from_millis(50)),
         );
 
         while let Some((duration, id, event)) = nodes.step() {

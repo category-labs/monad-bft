@@ -5,17 +5,22 @@ use monad_consensus::{
     types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
 };
 use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature};
-use monad_executor::mock_swarm::Nodes;
+use monad_executor::{
+    mock_swarm::{Nodes, Transformer},
+    State,
+};
 use monad_state::{MonadConfig, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_types::BlockId;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = AggregateSignatures<SignatureType>;
+type MS = MonadState<SignatureType, SignatureCollectionType>;
+type MM = <MS as State>::Message;
 
 pub fn get_configs(
     num_nodes: u16,
-    delta_ms: u64,
+    delta: Duration,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SignatureCollectionType>>) {
     let keys = create_keys(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -29,7 +34,7 @@ pub fn get_configs(
             key,
             validators: pubkeys,
 
-            delta: Duration::from_millis(delta_ms),
+            delta,
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
             genesis_signatures: genesis_sigs.clone(),
@@ -60,13 +65,17 @@ fn node_ledger_verification(node_blocks: &Vec<Vec<BlockId>>) {
     }
 }
 
-pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
-    let (pubkeys, state_configs) = get_configs(num_nodes, 2);
+pub fn run_nodes<T: Transformer<MM>>(
+    num_nodes: u16,
+    num_blocks: usize,
+    delta: Duration,
+    transformer: T,
+) {
+    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
 
-    let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
+    let mut nodes = Nodes::<MS, T>::new(
         pubkeys.into_iter().zip(state_configs).collect(),
-        |_node_1, _node_2| Duration::from_millis(1),
-        Vec::new(),
+        transformer,
     );
 
     while let Some((duration, id, event)) = nodes.step() {
@@ -76,44 +85,6 @@ pub fn run_nodes(num_nodes: u16, num_blocks: usize) {
     }
 
     // FIXME make this code better.... -.-
-    let node_blocks = nodes
-        .states()
-        .values()
-        .map(|(_, state)| {
-            state
-                .ledger()
-                .iter()
-                .map(|b| b.get_id())
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    node_ledger_verification(&node_blocks);
-}
-
-pub fn run_nodes_msg_delays(num_nodes: u16, num_blocks: usize) {
-    let (pubkeys, state_configs) = get_configs(num_nodes, 101);
-
-    let mut nodes = Nodes::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
-        pubkeys.into_iter().zip(state_configs).collect(),
-        |node_1, node_2| {
-            let mut ck = 0;
-            for b in node_1.0.bytes() {
-                ck ^= b;
-            }
-            for b in node_2.0.bytes() {
-                ck ^= b;
-            }
-            Duration::from_millis(ck as u64 % 600)
-        },
-        Vec::new(),
-    );
-
-    while let Some((duration, id, event)) = nodes.step() {
-        if nodes.states().values().next().unwrap().1.ledger().len() > num_blocks {
-            break;
-        }
-    }
-
     let node_blocks = nodes
         .states()
         .values()

@@ -1,7 +1,11 @@
 use std::time::Duration;
 
 use monad_crypto::secp256k1::PubKey;
-use monad_executor::{executor::mock::MockExecutor, mock_swarm::Nodes, Message, PeerId};
+use monad_executor::{
+    executor::mock::MockExecutor,
+    mock_swarm::{Nodes, Transformer},
+    Message, PeerId,
+};
 
 pub enum NodeEvent<'s, Id, M, MId, E> {
     Message {
@@ -47,56 +51,52 @@ pub trait Graph {
     fn set_tick(&mut self, tick: Duration);
 }
 
-pub struct NodesSimulation<S, C, L>
+pub struct NodesSimulation<S, C, T>
 where
     S: monad_executor::State,
     C: Fn() -> Vec<(PubKey, S::Config)>,
-    L: Fn(&PeerId, &PeerId) -> Duration,
+    T: Transformer<S::Message>,
 {
     init_configs_gen: C,
-    init_compute_latency: L,
+    init_transformer: T,
     max_tick: Duration,
 
     // TODO move stuff below into separate struct
-    nodes: Nodes<S, L>,
+    nodes: Nodes<S, T>,
     current_tick: Duration,
 }
 
-impl<S, C, L> NodesSimulation<S, C, L>
+impl<S, C, T> NodesSimulation<S, C, T>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
     C: Fn() -> Vec<(PubKey, S::Config)>,
-    L: Fn(&PeerId, &PeerId) -> Duration + Clone,
+    T: Transformer<S::Message> + Clone,
 {
-    pub fn new(configs_gen: C, compute_latency: L, max_tick: Duration) -> Self {
+    pub fn new(configs_gen: C, transformer: T, max_tick: Duration) -> Self {
         let configs = configs_gen();
         Self {
             init_configs_gen: configs_gen,
-            init_compute_latency: compute_latency.clone(),
+            init_transformer: transformer.clone(),
             max_tick,
 
-            nodes: Nodes::new(configs, compute_latency, Vec::new()),
+            nodes: Nodes::new(configs, transformer),
             current_tick: Duration::from_secs(0),
         }
     }
 
     fn reset(&mut self) {
-        self.nodes = Nodes::new(
-            (self.init_configs_gen)(),
-            self.init_compute_latency.clone(),
-            Vec::new(),
-        );
+        self.nodes = Nodes::new((self.init_configs_gen)(), self.init_transformer.clone());
         self.current_tick = self.min_tick();
     }
 }
 
-impl<S, C, L> Graph for NodesSimulation<S, C, L>
+impl<S, C, T> Graph for NodesSimulation<S, C, T>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
     C: Fn() -> Vec<(PubKey, S::Config)>,
-    L: Fn(&PeerId, &PeerId) -> Duration + Clone,
+    T: Transformer<S::Message> + Clone,
 {
     type State = S;
     type Message = S::Message;
