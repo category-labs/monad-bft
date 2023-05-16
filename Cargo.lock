@@ -2788,8 +2788,6 @@ dependencies = [
 name = "monad-proto"
 version = "0.1.0"
 dependencies = [
- "monad-testutil",
- "monad-validator",
  "prost",
  "prost-build",
  "protobuf-src",

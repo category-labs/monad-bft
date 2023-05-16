@@ -1,4 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+use std::time::Duration;
+
+use monad_executor::mock_swarm::LatencyTransformer;
 
 #[path = "../tests/base.rs"]
 mod base;
@@ -12,5 +15,10 @@ criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
 
 fn two_nodes() {
-    run_nodes(2, 1024);
+    run_nodes(
+        2,
+        1024,
+        Duration::from_millis(2),
+        LatencyTransformer(Duration::from_millis(1)),
+    );
 }
