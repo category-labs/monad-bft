@@ -13,10 +13,8 @@ bench = false
 [dependencies]
 monad-consensus = {path = "../monad-consensus"}
 monad-crypto = {path = "../monad-crypto"}
-monad-executor = { path = "../monad-executor" }
 monad-state = {path = "../monad-state"}
 monad-types = {path = "../monad-types"}
 monad-validator = {path = "../monad-validator"}
-monad-wal = { path = "../monad-wal" }
 
 sha2 = "0.10.6"

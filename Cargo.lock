@@ -2823,11 +2823,9 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus",
  "monad-crypto",
- "monad-executor",
  "monad-state",
  "monad-types",
  "monad-validator",
- "monad-wal",
  "sha2 0.10.6",
 ]
 
