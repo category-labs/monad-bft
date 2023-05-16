@@ -29,7 +29,7 @@ mod tests {
                 let executor = monad_executor::executor::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
                     timer: monad_executor::executor::timer::TokioTimer::default(),
-                    counter: monad_counter::counter::CounterService::new(),
+                    counter: monad_cmd_counter::counter::CounterService::new(),
                 };
                 (key, executor)
             })

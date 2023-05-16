@@ -1,6 +1,6 @@
+use monad_cmd_counter::counter::CounterServiceCommand;
 use monad_consensus::types::block::Block;
 use monad_consensus::types::signature::SignatureCollection;
-use monad_counter::counter::CounterServiceCommand;
 use monad_types::BlockId;
 use monad_types::Round;
 use ptree::print_tree;

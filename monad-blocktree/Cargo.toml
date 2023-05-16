@@ -12,7 +12,7 @@ bench = false
 
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
-monad-counter = { path = "../monad-counter" }
+monad-cmd-counter = { path = "../monad-cmd-counter" }
 monad-types = { path = "../monad-types" }
 ptree = "0.4.0"
 

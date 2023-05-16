@@ -12,7 +12,7 @@ use crate::{state::PeerId, Command, Message, RouterCommand, State, TimerCommand}
 use monad_types::Executor;
 
 use futures::Stream;
-use monad_counter::counter::CounterService;
+use monad_cmd_counter::counter::CounterService;
 
 pub struct MockExecutor<S>
 where
