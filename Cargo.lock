@@ -2848,6 +2848,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-macroquad",
+ "futures",
  "macroquad",
  "monad-consensus",
  "monad-crypto",

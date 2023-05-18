@@ -9,7 +9,6 @@ use monad_consensus::{
     types::{
         block::{Block, TransactionList},
         ledger::{InMemoryLedger, Ledger},
-        mempool::{Mempool, SimulationMempool},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
         quorum_certificate::{QuorumCertificate, Rank},
         signature::SignatureCollection,
@@ -27,7 +26,9 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
     Signature,
 };
-use monad_executor::{Command, Message, PeerId, RouterCommand, State, TimerCommand};
+use monad_executor::{
+    Command, MempoolCommand, Message, PeerId, RouterCommand, State, TimerCommand,
+};
 use monad_types::{NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
@@ -54,7 +55,7 @@ where
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
-    consensus_state: ConsensusState<ST, SCT, InMemoryLedger<SCT>, SimulationMempool>,
+    consensus_state: ConsensusState<ST, SCT, InMemoryLedger<SCT>>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
@@ -285,6 +286,31 @@ where
                         .into_iter()
                         .map(Into::into)
                         .collect(),
+                    ConsensusEvent::FetchedTxs(fetched) => {
+                        assert_eq!(fetched.node_id, self.consensus_state.nodeid);
+
+                        let mut cmds = vec![ConsensusCommand::FetchTxsReset];
+
+                        // make sure we're still in same round
+                        if fetched.round == self.consensus_state.pacemaker.get_current_round() {
+                            let b = Block::new::<HasherType>(
+                                fetched.node_id,
+                                fetched.round,
+                                &fetched.txns,
+                                &fetched.high_qc,
+                            );
+
+                            let p = ProposalMessage {
+                                block: b,
+                                last_round_tc: fetched.last_round_tc,
+                            };
+
+                            cmds.push(ConsensusCommand::Broadcast {
+                                message: ConsensusMessage::Proposal(p),
+                            })
+                        }
+                        cmds
+                    }
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
@@ -293,7 +319,7 @@ where
                             .verify::<HasherType>(self.validator_set.get_members(), &sender)
                         {
                             Ok(m) => m,
-                            Err(_) => todo!(),
+                            Err(e) => todo!("{e:?}"),
                         };
                         let (author, signature, verified_message) = verified_message.destructure();
                         match verified_message {
@@ -312,14 +338,14 @@ where
                                     msg,
                                     &mut self.validator_set,
                                 ),
-                            ConsensusMessage::Timeout(msg) => self
-                                .consensus_state
-                                .handle_timeout_message::<HasherType, _>(
+                            ConsensusMessage::Timeout(msg) => {
+                                self.consensus_state.handle_timeout_message::<_>(
                                     author,
                                     signature,
                                     msg,
                                     &mut self.validator_set,
-                                ),
+                                )
+                            }
                         }
                     }
                 };
@@ -377,8 +403,16 @@ where
                                 on_timeout,
                             )),
                         })),
-                        ConsensusCommand::Unschedule => {
-                            cmds.push(Command::TimerCommand(TimerCommand::Unschedule))
+                        ConsensusCommand::ScheduleReset => {
+                            cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset))
+                        }
+                        ConsensusCommand::FetchTxs(cb) => cmds.push(Command::MempoolCommand(
+                            MempoolCommand::FetchTxs(Box::new(|txs| {
+                                Self::Event::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
+                            })),
+                        )),
+                        ConsensusCommand::FetchTxsReset => {
+                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }
                     }
                 }
@@ -389,12 +423,14 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusEvent<S, T> {
+pub enum ConsensusEvent<ST, SCT> {
     Message {
         sender: PubKey,
-        unverified_message: Unverified<S, ConsensusMessage<S, T>>,
+        unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
     },
     Timeout(PacemakerTimerExpire),
+
+    FetchedTxs(FetchedTxs<ST, SCT>),
 }
 
 impl<S: Debug, T: Debug> Debug for ConsensusEvent<S, T> {
@@ -409,35 +445,48 @@ impl<S: Debug, T: Debug> Debug for ConsensusEvent<S, T> {
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
+            ConsensusEvent::FetchedTxs(p) => p.fmt(f),
         }
     }
 }
 
-#[derive(Debug)]
-pub enum ConsensusCommand<S, T: SignatureCollection> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedTxs<ST, SCT> {
+    // some of this stuff is probably not strictly necessary
+    // they're included here just to be extra safe
+    node_id: NodeId,
+    round: Round,
+    high_qc: QuorumCertificate<SCT>,
+    last_round_tc: Option<TimeoutCertificate<ST>>,
+
+    txns: TransactionList,
+}
+
+pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     Send {
         to: PeerId,
-        message: ConsensusMessage<S, T>,
+        message: ConsensusMessage<ST, SCT>,
     },
     Broadcast {
-        message: ConsensusMessage<S, T>,
+        message: ConsensusMessage<ST, SCT>,
     },
     Schedule {
         duration: Duration,
         on_timeout: PacemakerTimerExpire,
     },
-    Unschedule,
+    ScheduleReset,
+    FetchTxs(Box<dyn FnOnce(Vec<u8>) -> FetchedTxs<ST, SCT>>),
+    FetchTxsReset,
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
 
-struct ConsensusState<S, T, L, M> {
+struct ConsensusState<S, T, L> {
     pending_block_tree: BlockTree<T>,
     vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,
 
     ledger: L,
-    mempool: M,
 
     pacemaker: Pacemaker<S, T>,
     safety: Safety,
@@ -448,12 +497,11 @@ struct ConsensusState<S, T, L, M> {
     keypair: KeyPair,
 }
 
-impl<S, T, L, M> ConsensusState<S, T, L, M>
+impl<S, T, L> ConsensusState<S, T, L>
 where
     S: Signature,
-    T: SignatureCollection + Debug,
+    T: SignatureCollection,
     L: Ledger<Signatures = T>,
-    M: Mempool,
 {
     pub fn new(
         my_pubkey: PubKey,
@@ -469,7 +517,6 @@ where
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             ledger: L::new(),
-            mempool: M::new(),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
@@ -546,13 +593,13 @@ where
             cmds.extend(self.process_certificate_qc(&qc));
 
             if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
-                cmds.extend(self.process_new_round_event::<H>(None));
+                cmds.extend(self.process_new_round_event(None));
             }
         }
         cmds
     }
 
-    fn handle_timeout_message<H: Hasher, V: LeaderElection>(
+    fn handle_timeout_message<V: LeaderElection>(
         &mut self,
         author: NodeId,
         signature: S,
@@ -594,7 +641,7 @@ where
             cmds.extend(advance_round_cmds);
 
             if self.nodeid == *validators.get_leader(self.pacemaker.get_current_round()) {
-                cmds.extend(self.process_new_round_event::<H>(Some(tc)));
+                cmds.extend(self.process_new_round_event(Some(tc)));
             }
         }
 
@@ -635,29 +682,26 @@ where
 
     // TODO consider changing return type to Option<T>
     #[must_use]
-    fn process_new_round_event<H: Hasher>(
+    fn process_new_round_event(
         &mut self,
         last_round_tc: Option<TimeoutCertificate<S>>,
     ) -> Vec<ConsensusCommand<S, T>> {
         self.vote_state
             .start_new_round(self.pacemaker.get_current_round());
 
-        let txns: TransactionList = self.mempool.get_transactions(10000);
-        let b = Block::new::<H>(
-            self.nodeid,
-            self.pacemaker.get_current_round(),
-            &txns,
-            &self.high_qc,
-        );
+        let node_id = self.nodeid;
+        let round = self.pacemaker.get_current_round();
+        let high_qc = self.high_qc.clone();
 
-        let p = ProposalMessage {
-            block: b,
-            last_round_tc,
-        };
-
-        vec![ConsensusCommand::Broadcast {
-            message: ConsensusMessage::Proposal(p),
-        }]
+        vec![ConsensusCommand::FetchTxs(Box::new(move |txns| {
+            FetchedTxs {
+                node_id,
+                round,
+                high_qc,
+                last_round_tc,
+                txns: TransactionList(txns),
+            }
+        }))]
     }
 }
 
@@ -674,7 +718,7 @@ impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for Cons
                 duration,
                 on_timeout,
             },
-            PacemakerCommand::Unschedule => ConsensusCommand::Unschedule,
+            PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
         }
     }
 }
@@ -702,14 +746,12 @@ mod test {
         validator::Validator, validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin,
     };
 
-    use crate::{
-        ConsensusCommand, ConsensusMessage, ConsensusState, InMemoryLedger, SimulationMempool,
-    };
+    use crate::{ConsensusCommand, ConsensusMessage, ConsensusState, InMemoryLedger};
 
     fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>() -> (
         Vec<KeyPair>,
         ValidatorSet<WeightedRoundRobin>,
-        ConsensusState<ST, SCT, InMemoryLedger<SCT>, SimulationMempool>,
+        ConsensusState<ST, SCT, InMemoryLedger<SCT>>,
     ) {
         let keys = create_keys(4);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -729,14 +771,13 @@ mod test {
         );
 
         let mut key = create_keys(1);
-        let consensus_state =
-            ConsensusState::<ST, SCT, InMemoryLedger<SCT>, SimulationMempool>::new(
-                key[0].pubkey(),
-                genesis_block,
-                genesis_qc,
-                Duration::from_secs(1),
-                key.remove(0),
-            );
+        let consensus_state = ConsensusState::<ST, SCT, InMemoryLedger<SCT>>::new(
+            key[0].pubkey(),
+            genesis_block,
+            genesis_qc,
+            Duration::from_secs(1),
+            key.remove(0),
+        );
 
         (keys, val_set, consensus_state)
     }
@@ -920,7 +961,7 @@ mod test {
         };
         let signed_byzantine_tm = Verified::new::<Sha256Hash>(byzantine_tm, &keys[1]);
         let (author, signature, tm) = signed_byzantine_tm.destructure();
-        state.handle_timeout_message::<Sha256Hash, _>(author, signature, tm, &mut valset);
+        state.handle_timeout_message::<_>(author, signature, tm, &mut valset);
     }
 
     #[test]

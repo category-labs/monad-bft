@@ -8,14 +8,18 @@ use std::{
     time::Duration,
 };
 
-use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
+use crate::{
+    state::PeerId, Command, Executor, MempoolCommand, Message, RouterCommand, State, TimerCommand,
+};
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
-pub struct MockExecutor<S>
+pub struct MockExecutor<S, M>
 where
     S: State,
 {
+    mempool: M,
+
     tick: Duration,
 
     timer: Option<TimerEvent<S::Event>>,
@@ -77,7 +81,7 @@ enum ExecutorEventType {
     Timer,
 }
 
-impl<S> MockExecutor<S>
+impl<S, M> MockExecutor<S, M>
 where
     S: State,
 {
@@ -164,12 +168,15 @@ where
     }
 }
 
-impl<S> Default for MockExecutor<S>
+impl<S, M> Default for MockExecutor<S, M>
 where
     S: State,
+    M: Default,
 {
     fn default() -> Self {
         Self {
+            mempool: M::default(),
+
             tick: Duration::default(),
 
             timer: None,
@@ -186,9 +193,10 @@ where
     }
 }
 
-impl<S> Executor for MockExecutor<S>
+impl<S, M> Executor for MockExecutor<S, M>
 where
     S: State,
+    M: Executor<Command = MempoolCommand<S::Event>>,
 {
     type Command = Command<S::Message, S::OutboundMessage>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -201,13 +209,29 @@ where
 
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
-        for command in commands {
+
+        let (router_cmds, timer_cmds, mempool_cmds) = Self::Command::split_commands(commands);
+        for command in router_cmds {
             match command {
-                Command::TimerCommand(TimerCommand::Unschedule) => self.timer = None,
-                Command::TimerCommand(TimerCommand::Schedule {
+                RouterCommand::Publish {
+                    to,
+                    message,
+                    on_ack,
+                } => {
+                    to_publish.push((to, message, on_ack));
+                }
+                RouterCommand::Unpublish { to, id } => {
+                    to_unpublish.insert((to, id));
+                }
+            }
+        }
+        for command in timer_cmds {
+            match command {
+                TimerCommand::ScheduleReset => self.timer = None,
+                TimerCommand::Schedule {
                     duration,
                     on_timeout,
-                }) => {
+                } => {
                     self.timer = Some(TimerEvent {
                         event: on_timeout,
                         tick: self.tick + duration,
@@ -215,18 +239,9 @@ where
                         scheduled_tick: self.tick,
                     })
                 }
-                Command::RouterCommand(RouterCommand::Publish {
-                    to,
-                    message,
-                    on_ack,
-                }) => {
-                    to_publish.push((to, message, on_ack));
-                }
-                Command::RouterCommand(RouterCommand::Unpublish { to, id }) => {
-                    to_unpublish.insert((to, id));
-                }
             }
         }
+        self.mempool.exec(mempool_cmds);
 
         for (to, message, on_ack) in to_publish {
             let id = message.as_ref().id();
@@ -267,14 +282,21 @@ where
     }
 }
 
-impl<S> Stream for MockExecutor<S>
+impl<S, M> Stream for MockExecutor<S, M>
 where
     S: State,
+    M: Stream<Item = S::Event>,
+
     Self: Unpin,
+    M: Unpin,
 {
     type Item = S::Event;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
+
+        if let Poll::Ready(Some(event)) = this.mempool.poll_next_unpin(cx) {
+            return Poll::Ready(Some(event));
+        }
 
         if let Some((tick, event_type)) = this.peek_event() {
             this.tick = tick;
@@ -309,10 +331,10 @@ where
                 }
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
             };
-            Poll::Ready(Some(event))
-        } else {
-            Poll::Ready(None)
+            return Poll::Ready(Some(event));
         }
+
+        Poll::Ready(None)
     }
 }
 
@@ -333,7 +355,7 @@ impl<E> Executor for MockTimer<E> {
                     duration: _,
                     on_timeout,
                 } => self.event = Some(on_timeout),
-                TimerCommand::Unschedule => self.event = None,
+                TimerCommand::ScheduleReset => self.event = None,
             }
         }
     }
@@ -358,7 +380,7 @@ mod tests {
     use monad_testutil::signing::{create_keys, node_id};
 
     use crate::{
-        executor::mock::MockExecutor,
+        executor::{mempool::MockMempool, mock::MockExecutor},
         mock_swarm::{LatencyTransformer, Nodes},
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         Message,
@@ -425,6 +447,7 @@ mod tests {
                         on_ack: LongAckEvent::IncrementNumAck,
                     }));
                     // reset timer back to 1 second
+                    commands.push(Command::TimerCommand(TimerCommand::ScheduleReset));
                     commands.push(Command::TimerCommand(TimerCommand::Schedule {
                         duration: std::time::Duration::from_secs(1),
                         on_timeout: LongAckEvent::IncrementNumTimeout,
@@ -433,6 +456,7 @@ mod tests {
                 LongAckEvent::IncrementNumTimeout => {
                     self.num_timeouts += 1;
                     // reset timer back to 1 second
+                    commands.push(Command::TimerCommand(TimerCommand::ScheduleReset));
                     commands.push(Command::TimerCommand(TimerCommand::Schedule {
                         duration: std::time::Duration::from_secs(1),
                         on_timeout: LongAckEvent::IncrementNumTimeout,
@@ -464,7 +488,7 @@ mod tests {
     }
 
     fn simulate_peer<S: State>(
-        executor: &mut MockExecutor<S>,
+        executor: &mut MockExecutor<S, MockMempool<S::Event>>,
         message_delays: &mut impl Iterator<Item = Duration>,
     ) {
         while let Some((to, outbound_message)) = executor.receive_message() {
@@ -487,9 +511,9 @@ mod tests {
     ) -> (S, Vec<S::Event>)
     where
         S: State,
-        MockExecutor<S>: Unpin,
+        MockExecutor<S, MockMempool<S::Event>>: Unpin,
     {
-        let mut executor: MockExecutor<S> = MockExecutor::default();
+        let mut executor: MockExecutor<S, _> = MockExecutor::default();
 
         let (mut state, mut init_commands) = S::init(config);
         let mut event_log = init_events.clone();
@@ -731,7 +755,7 @@ mod tests {
         let state_configs = (0..NUM_NODES)
             .map(|idx| (pubkeys.clone(), pubkeys[idx as usize]))
             .collect::<Vec<_>>();
-        let mut nodes = Nodes::<SimpleChainState, _>::new(
+        let mut nodes = Nodes::<SimpleChainState, MockMempool<_>, _>::new(
             pubkeys
                 .into_iter()
                 .map(|peer_id| peer_id.0)

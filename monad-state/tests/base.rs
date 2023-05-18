@@ -6,6 +6,7 @@ use monad_consensus::{
 };
 use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature};
 use monad_executor::{
+    executor::mempool::MockMempool,
     mock_swarm::{Nodes, Transformer},
     State,
 };
@@ -73,7 +74,7 @@ pub fn run_nodes<T: Transformer<MM>>(
 ) {
     let (pubkeys, state_configs) = get_configs(num_nodes, delta);
 
-    let mut nodes = Nodes::<MS, T>::new(
+    let mut nodes = Nodes::<MS, MockMempool<_>, T>::new(
         pubkeys.into_iter().zip(state_configs).collect(),
         transformer,
     );

@@ -9,7 +9,7 @@ pub mod convert;
 
 pub mod secp256k1;
 
-pub trait Signature: Copy + Clone + Eq + Hash + std::fmt::Debug {
+pub trait Signature: Copy + Clone + Eq + Hash + std::fmt::Debug + 'static {
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
 
     fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error>;
