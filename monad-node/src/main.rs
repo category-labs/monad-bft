@@ -18,7 +18,11 @@ use monad_consensus::{
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
 use monad_crypto::Signature;
 use monad_executor::{
-    executor::{mempool::MockMempool, parent::ParentExecutor, timer::TokioTimer},
+    executor::{
+        mempool::{MempoolExecutor, SimpleMempool},
+        parent::ParentExecutor,
+        timer::TokioTimer,
+    },
     Executor, State,
 };
 use monad_p2p::Multiaddr;
@@ -142,7 +146,7 @@ async fn run(mut config: Config) {
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        mempool: MockMempool::default(),
+        mempool: MempoolExecutor::<SimpleMempool, _>::default(),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {

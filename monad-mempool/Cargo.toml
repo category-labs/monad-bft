@@ -1,0 +1,13 @@
+[package]
+name = "monad-mempool"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+monad-executor = { path = "../monad-executor" }
+
+axum = "0.6"
+hex = "0.4"
+tracing = "0.1"

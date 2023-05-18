@@ -8,16 +8,17 @@ use std::{
     time::Duration,
 };
 
-use super::mempool::MockMempool;
 use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
 
 use futures::{Stream, StreamExt};
+
+use super::mempool::{MempoolExecutor, SimpleMempool};
 
 pub struct MockExecutor<S>
 where
     S: State,
 {
-    mempool: MockMempool<S::Event>,
+    mempool: MempoolExecutor<SimpleMempool, S::Event>,
 
     tick: Duration,
 
