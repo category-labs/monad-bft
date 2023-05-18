@@ -27,12 +27,23 @@ where
 }
 
 pub enum TimerCommand<E> {
-    // overwrites previous Schedule if exists
+    /// ScheduleReset should ALMOST ALWAYS be emitted by the state machine after handling E
+    /// This is to prevent E from firing twice on replay
+    // TODO create test to demonstrate faulty behavior if written improperly
     Schedule {
         duration: std::time::Duration,
         on_timeout: E,
     },
-    Unschedule,
+    ScheduleReset,
+}
+
+pub enum MempoolCommand<E> {
+    // TODO consider moving away from dynamic dispatch
+    /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
+    /// This is to prevent E from firing twice on replay
+    // TODO create test to demonstrate faulty behavior if written improperly
+    FetchTxs(Box<dyn FnOnce(Vec<u8>) -> E>),
+    FetchReset,
 }
 
 pub trait Executor {
@@ -46,6 +57,8 @@ where
 {
     RouterCommand(RouterCommand<M, OM>),
     TimerCommand(TimerCommand<M::Event>),
+
+    MempoolCommand(MempoolCommand<M::Event>),
 }
 
 impl<M, OM> Command<M, OM>
@@ -54,16 +67,22 @@ where
 {
     pub fn split_commands(
         commands: Vec<Self>,
-    ) -> (Vec<RouterCommand<M, OM>>, Vec<TimerCommand<M::Event>>) {
+    ) -> (
+        Vec<RouterCommand<M, OM>>,
+        Vec<TimerCommand<M::Event>>,
+        Vec<MempoolCommand<M::Event>>,
+    ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
+        let mut mempool_cmds = Vec::new();
         for command in commands {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
+                Command::MempoolCommand(cmd) => mempool_cmds.push(cmd),
             }
         }
-        (router_cmds, timer_cmds)
+        (router_cmds, timer_cmds, mempool_cmds)
     }
 }
 

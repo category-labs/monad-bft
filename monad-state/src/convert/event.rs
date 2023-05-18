@@ -6,6 +6,7 @@ use monad_proto::proto::event::*;
 use monad_proto::proto::pacemaker::ProtoPacemakerTimerExpire;
 
 use crate::ConsensusEvent as TypeConsensusEvent;
+use crate::FetchedTxs;
 use crate::MonadEvent as TypeMonadEvent;
 
 pub(super) type MonadEvent = TypeMonadEvent<SecpSignature, AggSecpSignature>;
@@ -23,6 +24,16 @@ impl From<&ConsensusEvent> for ProtoConsensusEvent {
             }),
             TypeConsensusEvent::Timeout(_tmo) => {
                 proto_consensus_event::Event::Timeout(ProtoPacemakerTimerExpire {})
+            }
+            TypeConsensusEvent::FetchedTxs(fetched) => {
+                proto_consensus_event::Event::FetchedTxs(ProtoFetchedTxs {
+                    node_id: Some((&fetched.node_id).into()),
+                    round: Some((&fetched.round).into()),
+                    high_qc: Some((&fetched.high_qc).into()),
+                    last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
+
+                    txns: Some((&fetched.txns).into()),
+                })
             }
         };
         Self { event: Some(event) }
@@ -50,6 +61,38 @@ impl TryFrom<ProtoConsensusEvent> for ConsensusEvent {
             },
             Some(proto_consensus_event::Event::Timeout(_msg)) => {
                 ConsensusEvent::Timeout(PacemakerTimerExpire)
+            }
+            Some(proto_consensus_event::Event::FetchedTxs(fetched_txs)) => {
+                ConsensusEvent::FetchedTxs(FetchedTxs {
+                    node_id: fetched_txs
+                        .node_id
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.node_id".to_owned(),
+                        ))?
+                        .try_into()?,
+                    round: fetched_txs
+                        .round
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.round".to_owned(),
+                        ))?
+                        .try_into()?,
+                    high_qc: fetched_txs
+                        .high_qc
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.high_qc".to_owned(),
+                        ))?
+                        .try_into()?,
+                    last_round_tc: fetched_txs
+                        .last_round_tc
+                        .map(TryInto::try_into)
+                        .transpose()?,
+                    txns: fetched_txs
+                        .txns
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.txns".to_owned(),
+                        ))?
+                        .try_into()?,
+                })
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),

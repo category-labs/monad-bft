@@ -26,7 +26,7 @@ impl<E> Executor for TokioTimer<E> {
                     duration,
                     on_timeout,
                 } => timer = Some((duration, on_timeout)),
-                TimerCommand::Unschedule => timer = None,
+                TimerCommand::ScheduleReset => timer = None,
             }
         }
 

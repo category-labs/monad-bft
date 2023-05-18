@@ -8,14 +8,17 @@ use std::{
     time::Duration,
 };
 
+use super::mempool::MockMempool;
 use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 
 pub struct MockExecutor<S>
 where
     S: State,
 {
+    mempool: MockMempool<S::Event>,
+
     tick: Duration,
 
     timer: Option<TimerEvent<S::Event>>,
@@ -75,6 +78,7 @@ enum ExecutorEventType {
     InboundAck,
 
     Timer,
+    Mempool,
 }
 
 impl<S> MockExecutor<S>
@@ -125,6 +129,12 @@ where
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
             .chain(
+                self.mempool
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::Mempool))
+                    .into_iter(),
+            )
+            .chain(
                 self.inbound_messages
                     .peek()
                     .map(|SequencedPeerEvent { tick, .. }| {
@@ -170,6 +180,8 @@ where
 {
     fn default() -> Self {
         Self {
+            mempool: Default::default(),
+
             tick: Duration::default(),
 
             timer: None,
@@ -201,13 +213,29 @@ where
 
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
-        for command in commands {
+
+        let (router_cmds, timer_cmds, mempool_cmds) = Self::Command::split_commands(commands);
+        for command in router_cmds {
             match command {
-                Command::TimerCommand(TimerCommand::Unschedule) => self.timer = None,
-                Command::TimerCommand(TimerCommand::Schedule {
+                RouterCommand::Publish {
+                    to,
+                    message,
+                    on_ack,
+                } => {
+                    to_publish.push((to, message, on_ack));
+                }
+                RouterCommand::Unpublish { to, id } => {
+                    to_unpublish.insert((to, id));
+                }
+            }
+        }
+        for command in timer_cmds {
+            match command {
+                TimerCommand::ScheduleReset => self.timer = None,
+                TimerCommand::Schedule {
                     duration,
                     on_timeout,
-                }) => {
+                } => {
                     self.timer = Some(TimerEvent {
                         event: on_timeout,
                         tick: self.tick + duration,
@@ -215,18 +243,9 @@ where
                         scheduled_tick: self.tick,
                     })
                 }
-                Command::RouterCommand(RouterCommand::Publish {
-                    to,
-                    message,
-                    on_ack,
-                }) => {
-                    to_publish.push((to, message, on_ack));
-                }
-                Command::RouterCommand(RouterCommand::Unpublish { to, id }) => {
-                    to_unpublish.insert((to, id));
-                }
             }
         }
+        self.mempool.exec(mempool_cmds);
 
         for (to, message, on_ack) in to_publish {
             let id = message.as_ref().id();
@@ -273,8 +292,12 @@ where
     Self: Unpin,
 {
     type Item = S::Event;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
+
+        if let Poll::Ready(Some(event)) = this.mempool.poll_next_unpin(cx) {
+            return Poll::Ready(Some(event));
+        }
 
         if let Some((tick, event_type)) = this.peek_event() {
             this.tick = tick;
@@ -308,11 +331,12 @@ where
                         .unwrap()
                 }
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
+                ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
             };
-            Poll::Ready(Some(event))
-        } else {
-            Poll::Ready(None)
+            return Poll::Ready(Some(event));
         }
+
+        Poll::Ready(None)
     }
 }
 
@@ -333,7 +357,7 @@ impl<E> Executor for MockTimer<E> {
                     duration: _,
                     on_timeout,
                 } => self.event = Some(on_timeout),
-                TimerCommand::Unschedule => self.event = None,
+                TimerCommand::ScheduleReset => self.event = None,
             }
         }
     }
@@ -426,6 +450,7 @@ mod tests {
                         on_ack: LongAckEvent::IncrementNumAck,
                     }));
                     // reset timer back to 1 second
+                    commands.push(Command::TimerCommand(TimerCommand::ScheduleReset));
                     commands.push(Command::TimerCommand(TimerCommand::Schedule {
                         duration: std::time::Duration::from_secs(1),
                         on_timeout: LongAckEvent::IncrementNumTimeout,
@@ -434,6 +459,7 @@ mod tests {
                 LongAckEvent::IncrementNumTimeout => {
                     self.num_timeouts += 1;
                     // reset timer back to 1 second
+                    commands.push(Command::TimerCommand(TimerCommand::ScheduleReset));
                     commands.push(Command::TimerCommand(TimerCommand::Schedule {
                         duration: std::time::Duration::from_secs(1),
                         on_timeout: LongAckEvent::IncrementNumTimeout,

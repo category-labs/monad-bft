@@ -11,7 +11,7 @@ use crate::{
         signature::SignatureCollection,
         timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
     },
-    validation::safety::Safety,
+    validation::{message::well_formed, safety::Safety},
 };
 
 pub struct Pacemaker<S, T> {
@@ -27,7 +27,7 @@ pub struct Pacemaker<S, T> {
     phase: PhaseHonest,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum PhaseHonest {
     Zero,
     One,
@@ -41,7 +41,7 @@ pub enum PacemakerCommand<S, T> {
         duration: Duration,
         on_timeout: PacemakerTimerExpire,
     },
-    Unschedule,
+    ScheduleReset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,15 +95,24 @@ where
         &self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
-    ) -> Option<PacemakerCommand<S, T>> {
-        safety
+    ) -> Vec<PacemakerCommand<S, T>> {
+        let mut cmds = vec![PacemakerCommand::ScheduleReset];
+        let maybe_broadcast = safety
             .make_timeout(self.current_round, high_qc.clone(), &self.last_round_tc)
             .map(|timeout_info| {
+                well_formed(
+                    timeout_info.round,
+                    timeout_info.high_qc.info.vote.round,
+                    &self.last_round_tc,
+                )
+                .expect("invalid timeout");
                 PacemakerCommand::Broadcast(TimeoutMessage {
                     tminfo: timeout_info,
                     last_round_tc: self.last_round_tc.clone(),
                 })
-            })
+            });
+        cmds.extend(maybe_broadcast);
+        cmds
     }
 
     #[must_use]
@@ -112,7 +121,7 @@ where
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
         _event: PacemakerTimerExpire,
-    ) -> Option<PacemakerCommand<S, T>> {
+    ) -> Vec<PacemakerCommand<S, T>> {
         self.phase = PhaseHonest::One;
         self.local_timeout_round(safety, high_qc)
     }
@@ -142,7 +151,7 @@ where
         let timeouts = self.pending_timeouts.keys().copied().collect();
 
         if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
-            ret_commands.push(PacemakerCommand::Unschedule);
+            // self.local_timeout_round emits PacemakerCommand::ScheduleReset
             ret_commands.extend(self.local_timeout_round(safety, high_qc));
             self.phase = PhaseHonest::One;
         }

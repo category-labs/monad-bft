@@ -3,9 +3,12 @@ syntax = "proto3";
 package monad_proto.event;
 
 import "basic.proto";
+import "block.proto";
 import "message.proto";
 import "pacemaker.proto";
+import "quorum_certificate.proto";
 import "signing.proto";
+import "timeout.proto";
 
 message ProtoPeerId {
   monad_proto.basic.ProtoPubkey pubkey = 1;
@@ -26,10 +29,21 @@ message ProtoMessageWithSender {
   monad_proto.message.ProtoUnverifiedConsensusMessage unverified_message = 2;
 }
 
+message ProtoFetchedTxs {
+  monad_proto.basic.ProtoNodeId node_id = 1;
+  monad_proto.basic.ProtoRound round = 2;
+  monad_proto.quorum_certificate.ProtoQuorumCertificateAggSig high_qc = 3;
+
+  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 4;
+
+  monad_proto.block.ProtoTransactionList txns = 5;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
+    ProtoFetchedTxs fetched_txs = 3;
   }
 }
 

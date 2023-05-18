@@ -97,7 +97,12 @@ impl<M: Message> Transformer<M> for LayerTransformer<M> {
     }
 }
 
-pub struct Nodes<S: State, T: Transformer<S::Message>, LGR: PersistenceLogger<Event = S::Event>> {
+pub struct Nodes<S, T, LGR>
+where
+    S: State,
+    T: Transformer<S::Message>,
+    LGR: PersistenceLogger<Event = S::Event>,
+{
     states: BTreeMap<PeerId, (MockExecutor<S>, S, LGR)>,
     transformer: T,
 }
