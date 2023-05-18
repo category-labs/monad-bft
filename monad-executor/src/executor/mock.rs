@@ -8,17 +8,16 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    state::PeerId, Command, Executor, MempoolCommand, Message, RouterCommand, State, TimerCommand,
-};
+use super::mempool::MockMempool;
+use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
 
 use futures::{Stream, StreamExt};
 
-pub struct MockExecutor<S, M>
+pub struct MockExecutor<S>
 where
     S: State,
 {
-    mempool: M,
+    mempool: MockMempool<S::Event>,
 
     tick: Duration,
 
@@ -79,9 +78,10 @@ enum ExecutorEventType {
     InboundAck,
 
     Timer,
+    Mempool,
 }
 
-impl<S, M> MockExecutor<S, M>
+impl<S> MockExecutor<S>
 where
     S: State,
 {
@@ -129,6 +129,12 @@ where
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
             .chain(
+                self.mempool
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::Mempool))
+                    .into_iter(),
+            )
+            .chain(
                 self.inbound_messages
                     .peek()
                     .map(|SequencedPeerEvent { tick, .. }| {
@@ -168,14 +174,13 @@ where
     }
 }
 
-impl<S, M> Default for MockExecutor<S, M>
+impl<S> Default for MockExecutor<S>
 where
     S: State,
-    M: Default,
 {
     fn default() -> Self {
         Self {
-            mempool: M::default(),
+            mempool: Default::default(),
 
             tick: Duration::default(),
 
@@ -193,10 +198,9 @@ where
     }
 }
 
-impl<S, M> Executor for MockExecutor<S, M>
+impl<S> Executor for MockExecutor<S>
 where
     S: State,
-    M: Executor<Command = MempoolCommand<S::Event>>,
 {
     type Command = Command<S::Message, S::OutboundMessage>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -282,13 +286,10 @@ where
     }
 }
 
-impl<S, M> Stream for MockExecutor<S, M>
+impl<S> Stream for MockExecutor<S>
 where
     S: State,
-    M: Stream<Item = S::Event>,
-
     Self: Unpin,
-    M: Unpin,
 {
     type Item = S::Event;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -330,6 +331,7 @@ where
                         .unwrap()
                 }
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
+                ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
             };
             return Poll::Ready(Some(event));
         }
@@ -380,7 +382,7 @@ mod tests {
     use monad_testutil::signing::{create_keys, node_id};
 
     use crate::{
-        executor::{mempool::MockMempool, mock::MockExecutor},
+        executor::mock::MockExecutor,
         mock_swarm::{LatencyTransformer, Nodes},
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         Message,
@@ -488,7 +490,7 @@ mod tests {
     }
 
     fn simulate_peer<S: State>(
-        executor: &mut MockExecutor<S, MockMempool<S::Event>>,
+        executor: &mut MockExecutor<S>,
         message_delays: &mut impl Iterator<Item = Duration>,
     ) {
         while let Some((to, outbound_message)) = executor.receive_message() {
@@ -511,9 +513,9 @@ mod tests {
     ) -> (S, Vec<S::Event>)
     where
         S: State,
-        MockExecutor<S, MockMempool<S::Event>>: Unpin,
+        MockExecutor<S>: Unpin,
     {
-        let mut executor: MockExecutor<S, _> = MockExecutor::default();
+        let mut executor: MockExecutor<S> = MockExecutor::default();
 
         let (mut state, mut init_commands) = S::init(config);
         let mut event_log = init_events.clone();
@@ -755,7 +757,7 @@ mod tests {
         let state_configs = (0..NUM_NODES)
             .map(|idx| (pubkeys.clone(), pubkeys[idx as usize]))
             .collect::<Vec<_>>();
-        let mut nodes = Nodes::<SimpleChainState, MockMempool<_>, _>::new(
+        let mut nodes = Nodes::<SimpleChainState, _>::new(
             pubkeys
                 .into_iter()
                 .map(|peer_id| peer_id.0)

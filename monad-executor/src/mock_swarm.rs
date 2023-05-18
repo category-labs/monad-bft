@@ -3,10 +3,10 @@ use std::{
     time::Duration,
 };
 
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
 
-use crate::{executor::mock::MockExecutor, Executor, MempoolCommand, Message, PeerId, State};
+use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
 pub enum LinkMessageType<M: Message> {
     Message(M),
@@ -98,26 +98,21 @@ impl<M: Message> Transformer<M> for LayerTransformer<M> {
     }
 }
 
-pub struct Nodes<S, M, T>
+pub struct Nodes<S, T>
 where
     S: State,
     T: Transformer<S::Message>,
 {
-    states: HashMap<PeerId, (MockExecutor<S, M>, S)>,
+    states: HashMap<PeerId, (MockExecutor<S>, S)>,
     transformer: T,
 }
 
-impl<S, M, T> Nodes<S, M, T>
+impl<S, T> Nodes<S, T>
 where
     S: State,
-    M: Executor<Command = MempoolCommand<S::Event>> + Stream<Item = S::Event>,
     T: Transformer<S::Message>,
 
-    // not technically necessary, but makes things easier for now
-    M: Default,
-
-    M: Unpin,
-    MockExecutor<S, M>: Unpin,
+    MockExecutor<S>: Unpin,
 {
     pub fn new(peers: Vec<(PubKey, S::Config)>, transformer: T) -> Self {
         assert!(!peers.is_empty());
@@ -125,7 +120,7 @@ where
         let mut states = HashMap::new();
 
         for (pubkey, config) in peers {
-            let mut executor: MockExecutor<S, _> = MockExecutor::default();
+            let mut executor: MockExecutor<S> = MockExecutor::default();
             let (state, init_commands) = S::init(config);
             executor.exec(init_commands);
             states.insert(PeerId(pubkey), (executor, state));
@@ -232,7 +227,7 @@ where
         }
     }
 
-    pub fn states(&self) -> &HashMap<PeerId, (MockExecutor<S, M>, S)> {
+    pub fn states(&self) -> &HashMap<PeerId, (MockExecutor<S>, S)> {
         &self.states
     }
 }

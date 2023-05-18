@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use futures::Stream;
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
     executor::mock::MockExecutor,
     mock_swarm::{Nodes, Transformer},
-    Executor, MempoolCommand, Message, PeerId,
+    Message, PeerId,
 };
 
 pub enum NodeEvent<'s, Id, M, MId, E> {
@@ -52,7 +51,7 @@ pub trait Graph {
     fn set_tick(&mut self, tick: Duration);
 }
 
-pub struct NodesSimulation<S, M, C, T>
+pub struct NodesSimulation<S, C, T>
 where
     S: monad_executor::State,
     C: Fn() -> Vec<(PubKey, S::Config)>,
@@ -63,15 +62,14 @@ where
     max_tick: Duration,
 
     // TODO move stuff below into separate struct
-    nodes: Nodes<S, M, T>,
+    nodes: Nodes<S, T>,
     current_tick: Duration,
 }
 
-impl<S, M, C, T> NodesSimulation<S, M, C, T>
+impl<S, C, T> NodesSimulation<S, C, T>
 where
     S: monad_executor::State,
-    MockExecutor<S, M>: Unpin,
-    M: Executor<Command = MempoolCommand<S::Event>> + Stream<Item = S::Event> + Default + Unpin,
+    MockExecutor<S>: Unpin,
     C: Fn() -> Vec<(PubKey, S::Config)>,
     T: Transformer<S::Message> + Clone,
 {
@@ -93,11 +91,10 @@ where
     }
 }
 
-impl<S, M, C, T> Graph for NodesSimulation<S, M, C, T>
+impl<S, C, T> Graph for NodesSimulation<S, C, T>
 where
     S: monad_executor::State,
-    MockExecutor<S, M>: Unpin,
-    M: Executor<Command = MempoolCommand<S::Event>> + Stream<Item = S::Event> + Default + Unpin,
+    MockExecutor<S>: Unpin,
     C: Fn() -> Vec<(PubKey, S::Config)>,
     T: Transformer<S::Message> + Clone,
 {

@@ -14,7 +14,6 @@ use monad_consensus::{
 };
 use monad_crypto::secp256k1::KeyPair;
 use monad_crypto::NopSignature;
-use monad_executor::executor::mempool::MockMempool;
 use monad_executor::mock_swarm::XorLatencyTransformer;
 use monad_state::{MonadConfig, MonadState};
 use monad_testutil::signing::{create_keys, get_genesis_config};
@@ -56,7 +55,7 @@ async fn main() {
             pubkeys.into_iter().zip(state_configs).collect()
         };
 
-        NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, MockMempool<_>, _, _>::new(
+        NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _>::new(
             config_gen,
             XorLatencyTransformer(Duration::from_millis(100)),
             Duration::from_secs(4),

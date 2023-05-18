@@ -11,6 +11,13 @@ use futures::Stream;
 pub struct MockMempool<E> {
     fetch_txs_state: Option<Box<dyn FnOnce(Vec<u8>) -> E>>,
 }
+
+impl<E> MockMempool<E> {
+    pub fn ready(&self) -> bool {
+        self.fetch_txs_state.is_some()
+    }
+}
+
 impl<E> Default for MockMempool<E> {
     fn default() -> Self {
         Self {
