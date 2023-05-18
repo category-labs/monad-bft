@@ -14,14 +14,12 @@ type Result<T> = StdResult<T, BlockTreeError>;
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub enum BlockTreeError {
-    ParentNotPresent(String),
     BlockNotExist(String),
 }
 
 impl fmt::Display for BlockTreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ParentNotPresent(s) => write!(f, "Parent not present: {}", s),
             Self::BlockNotExist(s) => write!(f, "Block not exist: {}", s),
         }
     }
@@ -36,14 +34,16 @@ impl std::error::Error for BlockTreeError {
 #[derive(Debug)]
 pub struct BlockTreeBlock<T> {
     block: Block<T>,
+    parent: Option<BlockId>,
     children: Vec<BlockId>,
 }
 
 impl<T: SignatureCollection> BlockTreeBlock<T> {
     const CHILD_INDENT: &str = "    ";
-    fn new(b: Block<T>) -> Self {
+    fn new(b: Block<T>, parent: Option<BlockId>) -> Self {
         BlockTreeBlock {
             block: b,
+            parent,
             children: Vec::new(),
         }
     }
@@ -104,7 +104,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         let bid = genesis_block.get_id();
         let round = genesis_block.round;
         let mut tree = HashMap::new();
-        tree.insert(bid, BlockTreeBlock::new(genesis_block));
+        tree.insert(bid, BlockTreeBlock::new(genesis_block, None));
         Self {
             root: bid,
             tree,
@@ -159,18 +159,39 @@ impl<T: SignatureCollection> BlockTree<T> {
 
         let new_bid = b.get_id();
         let new_round = b.round;
-        let parent_bid = &b.qc.info.vote.id;
-        self.tree
-            .get_mut(parent_bid)
-            .ok_or(BlockTreeError::ParentNotPresent(format!(
-                "{:?}",
-                parent_bid
-            )))?
-            .children
-            .push(new_bid);
-        self.tree.insert(new_bid, BlockTreeBlock::new(b));
+        let parent_bid = b.qc.info.vote.id;
+
+        // if the new block's parent is already in the tree, add
+        // new block to the parent's children
+        if let Some(parent) = self.tree.get_mut(&parent_bid) {
+            parent.children.push(new_bid);
+        }
+
+        let mut new_btb = BlockTreeBlock::new(b, Some(parent_bid));
+        // find all nodes who would be children of the new block
+        let children = self
+            .tree
+            .iter()
+            .filter(|(_k, ref v)| v.parent == Some(new_bid))
+            .map(|k| k.0)
+            .collect::<Vec<_>>();
+
+        new_btb.children.extend(children);
+        self.tree.insert(new_bid, new_btb);
         self.high_round = new_round;
         Ok(())
+    }
+
+    pub fn path_to_root(&self, b: &BlockId) -> bool {
+        let mut bid = b;
+        loop {
+            let Some(i) = self.tree.get(&bid) else { return false };
+            if i.block.get_id() == self.root {
+                return true;
+            }
+            let Some(parent_id) = &i.parent else {return false };
+            bid = parent_id;
+        }
     }
 
     pub fn debug_print(&self) -> std::io::Result<()> {
@@ -184,6 +205,8 @@ impl<T: SignatureCollection> BlockTree<T> {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashSet;
+
     use monad_consensus::types::block::{Block as ConsensusBlock, TransactionList};
     use monad_consensus::types::ledger::LedgerCommitInfo;
     use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
@@ -381,8 +404,15 @@ mod test {
         assert!(blocktree.add(b3.clone()).is_ok());
         assert!(blocktree.add(b4.clone()).is_ok());
         assert!(blocktree.add(b5.clone()).is_ok());
-        assert!(blocktree.add(b6).is_ok());
+        assert!(blocktree.add(b6.clone()).is_ok());
         println!("{:?}", blocktree);
+
+        assert!(blocktree.path_to_root(&b1.get_id()));
+        assert!(blocktree.path_to_root(&b2.get_id()));
+        assert!(blocktree.path_to_root(&b3.get_id()));
+        assert!(blocktree.path_to_root(&b4.get_id()));
+        assert!(blocktree.path_to_root(&b5.get_id()));
+        assert!(blocktree.path_to_root(&b6.get_id()));
 
         // pruning on the old root should return no committable blocks
         let commit = blocktree.prune(&g.get_id()).unwrap();
@@ -417,6 +447,10 @@ mod test {
             blocktree.prune(&b4.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)
         );
+        assert!(!blocktree.path_to_root(&g.get_id()));
+        assert!(!blocktree.path_to_root(&b1.get_id()));
+        assert!(!blocktree.path_to_root(&b2.get_id()));
+        assert!(!blocktree.path_to_root(&b1.get_id()));
 
         // Pruned blocktree after insertion
         //     b5
@@ -512,11 +546,27 @@ mod test {
             ),
         );
 
+        let gid = g.get_id();
         let mut blocktree = BlockTree::new(g);
-        matches!(
-            blocktree.add(b2).unwrap_err(),
-            BlockTreeError::ParentNotPresent(_)
+
+        assert_eq!(blocktree.tree.get(&gid).unwrap().parent, None);
+        assert!(blocktree.add(b2.clone()).is_ok());
+        assert_eq!(blocktree.tree.len(), 2);
+        assert_eq!(
+            blocktree.tree.get(&b2.get_id()).unwrap().parent,
+            Some(b1.get_id())
         );
+        assert!(!blocktree.path_to_root(&b2.get_id()));
+
+        assert!(blocktree.add(b1.clone()).is_ok());
+        assert_eq!(blocktree.tree.len(), 3);
+        assert!(blocktree.path_to_root(&b1.get_id()));
+        assert!(blocktree.path_to_root(&b2.get_id()));
+        assert_eq!(
+            blocktree.tree.get(&b2.get_id()).unwrap().parent,
+            Some(b1.get_id())
+        );
+        assert_eq!(blocktree.tree.get(&b1.get_id()).unwrap().parent, Some(gid));
     }
 
     #[test]
@@ -666,5 +716,127 @@ mod test {
 
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(blocktree.tree[&blocktree.root].children.len(), 1);
+    }
+
+    #[test]
+    fn paths_to_root() {
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(0),
+            &TransactionList(Vec::new()),
+            &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let v1 = VoteInfo {
+            id: g.get_id(),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let b1 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(1),
+            &TransactionList(Vec::new()),
+            &QC::new(
+                QcInfo {
+                    vote: v1,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let v2 = VoteInfo {
+            id: b1.get_id(),
+            round: Round(1),
+            parent_id: g.get_id(),
+            parent_round: Round(0),
+        };
+
+        let b2 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(2),
+            &TransactionList(Vec::new()),
+            &QC::new(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let b3 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(3),
+            &TransactionList(Vec::new()),
+            &QC::new(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let b4 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(4),
+            &TransactionList(Vec::new()),
+            &QC::new(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures,
+            ),
+        );
+
+        let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
+        assert!(blocktree.path_to_root(&g.get_id()));
+        assert!(!blocktree.path_to_root(&b1.get_id()));
+
+        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(!blocktree.path_to_root(&b2.get_id()));
+
+        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(!blocktree.path_to_root(&b3.get_id()));
+
+        assert!(blocktree.add(b4.clone()).is_ok());
+        assert!(!blocktree.path_to_root(&b4.get_id()));
+
+        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.path_to_root(&b1.get_id()));
+        assert!(blocktree.path_to_root(&b2.get_id()));
+        assert!(blocktree.path_to_root(&b3.get_id()));
+        assert!(blocktree.path_to_root(&b4.get_id()));
+        let children = [&b2, &b3, &b4]
+            .iter()
+            .map(|b| b.get_id())
+            .collect::<Vec<_>>();
+        let b: HashSet<&BlockId> = HashSet::from_iter(children.iter());
+        let a: HashSet<&BlockId> =
+            HashSet::from_iter(blocktree.tree.get(&b1.get_id()).unwrap().children.iter());
+        assert_eq!(a, b);
+
+        assert!(blocktree.prune(&b3.get_id()).is_ok());
+        assert!(blocktree.path_to_root(&b3.get_id()));
+
+        assert!(!blocktree.path_to_root(&g.get_id()));
+        assert!(!blocktree.path_to_root(&b1.get_id()));
+        assert!(!blocktree.path_to_root(&b2.get_id()));
+        assert!(!blocktree.path_to_root(&b4.get_id()));
     }
 }
