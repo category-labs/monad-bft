@@ -7,11 +7,13 @@ use monad_wal::PersistenceLogger;
 
 use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
+#[derive(Clone, Debug)]
 pub enum LinkMessageType<M: Message> {
     Message(M),
     Ack(M::Id),
 }
 
+#[derive(Clone)]
 pub struct LinkMessage<M: Message> {
     pub from: PeerId,
     pub to: PeerId,
@@ -105,6 +107,7 @@ where
 {
     states: BTreeMap<PeerId, (MockExecutor<S>, S, LGR)>,
     transformer: T,
+    enable_transformer: bool,
 }
 
 impl<S, T, LGR> Nodes<S, T, LGR>
@@ -137,6 +140,7 @@ where
         let mut nodes = Self {
             states,
             transformer,
+            enable_transformer: true,
         };
 
         for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
@@ -187,24 +191,34 @@ where
             let (mut executor, state, wal) = self.states.remove(peer_id).unwrap();
 
             while let Some((to, outbound_message)) = executor.receive_message() {
-                let transformed = self.transformer.transform(LinkMessage {
+                let lm = LinkMessage {
                     from: *peer_id,
                     to,
                     message: LinkMessageType::Message(outbound_message.into()),
 
                     from_tick: tick,
-                });
+                };
+                let transformed = if self.enable_transformer {
+                    self.transformer.transform(lm)
+                } else {
+                    vec![(Duration::ZERO, lm)]
+                };
 
                 outbounds.extend(transformed.into_iter());
             }
             while let Some((to, message_id)) = executor.receive_ack() {
-                let transformed = self.transformer.transform(LinkMessage {
+                let lm = LinkMessage {
                     from: *peer_id,
                     to,
                     message: LinkMessageType::Ack(message_id),
 
                     from_tick: tick,
-                });
+                };
+                let transformed = if self.enable_transformer {
+                    self.transformer.transform(lm)
+                } else {
+                    vec![(Duration::ZERO, lm)]
+                };
 
                 outbounds.extend(transformed.into_iter());
             }
@@ -236,7 +250,15 @@ where
         }
     }
 
+    pub fn set_transformer(&mut self, enable: bool) {
+        self.enable_transformer = enable;
+    }
+
     pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S>, S, LGR)> {
         &self.states
+    }
+
+    pub fn mut_states(&mut self) -> &mut BTreeMap<PeerId, (MockExecutor<S>, S, LGR)> {
+        &mut self.states
     }
 }

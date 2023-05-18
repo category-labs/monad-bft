@@ -1,4 +1,5 @@
 use monad_consensus::types::block::Block;
+use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::types::signature::SignatureCollection;
 use monad_types::BlockId;
 use monad_types::Round;
@@ -172,7 +173,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         let children = self
             .tree
             .iter()
-            .filter(|(_k, ref v)| v.parent == Some(new_bid))
+            .filter(|(_k, v)| v.parent == Some(new_bid))
             .map(|k| k.0)
             .collect::<Vec<_>>();
 
@@ -185,7 +186,7 @@ impl<T: SignatureCollection> BlockTree<T> {
     pub fn path_to_root(&self, b: &BlockId) -> bool {
         let mut bid = b;
         loop {
-            let Some(i) = self.tree.get(&bid) else { return false };
+            let Some(i) = self.tree.get(bid) else { return false };
             if i.block.get_id() == self.root {
                 return true;
             }
@@ -194,12 +195,24 @@ impl<T: SignatureCollection> BlockTree<T> {
         }
     }
 
+    pub fn has_parent(&self, qc: &QuorumCertificate<T>) -> bool {
+        self.tree.contains_key(&qc.info.vote.id)
+    }
+
     pub fn debug_print(&self) -> std::io::Result<()> {
         let mut tree = TreeBuilder::new("BlockTree".to_owned());
         let root = self.tree.get(&self.root).unwrap();
         root.build_ptree(self, &mut tree);
 
         print_tree(&tree.build())
+    }
+
+    pub fn tree(&self) -> &HashMap<BlockId, BlockTreeBlock<T>> {
+        &self.tree
+    }
+
+    pub fn size(&self) -> usize {
+        self.tree.len()
     }
 }
 

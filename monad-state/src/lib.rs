@@ -29,7 +29,7 @@ use monad_crypto::{
 use monad_executor::{
     Command, MempoolCommand, Message, PeerId, RouterCommand, State, TimerCommand,
 };
-use monad_types::{NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
     weighted_round_robin::WeightedRoundRobin,
@@ -70,6 +70,10 @@ where
 
     pub fn ledger(&self) -> &Vec<Block<SCT>> {
         self.consensus_state.ledger.get_blocks()
+    }
+
+    pub fn blocktree(&self) -> &BlockTree<SCT> {
+        &self.consensus_state.pending_block_tree
     }
 }
 
@@ -414,6 +418,11 @@ where
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }
+                        ConsensusCommand::RequestSync { blockid: _ } => {
+                            // TODO: respond with the Proposal matching the blockID.
+                            //       right now, all 'missed' proposals are actually in-flight
+                            //       so we don't need to implement this yet for things to work
+                        }
                     }
                 }
                 cmds
@@ -477,6 +486,9 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     ScheduleReset,
     FetchTxs(Box<dyn FnOnce(Vec<u8>) -> FetchedTxs<ST, SCT>>),
     FetchTxsReset,
+    RequestSync {
+        blockid: BlockId,
+    },
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
@@ -532,9 +544,6 @@ where
         validators: &mut ValidatorSet<V>,
     ) -> Vec<ConsensusCommand<S, T>> {
         let mut cmds = Vec::new();
-        if p.block.round < self.pacemaker.get_current_round() {
-            return cmds;
-        }
 
         let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
         cmds.extend(process_certificate_cmds);
@@ -551,13 +560,19 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = *validators.get_leader(round);
 
-        if p.block.round != round || author != leader || p.block.author != leader {
-            return cmds;
-        }
-
         self.pending_block_tree
             .add(p.block.clone())
             .expect("Failed to add block to blocktree");
+
+        if !self.pending_block_tree.has_parent(&p.block.qc) {
+            cmds.push(ConsensusCommand::RequestSync {
+                blockid: p.block.get_parent_id(),
+            });
+        }
+
+        if p.block.round != round || author != leader || p.block.author != leader {
+            return cmds;
+        }
 
         let vote_msg = self.safety.make_vote::<S, T, H>(&p.block, &p.last_round_tc);
 
@@ -656,16 +671,20 @@ where
             return;
         }
 
-        if qc.info.ledger_commit.commit_state_hash.is_some() {
+        self.high_qc = qc.clone();
+        if qc.info.ledger_commit.commit_state_hash.is_some()
+            && self
+                .pending_block_tree
+                .path_to_root(&qc.info.vote.parent_id)
+        {
             let blocks_to_commit = self
                 .pending_block_tree
                 .prune(&qc.info.vote.parent_id)
-                .unwrap();
+                .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
             if !blocks_to_commit.is_empty() {
                 self.ledger.add_blocks(blocks_to_commit);
             }
         }
-        self.high_qc = qc.clone();
     }
 
     // TODO consider changing return type to Option<T>
@@ -725,6 +744,7 @@ impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for Cons
 
 #[cfg(test)]
 mod test {
+    use itertools::Itertools;
     use std::time::Duration;
 
     use monad_consensus::pacemaker::PacemakerTimerExpire;
@@ -739,6 +759,7 @@ mod test {
     use monad_consensus::validation::signing::Verified;
     use monad_crypto::secp256k1::KeyPair;
     use monad_crypto::{NopSignature, Signature};
+    use monad_executor::PeerId;
     use monad_testutil::proposal::ProposalGen;
     use monad_testutil::signing::{create_keys, get_genesis_config};
     use monad_types::{BlockId, Hash, Round};
@@ -865,9 +886,7 @@ mod test {
         assert!(result.is_none());
     }
 
-    // TODO: remove the should_panic once we handle block requests for skipped blocks
     #[test]
-    #[should_panic]
     fn enter_proposalmsg_round() {
         let (keys, mut valset, mut state) =
             setup::<NopSignature, AggregateSignatures<NopSignature>>();
@@ -990,5 +1009,135 @@ mod test {
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn test_out_of_order_proposals() {
+        let perms = (0..4).permutations(4).collect::<Vec<_>>();
+
+        for perm in perms {
+            out_of_order_proposals(perm);
+        }
+    }
+
+    fn out_of_order_proposals(perms: Vec<usize>) {
+        let (keys, mut valset, mut state) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let mut propgen = ProposalGen::new(state.high_qc.clone());
+
+        // first proposal
+        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p1.destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                }
+            )
+        });
+
+        assert_eq!(state.pacemaker.get_current_round(), Round(1));
+        assert!(result.is_some());
+
+        // second proposal
+        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p2.destructure();
+        let cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Send {
+                    to: _,
+                    message: ConsensusMessage::Vote(_),
+                }
+            )
+        });
+
+        assert_eq!(state.pacemaker.get_current_round(), Round(2));
+        assert!(result.is_some());
+
+        let mut missing_proposals = Vec::new();
+        for _ in 0..perms.len() {
+            missing_proposals.push(propgen.next_proposal(&keys, &mut valset));
+        }
+
+        // last proposal arrvies
+        let p_fut = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p_fut.destructure();
+        state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        // confirm the size of the pending_block_tree (genesis, p1, p2, p_fut)
+        assert_eq!(state.pending_block_tree.size(), 4);
+
+        // missed proposals now arrive
+        let mut cmds = Vec::new();
+        for i in &perms {
+            let (author, _, verified_message) = missing_proposals[*i].clone().destructure();
+            cmds.extend(state.handle_proposal_message::<Sha256Hash, _>(
+                author,
+                verified_message,
+                &mut valset,
+            ));
+        }
+
+        let _self_id = PeerId(state.nodeid.0);
+        let mut more_proposals = true;
+
+        while more_proposals {
+            cmds = cmds
+                .into_iter()
+                .filter(|m| {
+                    matches!(
+                        m,
+                        ConsensusCommand::Send {
+                            to: _,
+                            message: ConsensusMessage::Proposal(_),
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let mut proposals = Vec::new();
+            let c = if cmds.is_empty() {
+                break;
+            } else {
+                cmds.remove(0)
+            };
+
+            match c {
+                ConsensusCommand::Send {
+                    to: _self_id,
+                    message: ConsensusMessage::Proposal(m),
+                } => {
+                    proposals.extend(state.handle_proposal_message::<Sha256Hash, _>(
+                        m.block.author,
+                        m.clone(),
+                        &mut valset,
+                    ));
+                }
+                _ => more_proposals = false,
+            }
+            cmds.extend(proposals);
+        }
+
+        // next proposal will trigger everything to be committed if there is
+        // a consecutive chain as expected
+        // last proposal arrvies
+        let p_last = propgen.next_proposal(&keys, &mut valset);
+        let (author, _, verified_message) = p_last.destructure();
+        state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+
+        assert_eq!(state.pending_block_tree.size(), 3);
+        assert_eq!(
+            state.pacemaker.get_current_round(),
+            Round(perms.len() as u64 + 4),
+            "order of proposals {:?}",
+            perms
+        );
     }
 }

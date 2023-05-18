@@ -255,7 +255,7 @@ where
             self.outbound_messages.push_back((to, message));
             let entry = self.sent_messages.entry(to).or_default().entry(id);
             match entry {
-                Entry::Occupied(_) => panic!("can't double publish!"),
+                Entry::Occupied(_) => panic!("can't double publish! {:?}", to),
                 Entry::Vacant(v) => v.insert(on_ack),
             };
         }
