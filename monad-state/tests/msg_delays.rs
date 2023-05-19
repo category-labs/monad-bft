@@ -4,7 +4,6 @@ use monad_executor::mock_swarm::XorLatencyTransformer;
 
 mod base;
 
-#[cfg(feature = "proto")]
 #[test]
 fn two_nodes() {
     tracing_subscriber::fmt::init();

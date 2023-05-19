@@ -26,7 +26,6 @@ mod test {
         recover_nodes_msg_delays(4, 10, 5);
     }
 
-    #[cfg(feature = "proto")]
     pub fn recover_nodes_msg_delays(
         num_nodes: u16,
         num_blocks_before: usize,

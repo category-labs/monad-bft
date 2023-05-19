@@ -122,11 +122,7 @@ where
         MessageActionPublish::new(peer, message)
     }
 
-    pub fn broadcast(&mut self, message: OM) -> Vec<MessageActionPublish<M, OM>>
-    where
-        <M as monad_executor::Message>::Id: Debug,
-        OM: Debug,
-    {
+    pub fn broadcast(&mut self, message: OM) -> Vec<MessageActionPublish<M, OM>> {
         let mut commands = Vec::new();
         for peer in self.peers.to_vec() {
             commands.push(self.send(peer, message.clone()));
@@ -140,10 +136,7 @@ where
         round: Round,
         peer: PeerId,
         id: M::Id,
-    ) -> Option<MessageActionUnpublish<M>>
-    where
-        <M as monad_executor::Message>::Id: Debug,
-    {
+    ) -> Option<MessageActionUnpublish<M>> {
         let max_round = self.max_round();
         if round >= self.min_round() && round <= max_round {
             let back_idx = self.max_rounds_cached() - 1;
