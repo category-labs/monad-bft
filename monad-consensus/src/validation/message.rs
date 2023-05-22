@@ -13,22 +13,15 @@ pub fn well_formed<S>(
     let prev_round = round - Round(1);
     let valid_qc_round = qc_round == prev_round;
 
-    match tc {
-        Some(tc) => {
-            // if there is a TC, the qc round must be invalid and the tc round must be valid
-            if !valid_qc_round && tc.round == prev_round {
-                Ok(())
-            } else {
-                Err(Error::NotWellFormed)
-            }
-        }
-        None => {
-            // If no TC, the qc round must be valid
-            if valid_qc_round {
-                Ok(())
-            } else {
-                Err(Error::NotWellFormed)
-            }
+    // ignore tc if qc is from r-1
+    if valid_qc_round {
+        return Ok(());
+    }
+    // otherwise check tc comes from r-1
+    if let Some(tc) = tc {
+        if tc.round == prev_round {
+            return Ok(());
         }
     }
+    Err(Error::NotWellFormed)
 }
