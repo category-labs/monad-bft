@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -38,7 +40,7 @@ pub trait Transformer<M: Message> {
 }
 
 /// adds constant latency
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LatencyTransformer(pub Duration);
 impl<M: Message> Transformer<M> for LatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
@@ -47,7 +49,7 @@ impl<M: Message> Transformer<M> for LatencyTransformer {
 }
 
 /// adds constant latency (parametrizable cap) to each link determined by xor(peer_id_1, peer_id_2)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct XorLatencyTransformer(pub Duration);
 impl<M: Message> Transformer<M> for XorLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
@@ -64,21 +66,70 @@ impl<M: Message> Transformer<M> for XorLatencyTransformer {
 
 /// blacklists given nodes
 #[derive(Clone)]
-pub struct BlacklistTransformer(pub HashSet<PeerId>);
-impl<M: Message> Transformer<M> for BlacklistTransformer {
+pub struct BlacklistTransformer<M> {
+    peers: HashSet<PeerId>,
+
+    // TODO once this transformer supports replay, can remove this
+    _pd: PhantomData<M>,
+}
+impl<M: Message> Transformer<M> for BlacklistTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         let mut output = Vec::new();
-        if !self.0.contains(&message.from) && !self.0.contains(&message.to) {
+        if !self.peers.contains(&message.from) && !self.peers.contains(&message.to) {
             output.push((Duration::ZERO, message))
         }
         output
     }
 }
 
-// using dynamic dispatch so that we can change these at runtime... such as in monad-viz
-type LayerTransformer<M> = Vec<Box<dyn Transformer<M>>>;
+impl<M> Debug for BlacklistTransformer<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlacklistTransformer")
+            .field("peers", &self.peers)
+            .finish()
+    }
+}
 
-impl<M: Message> Transformer<M> for LayerTransformer<M> {
+impl<M: Message> Transformer<M> for Vec<Box<dyn Transformer<M>>> {
+    fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
+        self.iter_mut().fold(
+            // accumulator is transformed set of messages before/after each layer
+            vec![(Duration::ZERO, message)],
+            |messages, layer| {
+                messages
+                    .into_iter()
+                    .flat_map(|(base_duration, message)| {
+                        // transform each message by applying the layer to each
+                        layer
+                            .transform(message)
+                            .into_iter()
+                            .map(move |(duration, message)| (base_duration + duration, message))
+                    })
+                    .collect()
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Layer<M> {
+    Latency(LatencyTransformer),
+    XorLatency(XorLatencyTransformer),
+    Blacklist(BlacklistTransformer<M>),
+}
+
+impl<M: Message> Transformer<M> for Layer<M> {
+    fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
+        match self {
+            Layer::Latency(t) => t.transform(message),
+            Layer::XorLatency(t) => t.transform(message),
+            Layer::Blacklist(t) => t.transform(message),
+        }
+    }
+}
+
+pub type LayerTransformer<M> = Vec<Layer<M>>;
+impl<M: Message> Transformer<M> for Vec<Layer<M>> {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         self.iter_mut().fold(
             // accumulator is transformed set of messages before/after each layer

@@ -51,55 +51,72 @@ pub trait Graph {
     fn set_tick(&mut self, tick: Duration);
 }
 
-pub struct NodesSimulation<S, C, T, LGR>
+pub trait SimulationConfig<S, T, LGR>
 where
     S: monad_executor::State,
-    C: Fn() -> Vec<(PubKey, S::Config, LGR::Config)>,
     T: Transformer<S::Message>,
     LGR: PersistenceLogger<Event = S::Event>,
 {
-    init_configs_gen: C,
-    init_transformer: T,
-    max_tick: Duration,
+    fn max_tick(&self) -> Duration;
+    fn transformer(&self) -> &T;
+    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config)>;
+}
+
+pub struct NodesSimulation<S, T, LGR, C>
+where
+    S: monad_executor::State,
+    T: Transformer<S::Message>,
+    LGR: PersistenceLogger<Event = S::Event>,
+    C: SimulationConfig<S, T, LGR>,
+{
+    config: C,
 
     // TODO move stuff below into separate struct
     nodes: Nodes<S, T, LGR>,
     current_tick: Duration,
 }
 
-impl<S, C, T, LGR> NodesSimulation<S, C, T, LGR>
+impl<S, T, LGR, C> NodesSimulation<S, T, LGR, C>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
-    C: Fn() -> Vec<(PubKey, S::Config, LGR::Config)>,
     T: Transformer<S::Message> + Clone,
     LGR: PersistenceLogger<Event = S::Event>,
+    C: SimulationConfig<S, T, LGR>,
 {
-    pub fn new(configs_gen: C, transformer: T, max_tick: Duration) -> Self {
-        let configs = configs_gen();
+    pub fn new(config: C) -> Self {
         Self {
-            init_configs_gen: configs_gen,
-            init_transformer: transformer.clone(),
-            max_tick,
+            nodes: Nodes::new(config.nodes(), config.transformer().clone()),
+            current_tick: Duration::ZERO,
 
-            nodes: Nodes::new(configs, transformer),
-            current_tick: Duration::from_secs(0),
+            config,
         }
     }
 
+    pub fn config(&self) -> &C {
+        &self.config
+    }
+
+    pub fn update_config(&mut self, config: C) {
+        self.config = config;
+        let current_tick = self.current_tick;
+        self.reset();
+        self.set_tick(current_tick);
+    }
+
     fn reset(&mut self) {
-        self.nodes = Nodes::new((self.init_configs_gen)(), self.init_transformer.clone());
+        self.nodes = Nodes::new(self.config.nodes(), self.config.transformer().clone());
         self.current_tick = self.min_tick();
     }
 }
 
-impl<S, C, T, LGR> Graph for NodesSimulation<S, C, T, LGR>
+impl<S, T, LGR, C> Graph for NodesSimulation<S, T, LGR, C>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
-    C: Fn() -> Vec<(PubKey, S::Config, LGR::Config)>,
     T: Transformer<S::Message> + Clone,
     LGR: PersistenceLogger<Event = S::Event>,
+    C: SimulationConfig<S, T, LGR>,
 {
     type State = S;
     type Message = S::Message;
@@ -160,7 +177,7 @@ where
     }
 
     fn max_tick(&self) -> Duration {
-        self.max_tick
+        self.config().max_tick()
     }
 
     fn set_tick(&mut self, tick: Duration) {

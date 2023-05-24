@@ -16,9 +16,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - name: Install Dependencies
-      run: |
-        sudo apt install libx11-dev libxi-dev libgl1-mesa-dev gcc-mingw-w64 libasound2-dev
     - uses: Swatinem/rust-cache@v2
     - name: Check
       run: cargo check --all-targets --verbose

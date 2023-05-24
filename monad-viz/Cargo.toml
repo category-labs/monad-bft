@@ -10,10 +10,11 @@ name = "monad-viz"
 bench = false
 
 [dependencies]
-egui = "0.21"
-egui-macroquad = "0.15"
+iced = { version = "0.9", features = ["canvas"] }
+iced_native = { version = "0.10"}
+iced_lazy = { version = "0.6"}
+
 futures = "0.3"
-macroquad = { version = "0.3.25", default-features = false }
 
 monad-executor = { path = "../monad-executor" }
 monad-consensus = { path = "../monad-consensus" }

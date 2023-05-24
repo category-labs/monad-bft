@@ -1,134 +1,195 @@
 use std::collections::HashMap;
 use std::{f32::consts::PI, time::Duration};
 
+mod config;
 mod graph;
 
-use graph::Graph;
-use graph::NodeEvent;
+use config::{ConfigEditor, SimConfig};
+
 use graph::NodesSimulation;
+use graph::{Graph, NodeEvent};
 
-use macroquad::prelude::*;
-use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
-use monad_consensus::{
-    types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
+use iced::widget::canvas::{Frame, Path, Program, Text};
+use iced::widget::{Canvas, Row, VerticalSlider};
+use iced::{
+    executor, keyboard, subscription, Application, Color, Command, Event, Length, Settings, Theme,
+    Vector,
 };
-use monad_crypto::secp256k1::KeyPair;
-use monad_crypto::NopSignature;
-use monad_executor::mock_swarm::XorLatencyTransformer;
-use monad_state::{MonadConfig, MonadEvent, MonadState};
-use monad_testutil::signing::{create_keys, get_genesis_config};
-use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
-fn window_conf() -> Conf {
-    Conf {
-        fullscreen: true,
-        ..Default::default()
-    }
-}
+use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+use monad_crypto::NopSignature;
+use monad_executor::mock_swarm::{
+    LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
+};
+use monad_executor::State;
+use monad_state::{MonadEvent, MonadState};
+use monad_wal::mock::MockWALogger;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = AggregateSignatures<SignatureType>;
+type MS = MonadState<SignatureType, SignatureCollectionType>;
+type MM = <MS as State>::Message;
 type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
+type Sim = NodesSimulation<MS, LayerTransformer<MM>, PersistenceLoggerType, SimConfig>;
 
-#[macroquad::main(window_conf)]
-async fn main() {
-    let mut simulation: NodesSimulation<
-        MonadState<SignatureType, SignatureCollectionType>,
-        _,
-        _,
-        PersistenceLoggerType,
-    > = {
-        const NUM_NODES: u16 = 5;
-        let config_gen = || {
-            let keys = create_keys(NUM_NODES as u32);
-            let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-            let (genesis_block, genesis_sigs) =
-                get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+pub fn main() -> iced::Result {
+    Viz::run(Settings::default())
+}
 
-            let state_configs = keys
-                .into_iter()
-                .zip(std::iter::repeat(pubkeys.clone()))
-                .map(|(key, pubkeys)| MonadConfig {
-                    key,
-                    validators: pubkeys,
+struct Viz {
+    simulation: Sim,
+}
 
-                    delta: Duration::from_millis(101),
-                    genesis_block: genesis_block.clone(),
-                    genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
-                    genesis_signatures: genesis_sigs.clone(),
-                })
-                .collect::<Vec<_>>();
+#[derive(Debug, Clone)]
+enum Message {
+    SetTick(f32),
+    AddTick(f32),
+    SetConfig(SimConfig),
+}
 
-            pubkeys
-                .into_iter()
-                .zip(state_configs)
-                .zip(std::iter::repeat(MockWALoggerConfig {}))
-                .map(|((a, b), c)| (a, b, c))
-                .collect()
+impl Application for Viz {
+    type Executor = executor::Default;
+    type Flags = ();
+    type Message = Message;
+    type Theme = Theme;
+
+    fn new(_flags: ()) -> (Self, Command<Self::Message>) {
+        let config = SimConfig {
+            num_nodes: 7,
+            delta: Duration::from_millis(101),
+            max_tick: Duration::from_secs_f32(4.0),
+            transformer: vec![
+                Layer::Latency(LatencyTransformer(Duration::from_millis(100))),
+                Layer::XorLatency(XorLatencyTransformer(Duration::from_millis(20))),
+            ],
         };
-        NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _, _>::new(
-            config_gen,
-            XorLatencyTransformer(Duration::from_millis(100)),
-            Duration::from_secs(4),
-        )
-    };
-    let mut tick = simulation.min_tick().as_secs_f32();
+        let simulation = {
+            NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _, _>::new(
+                config,
+            )
+        };
 
-    loop {
-        clear_background(WHITE);
+        (Self { simulation }, Command::none())
+    }
 
-        // Process keys, mouse etc.
-        let vw = screen_width();
-        let vh = screen_height();
+    fn title(&self) -> String {
+        "monviz <3".to_owned()
+    }
 
-        egui_macroquad::ui(|egui_ctx| {
-            egui::Window::new("SimViz").show(egui_ctx, |ui| {
-                ui.style_mut().spacing.slider_width = vw * 0.9;
-                ui.add(egui::Slider::new(
-                    &mut tick,
-                    simulation.min_tick().as_secs_f32()..=simulation.max_tick().as_secs_f32(),
-                ))
-            });
-        });
+    fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
+        match message {
+            Message::SetTick(tick) => {
+                self.simulation.set_tick(Duration::from_secs_f32(tick));
+            }
+            Message::AddTick(delta) => {
+                self.simulation.set_tick(Duration::from_secs_f32(
+                    (self.simulation.tick().as_secs_f32() + delta).clamp(
+                        self.simulation.min_tick().as_secs_f32(),
+                        self.simulation.max_tick().as_secs_f32(),
+                    ),
+                ));
+            }
+            Message::SetConfig(config) => {
+                self.simulation.update_config(config);
+            }
+        }
 
-        simulation.set_tick(Duration::from_secs_f32(tick));
+        Command::none()
+    }
 
-        let state = simulation.state();
+    fn view(&self) -> iced::Element<'_, Self::Message> {
+        Row::new()
+            .push(
+                VerticalSlider::new(
+                    self.simulation.min_tick().as_secs_f32()
+                        ..=self.simulation.max_tick().as_secs_f32(),
+                    self.simulation.tick().as_secs_f32(),
+                    Message::SetTick,
+                )
+                .step(0.001),
+            )
+            .push(
+                Canvas::new(&self.simulation)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .push(ConfigEditor::new(
+                self.simulation.config(),
+                Message::SetConfig,
+            ))
+            .into()
+    }
+
+    fn subscription(&self) -> iced::Subscription<Self::Message> {
+        subscription::events_with(|event, _status| match event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key_code:
+                    keyboard::KeyCode::Right | keyboard::KeyCode::Space | keyboard::KeyCode::Enter,
+                modifiers,
+            }) => Some(Message::AddTick(
+                0.001 * if modifiers.alt() { 10.0 } else { 1.0 },
+            )),
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key_code: keyboard::KeyCode::Left,
+                modifiers,
+            }) => Some(Message::AddTick(
+                -0.001 * if modifiers.alt() { 10.0 } else { 1.0 },
+            )),
+            _ => None,
+        })
+    }
+}
+
+impl Program<Message> for &Sim {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        cursor: iced::widget::canvas::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        let tick = self.tick().as_secs_f32();
+        let state = self.state();
+
+        let vw = bounds.width;
+        let vh = bounds.height;
         let points = get_circle_points(state.len(), f32::min(vw, vh) / 3.0);
 
-        // Draw things before egui
-        set_camera(&Camera2D::from_display_rect(Rect {
-            x: -vw / 2.0,
-            y: -vh / 2.0,
-
-            w: vw,
-            h: vh,
-        }));
-
+        let mut frame = Frame::new(bounds.size());
         for (idx, (node, (x, y))) in state.iter().zip(&points).enumerate() {
-            draw_circle(*x, *y, 5.0, RED);
+            let circle = Path::circle(frame.center() + Vector::new(*x, *y), 5.0);
+            frame.fill(&circle, Color::from_rgb(255.0, 0.0, 0.0));
 
-            draw_text(
-                // format!("{:?}", node.id).as_ref(),
-                format!(
+            frame.fill_text(Text {
+                content: format!(
                     "node-{} ledger_len={}, last_id={:?}",
                     idx,
                     node.state.ledger().len(),
                     node.state.ledger().last().map(|block| block.get_id())
-                )
-                .as_ref(),
-                x + 5.0,
-                y - 5.0,
-                20.0,
-                BLACK,
-            );
+                ),
+                position: frame.center() + Vector::new(x + 5.0, y - 5.0),
+                size: 20.0,
+                color: Color::BLACK,
+                ..Default::default()
+            })
         }
 
-        for (x1, y1) in &points {
-            for (x2, y2) in &points {
-                draw_line(*x1, *y1, *x2, *y2, 1.0, GREEN);
-            }
-        }
+        // for (x1, y1) in &points {
+        //     for (x2, y2) in &points {
+        //         let line = Path::line(
+        //             frame.center() + Vector::new(*x1, *y1),
+        //             frame.center() + Vector::new(*x2, *y2),
+        //         );
+        //         frame.stroke(
+        //             &line,
+        //             Stroke::default()
+        //                 .with_color(Color::from_rgb(0.0, 255.0, 0.0))
+        //                 .with_width(1.0),
+        //         );
+        //     }
+        // }
 
         let node_indices = state
             .iter()
@@ -154,15 +215,17 @@ async fn main() {
                         let ratio =
                             (tick - tx_time.as_secs_f32()) / (rx_time - tx_time).as_secs_f32();
                         let (x, y) = (x1 + (x2 - x1) * ratio, y1 + (y2 - y1) * ratio);
-                        draw_circle(x, y, 4.0, BLUE);
 
-                        draw_text(
-                            format!("{:?}", message).as_ref(),
-                            x + 5.0,
-                            y - 5.0,
-                            20.0,
-                            BLACK,
-                        );
+                        let circle = Path::circle(frame.center() + Vector::new(x, y), 4.0);
+                        frame.fill(&circle, Color::from_rgb(0.0, 0.0, 255.0));
+
+                        frame.fill_text(Text {
+                            content: format!("{:?}", message),
+                            position: frame.center() + Vector::new(x + 5.0, y - 5.0),
+                            size: 20.0,
+                            color: Color::BLACK,
+                            ..Default::default()
+                        })
                     }
                     NodeEvent::Ack {
                         tx_time,
@@ -178,16 +241,17 @@ async fn main() {
                         let ratio =
                             (tick - tx_time.as_secs_f32()) / (rx_time - tx_time).as_secs_f32();
                         let (x, y) = (x1 + (x2 - x1) * ratio, y1 + (y2 - y1) * ratio);
-                        draw_circle(x, y, 4.0, PURPLE);
 
-                        draw_text(
-                            // format!("{:?}", message_id).as_ref(),
-                            "ACK",
-                            x + 5.0,
-                            y - 5.0,
-                            20.0,
-                            BLACK,
-                        );
+                        let circle = Path::circle(frame.center() + Vector::new(x, y), 4.0);
+                        frame.fill(&circle, Color::from_rgb(255.0, 0.0, 255.0));
+
+                        frame.fill_text(Text {
+                            content: "ACK".to_owned(),
+                            position: frame.center() + Vector::new(x + 5.0, y - 5.0),
+                            size: 20.0,
+                            color: Color::BLACK,
+                            ..Default::default()
+                        })
                     }
                     NodeEvent::Timer {
                         scheduled_time,
@@ -200,11 +264,7 @@ async fn main() {
             }
         }
 
-        egui_macroquad::draw();
-
-        // Draw things after egui
-
-        next_frame().await;
+        vec![frame.into_geometry()]
     }
 }
 
