@@ -31,6 +31,7 @@ impl error::Error for ValidatorSetError {
 #[derive(Debug)]
 pub struct ValidatorSet<T: LeaderElection> {
     validators: HashMap<NodeId, Validator>,
+    validator_list: Vec<NodeId>,
     leader_election: T,
     total_stake: i64,
     round: Round, // monotonically increasing: initial 1
@@ -39,6 +40,7 @@ pub struct ValidatorSet<T: LeaderElection> {
 impl<T: LeaderElection> ValidatorSet<T> {
     pub fn new(validators: Vec<Validator>) -> Result<Self> {
         let mut vmap = HashMap::new();
+        let mut vlist = Vec::new();
         for v in validators.into_iter() {
             let entry = vmap.entry(NodeId(v.pubkey)).or_insert(v);
             if entry.stake != v.stake {
@@ -47,7 +49,10 @@ impl<T: LeaderElection> ValidatorSet<T> {
                     v.pubkey
                 )));
             }
+            vlist.push(NodeId(v.pubkey));
         }
+
+        vlist.sort();
 
         let mut election = T::new();
         election.start_new_epoch(vmap.values().map(|v| (NodeId(v.pubkey), v.stake)).collect());
@@ -55,6 +60,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
 
         Ok(ValidatorSet {
             validators: vmap,
+            validator_list: vlist,
             leader_election: election,
             total_stake,
             round: Round(1),
@@ -96,9 +102,10 @@ impl<T: LeaderElection> ValidatorSet<T> {
 
     pub fn get_leader(&mut self, round: Round) -> &NodeId {
         // FIXME switch back to weighted round robin
-        let mut validators = self.validators.iter().collect::<Vec<_>>();
-        validators.sort_by_key(|(pubkey, _)| *pubkey);
-        validators[round.0 as usize % self.validators.len()].0
+        // let mut validators = self.validators.iter().collect::<Vec<_>>();
+        // validators.sort_by_key(|(pubkey, _)| *pubkey);
+        &self.validator_list[round.0 as usize % self.validators.len()]
+        // validators[round.0 as usize % self.validators.len()].0
         // if round < self.round {
         //     panic!("round reversed {:?}->{:?}", self.round, round);
         // }

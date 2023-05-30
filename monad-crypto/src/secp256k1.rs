@@ -5,7 +5,7 @@ use crate::Signature;
 
 use zeroize::Zeroize;
 
-#[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Hash)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -29,6 +29,26 @@ impl std::fmt::Debug for PubKey {
             ser[0], ser[1], ser[30], ser[31]
         )?;
         Ok(())
+    }
+}
+
+impl std::cmp::PartialEq for PubKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_fast_unstable(&other.0)
+    }
+}
+
+impl std::cmp::Eq for PubKey {}
+
+impl std::cmp::Ord for PubKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp_fast_unstable(&other.0)
+    }
+}
+
+impl std::cmp::PartialOrd for PubKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
