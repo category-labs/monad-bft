@@ -85,7 +85,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
         for addr in addrs {
             if let Some(v) = self.validators.get(addr) {
                 voter_stake += v.stake;
-                assert!(duplicates.insert(addr));
+                debug_assert!(duplicates.insert(addr));
             }
         }
         voter_stake >= self.total_stake * 2 / 3 + 1
