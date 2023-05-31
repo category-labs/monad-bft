@@ -239,7 +239,7 @@ where
     fn simulate_peer(&mut self, peer_id: &PeerId, tick: Duration) {
         let outbounds = {
             let mut outbounds: Vec<(Duration, LinkMessage<<S as State>::Message>)> = Vec::new();
-            let (mut executor, state, wal) = self.states.remove(peer_id).unwrap();
+            let (executor, _, _) = self.states.get_mut(peer_id).unwrap();
 
             while let Some((to, outbound_message)) = executor.receive_message() {
                 let lm = LinkMessage {
@@ -274,7 +274,6 @@ where
                 outbounds.extend(transformed.into_iter());
             }
 
-            self.states.insert(*peer_id, (executor, state, wal));
             outbounds
         };
 
