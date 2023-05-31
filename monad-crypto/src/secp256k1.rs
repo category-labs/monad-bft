@@ -5,7 +5,7 @@ use crate::Signature;
 
 use zeroize::Zeroize;
 
-#[derive(Copy, Clone, Hash)]
+#[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -49,6 +49,13 @@ impl std::cmp::Ord for PubKey {
 impl std::cmp::PartialOrd for PubKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for PubKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let slice = unsafe { std::mem::transmute::<Self, [u8; 64]>(*self) };
+        slice.hash(state)
     }
 }
 
