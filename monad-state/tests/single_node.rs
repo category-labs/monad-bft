@@ -1,6 +1,5 @@
 mod base;
 
-#[cfg(feature = "proto")]
 #[test]
 fn two_nodes() {
     use monad_executor::mock_swarm::LatencyTransformer;
