@@ -4,7 +4,7 @@ use std::{
     marker::Unpin,
     ops::DerefMut,
     pin::Pin,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -342,22 +342,39 @@ where
 
 pub struct MockTimer<E> {
     event: Option<E>,
+    waker: Option<Waker>,
 }
 impl<E> Default for MockTimer<E> {
     fn default() -> Self {
-        Self { event: None }
+        Self {
+            event: None,
+            waker: None,
+        }
     }
 }
 impl<E> Executor for MockTimer<E> {
     type Command = TimerCommand<E>;
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
+        let mut wake = false;
         for command in commands {
-            match command {
+            self.event = match command {
                 TimerCommand::Schedule {
                     duration: _,
                     on_timeout,
-                } => self.event = Some(on_timeout),
-                TimerCommand::ScheduleReset => self.event = None,
+                } => {
+                    wake = true;
+                    Some(on_timeout)
+                }
+                TimerCommand::ScheduleReset => {
+                    wake = false;
+                    None
+                }
+            }
+        }
+
+        if wake {
+            if let Some(waker) = self.waker.take() {
+                waker.wake()
             }
         }
     }
@@ -367,8 +384,14 @@ where
     E: Unpin,
 {
     type Item = E;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(self.deref_mut().event.take())
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+        if let Some(event) = this.event.take() {
+            return Poll::Ready(Some(event));
+        }
+
+        this.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
@@ -376,7 +399,7 @@ where
 mod tests {
     use std::{collections::HashSet, fmt::Debug, time::Duration};
 
-    use futures::StreamExt;
+    use futures::{FutureExt, StreamExt};
 
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
@@ -388,6 +411,122 @@ mod tests {
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         Message,
     };
+
+    use super::*;
+
+    #[test]
+    fn test_mock_timer_schedule() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![TimerCommand::Schedule {
+            duration: Duration::ZERO,
+            on_timeout: (),
+        }]);
+
+        assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_double_schedule() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![TimerCommand::Schedule {
+            duration: Duration::ZERO,
+            on_timeout: (),
+        }]);
+        mock_timer.exec(vec![TimerCommand::Schedule {
+            duration: Duration::ZERO,
+            on_timeout: (),
+        }]);
+
+        assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_reset() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![TimerCommand::Schedule {
+            duration: Duration::ZERO,
+            on_timeout: (),
+        }]);
+        mock_timer.exec(vec![TimerCommand::ScheduleReset]);
+
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_inline_double_schedule() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![
+            TimerCommand::Schedule {
+                duration: Duration::ZERO,
+                on_timeout: (),
+            },
+            TimerCommand::Schedule {
+                duration: Duration::ZERO,
+                on_timeout: (),
+            },
+        ]);
+
+        assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_inline_reset() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![
+            TimerCommand::Schedule {
+                duration: Duration::ZERO,
+                on_timeout: (),
+            },
+            TimerCommand::ScheduleReset,
+        ]);
+
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_inline_reset_schedule() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![
+            TimerCommand::ScheduleReset,
+            TimerCommand::Schedule {
+                duration: Duration::ZERO,
+                on_timeout: (),
+            },
+        ]);
+
+        assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_noop_exec() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![TimerCommand::Schedule {
+            duration: Duration::ZERO,
+            on_timeout: (),
+        }]);
+        mock_timer.exec(Vec::new());
+
+        assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     /// EXAMPLE APPLICATION-LEVEL STUFF

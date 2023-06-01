@@ -22,5 +22,7 @@ tokio = { version = "1.26", features = ["time"], optional = true }
 monad-testutil = { path = "../monad-testutil"}
 monad-types = { path = "../monad-types" }
 
+tokio = { version = "1.26", features = ["macros", "rt"] }
+
 [features]
 proto = ["dep:monad-proto", "monad-crypto/proto"]
