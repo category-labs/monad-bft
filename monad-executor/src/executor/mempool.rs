@@ -9,7 +9,7 @@ use crate::{Executor, MempoolCommand};
 use futures::Stream;
 
 pub struct MockMempool<E> {
-    fetch_txs_state: Option<Box<dyn FnOnce(Vec<u8>) -> E>>,
+    fetch_txs_state: Option<Box<dyn (FnOnce(Vec<u8>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
 }
 

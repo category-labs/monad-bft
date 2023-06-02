@@ -56,16 +56,21 @@ async fn main() {
 
     let args = Args::parse();
 
-    futures_util::future::select_all(testnet(args.addresses, Duration::from_secs(1)).map(
-        |config| {
-            let fut = {
-                let bind_address = config.bind_address.clone();
-                run(config).instrument(tracing::info_span!("node", ?bind_address))
-            };
-            Box::pin(fut)
-        },
-    ))
-    .await;
+    futures_util::future::join_all(
+        testnet(args.addresses, Duration::from_secs(1))
+            .map(|config| {
+                let fut = {
+                    let bind_address = config.bind_address.clone();
+                    run(config).instrument(tracing::info_span!("node", ?bind_address))
+                };
+                Box::pin(fut)
+            })
+            .map(tokio::spawn),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
 }
 
 fn testnet(addresses: Vec<String>, delta: Duration) -> impl Iterator<Item = Config> {

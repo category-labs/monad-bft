@@ -484,7 +484,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
         on_timeout: PacemakerTimerExpire,
     },
     ScheduleReset,
-    FetchTxs(Box<dyn FnOnce(Vec<u8>) -> FetchedTxs<ST, SCT>>),
+    FetchTxs(Box<dyn (FnOnce(Vec<u8>) -> FetchedTxs<ST, SCT>) + Send + Sync>),
     FetchTxsReset,
     RequestSync {
         blockid: BlockId,

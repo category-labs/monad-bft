@@ -42,7 +42,7 @@ pub enum MempoolCommand<E> {
     /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
     // TODO create test to demonstrate faulty behavior if written improperly
-    FetchTxs(Box<dyn FnOnce(Vec<u8>) -> E>),
+    FetchTxs(Box<dyn (FnOnce(Vec<u8>) -> E) + Send + Sync>),
     FetchReset,
 }
 
