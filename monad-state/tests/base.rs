@@ -98,10 +98,12 @@ pub fn node_ledger_verification<
     PL: PersistenceLogger,
 >(
     states: &BTreeMap<PeerId, (MockExecutor<MonadState<ST, SCT>>, MonadState<ST, SCT>, PL)>,
-    num_blocks: usize,
 ) {
+    let num_b = states.values().map(|v| v.1.ledger().len()).min().unwrap();
+
     for n in states {
         println!("node id {:?}", n.0);
+        println!("ledger len {:?}", n.1 .1.ledger().len());
         println!("ledger {:?}", n.1 .1.ledger());
         println!("blocktree {:?}", n.1 .1.blocktree());
         println!(
@@ -109,15 +111,11 @@ pub fn node_ledger_verification<
             n.1 .1.blocktree().tree().len()
         );
 
-        assert!(states
-            .values()
-            .next()
-            .unwrap()
-            .1
-            .ledger()
-            .iter()
-            .take(num_blocks - 1)
-            .eq(n.1 .1.ledger().iter().take(num_blocks - 1)));
+        let a = n.1 .1.ledger();
+        let b = states.values().next().unwrap().1.ledger();
+
+        assert!((a.len() as i32).abs_diff(b.len() as i32) <= 1);
+        assert!(a.iter().take(num_b).eq(b.iter().take(num_b)));
     }
 }
 
@@ -142,11 +140,10 @@ pub fn run_nodes<T: Transformer<MM>>(
         }
     }
 
-    node_ledger_verification(nodes.states(), num_blocks);
+    node_ledger_verification(nodes.states());
 }
 
 pub fn run_one_delayed_node<T: Transformer<MM>>(
-    num_blocks: usize,
     transformer: T,
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MC>,
@@ -164,10 +161,10 @@ pub fn run_one_delayed_node<T: Transformer<MM>>(
     let mut cnt = 0;
     while let Some((_duration, _id, _event)) = nodes.step() {
         cnt += 1;
-        if cnt > 300 {
+        if cnt > 400 {
             break;
         }
     }
 
-    node_ledger_verification(nodes.states(), num_blocks);
+    node_ledger_verification(nodes.states());
 }

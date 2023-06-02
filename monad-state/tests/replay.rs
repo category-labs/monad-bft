@@ -147,6 +147,6 @@ mod test {
             })
             .collect::<Vec<_>>();
 
-        node_ledger_verification(nodes_recovered.states(), num_block_after);
+        node_ledger_verification(nodes_recovered.states());
     }
 }

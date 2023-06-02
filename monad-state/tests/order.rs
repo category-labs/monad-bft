@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use monad_executor::mock_swarm::{LatencyTransformer, Transformer};
 use test_case::test_case;
 
 use crate::base::PartitionThenReplayTransformer;
@@ -25,14 +26,17 @@ fn all_messages_delayed(direction: bool) {
     println!("delayed node ID: {:?}", first_node);
 
     base::run_one_delayed_node(
-        4,
-        PartitionThenReplayTransformer {
-            peers: filter_peers,
-            filtered_msgs: Vec::new(),
-            cnt: 0,
-            cnt_limit: 200,
-            reverse: direction,
-        },
+        vec![
+            LatencyTransformer(Duration::from_millis(1)).boxed(),
+            PartitionThenReplayTransformer {
+                peers: filter_peers,
+                filtered_msgs: Vec::new(),
+                cnt: 0,
+                cnt_limit: 200,
+                reverse: direction,
+            }
+            .boxed(),
+        ],
         pubkeys,
         state_configs,
     );
