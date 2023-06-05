@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use libp2p::{request_response::ProtocolSupport, swarm::NetworkBehaviour};
 use monad_types::{Deserializable, Serializable};
 
@@ -16,8 +18,6 @@ where
 }
 const IDENTIFY_PROTO_NAME: &str = "/monad/identify/0.0.1";
 const REQUEST_RESPONSE_PROTO_NAME: &str = "/monad/req-res/0.0.1";
-const REQUEST_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-const REQUEST_RESPONSE_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl<M, OM> Behavior<M, OM>
 where
@@ -25,7 +25,7 @@ where
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
 {
-    pub(crate) fn new(pubkey: &libp2p::identity::PublicKey) -> Self {
+    pub(crate) fn new(pubkey: &libp2p::identity::PublicKey, timeout: Duration) -> Self {
         let identify = libp2p::identify::Behaviour::new(libp2p::identify::Config::new(
             IDENTIFY_PROTO_NAME.to_string(),
             pubkey.clone(),
@@ -33,8 +33,8 @@ where
 
         let mut request_response_config = libp2p::request_response::Config::default();
         request_response_config
-            .set_request_timeout(REQUEST_RESPONSE_TIMEOUT)
-            .set_connection_keep_alive(REQUEST_RESPONSE_KEEPALIVE);
+            .set_request_timeout(timeout)
+            .set_connection_keep_alive(timeout);
         let request_response = libp2p::request_response::Behaviour::new(
             codec::ReliableMessageCodec::default(),
             [(

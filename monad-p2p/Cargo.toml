@@ -20,7 +20,7 @@ futures = "0.3"
 async-trait = "0.1"
 tracing = "0.1"
 
-libp2p = { workspace = true, features = ["macros", "mplex", "noise", "identify", "request-response", "secp256k1"] }
+libp2p = { workspace = true, features = ["macros", "mplex", "noise", "plaintext", "identify", "request-response", "secp256k1"] }
 
 [features]
 tokio = ["libp2p/tcp", "libp2p/tokio"]

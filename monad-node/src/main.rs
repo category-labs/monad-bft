@@ -21,7 +21,7 @@ use monad_executor::{
     executor::{mempool::MockMempool, parent::ParentExecutor, timer::TokioTimer},
     Executor, State,
 };
-use monad_p2p::Multiaddr;
+use monad_p2p::{Auth, Multiaddr};
 use monad_types::{NodeId, Round};
 
 type HasherType = Sha256Hash;
@@ -35,6 +35,8 @@ pub struct Config {
     pub secret_key: Box<[u8; 32]>,
 
     pub bind_address: Multiaddr,
+    pub libp2p_timeout: Duration,
+    pub libp2p_auth: Auth,
 
     pub genesis_peers: Vec<(Multiaddr, PubKey)>,
     pub delta: Duration,
@@ -126,6 +128,8 @@ fn testnet(addresses: Vec<String>, delta: Duration) -> impl Iterator<Item = Conf
         .map(move |(bind_address, secret_key)| Config {
             secret_key,
             bind_address,
+            libp2p_timeout: Duration::from_secs(1),
+            libp2p_auth: Auth::None,
             genesis_peers: peers.clone(),
             delta,
             genesis_block: genesis_block.clone(),
@@ -138,8 +142,13 @@ async fn run(mut config: Config) {
     let (keypair, libp2p_keypair) =
         KeyPair::libp2p_from_bytes(config.secret_key.as_mut_slice()).expect("invalid key");
 
-    let mut router =
-        monad_p2p::Service::with_tokio_executor(libp2p_keypair.into(), config.bind_address).await;
+    let mut router = monad_p2p::Service::with_tokio_executor(
+        libp2p_keypair.into(),
+        config.bind_address,
+        config.libp2p_timeout,
+        config.libp2p_auth,
+    )
+    .await;
     for (address, peer) in &config.genesis_peers {
         router.add_peer(&peer.into(), address.clone())
     }

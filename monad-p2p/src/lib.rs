@@ -3,6 +3,7 @@ use std::{
     ops::DerefMut,
     sync::Arc,
     task::Poll,
+    time::Duration,
 };
 
 use futures::{FutureExt, Stream, StreamExt};
@@ -32,6 +33,11 @@ where
     self_events: VecDeque<M::Event>,
 }
 
+pub enum Auth {
+    None,
+    Noise,
+}
+
 impl<M, OM> Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
@@ -49,7 +55,7 @@ where
             .boxed();
 
         let pubkey = identity.public();
-        let behavior = Behavior::new(&pubkey);
+        let behavior = Behavior::new(&pubkey, Duration::from_secs(1));
 
         let local_peer_id: libp2p::PeerId = pubkey.into();
         let mut swarm = SwarmBuilder::without_executor(transport, behavior, local_peer_id).build();
@@ -75,6 +81,8 @@ where
     pub async fn with_tokio_executor(
         identity: libp2p::identity::Keypair,
         address: Multiaddr,
+        timeout: Duration,
+        auth: Auth,
     ) -> Self {
         use libp2p::multiaddr::Protocol;
 
@@ -92,16 +100,23 @@ where
                     0,
                 )),
         )
-        .upgrade(libp2p::core::upgrade::Version::V1Lazy)
-        // .authenticate(libp2p::plaintext::PlainText2Config {
-        //     local_public_key: identity.public(),
-        // })
-        .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
-        .multiplex(libp2p::mplex::MplexConfig::new())
-        .boxed();
+        .upgrade(libp2p::core::upgrade::Version::V1Lazy);
+
+        let transport = match auth {
+            Auth::None => transport
+                .authenticate(libp2p::plaintext::PlainText2Config {
+                    local_public_key: identity.public(),
+                })
+                .multiplex(libp2p::mplex::MplexConfig::new())
+                .boxed(),
+            Auth::Noise => transport
+                .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
+                .multiplex(libp2p::mplex::MplexConfig::new())
+                .boxed(),
+        };
 
         let pubkey = identity.public();
-        let behavior = Behavior::new(&pubkey);
+        let behavior = Behavior::new(&pubkey, timeout);
 
         let local_peer_id: libp2p::PeerId = pubkey.into();
         let mut swarm = SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id)
