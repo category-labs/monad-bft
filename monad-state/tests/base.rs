@@ -1,3 +1,6 @@
+use rand::prelude::SliceRandom;
+use rand::SeedableRng;
+use rand_chacha::ChaChaRng;
 use std::{collections::BTreeMap, collections::HashSet, time::Duration};
 
 use monad_consensus::{
@@ -23,6 +26,12 @@ type MC = MonadConfig<SignatureCollectionType>;
 type MM = <MS as State>::Message;
 type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
 
+pub enum TransformerReplayOrder {
+    Forward,
+    Reverse,
+    Random(u64),
+}
+
 pub struct PartitionThenReplayTransformer<
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
@@ -31,7 +40,21 @@ pub struct PartitionThenReplayTransformer<
     pub filtered_msgs: Vec<LinkMessage<MonadMessage<ST, SCT>>>,
     pub cnt: u32,
     pub cnt_limit: u32,
-    pub reverse: bool,
+    pub order: TransformerReplayOrder,
+}
+
+impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>
+    PartitionThenReplayTransformer<ST, SCT>
+{
+    pub fn new(peers: HashSet<PeerId>, cnt_limit: u32, order: TransformerReplayOrder) -> Self {
+        PartitionThenReplayTransformer {
+            peers,
+            filtered_msgs: Vec::new(),
+            cnt: 0,
+            cnt_limit,
+            order,
+        }
+    }
 }
 
 impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>> Transformer<MonadMessage<ST, SCT>>
@@ -54,13 +77,25 @@ impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>> Transformer<Mo
         }
 
         if self.cnt > self.cnt_limit {
-            let iter_direction = if self.reverse {
-                itertools::Either::Right(self.filtered_msgs.clone().into_iter().rev())
-            } else {
-                itertools::Either::Left(self.filtered_msgs.clone().into_iter())
+            let msgs = match self.order {
+                TransformerReplayOrder::Forward => {
+                    self.filtered_msgs.clone().into_iter().collect::<Vec<_>>()
+                }
+                TransformerReplayOrder::Reverse => self
+                    .filtered_msgs
+                    .clone()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>(),
+                TransformerReplayOrder::Random(seed) => {
+                    let mut gen = ChaChaRng::seed_from_u64(seed);
+                    let mut s = self.filtered_msgs.clone().into_iter().collect::<Vec<_>>();
+                    s.shuffle(&mut gen);
+                    s
+                }
             };
 
-            output.extend(std::iter::repeat(Duration::ZERO).zip(iter_direction));
+            output.extend(std::iter::repeat(Duration::ZERO).zip(msgs));
         }
 
         output

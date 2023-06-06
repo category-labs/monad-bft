@@ -4,14 +4,19 @@ use std::time::Duration;
 use monad_executor::mock_swarm::{LatencyTransformer, Transformer};
 use test_case::test_case;
 
-use crate::base::PartitionThenReplayTransformer;
+use crate::base::{PartitionThenReplayTransformer, TransformerReplayOrder};
 use monad_executor::PeerId;
 
 mod base;
 
-#[test_case(false; "in order")]
-#[test_case(true; "reverse order")]
-fn all_messages_delayed(direction: bool) {
+#[test_case(TransformerReplayOrder::Forward; "in order")]
+#[test_case(TransformerReplayOrder::Reverse; "reverse order")]
+#[test_case(TransformerReplayOrder::Random(1); "random seed 1")]
+#[test_case(TransformerReplayOrder::Random(2); "random seed 2")]
+#[test_case(TransformerReplayOrder::Random(3); "random seed 3")]
+#[test_case(TransformerReplayOrder::Random(4); "random seed 4")]
+#[test_case(TransformerReplayOrder::Random(5); "random seed 5")]
+fn all_messages_delayed(direction: TransformerReplayOrder) {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
     let (pubkeys, state_configs) = base::get_configs(num_nodes, delta);
@@ -28,14 +33,7 @@ fn all_messages_delayed(direction: bool) {
     base::run_one_delayed_node(
         vec![
             LatencyTransformer(Duration::from_millis(1)).boxed(),
-            PartitionThenReplayTransformer {
-                peers: filter_peers,
-                filtered_msgs: Vec::new(),
-                cnt: 0,
-                cnt_limit: 200,
-                reverse: direction,
-            }
-            .boxed(),
+            PartitionThenReplayTransformer::new(filter_peers, 200, direction).boxed(),
         ],
         pubkeys,
         state_configs,

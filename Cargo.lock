@@ -3443,6 +3443,8 @@ dependencies = [
  "monad-validator",
  "monad-wal",
  "prost",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "ref-cast",
  "tempfile",
  "test-case",
