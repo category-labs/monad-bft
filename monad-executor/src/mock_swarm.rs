@@ -3,6 +3,10 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use rand::Rng;
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaChaRng;
+
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
 use monad_wal::PersistenceLogger;
@@ -61,6 +65,33 @@ impl<M: Message> Transformer<M> for XorLatencyTransformer {
             ck ^= b;
         }
         vec![(self.0.mul_f32(ck as f32 / u8::MAX as f32), message)]
+    }
+}
+
+/// adds random latency to each message up to a cap
+pub struct RandLatencyTransformer {
+    gen: ChaChaRng,
+    max_latency: u64,
+}
+
+impl RandLatencyTransformer {
+    pub fn new(seed: u64, max_latency: u64) -> Self {
+        RandLatencyTransformer {
+            gen: ChaChaRng::seed_from_u64(seed),
+            max_latency,
+        }
+    }
+
+    pub fn next_latency(&mut self) -> Duration {
+        let s = self.gen.gen_range(1..self.max_latency);
+
+        Duration::from_millis(s)
+    }
+}
+
+impl<M: Message> Transformer<M> for RandLatencyTransformer {
+    fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
+        vec![(self.next_latency(), message)]
     }
 }
 
