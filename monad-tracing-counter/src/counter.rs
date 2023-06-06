@@ -4,9 +4,11 @@ use std::sync::atomic::Ordering;
 use std::sync::RwLock;
 use std::sync::RwLockReadGuard;
 use std::sync::RwLockWriteGuard;
+
 use tracing_core::field::Visit;
 use tracing_core::{span, Event, Interest, Metadata, Subscriber as CoreSubscriber};
 use tracing_subscriber::layer::Filter;
+
 const METRIC_PREFIX_MONOTONIC_COUNTER: &str = "monotonic_counter.";
 const METRIC_STATUS: &str = "metric_status";
 
@@ -26,7 +28,6 @@ macro_rules! inc_count {
     }};
 }
 
-#[derive(Clone)]
 pub struct MetricFilter;
 
 impl<S> Filter<S> for MetricFilter {

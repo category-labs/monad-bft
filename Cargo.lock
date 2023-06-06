@@ -3492,8 +3492,6 @@ dependencies = [
 name = "monad-tracing-counter"
 version = "0.1.0"
 dependencies = [
- "lazy_static 1.4.0",
- "once_cell",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
