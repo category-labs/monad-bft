@@ -137,15 +137,6 @@ pub fn node_ledger_verification<
     let num_b = states.values().map(|v| v.1.ledger().len()).min().unwrap();
 
     for n in states {
-        println!("node id {:?}", n.0);
-        println!("ledger len {:?}", n.1 .1.ledger().len());
-        println!("ledger {:?}", n.1 .1.ledger());
-        println!("blocktree {:?}", n.1 .1.blocktree());
-        println!(
-            "blocktree num elements {:?}",
-            n.1 .1.blocktree().tree().len()
-        );
-
         let a = n.1 .1.ledger();
         let b = states.values().next().unwrap().1.ledger();
 
