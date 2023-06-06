@@ -16,9 +16,10 @@ monad-proto = { path = "../monad-proto", optional = true }
 monad-wal = { path = "../monad-wal" }
 
 futures = "0.3"
-tokio = { version = "1.26", features = ["time"], optional = true }
 rand = "0.8.5"
 rand_chacha = "0.3.1"
+tokio = { version = "1.26", features = ["time"], optional = true }
+tracing = "0.1.37"
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}

@@ -11,6 +11,7 @@ members = [
     "monad-proto",
     "monad-state",
     "monad-testutil",
+    "monad-tracing-counter",
     "monad-types",
     "monad-validator",
     "monad-viz",

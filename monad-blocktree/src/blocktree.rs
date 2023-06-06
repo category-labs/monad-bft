@@ -1,12 +1,14 @@
 use monad_consensus::types::block::Block;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::types::signature::SignatureCollection;
+use monad_tracing_counter::inc_count;
 use monad_types::BlockId;
 use monad_types::Round;
 use ptree::print_tree;
 use std::collections::HashMap;
 use std::fmt;
 use std::result::Result as StdResult;
+use tracing::trace;
 
 use ptree::builder::TreeBuilder;
 
@@ -125,6 +127,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         // retain the new root block, remove all other committable block to avoid copying
         let mut commit: Vec<Block<T>> = Vec::new();
         if &self.root == new_root {
+            inc_count!(blocktree.prune.noop);
             return Ok(commit);
         }
         let new_root_block = &self
@@ -150,11 +153,13 @@ impl<T: SignatureCollection> BlockTree<T> {
             .retain(|_, b| b.block.round > new_root_round || b.block.get_id() == self.root);
 
         commit.reverse();
+        inc_count!(blocktree.prune.success);
         Ok(commit)
     }
 
     pub fn add(&mut self, b: Block<T>) -> Result<()> {
         if self.tree.contains_key(&b.get_id()) {
+            inc_count!(blocktree.add.duplicate);
             return Ok(());
         }
 
@@ -180,6 +185,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         new_btb.children.extend(children);
         self.tree.insert(new_bid, new_btb);
         self.high_round = new_round;
+        inc_count!(blocktree.add.success);
         Ok(())
     }
 

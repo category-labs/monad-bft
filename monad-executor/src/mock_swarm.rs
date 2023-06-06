@@ -10,6 +10,7 @@ use rand_chacha::ChaChaRng;
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
 use monad_wal::PersistenceLogger;
+use tracing::info_span;
 
 use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
@@ -255,6 +256,8 @@ where
             let id = *id;
             let event = futures::executor::block_on(executor.next()).unwrap();
             wal.push(&event).unwrap(); // FIXME: propagate the error
+            let node_span = info_span!("node", id = ?id);
+            let _guard = node_span.enter();
             let commands = state.update(event.clone());
 
             executor.exec(commands);

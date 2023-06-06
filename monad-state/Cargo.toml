@@ -22,17 +22,19 @@ monad-wal = { path = "../monad-wal" }
 monad-proto = { path = "../monad-proto", optional = true }
 
 ref-cast = "1.0"
-tracing = "0.1"
 prost = { version = "0.11.9", optional = true }
 rand = "0.8.5"
 rand_chacha = "0.3.1"
+tracing = "0.1.35"
+tracing-core = "0.1.30"
 
 [features]
 proto = ["dep:monad-proto", "dep:prost", "monad-consensus/proto", "monad-crypto/proto", "monad-types/proto", "monad-executor/proto"]
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil"}
-tracing-subscriber = "0.3"
+monad-tracing-counter = { path = "../monad-tracing-counter" }
+tracing-subscriber = "0.3.17"
 criterion = "0.4"
 tempfile = "3.5.0"
 itertools = "0.10.5"

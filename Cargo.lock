@@ -3320,8 +3320,10 @@ dependencies = [
  "monad-consensus",
  "monad-crypto",
  "monad-testutil",
+ "monad-tracing-counter",
  "monad-types",
  "ptree",
+ "tracing",
 ]
 
 [[package]]
@@ -3386,6 +3388,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3441,6 +3444,7 @@ dependencies = [
  "monad-executor",
  "monad-proto",
  "monad-testutil",
+ "monad-tracing-counter",
  "monad-types",
  "monad-validator",
  "monad-wal",
@@ -3451,6 +3455,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "tracing",
+ "tracing-core",
  "tracing-subscriber",
 ]
 
@@ -3464,6 +3469,17 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "sha2 0.10.6",
+]
+
+[[package]]
+name = "monad-tracing-counter"
+version = "0.1.0"
+dependencies = [
+ "lazy_static 1.4.0",
+ "once_cell",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]
