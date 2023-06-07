@@ -2064,6 +2064,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e77ac7b51b8e6313251737fcef4b1c01a2ea102bde68415b62c0ee9268fec357"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.18",
+]
+
+[[package]]
 name = "gimli"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2572,6 +2583,15 @@ dependencies = [
  "waitgroup",
  "webrtc-srtp",
  "webrtc-util",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0539b5de9241582ce6bd6b0ba7399313560151e58c9aaf8b74b711b1bdce644"
+dependencies = [
+ "ghost",
 ]
 
 [[package]]
@@ -3450,6 +3470,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-randomized-tests"
+version = "0.1.0"
+dependencies = [
+ "inventory",
+ "monad-executor",
+ "monad-state",
+ "monad-testutil",
+ "simple-xml-builder",
+]
+
+[[package]]
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
@@ -3482,9 +3513,13 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus",
  "monad-crypto",
+ "monad-executor",
  "monad-state",
  "monad-types",
  "monad-validator",
+ "monad-wal",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "sha2 0.10.6",
 ]
 
@@ -5292,6 +5327,15 @@ name = "simd-adler32"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "238abfbb77c1915110ad968465608b68e869e0772622c9656714e73e5a1a522f"
+
+[[package]]
+name = "simple-xml-builder"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a50cb1e76f89e3c076f7ae0a609c4b0033c26034f740eddbeb761b64b2f42980"
+dependencies = [
+ "indexmap",
+]
 
 [[package]]
 name = "siphasher"

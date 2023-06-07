@@ -1,11 +1,7 @@
-mod base;
-
 #[cfg(test)]
 #[cfg(feature = "proto")]
 mod test {
-    use super::base;
-
-    use base::{get_configs, node_ledger_verification};
+    use monad_testutil::swarm::{get_configs, node_ledger_verification};
     use std::collections::HashMap;
     use std::fs::create_dir_all;
     use std::time::Duration;

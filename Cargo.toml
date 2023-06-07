@@ -9,6 +9,7 @@ members = [
     "monad-node",
     "monad-p2p",
     "monad-proto",
+    "monad-randomized-tests",
     "monad-state",
     "monad-testutil",
     "monad-tracing-counter",

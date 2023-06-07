@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use monad_executor::mock_swarm::LatencyTransformer;
+use monad_testutil::swarm::run_nodes;
 use monad_tracing_counter::counter::CounterLayer;
 use monad_tracing_counter::counter::MetricFilter;
 use monad_tracing_counter::counter_status;
@@ -9,7 +10,6 @@ use tracing_core::LevelFilter;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::Registry;
-mod base;
 
 #[test]
 fn two_nodes() {
@@ -26,7 +26,7 @@ fn two_nodes() {
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
-    base::run_nodes(
+    run_nodes(
         2,
         1024,
         Duration::from_millis(2),

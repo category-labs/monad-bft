@@ -3,10 +3,7 @@ use std::time::Duration;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use monad_executor::mock_swarm::LatencyTransformer;
-
-#[path = "../tests/base.rs"]
-mod base;
-use base::run_nodes;
+use monad_testutil::swarm::run_nodes;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("two nodes", |b| b.iter(|| two_nodes()));

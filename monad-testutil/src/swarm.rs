@@ -3,6 +3,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 use std::{collections::BTreeMap, collections::HashSet, time::Duration};
 
+use crate::signing::{create_keys, get_genesis_config};
 use monad_consensus::{
     signatures::aggregate_signature::AggregateSignatures,
     types::{quorum_certificate::genesis_vote_info, signature::SignatureCollection},
@@ -15,7 +16,6 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
-use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use monad_wal::PersistenceLogger;
 

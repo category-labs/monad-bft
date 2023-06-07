@@ -2,12 +2,11 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use monad_executor::mock_swarm::{LatencyTransformer, Transformer};
+use monad_testutil::swarm::{get_configs, run_one_delayed_node};
+use monad_testutil::swarm::{PartitionThenReplayTransformer, TransformerReplayOrder};
 use test_case::test_case;
 
-use crate::base::{PartitionThenReplayTransformer, TransformerReplayOrder};
 use monad_executor::PeerId;
-
-mod base;
 
 #[test_case(TransformerReplayOrder::Forward; "in order")]
 #[test_case(TransformerReplayOrder::Reverse; "reverse order")]
@@ -19,7 +18,7 @@ mod base;
 fn all_messages_delayed(direction: TransformerReplayOrder) {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
-    let (pubkeys, state_configs) = base::get_configs(num_nodes, delta);
+    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
@@ -30,7 +29,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    base::run_one_delayed_node(
+    run_one_delayed_node(
         vec![
             LatencyTransformer(Duration::from_millis(1)).boxed(),
             PartitionThenReplayTransformer::new(filter_peers, 200, direction).boxed(),

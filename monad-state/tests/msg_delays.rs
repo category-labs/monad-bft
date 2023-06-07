@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use monad_executor::mock_swarm::XorLatencyTransformer;
-
-mod base;
+use monad_testutil::swarm::run_nodes;
 
 #[test]
 fn two_nodes() {
     tracing_subscriber::fmt::init();
 
-    base::run_nodes(
+    run_nodes(
         4,
         40,
         Duration::from_millis(101),
