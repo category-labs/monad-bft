@@ -72,7 +72,7 @@ where
     config: C,
 
     // TODO move stuff below into separate struct
-    nodes: Nodes<S, T, LGR>,
+    pub nodes: Nodes<S, T, LGR>,
     current_tick: Duration,
 }
 

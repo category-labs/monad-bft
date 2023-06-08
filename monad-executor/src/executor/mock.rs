@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use super::ledger::MockLedger;
 use super::mempool::MockMempool;
 use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
 
@@ -18,6 +19,7 @@ where
     S: State,
 {
     mempool: MockMempool<S::Event>,
+    ledger: MockLedger<S::Block>,
 
     tick: Duration,
 
@@ -181,6 +183,7 @@ where
     fn default() -> Self {
         Self {
             mempool: Default::default(),
+            ledger: Default::default(),
 
             tick: Duration::default(),
 
@@ -202,7 +205,7 @@ impl<S> Executor for MockExecutor<S>
 where
     S: State,
 {
-    type Command = Command<S::Message, S::OutboundMessage>;
+    type Command = Command<S::Message, S::OutboundMessage, S::Block>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         // we must have processed received messages at this point, so we can send out acks
         self.outbound_ack.extend(
@@ -214,7 +217,8 @@ where
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
 
-        let (router_cmds, timer_cmds, mempool_cmds) = Self::Command::split_commands(commands);
+        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds) =
+            Self::Command::split_commands(commands);
         for command in router_cmds {
             match command {
                 RouterCommand::Publish {
@@ -246,6 +250,7 @@ where
             }
         }
         self.mempool.exec(mempool_cmds);
+        self.ledger.exec(ledger_cmds);
 
         for (to, message, on_ack) in to_publish {
             let id = message.as_ref().id();
@@ -337,6 +342,15 @@ where
         }
 
         Poll::Ready(None)
+    }
+}
+
+impl<S> MockExecutor<S>
+where
+    S: State,
+{
+    pub fn ledger(&self) -> &MockLedger<S::Block> {
+        &self.ledger
     }
 }
 
@@ -548,10 +562,14 @@ mod tests {
         type Event = LongAckEvent;
         type OutboundMessage = LongAckMessage;
         type Message = LongAckMessage;
+        type Block = ();
 
         fn init(
             _config: Self::Config,
-        ) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
+        ) -> (
+            Self,
+            Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+        ) {
             let init_self = Self {
                 num_ack: 0,
                 num_timeouts: 0,
@@ -574,7 +592,7 @@ mod tests {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<Command<Self::Message, Self::OutboundMessage>> {
+        ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
             let mut commands = Vec::new();
             match event {
                 LongAckEvent::IncrementNumAck => {
@@ -799,10 +817,14 @@ mod tests {
         type Event = SimpleChainEvent;
         type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
+        type Block = ();
 
         fn init(
             config: Self::Config,
-        ) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
+        ) -> (
+            Self,
+            Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+        ) {
             let (pubkeys, me) = config;
 
             let init_cmds = pubkeys
@@ -832,7 +854,7 @@ mod tests {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<Command<Self::Message, Self::OutboundMessage>> {
+        ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
             let mut commands = Vec::new();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {

@@ -46,12 +46,16 @@ pub enum MempoolCommand<E> {
     FetchReset,
 }
 
+pub enum LedgerCommand<B> {
+    LedgerCommit(B),
+}
+
 pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
 
-pub enum Command<M, OM>
+pub enum Command<M, OM, B>
 where
     M: Message,
 {
@@ -59,9 +63,10 @@ where
     TimerCommand(TimerCommand<M::Event>),
 
     MempoolCommand(MempoolCommand<M::Event>),
+    LedgerCommand(LedgerCommand<B>),
 }
 
-impl<M, OM> Command<M, OM>
+impl<M, OM, B> Command<M, OM, B>
 where
     M: Message,
 {
@@ -71,18 +76,21 @@ where
         Vec<RouterCommand<M, OM>>,
         Vec<TimerCommand<M::Event>>,
         Vec<MempoolCommand<M::Event>>,
+        Vec<LedgerCommand<B>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         let mut mempool_cmds = Vec::new();
+        let mut ledger_cmds = Vec::new();
         for command in commands {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::MempoolCommand(cmd) => mempool_cmds.push(cmd),
+                Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
             }
         }
-        (router_cmds, timer_cmds, mempool_cmds)
+        (router_cmds, timer_cmds, mempool_cmds, ledger_cmds)
     }
 }
 
@@ -91,9 +99,18 @@ pub trait State: Sized {
     type Event: Clone;
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
     type Message: Message<Event = Self::Event>;
+    type Block;
 
-    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>);
-    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Message, Self::OutboundMessage>>;
+    fn init(
+        config: Self::Config,
+    ) -> (
+        Self,
+        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+    );
+    fn update(
+        &mut self,
+        event: Self::Event,
+    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>;
 }
 
 pub trait Message: Clone {

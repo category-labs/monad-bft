@@ -62,7 +62,17 @@ mod test {
         );
 
         while let Some((_, _, _)) = nodes.step() {
-            if nodes.states().values().next().unwrap().1.ledger().len() > num_blocks_before {
+            if nodes
+                .states()
+                .values()
+                .next()
+                .unwrap()
+                .0
+                .ledger()
+                .get_blocks()
+                .len()
+                > num_blocks_before
+            {
                 break;
             }
         }
@@ -71,11 +81,11 @@ mod test {
         let node_ledger_before = nodes
             .states()
             .iter()
-            .map(|(peerid, (_, state, _))| {
+            .map(|(peerid, (exec, _, _))| {
                 (
                     *peerid,
-                    state
-                        .ledger()
+                    exec.ledger()
+                        .get_blocks()
                         .iter()
                         .map(|b| b.get_id())
                         .collect::<Vec<_>>(),
@@ -106,11 +116,11 @@ mod test {
         let node_ledger_recovered = nodes_recovered
             .states()
             .iter()
-            .map(|(peerid, (_, state, _))| {
+            .map(|(peerid, (exec, _, _))| {
                 (
                     *peerid,
-                    state
-                        .ledger()
+                    exec.ledger()
+                        .get_blocks()
                         .iter()
                         .map(|b| b.get_id())
                         .collect::<Vec<_>>(),
@@ -126,26 +136,15 @@ mod test {
                 .values()
                 .next()
                 .unwrap()
-                .1
+                .0
                 .ledger()
+                .get_blocks()
                 .len()
                 > num_blocks_before + num_block_after
             {
                 break;
             }
         }
-
-        let node_blocks = nodes_recovered
-            .states()
-            .values()
-            .map(|(_, state, _)| {
-                state
-                    .ledger()
-                    .iter()
-                    .map(|b| b.get_id())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
 
         node_ledger_verification(nodes_recovered.states());
     }

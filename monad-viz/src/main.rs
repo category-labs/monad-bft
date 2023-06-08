@@ -162,12 +162,13 @@ impl Program<Message> for &Sim {
             let circle = Path::circle(frame.center() + Vector::new(*x, *y), 5.0);
             frame.fill(&circle, Color::from_rgb(255.0, 0.0, 0.0));
 
+            let ledger = self.nodes.states().get(node.id).unwrap().0.ledger();
             frame.fill_text(Text {
                 content: format!(
                     "node-{} ledger_len={}, last_id={:?}",
                     idx,
-                    node.state.ledger().len(),
-                    node.state.ledger().last().map(|block| block.get_id())
+                    ledger.get_blocks().len(),
+                    ledger.get_blocks().last().map(|block| block.get_id())
                 ),
                 position: frame.center() + Vector::new(x + 5.0, y - 5.0),
                 size: 20.0,

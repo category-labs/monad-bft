@@ -8,7 +8,10 @@ mod tests {
         types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_executor::{executor::mempool::MockMempool, Executor, State};
+    use monad_executor::{
+        executor::{ledger::MockLedger, mempool::MockMempool},
+        Executor, State,
+    };
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
     use monad_wal::{
@@ -37,6 +40,7 @@ mod tests {
                 let executor = monad_executor::executor::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
                     mempool: MockMempool::default(),
+                    ledger: MockLedger::default(),
                     timer: monad_executor::executor::timer::TokioTimer::default(),
                 };
 
@@ -108,7 +112,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        while states.iter().any(|(_, state, _)| state.ledger().len() < 10) {
+        while states
+            .iter()
+            .any(|(exec, _, _)| exec.ledger().get_blocks().len() < 10)
+        {
             let ((executor, state, event, wal), _, _) =
                 futures::future::select_all(states.iter_mut().map(|(executor, state, wal)| {
                     let fut = async {

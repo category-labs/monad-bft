@@ -49,7 +49,6 @@ mod test {
 
     impl Message for MockMessage {
         type Event = TestEvent;
-
         type Id = i32;
 
         fn id(&self) -> Self::Id {
@@ -72,12 +71,13 @@ mod test {
         type Event = TestEvent;
         type OutboundMessage = MockMessage;
         type Message = MockMessage;
+        type Block = ();
 
         fn init(
             _config: Self::Config,
         ) -> (
             Self,
-            Vec<monad_executor::Command<Self::Message, Self::OutboundMessage>>,
+            Vec<monad_executor::Command<Self::Message, Self::OutboundMessage, Self::Block>>,
         ) {
             let state = VecState { events: Vec::new() };
             (state, Vec::new())
@@ -86,7 +86,8 @@ mod test {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<monad_executor::Command<Self::Message, Self::OutboundMessage>> {
+        ) -> Vec<monad_executor::Command<Self::Message, Self::OutboundMessage, Self::Block>>
+        {
             self.events.push(event);
             Vec::new()
         }

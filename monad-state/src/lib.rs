@@ -8,7 +8,6 @@ use monad_consensus::{
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
     types::{
         block::{Block, TransactionList},
-        ledger::{InMemoryLedger, Ledger},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
         quorum_certificate::{QuorumCertificate, Rank},
         signature::SignatureCollection,
@@ -27,7 +26,7 @@ use monad_crypto::{
     Signature,
 };
 use monad_executor::{
-    Command, MempoolCommand, Message, PeerId, RouterCommand, State, TimerCommand,
+    Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, State, TimerCommand,
 };
 use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{
@@ -55,7 +54,7 @@ where
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
-    consensus_state: ConsensusState<ST, SCT, InMemoryLedger<SCT>>,
+    consensus_state: ConsensusState<ST, SCT>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
@@ -66,10 +65,6 @@ where
 {
     pub fn pubkey(&self) -> PubKey {
         self.consensus_state.nodeid.0
-    }
-
-    pub fn ledger(&self) -> &Vec<Block<SCT>> {
-        self.consensus_state.ledger.get_blocks()
     }
 
     pub fn blocktree(&self) -> &BlockTree<SCT> {
@@ -216,8 +211,14 @@ where
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
+    type Block = Block<SCT>;
 
-    fn init(config: Self::Config) -> (Self, Vec<Command<Self::Message, Self::OutboundMessage>>) {
+    fn init(
+        config: Self::Config,
+    ) -> (
+        Self,
+        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+    ) {
         // create my keys and validator structs
         // FIXME stake should be configurable
         let validator_list = config
@@ -260,7 +261,10 @@ where
         (monad_state, init_cmds)
     }
 
-    fn update(&mut self, event: Self::Event) -> Vec<Command<Self::Message, Self::OutboundMessage>> {
+    fn update(
+        &mut self,
+        event: Self::Event,
+    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
         match event {
             MonadEvent::Ack { peer, id, round } => self
                 .message_state
@@ -423,6 +427,9 @@ where
                             //       right now, all 'missed' proposals are actually in-flight
                             //       so we don't need to implement this yet for things to work
                         }
+                        ConsensusCommand::LedgerCommit(block) => {
+                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))
+                        }
                     }
                 }
                 cmds
@@ -486,6 +493,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     ScheduleReset,
     FetchTxs(Box<dyn (FnOnce(Vec<u8>) -> FetchedTxs<ST, SCT>) + Send + Sync>),
     FetchTxsReset,
+    LedgerCommit(Block<SCT>),
     RequestSync {
         blockid: BlockId,
     },
@@ -493,12 +501,10 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     // - to handle this command, we need to call message_state.set_round()
 }
 
-struct ConsensusState<S, T, L> {
+struct ConsensusState<S, T> {
     pending_block_tree: BlockTree<T>,
     vote_state: VoteState<T>,
     high_qc: QuorumCertificate<T>,
-
-    ledger: L,
 
     pacemaker: Pacemaker<S, T>,
     safety: Safety,
@@ -509,11 +515,10 @@ struct ConsensusState<S, T, L> {
     keypair: KeyPair,
 }
 
-impl<S, T, L> ConsensusState<S, T, L>
+impl<S, T> ConsensusState<S, T>
 where
     S: Signature,
     T: SignatureCollection,
-    L: Ledger<Signatures = T>,
 {
     pub fn new(
         my_pubkey: PubKey,
@@ -528,7 +533,6 @@ where
             pending_block_tree: BlockTree::new(genesis_block),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
-            ledger: L::new(),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
@@ -666,12 +670,14 @@ where
     // If the qc has a commit_state_hash, commit the parent block and prune the
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
-    fn process_qc(&mut self, qc: &QuorumCertificate<T>) {
+    #[must_use]
+    fn process_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<S, T>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
-            return;
+            return Vec::new();
         }
 
         self.high_qc = qc.clone();
+        let mut cmds = Vec::new();
         if qc.info.ledger_commit.commit_state_hash.is_some()
             && self
                 .pending_block_tree
@@ -681,22 +687,31 @@ where
                 .pending_block_tree
                 .prune(&qc.info.vote.parent_id)
                 .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
+
             if !blocks_to_commit.is_empty() {
-                self.ledger.add_blocks(blocks_to_commit);
+                cmds.extend(
+                    blocks_to_commit
+                        .into_iter()
+                        .map(ConsensusCommand::<S, T>::LedgerCommit),
+                );
             }
         }
+        cmds
     }
 
     // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_certificate_qc(&mut self, qc: &QuorumCertificate<T>) -> Vec<ConsensusCommand<S, T>> {
-        self.process_qc(qc);
+        let mut cmds = Vec::new();
+        cmds.extend(self.process_qc(qc));
 
-        self.pacemaker
-            .advance_round_qc(qc)
-            .map(Into::into)
-            .into_iter()
-            .collect()
+        cmds.extend(
+            self.pacemaker
+                .advance_round_qc(qc)
+                .map(Into::into)
+                .into_iter(),
+        );
+        cmds
     }
 
     // TODO consider changing return type to Option<T>
@@ -767,12 +782,12 @@ mod test {
         validator::Validator, validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin,
     };
 
-    use crate::{ConsensusCommand, ConsensusMessage, ConsensusState, InMemoryLedger};
+    use crate::{ConsensusCommand, ConsensusMessage, ConsensusState};
 
     fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>() -> (
         Vec<KeyPair>,
         ValidatorSet<WeightedRoundRobin>,
-        ConsensusState<ST, SCT, InMemoryLedger<SCT>>,
+        ConsensusState<ST, SCT>,
     ) {
         let keys = create_keys(4);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -792,7 +807,7 @@ mod test {
         );
 
         let mut key = create_keys(1);
-        let consensus_state = ConsensusState::<ST, SCT, InMemoryLedger<SCT>>::new(
+        let consensus_state = ConsensusState::<ST, SCT>::new(
             key[0].pubkey(),
             genesis_block,
             genesis_qc,
@@ -1174,6 +1189,11 @@ mod test {
         let p2_cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
+        let lc = p2_cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(lc.is_none());
+
         let p2_votes = p2_cmds
             .into_iter()
             .filter_map(|c| match c {
@@ -1192,9 +1212,12 @@ mod test {
         let p3 = propgen.next_proposal(&keys, &mut valset);
         let (author, _, verified_message) = p3.destructure();
 
-        assert_eq!(state.ledger.get_blocks().len(), 0);
-        state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
-        assert_eq!(state.ledger.get_blocks().len(), 1);
+        let p2_cmds =
+            state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
+        let lc = p2_cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(lc.is_some());
     }
 
     #[test]

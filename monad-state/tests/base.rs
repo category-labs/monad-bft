@@ -134,12 +134,17 @@ pub fn node_ledger_verification<
 >(
     states: &BTreeMap<PeerId, (MockExecutor<MonadState<ST, SCT>>, MonadState<ST, SCT>, PL)>,
 ) {
-    let num_b = states.values().map(|v| v.1.ledger().len()).min().unwrap();
+    let num_b = states
+        .values()
+        .map(|v| v.0.ledger().get_blocks().len())
+        .min()
+        .unwrap();
 
     for n in states {
-        let a = n.1 .1.ledger();
-        let b = states.values().next().unwrap().1.ledger();
+        let a = n.1 .0.ledger().get_blocks();
+        let b = states.values().next().unwrap().0.ledger().get_blocks();
 
+        assert!(!b.is_empty());
         assert!((a.len() as i32).abs_diff(b.len() as i32) <= 1);
         assert!(a.iter().take(num_b).eq(b.iter().take(num_b)));
     }
@@ -161,7 +166,17 @@ pub fn run_nodes<T: Transformer<MM>>(
     let mut nodes = Nodes::<MS, T, PersistenceLoggerType>::new(peers, transformer);
 
     while let Some((duration, id, event)) = nodes.step() {
-        if nodes.states().values().next().unwrap().1.ledger().len() > num_blocks {
+        if nodes
+            .states()
+            .values()
+            .next()
+            .unwrap()
+            .0
+            .ledger()
+            .get_blocks()
+            .len()
+            > num_blocks
+        {
             break;
         }
     }
