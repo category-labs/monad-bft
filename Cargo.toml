@@ -22,6 +22,9 @@ resolver = "2"
 [profile.dev]
 opt-level = 1
 
+[profile.release]
+debug = true
+
 [workspace.dependencies]
 libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "a2a5160b" }
 libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "a2a5160b" }

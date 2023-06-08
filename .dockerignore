@@ -3,3 +3,7 @@ Dockerfile
 
 **/.git
 **/target
+
+**/*.data
+**/*.data.old
+**/*.svg

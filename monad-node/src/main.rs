@@ -1,8 +1,10 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use futures_util::StreamExt;
+use tracing::event;
 use tracing::instrument::Instrument;
+use tracing::Level;
 
 use monad_consensus::{
     signatures::aggregate_signature::AggregateSignatures,
@@ -36,6 +38,7 @@ pub struct Config {
 
     pub bind_address: Multiaddr,
     pub libp2p_timeout: Duration,
+    pub libp2p_keepalive: Duration,
     pub libp2p_auth: Auth,
 
     pub genesis_peers: Vec<(Multiaddr, PubKey)>,
@@ -59,15 +62,19 @@ async fn main() {
     let args = Args::parse();
 
     futures_util::future::join_all(
-        testnet(args.addresses, Duration::from_secs(1))
-            .map(|config| {
-                let fut = {
-                    let bind_address = config.bind_address.clone();
-                    run(config).instrument(tracing::info_span!("node", ?bind_address))
-                };
-                Box::pin(fut)
-            })
-            .map(tokio::spawn),
+        testnet(
+            args.addresses,
+            Duration::from_secs(5),
+            Duration::from_secs(60),
+        )
+        .map(|config| {
+            let fut = {
+                let bind_address = config.bind_address.clone();
+                run(config).instrument(tracing::info_span!("node", ?bind_address))
+            };
+            Box::pin(fut)
+        })
+        .map(tokio::spawn),
     )
     .await
     .into_iter()
@@ -75,7 +82,11 @@ async fn main() {
     .unwrap();
 }
 
-fn testnet(addresses: Vec<String>, delta: Duration) -> impl Iterator<Item = Config> {
+fn testnet(
+    addresses: Vec<String>,
+    delta: Duration,
+    keepalive: Duration,
+) -> impl Iterator<Item = Config> {
     let secrets = std::iter::repeat_with(rand::random::<[u8; 32]>)
         .map(Box::new)
         .take(addresses.len())
@@ -128,7 +139,8 @@ fn testnet(addresses: Vec<String>, delta: Duration) -> impl Iterator<Item = Conf
         .map(move |(bind_address, secret_key)| Config {
             secret_key,
             bind_address,
-            libp2p_timeout: Duration::from_secs(1),
+            libp2p_timeout: delta,
+            libp2p_keepalive: keepalive,
             libp2p_auth: Auth::None,
             genesis_peers: peers.clone(),
             delta,
@@ -146,6 +158,7 @@ async fn run(mut config: Config) {
         libp2p_keypair.into(),
         config.bind_address,
         config.libp2p_timeout,
+        config.libp2p_keepalive,
         config.libp2p_auth,
     )
     .await;
@@ -177,8 +190,21 @@ async fn run(mut config: Config) {
     // we can delete this once we support retry at the monad-p2p executor level
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
+    let mut start = Instant::now();
+    let mut last_printed_len = 0;
+    const BLOCK_INTERVAL: usize = 100;
     while let Some(event) = executor.next().await {
         let commands = state.update(event);
+        if state.ledger().len() >= last_printed_len + BLOCK_INTERVAL {
+            event!(
+                Level::INFO,
+                ledger_len = state.ledger().len(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "100 blocks"
+            );
+            start = Instant::now();
+            last_printed_len = state.ledger().len() / BLOCK_INTERVAL * BLOCK_INTERVAL;
+        }
         executor.exec(commands);
     }
 }

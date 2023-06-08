@@ -25,7 +25,11 @@ where
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
 {
-    pub(crate) fn new(pubkey: &libp2p::identity::PublicKey, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        pubkey: &libp2p::identity::PublicKey,
+        timeout: Duration,
+        keepalive: Duration,
+    ) -> Self {
         let identify = libp2p::identify::Behaviour::new(libp2p::identify::Config::new(
             IDENTIFY_PROTO_NAME.to_string(),
             pubkey.clone(),
@@ -34,7 +38,7 @@ where
         let mut request_response_config = libp2p::request_response::Config::default();
         request_response_config
             .set_request_timeout(timeout)
-            .set_connection_keep_alive(timeout);
+            .set_connection_keep_alive(keepalive);
         let request_response = libp2p::request_response::Behaviour::new(
             codec::ReliableMessageCodec::default(),
             [(

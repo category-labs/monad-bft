@@ -29,5 +29,5 @@ RUN apt install -y iproute2
 COPY --from=builder /usr/local/cargo/bin/monad-node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/tc.sh .
 
-ENV RUST_LOG=trace
+ENV RUST_LOG=monad_consensus=DEBUG
 CMD ["bash", "tc.sh"]

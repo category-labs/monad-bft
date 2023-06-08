@@ -55,7 +55,7 @@ where
             .boxed();
 
         let pubkey = identity.public();
-        let behavior = Behavior::new(&pubkey, Duration::from_secs(1));
+        let behavior = Behavior::new(&pubkey, Duration::from_secs(1), Duration::from_secs(10));
 
         let local_peer_id: libp2p::PeerId = pubkey.into();
         let mut swarm = SwarmBuilder::without_executor(transport, behavior, local_peer_id).build();
@@ -82,6 +82,7 @@ where
         identity: libp2p::identity::Keypair,
         address: Multiaddr,
         timeout: Duration,
+        keepalive: Duration,
         auth: Auth,
     ) -> Self {
         use libp2p::multiaddr::Protocol;
@@ -116,7 +117,7 @@ where
         };
 
         let pubkey = identity.public();
-        let behavior = Behavior::new(&pubkey, timeout);
+        let behavior = Behavior::new(&pubkey, timeout, keepalive);
 
         let local_peer_id: libp2p::PeerId = pubkey.into();
         let mut swarm = SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id)
