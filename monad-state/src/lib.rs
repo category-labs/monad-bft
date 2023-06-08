@@ -130,12 +130,10 @@ pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>
 pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl monad_types::Serializable
+impl<S: Signature> monad_types::Serializable
     for VerifiedMonadMessage<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
-            monad_crypto::secp256k1::SecpSignature,
-        >,
+        S,
+        monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>,
     >
 {
     fn serialize(&self) -> Vec<u8> {
@@ -144,13 +142,8 @@ impl monad_types::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl monad_types::Deserializable
-    for MonadMessage<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
-            monad_crypto::secp256k1::SecpSignature,
-        >,
-    >
+impl<S: Signature> monad_types::Deserializable
+    for MonadMessage<S, monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>>
 {
     type ReadError = monad_proto::error::ProtoError;
 

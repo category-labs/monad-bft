@@ -18,7 +18,7 @@ message ProtoPeerId {
 // conversion is done in ProtoMonadEvent
 message ProtoAckEvent {
   ProtoPeerId peer = 1;
-  monad_proto.signing.ProtoSecpSignature id = 2;
+  monad_proto.signing.ProtoSignature id = 2;
   monad_proto.basic.ProtoRound round = 3;
 }
 

@@ -29,5 +29,5 @@ message ProtoUnverifiedConsensusMessage {
     ProtoTimeoutMessage timeout = 2;
     ProtoVoteMessage vote = 3;
   }
-  monad_proto.signing.ProtoSecpSignature author_signature = 4;
+  monad_proto.signing.ProtoSignature author_signature = 4;
 }

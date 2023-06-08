@@ -21,7 +21,7 @@ mod test {
             signing::{ValidatorMember, Verified},
         },
     };
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_testutil::block::setup_block;
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{BlockId, Hash, NodeId, Round};
@@ -53,10 +53,11 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg = ConsensusMessage::Vote(VoteMessage {
-            vote_info: vi,
-            ledger_commit_info: lci,
-        });
+        let votemsg: ConsensusMessage<SecpSignature, AggregateSignatures<SecpSignature>> =
+            ConsensusMessage::Vote(VoteMessage {
+                vote_info: vi,
+                ledger_commit_info: lci,
+            });
         let keypairs = vec![get_key(0)];
         let author_keypair = &keypairs[0];
         let validators = setup_validator_member(&keypairs);
@@ -154,10 +155,11 @@ mod test {
             TransactionList(vec![1, 2, 3, 4]),
             &keypairs,
         );
-        let proposal = ConsensusMessage::Proposal(ProposalMessage {
-            block: blk,
-            last_round_tc: None,
-        });
+        let proposal: ConsensusMessage<SecpSignature, AggregateSignatures<SecpSignature>> =
+            ConsensusMessage::Proposal(ProposalMessage {
+                block: blk,
+                last_round_tc: None,
+            });
         let verified_msg = Verified::new::<Sha256Hash>(proposal, author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_msg);

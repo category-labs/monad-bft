@@ -235,8 +235,12 @@ impl Signature for SecpSignature {
         self.recover_pubkey(msg)
     }
 
-    fn serialize(&self) -> [u8; 65] {
-        self.serialize()
+    fn serialize(&self) -> Vec<u8> {
+        self.serialize().to_vec()
+    }
+
+    fn deserialize(signature: &[u8]) -> Result<Self, Error> {
+        Self::deserialize(signature)
     }
 }
 

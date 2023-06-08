@@ -16,7 +16,8 @@ pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 
 
     fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error>;
 
-    fn serialize(&self) -> [u8; 65];
+    fn serialize(&self) -> Vec<u8>;
+    fn deserialize(signature: &[u8]) -> Result<Self, Error>;
 }
 
 // This implementation won't sign or verify anything, but its still required to return a PubKey
@@ -46,7 +47,17 @@ impl Signature for NopSignature {
         Ok(self.pubkey)
     }
 
-    fn serialize(&self) -> [u8; 65] {
-        [0; 65]
+    fn serialize(&self) -> Vec<u8> {
+        self.id
+            .to_le_bytes()
+            .into_iter()
+            .chain(self.pubkey.bytes().into_iter())
+            .collect()
+    }
+
+    fn deserialize(signature: &[u8]) -> Result<Self, Error> {
+        let id = u32::from_le_bytes(signature[..4].try_into().unwrap());
+        let pubkey = PubKey::from_slice(&signature[4..])?;
+        Ok(Self { pubkey, id })
     }
 }

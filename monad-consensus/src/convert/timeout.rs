@@ -1,17 +1,21 @@
-use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::{
+    convert::{proto_to_signature, signature_to_proto},
+    Signature,
+};
 use monad_proto::error::ProtoError;
 use monad_proto::proto::timeout::*;
 
-use crate::types::timeout::{
-    HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple, TimeoutCertificate as ConsensusTC,
-    TimeoutInfo as ConsensusTmoInfo,
+use crate::{
+    signatures::aggregate_signature::AggregateSignatures,
+    types::timeout::{
+        HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
+        TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
+    },
 };
 
-use super::signing::AggSecpSignature;
-
-type HighQcRoundSigTuple = TypeHighQcRoundSigTuple<SecpSignature>;
-type TimeoutCertificate = ConsensusTC<SecpSignature>;
-type TimeoutInfo = ConsensusTmoInfo<AggSecpSignature>;
+type HighQcRoundSigTuple<S> = TypeHighQcRoundSigTuple<S>;
+type TimeoutCertificate<S> = ConsensusTC<S>;
+type TimeoutInfo<S> = ConsensusTmoInfo<AggregateSignatures<S>>;
 
 impl From<&HighQcRound> for ProtoHighQcRound {
     fn from(value: &HighQcRound) -> Self {
@@ -35,16 +39,16 @@ impl TryFrom<ProtoHighQcRound> for HighQcRound {
     }
 }
 
-impl From<&HighQcRoundSigTuple> for ProtoHighQcRoundSigTuple {
-    fn from(value: &HighQcRoundSigTuple) -> Self {
+impl<S: Signature> From<&HighQcRoundSigTuple<S>> for ProtoHighQcRoundSigTuple {
+    fn from(value: &HighQcRoundSigTuple<S>) -> Self {
         Self {
             high_qc_round: Some((&value.high_qc_round).into()),
-            author_signature: Some((&value.author_signature).into()),
+            author_signature: Some(signature_to_proto(&value.author_signature)),
         }
     }
 }
 
-impl TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple {
+impl<S: Signature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoHighQcRoundSigTuple) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -54,18 +58,17 @@ impl TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple {
                     "Unverified<HighQcRound>.obj".to_owned(),
                 ))?
                 .try_into()?,
-            author_signature: value
-                .author_signature
-                .ok_or(Self::Error::MissingRequiredField(
+            author_signature: proto_to_signature(value.author_signature.ok_or(
+                Self::Error::MissingRequiredField(
                     "Unverified<HighQcRound>.author_signature".to_owned(),
-                ))?
-                .try_into()?,
+                ),
+            )?)?,
         })
     }
 }
 
-impl From<&TimeoutCertificate> for ProtoTimeoutCertificate {
-    fn from(value: &TimeoutCertificate) -> Self {
+impl<S: Signature> From<&TimeoutCertificate<S>> for ProtoTimeoutCertificate {
+    fn from(value: &TimeoutCertificate<S>) -> Self {
         Self {
             round: Some((&value.round).into()),
             high_qc_rounds: value
@@ -77,7 +80,7 @@ impl From<&TimeoutCertificate> for ProtoTimeoutCertificate {
     }
 }
 
-impl TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate {
+impl<S: Signature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutCertificate) -> Result<Self, Self::Error> {
@@ -97,8 +100,8 @@ impl TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate {
     }
 }
 
-impl From<&TimeoutInfo> for ProtoTimeoutInfoAggSig {
-    fn from(value: &TimeoutInfo) -> Self {
+impl<S: Signature> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
+    fn from(value: &TimeoutInfo<S>) -> Self {
         Self {
             round: Some((&value.round).into()),
             high_qc: Some((&value.high_qc).into()),
@@ -106,7 +109,7 @@ impl From<&TimeoutInfo> for ProtoTimeoutInfoAggSig {
     }
 }
 
-impl TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo {
+impl<S: Signature> TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutInfoAggSig) -> Result<Self, Self::Error> {

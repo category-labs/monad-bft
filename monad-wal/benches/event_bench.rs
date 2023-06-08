@@ -10,7 +10,6 @@ use monad_consensus::types::timeout::{
     HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo,
 };
 use monad_consensus::{
-    convert::signing::AggSecpSignature,
     signatures::aggregate_signature::AggregateSignatures,
     types::{
         block::TransactionList,
@@ -39,7 +38,7 @@ use monad_wal::PersistenceLogger;
 
 const N_VALIDATORS: usize = 400;
 
-type BenchEvent = MonadEvent<SecpSignature, AggSecpSignature>;
+type BenchEvent = MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>>;
 struct MonadEventBencher {
     event: BenchEvent,
     logger: WALogger<BenchEvent>,
@@ -203,7 +202,7 @@ fn bench_timeout(c: &mut Criterion) {
 }
 
 fn bench_local_timeout(c: &mut Criterion) {
-    let event: MonadEvent<SecpSignature, AggSecpSignature> =
+    let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> =
         MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(PacemakerTimerExpire {}));
 
     let mut bencher = MonadEventBencher::new(event);
@@ -218,7 +217,7 @@ fn bench_local_timeout(c: &mut Criterion) {
 fn bench_ack(c: &mut Criterion) {
     let msg_hash = Hash([0xab_u8; 32].into());
     let keypair: KeyPair = get_key(1);
-    let event: MonadEvent<SecpSignature, AggSecpSignature> = MonadEvent::Ack {
+    let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> = MonadEvent::Ack {
         peer: PeerId(keypair.pubkey()),
         id: keypair.sign(msg_hash.as_ref()),
         round: Round(1),

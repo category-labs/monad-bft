@@ -1,20 +1,23 @@
-use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::convert::{proto_to_signature, signature_to_proto};
+use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::signing::*;
 
 use crate::signatures::aggregate_signature::AggregateSignatures;
 
-pub type AggSecpSignature = AggregateSignatures<SecpSignature>;
-
-impl From<&AggSecpSignature> for ProtoAggSig {
-    fn from(value: &AggSecpSignature) -> Self {
+impl<S: Signature> From<&AggregateSignatures<S>> for ProtoAggSig {
+    fn from(value: &AggregateSignatures<S>) -> Self {
         Self {
-            sigs: value.sigs.iter().map(|v| v.into()).collect::<Vec<_>>(),
+            sigs: value
+                .sigs
+                .iter()
+                .map(|v| signature_to_proto(v))
+                .collect::<Vec<_>>(),
         }
     }
 }
 
-impl TryFrom<ProtoAggSig> for AggSecpSignature {
+impl<S: Signature> TryFrom<ProtoAggSig> for AggregateSignatures<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoAggSig) -> Result<Self, Self::Error> {
@@ -22,7 +25,7 @@ impl TryFrom<ProtoAggSig> for AggSecpSignature {
             sigs: value
                 .sigs
                 .into_iter()
-                .map(|v| v.try_into())
+                .map(|v| proto_to_signature(v))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }

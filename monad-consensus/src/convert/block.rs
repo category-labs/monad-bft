@@ -1,12 +1,12 @@
+use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::block::*;
 
 use crate::{
+    signatures::aggregate_signature::AggregateSignatures,
     types::block::{Block, TransactionList},
     validation::hashing::Sha256Hash,
 };
-
-use super::signing::AggSecpSignature;
 
 impl From<&TransactionList> for ProtoTransactionList {
     fn from(value: &TransactionList) -> Self {
@@ -23,8 +23,8 @@ impl TryFrom<ProtoTransactionList> for TransactionList {
     }
 }
 
-impl From<&Block<AggSecpSignature>> for ProtoBlockAggSig {
-    fn from(value: &Block<AggSecpSignature>) -> Self {
+impl<S: Signature> From<&Block<AggregateSignatures<S>>> for ProtoBlockAggSig {
+    fn from(value: &Block<AggregateSignatures<S>>) -> Self {
         Self {
             author: Some((&value.author).into()),
             round: Some((&value.round).into()),
@@ -34,12 +34,12 @@ impl From<&Block<AggSecpSignature>> for ProtoBlockAggSig {
     }
 }
 
-impl TryFrom<ProtoBlockAggSig> for Block<AggSecpSignature> {
+impl<S: Signature> TryFrom<ProtoBlockAggSig> for Block<AggregateSignatures<S>> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockAggSig) -> Result<Self, Self::Error> {
         // The hasher is hard-coded to be Sha256Hash
-        Ok(Block::<AggSecpSignature>::new::<Sha256Hash>(
+        Ok(Self::new::<Sha256Hash>(
             value
                 .author
                 .ok_or(Self::Error::MissingRequiredField(

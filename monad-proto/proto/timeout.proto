@@ -13,7 +13,7 @@ message ProtoHighQcRound {
 
 message ProtoHighQcRoundSigTuple {
   ProtoHighQcRound high_qc_round = 1;
-  monad_proto.signing.ProtoSecpSignature author_signature = 2;
+  monad_proto.signing.ProtoSignature author_signature = 2;
 }
 
 message ProtoTimeoutCertificate {

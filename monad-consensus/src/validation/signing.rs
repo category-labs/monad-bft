@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
+use monad_crypto::convert::signature_to_proto;
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_crypto::Signature;
 #[cfg(feature = "proto")]
@@ -331,8 +332,8 @@ fn get_pubkey(msg: &[u8], sig: &impl Signature) -> Result<PubKey, Error> {
 }
 
 #[cfg(feature = "proto")]
-impl From<&UnverifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
-    fn from(value: &UnverifiedConsensusMessage) -> Self {
+impl<S: Signature> From<&UnverifiedConsensusMessage<S>> for ProtoUnverifiedConsensusMessage {
+    fn from(value: &UnverifiedConsensusMessage<S>) -> Self {
         let oneof_message = match &value.obj {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
@@ -345,7 +346,7 @@ impl From<&UnverifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
             }
         };
         Self {
-            author_signature: Some(value.author_signature().into()),
+            author_signature: Some(signature_to_proto(value.author_signature())),
             oneof_message: Some(oneof_message),
         }
     }

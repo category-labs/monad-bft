@@ -2,9 +2,9 @@ use zerocopy::AsBytes;
 
 use monad_proto::error::ProtoError;
 use monad_proto::proto::basic::ProtoPubkey;
-use monad_proto::proto::signing::ProtoSecpSignature;
+use monad_proto::proto::signing::ProtoSignature;
 
-use crate::{secp256k1::SecpSignature, PubKey};
+use crate::{PubKey, Signature};
 
 impl From<&PubKey> for ProtoPubkey {
     fn from(value: &PubKey) -> Self {
@@ -23,19 +23,12 @@ impl TryFrom<ProtoPubkey> for PubKey {
     }
 }
 
-impl From<&SecpSignature> for ProtoSecpSignature {
-    fn from(value: &SecpSignature) -> Self {
-        ProtoSecpSignature {
-            sig: value.serialize().to_vec(),
-        }
+pub fn signature_to_proto(signature: &impl Signature) -> ProtoSignature {
+    ProtoSignature {
+        sig: signature.serialize(),
     }
 }
 
-impl TryFrom<ProtoSecpSignature> for SecpSignature {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoSecpSignature) -> Result<Self, Self::Error> {
-        SecpSignature::deserialize(value.sig.as_bytes())
-            .map_err(|e| ProtoError::Secp256k1Error(format!("{}", e)))
-    }
+pub fn proto_to_signature<S: Signature>(proto: ProtoSignature) -> Result<S, ProtoError> {
+    S::deserialize(&proto.sig).map_err(|e| ProtoError::Secp256k1Error(format!("{}", e)))
 }

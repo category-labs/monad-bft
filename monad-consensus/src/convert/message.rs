@@ -1,23 +1,23 @@
 use std::ops::Deref;
 
-use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::convert::{proto_to_signature, signature_to_proto};
+use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::message::*;
 
+use crate::signatures::aggregate_signature::AggregateSignatures;
 use crate::types::consensus_message::ConsensusMessage;
 use crate::types::message::{
     ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
 };
 use crate::validation::signing::{Unverified, Verified};
 
-use super::signing::AggSecpSignature;
-
-type TimeoutMessage = ConsensusTypeTmoMsg<SecpSignature, AggSecpSignature>;
-type ProposalMessage = ConsensusTypePropMsg<SecpSignature, AggSecpSignature>;
-pub(crate) type VerifiedConsensusMessage =
-    Verified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
-pub(crate) type UnverifiedConsensusMessage =
-    Unverified<SecpSignature, ConsensusMessage<SecpSignature, AggSecpSignature>>;
+type TimeoutMessage<S> = ConsensusTypeTmoMsg<S, AggregateSignatures<S>>;
+type ProposalMessage<S> = ConsensusTypePropMsg<S, AggregateSignatures<S>>;
+pub(crate) type VerifiedConsensusMessage<S> =
+    Verified<S, ConsensusMessage<S, AggregateSignatures<S>>>;
+pub(crate) type UnverifiedConsensusMessage<S> =
+    Unverified<S, ConsensusMessage<S, AggregateSignatures<S>>>;
 
 impl From<&VoteMessage> for ProtoVoteMessage {
     fn from(value: &VoteMessage) -> Self {
@@ -49,8 +49,8 @@ impl TryFrom<ProtoVoteMessage> for VoteMessage {
     }
 }
 
-impl From<&TimeoutMessage> for ProtoTimeoutMessage {
-    fn from(value: &TimeoutMessage) -> Self {
+impl<S: Signature> From<&TimeoutMessage<S>> for ProtoTimeoutMessage {
+    fn from(value: &TimeoutMessage<S>) -> Self {
         ProtoTimeoutMessage {
             tminfo: Some((&value.tminfo).into()),
             last_round_tc: (value.last_round_tc.as_ref().map(|v| v.into())),
@@ -58,7 +58,7 @@ impl From<&TimeoutMessage> for ProtoTimeoutMessage {
     }
 }
 
-impl TryFrom<ProtoTimeoutMessage> for TimeoutMessage {
+impl<S: Signature> TryFrom<ProtoTimeoutMessage> for TimeoutMessage<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoTimeoutMessage) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -74,8 +74,8 @@ impl TryFrom<ProtoTimeoutMessage> for TimeoutMessage {
     }
 }
 
-impl From<&ProposalMessage> for ProtoProposalMessageAggSig {
-    fn from(value: &ProposalMessage) -> Self {
+impl<S: Signature> From<&ProposalMessage<S>> for ProtoProposalMessageAggSig {
+    fn from(value: &ProposalMessage<S>) -> Self {
         Self {
             block: Some((&value.block).into()),
             last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
@@ -83,7 +83,7 @@ impl From<&ProposalMessage> for ProtoProposalMessageAggSig {
     }
 }
 
-impl TryFrom<ProtoProposalMessageAggSig> for ProposalMessage {
+impl<S: Signature> TryFrom<ProtoProposalMessageAggSig> for ProposalMessage<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoProposalMessageAggSig) -> Result<Self, Self::Error> {
@@ -99,8 +99,8 @@ impl TryFrom<ProtoProposalMessageAggSig> for ProposalMessage {
     }
 }
 
-impl From<&VerifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
-    fn from(value: &VerifiedConsensusMessage) -> Self {
+impl<S: Signature> From<&VerifiedConsensusMessage<S>> for ProtoUnverifiedConsensusMessage {
+    fn from(value: &VerifiedConsensusMessage<S>) -> Self {
         let oneof_message = match value.deref() {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
@@ -114,12 +114,12 @@ impl From<&VerifiedConsensusMessage> for ProtoUnverifiedConsensusMessage {
         };
         Self {
             oneof_message: Some(oneof_message),
-            author_signature: Some(value.author_signature().into()),
+            author_signature: Some(signature_to_proto(value.author_signature())),
         }
     }
 }
 
-impl TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage {
+impl<S: Signature> TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoUnverifiedConsensusMessage) -> Result<Self, Self::Error> {
@@ -137,12 +137,9 @@ impl TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage {
                 "Unverified<ConsensusMessage>.oneofmessage".to_owned(),
             ))?,
         };
-        let signature: SecpSignature = value
-            .author_signature
-            .ok_or(Self::Error::MissingRequiredField(
-                "Unverified<ConsensusMessage>.signature".to_owned(),
-            ))?
-            .try_into()?;
+        let signature = proto_to_signature(value.author_signature.ok_or(
+            Self::Error::MissingRequiredField("Unverified<ConsensusMessage>.signature".to_owned()),
+        )?)?;
         Ok(Unverified::new(message, signature))
     }
 }

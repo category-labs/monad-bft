@@ -1,11 +1,13 @@
+use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::quorum_certificate::*;
 
-use crate::types::quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC};
+use crate::{
+    signatures::aggregate_signature::AggregateSignatures,
+    types::quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC},
+};
 
-use super::signing::AggSecpSignature;
-
-type QuorumCertificate = ConsensusQC<AggSecpSignature>;
+type QuorumCertificate<S> = ConsensusQC<AggregateSignatures<S>>;
 
 impl From<&QcInfo> for ProtoQcInfo {
     fn from(qcinfo: &QcInfo) -> Self {
@@ -34,8 +36,8 @@ impl TryFrom<ProtoQcInfo> for QcInfo {
     }
 }
 
-impl From<&QuorumCertificate> for ProtoQuorumCertificateAggSig {
-    fn from(value: &QuorumCertificate) -> Self {
+impl<S: Signature> From<&QuorumCertificate<S>> for ProtoQuorumCertificateAggSig {
+    fn from(value: &QuorumCertificate<S>) -> Self {
         Self {
             info: Some((&value.info).into()),
             signatures: Some((&value.signatures).into()),
@@ -43,7 +45,7 @@ impl From<&QuorumCertificate> for ProtoQuorumCertificateAggSig {
     }
 }
 
-impl TryFrom<ProtoQuorumCertificateAggSig> for QuorumCertificate {
+impl<S: Signature> TryFrom<ProtoQuorumCertificateAggSig> for QuorumCertificate<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoQuorumCertificateAggSig) -> Result<Self, Self::Error> {

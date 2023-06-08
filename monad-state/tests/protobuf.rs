@@ -1,14 +1,12 @@
 #[cfg(all(test, feature = "proto"))]
 mod test {
+    use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
     use monad_consensus::types::consensus_message::ConsensusMessage;
     use monad_consensus::types::ledger::LedgerCommitInfo;
     use monad_consensus::types::message::VoteMessage;
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
-    use monad_consensus::{
-        convert::signing::AggSecpSignature, pacemaker::PacemakerTimerExpire,
-        validation::signing::Unverified,
-    };
+    use monad_consensus::{pacemaker::PacemakerTimerExpire, validation::signing::Unverified};
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::PeerId;
     use monad_state::{
@@ -24,11 +22,12 @@ mod test {
         let keypair = get_key(1);
         let pubkey = keypair.pubkey();
         let msg_hash = Hash([0x01_u8; 32]);
-        let event: MonadEvent<SecpSignature, AggSecpSignature> = MonadEvent::Ack {
-            peer: PeerId(pubkey),
-            id: keypair.sign(msg_hash.as_ref()),
-            round: Round(10),
-        };
+        let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> =
+            MonadEvent::Ack {
+                peer: PeerId(pubkey),
+                id: keypair.sign(msg_hash.as_ref()),
+                round: Round(10),
+            };
 
         let buf = serialize_event(&event);
         let rx_event = deserialize_event(&buf);
@@ -38,9 +37,10 @@ mod test {
 
     #[test]
     fn test_consensus_timeout_event() {
-        let event = MonadEvent::ConsensusEvent(
-            ConsensusEvent::<SecpSignature, AggSecpSignature>::Timeout(PacemakerTimerExpire {}),
-        );
+        let event = MonadEvent::ConsensusEvent(ConsensusEvent::<
+            SecpSignature,
+            AggregateSignatures<SecpSignature>,
+        >::Timeout(PacemakerTimerExpire {}));
 
         let buf = serialize_event(&event);
         let rx_event = deserialize_event(&buf);
@@ -61,7 +61,7 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg: ConsensusMessage<SecpSignature, AggSecpSignature> =
+        let votemsg: ConsensusMessage<SecpSignature, AggregateSignatures<SecpSignature>> =
             ConsensusMessage::Vote(VoteMessage {
                 vote_info: vi,
                 ledger_commit_info: lci,
