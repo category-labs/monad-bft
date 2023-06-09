@@ -198,15 +198,16 @@ async fn run(mut config: Config) {
     const BLOCK_INTERVAL: usize = 100;
     while let Some(event) = executor.next().await {
         let commands = state.update(event);
-        if state.ledger().len() >= last_printed_len + BLOCK_INTERVAL {
+        let ledger_len = executor.ledger().get_blocks().len();
+        if ledger_len >= last_printed_len + BLOCK_INTERVAL {
             event!(
                 Level::INFO,
-                ledger_len = state.ledger().len(),
+                ledger_len = ledger_len,
                 elapsed_ms = start.elapsed().as_millis(),
                 "100 blocks"
             );
             start = Instant::now();
-            last_printed_len = state.ledger().len() / BLOCK_INTERVAL * BLOCK_INTERVAL;
+            last_printed_len = ledger_len / BLOCK_INTERVAL * BLOCK_INTERVAL;
         }
         executor.exec(commands);
     }
