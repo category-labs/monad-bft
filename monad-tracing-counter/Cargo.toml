@@ -3,10 +3,8 @@ name = "monad-tracing-counter"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-tracing = "0.1.35"
-tracing-core = "0.1.31"
-tracing-subscriber = "0.3.17"
+tracing = { workspace = true }
+tracing-core = { workspace = true }
+tracing-subscriber = { workspace = true }
 

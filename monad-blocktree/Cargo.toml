@@ -3,8 +3,6 @@ name = "monad-blocktree"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
@@ -14,8 +12,9 @@ bench = false
 monad-consensus = { path = "../monad-consensus" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
-ptree = "0.4.0"
-tracing = "0.1.37"
+
+ptree = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }

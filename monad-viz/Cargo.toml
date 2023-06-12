@@ -3,22 +3,20 @@ name = "monad-viz"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [[bin]]
 name = "monad-viz"
 bench = false
 
 [dependencies]
-iced = { version = "0.9", features = ["canvas"] }
-iced_native = { version = "0.10"}
-iced_lazy = { version = "0.6"}
-
-futures = "0.3"
-
-monad-executor = { path = "../monad-executor" }
 monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto" }
+monad-executor = { path = "../monad-executor" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-wal = { path = "../monad-wal" }
+
+iced = { version = "0.9", features = ["canvas"] }
+iced_native = { version = "0.10" }
+iced_lazy = { version = "0.6" }
+
+futures = { workspace = true }

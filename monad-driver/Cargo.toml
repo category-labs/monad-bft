@@ -3,8 +3,6 @@ name = "monad-driver"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
@@ -12,11 +10,12 @@ monad-executor = { path = "../monad-executor", features = ["tokio"] }
 monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
 monad-state = { path = "../monad-state", features = ["proto"] }
 
-futures = "0.3"
+futures = { workspace = true }
 libp2p = { workspace = true }
-tokio = { version = "1.28", features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil"}
+monad-testutil = { path = "../monad-testutil" }
 monad-wal = { path = "../monad-wal" }
-tempfile = "3.5.0"
+
+tempfile = { workspace = true }

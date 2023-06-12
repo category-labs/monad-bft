@@ -3,8 +3,6 @@ name = "monad-p2p"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
@@ -16,11 +14,10 @@ monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-executor = { path = "../monad-executor" }
 monad-types = { path = "../monad-types" }
 
-futures = "0.3"
-async-trait = "0.1"
-tracing = "0.1"
-
+async-trait = { workspace = true }
+futures = { workspace = true }
 libp2p = { workspace = true, features = ["macros", "mplex", "noise", "plaintext", "identify", "request-response", "secp256k1"] }
+tracing = { workspace = true }
 
 [features]
 tokio = ["libp2p/tcp", "libp2p/tokio"]

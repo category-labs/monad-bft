@@ -3,8 +3,6 @@ name = "monad-consensus"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
@@ -16,14 +14,14 @@ monad-proto = { path = "../monad-proto", optional = true }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
-prost = { version = "0.11.9", optional = true}
-sha2 = "0.10.6"
-test-case = "3.0.0"
-zerocopy = "0.6.1"
-tracing = "0.1"
+prost = { workspace = true, optional = true }
+sha2 = { workspace = true }
+test-case = { workspace = true }
+tracing = { workspace = true }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil"}
+monad-testutil = { path = "../monad-testutil" }
 
 [features]
 proto = ["dep:monad-proto", "dep:prost", "monad-crypto/proto", "monad-types/proto"]

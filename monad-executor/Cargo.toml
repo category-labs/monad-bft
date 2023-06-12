@@ -15,17 +15,17 @@ monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
 monad-wal = { path = "../monad-wal" }
 
-futures = "0.3"
-rand = "0.8.5"
-rand_chacha = "0.3.1"
-tokio = { version = "1.26", features = ["time"], optional = true }
-tracing = "0.1.37"
+futures = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tokio = { workspace = true, features = ["time"], optional = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-monad-testutil = { path = "../monad-testutil"}
-monad-types = { path = "../monad-types" }
+monad-testutil = { path = "../monad-testutil" }
+monad-types = { path = "../monad-types"  }
 
-tokio = { version = "1.26", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 proto = ["dep:monad-proto", "monad-crypto/proto"]

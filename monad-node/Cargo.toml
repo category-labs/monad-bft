@@ -3,8 +3,6 @@ name = "monad-node"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
@@ -13,9 +11,9 @@ monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
 monad-state = { path = "../monad-state", features = ["proto"] }
 monad-types = { path = "../monad-types" }
 
-clap = { version = "4.2", features = ["derive"] }
-futures-util = "0.3"
-rand = "0.8"
-tokio = { version = "1.28", features = ["macros", "rt-multi-thread"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
+clap = { workspace = true, features = ["derive"] }
+futures-util = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

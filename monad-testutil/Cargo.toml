@@ -3,8 +3,6 @@ name = "monad-testutil"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 # this is necessary for criterion bench options
 # https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 [lib]
@@ -12,13 +10,13 @@ bench = false
 
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
-monad-crypto = {path = "../monad-crypto"}
-monad-executor = {path = "../monad-executor"}
-monad-state = {path = "../monad-state"}
-monad-types = {path = "../monad-types"}
-monad-validator = {path = "../monad-validator"}
-monad-wal = {path = "../monad-wal"}
-rand = "0.8.5"
-rand_chacha = "0.3.1"
+monad-crypto = {path = "../monad-crypto" }
+monad-executor = {path = "../monad-executor" }
+monad-state = {path = "../monad-state" }
+monad-types = {path = "../monad-types" }
+monad-validator = {path = "../monad-validator" }
+monad-wal = {path = "../monad-wal" }
 
-sha2 = "0.10.6"
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+sha2 = { workspace = true }
