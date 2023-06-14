@@ -15,5 +15,9 @@ clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+opentelemetry = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }

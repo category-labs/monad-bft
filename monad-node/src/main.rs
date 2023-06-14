@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use futures_util::StreamExt;
 use tracing::event;
-use tracing::instrument::Instrument;
 use tracing::Level;
 
 use monad_consensus::{
@@ -37,6 +36,7 @@ type MonadConfig = <MonadState as State>::Config;
 pub struct Config {
     // boxed for no implicit copies
     pub secret_key: Box<[u8; 32]>,
+    pub simulation_length: Duration,
 
     pub bind_address: Multiaddr,
     pub libp2p_timeout: Duration,
@@ -59,33 +59,49 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // tracing_subscriber::fmt::init();
+
+    use tracing_subscriber::layer::SubscriberExt;
+    let tracer = opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter::new(
+        "/tmp/jaeger".into(),
+        "jaeger".to_owned(),
+        "monad-node".to_owned(),
+        opentelemetry::runtime::Tokio,
+    )
+    // ID generator needs to be passed into TracerProvider::builder() inside install_batch
+    .install_batch();
+
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = tracing_subscriber::Registry::default().with(telemetry);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let args = Args::parse();
 
-    futures_util::future::join_all(
-        testnet(
-            args.addresses,
-            Duration::from_secs(5),
-            Duration::from_secs(60),
+    {
+        let all_nodes_span = tracing::info_span!("all_nodes");
+        let _entered = all_nodes_span.enter();
+        let id = all_nodes_span.id().unwrap();
+        futures_util::future::join_all(
+            testnet(
+                args.addresses,
+                Duration::from_secs(10),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            )
+            .map(|config| Box::pin(run(id.clone(), config)))
+            .map(tokio::spawn),
         )
-        .map(|config| {
-            let fut = {
-                let bind_address = config.bind_address.clone();
-                run(config).instrument(tracing::info_span!("node", ?bind_address))
-            };
-            Box::pin(fut)
-        })
-        .map(tokio::spawn),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap();
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
 }
 
 fn testnet(
     addresses: Vec<String>,
+    simulation_length: Duration,
     delta: Duration,
     keepalive: Duration,
 ) -> impl Iterator<Item = Config> {
@@ -140,6 +156,7 @@ fn testnet(
         .zip(secrets.into_iter())
         .map(move |(bind_address, secret_key)| Config {
             secret_key,
+            simulation_length,
             bind_address,
             libp2p_timeout: delta,
             libp2p_keepalive: keepalive,
@@ -152,7 +169,7 @@ fn testnet(
         })
 }
 
-async fn run(mut config: Config) {
+async fn run(cx: tracing::span::Id, mut config: Config) {
     let (keypair, libp2p_keypair) =
         KeyPair::libp2p_from_bytes(config.secret_key.as_mut_slice()).expect("invalid key");
 
@@ -193,12 +210,26 @@ async fn run(mut config: Config) {
     // we can delete this once we support retry at the monad-p2p executor level
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    let mut start = Instant::now();
+    let total_start = Instant::now();
+    let mut start = total_start;
     let mut last_printed_len = 0;
     const BLOCK_INTERVAL: usize = 100;
+
+    let mut last_ledger_len = executor.ledger().get_blocks().len();
+    let mut ledger_span = tracing::info_span!(parent: cx.clone(), "ledger_span", last_ledger_len);
+
     while let Some(event) = executor.next().await {
-        let commands = state.update(event);
+        let commands = {
+            let _ledger_span = ledger_span.enter();
+            let _event_span = tracing::info_span!("event_span", ?event).entered();
+            state.update(event)
+        };
+        executor.exec(commands);
         let ledger_len = executor.ledger().get_blocks().len();
+        if ledger_len > last_ledger_len {
+            last_ledger_len = ledger_len;
+            ledger_span = tracing::info_span!(parent: cx.clone(), "ledger_span", last_ledger_len);
+        }
         if ledger_len >= last_printed_len + BLOCK_INTERVAL {
             event!(
                 Level::INFO,
@@ -209,6 +240,11 @@ async fn run(mut config: Config) {
             start = Instant::now();
             last_printed_len = ledger_len / BLOCK_INTERVAL * BLOCK_INTERVAL;
         }
-        executor.exec(commands);
+        if total_start.elapsed() > config.simulation_length {
+            break;
+        }
     }
+    eprintln!("exited runloop");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    eprintln!("exited runloop, done sleeping");
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
+#[cfg(feature = "proto")]
 use monad_crypto::convert::signature_to_proto;
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_crypto::Signature;
