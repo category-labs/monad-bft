@@ -7,18 +7,12 @@ use monad_executor::{
     Message, PeerId,
 };
 use monad_wal::PersistenceLogger;
-pub enum NodeEvent<'s, Id, M, MId, E> {
+pub enum NodeEvent<'s, Id, M, E> {
     Message {
         tx_time: Duration,
         rx_time: Duration,
         tx_peer: &'s Id,
         message: &'s M,
-    },
-    Ack {
-        tx_time: Duration,
-        rx_time: Duration,
-        tx_peer: &'s Id,
-        message_id: &'s MId,
     },
     Timer {
         scheduled_time: Duration,
@@ -27,11 +21,11 @@ pub enum NodeEvent<'s, Id, M, MId, E> {
     },
 }
 
-pub struct NodeState<'s, Id, S, M, MId, E> {
+pub struct NodeState<'s, Id, S, M, E> {
     pub id: &'s Id,
     pub state: &'s S,
 
-    pub pending_events: Vec<NodeEvent<'s, Id, M, MId, E>>,
+    pub pending_events: Vec<NodeEvent<'s, Id, M, E>>,
 }
 
 pub trait Graph {
@@ -41,9 +35,7 @@ pub trait Graph {
     type Event;
     type NodeId;
 
-    fn state(
-        &self,
-    ) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::MessageId, Self::Event>>;
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::Event>>;
     fn tick(&self) -> Duration;
     fn min_tick(&self) -> Duration;
     fn max_tick(&self) -> Duration;
@@ -124,9 +116,7 @@ where
     type Event = S::Event;
     type NodeId = PeerId;
 
-    fn state(
-        &self,
-    ) -> Vec<NodeState<Self::NodeId, S, S::Message, <S::Message as Message>::Id, S::Event>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, S, S::Message, S::Event>> {
         let mut state =
             self.nodes
                 .states()
@@ -150,17 +140,6 @@ where
                                 message: &message_event.t,
                             }
                         }))
-                        .chain(
-                            executor
-                                .pending_acks()
-                                .iter()
-                                .map(|ack_event| NodeEvent::Ack {
-                                    tx_time: ack_event.tx_tick,
-                                    rx_time: ack_event.tick,
-                                    tx_peer: &ack_event.from,
-                                    message_id: &ack_event.t,
-                                }),
-                        )
                         .collect(),
                 })
                 .collect::<Vec<_>>();

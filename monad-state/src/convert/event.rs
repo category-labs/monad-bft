@@ -1,7 +1,5 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
-use monad_crypto::convert::proto_to_signature;
-use monad_crypto::convert::signature_to_proto;
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::event::*;
@@ -107,13 +105,6 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
 impl<S: Signature> From<&MonadEvent<S>> for ProtoMonadEvent {
     fn from(value: &MonadEvent<S>) -> Self {
         let event = match value {
-            TypeMonadEvent::Ack { peer, id, round } => {
-                proto_monad_event::Event::Ack(ProtoAckEvent {
-                    peer: Some(peer.into()),
-                    id: Some(signature_to_proto(id)),
-                    round: Some(round.into()),
-                })
-            }
             TypeMonadEvent::ConsensusEvent(msg) => {
                 proto_monad_event::Event::ConsensusEvent(msg.into())
             }
@@ -126,21 +117,6 @@ impl<S: Signature> TryFrom<ProtoMonadEvent> for MonadEvent<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
         let event: MonadEvent<S> = match value.event {
-            Some(proto_monad_event::Event::Ack(ProtoAckEvent { peer, id, round })) => {
-                MonadEvent::Ack {
-                    peer: peer
-                        .ok_or(ProtoError::MissingRequiredField("AckEvent.peer".to_owned()))?
-                        .try_into()?,
-                    id: proto_to_signature(
-                        id.ok_or(ProtoError::MissingRequiredField("AckEvent.id".to_owned()))?,
-                    )?,
-                    round: round
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "AckEvent.Round".to_owned(),
-                        ))?
-                        .try_into()?,
-                }
-            }
             Some(proto_monad_event::Event::ConsensusEvent(event)) => {
                 MonadEvent::ConsensusEvent(event.try_into()?)
             }

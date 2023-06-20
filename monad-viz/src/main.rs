@@ -228,32 +228,6 @@ impl Program<Message> for &Sim {
                             ..Default::default()
                         })
                     }
-                    NodeEvent::Ack {
-                        tx_time,
-                        rx_time,
-                        tx_peer,
-                        message_id,
-                    } => {
-                        if tx_time == Duration::from_secs_f32(tick) || rx_peer == tx_peer {
-                            continue;
-                        }
-                        let (x1, y1) = points[node_indices[tx_peer]];
-                        let (x2, y2) = points[node_indices[rx_peer]];
-                        let ratio =
-                            (tick - tx_time.as_secs_f32()) / (rx_time - tx_time).as_secs_f32();
-                        let (x, y) = (x1 + (x2 - x1) * ratio, y1 + (y2 - y1) * ratio);
-
-                        let circle = Path::circle(frame.center() + Vector::new(x, y), 4.0);
-                        frame.fill(&circle, Color::from_rgb(255.0, 0.0, 255.0));
-
-                        frame.fill_text(Text {
-                            content: "ACK".to_owned(),
-                            position: frame.center() + Vector::new(x + 5.0, y - 5.0),
-                            size: 20.0,
-                            color: Color::BLACK,
-                            ..Default::default()
-                        })
-                    }
                     NodeEvent::Timer {
                         scheduled_time,
                         trip_time,

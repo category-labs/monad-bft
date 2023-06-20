@@ -8,7 +8,6 @@ mod test {
     use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
     use monad_consensus::{pacemaker::PacemakerTimerExpire, validation::signing::Unverified};
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_executor::PeerId;
     use monad_state::{
         convert::interface::{deserialize_event, serialize_event},
         ConsensusEvent, MonadEvent,
@@ -16,24 +15,6 @@ mod test {
     use monad_testutil::signing::get_key;
     use monad_types::BlockId;
     use monad_types::{Hash, Round};
-
-    #[test]
-    fn test_ack_event() {
-        let keypair = get_key(1);
-        let pubkey = keypair.pubkey();
-        let msg_hash = Hash([0x01_u8; 32]);
-        let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> =
-            MonadEvent::Ack {
-                peer: PeerId(pubkey),
-                id: keypair.sign(msg_hash.as_ref()),
-                round: Round(10),
-            };
-
-        let buf = serialize_event(&event);
-        let rx_event = deserialize_event(&buf);
-
-        assert_eq!(event, rx_event.unwrap());
-    }
 
     #[test]
     fn test_consensus_timeout_event() {

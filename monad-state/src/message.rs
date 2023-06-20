@@ -130,27 +130,6 @@ where
 
         commands
     }
-
-    pub fn handle_ack(
-        &mut self,
-        round: Round,
-        peer: PeerId,
-        id: M::Id,
-    ) -> Option<MessageActionUnpublish<M>> {
-        let max_round = self.max_round();
-        if round >= self.min_round() && round <= max_round {
-            let back_idx = self.max_rounds_cached() - 1;
-            let key = (peer, id);
-
-            assert!(self.messages[(back_idx - (max_round - round).0) as usize].remove(&key));
-            Some(MessageActionUnpublish {
-                to: key.0,
-                id: key.1,
-            })
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -216,31 +195,5 @@ mod tests {
                 id: TestMessage,
             }],
         )
-    }
-
-    #[test]
-    fn handle_ack() {
-        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId(node_id().0), TestMessage);
-
-        let evicted = state.handle_ack(Round(0), PeerId(node_id().0), TestMessage);
-        assert_eq!(
-            evicted,
-            Some(MessageActionUnpublish {
-                to: PeerId(node_id().0),
-                id: TestMessage,
-            }),
-        )
-    }
-
-    #[test]
-    fn evicted_handle_ack() {
-        let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId(node_id().0), TestMessage);
-
-        let _ = state.set_round(Round(10), Vec::new());
-
-        let evicted = state.handle_ack(Round(0), PeerId(node_id().0), TestMessage);
-        assert_eq!(evicted, None,)
     }
 }

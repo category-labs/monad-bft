@@ -27,7 +27,7 @@ where
 {
     swarm: libp2p::Swarm<Behavior<M, OM>>,
 
-    outbound_messages: HashMap<RequestId, (Arc<WrappedMessage<M, OM>>, M::Event)>,
+    outbound_messages: HashMap<RequestId, Arc<WrappedMessage<M, OM>>>,
     outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
 
     self_events: VecDeque<M::Event>,
@@ -153,13 +153,12 @@ where
         self.swarm.listeners()
     }
 
-    pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: OM, on_ack: M::Event) {
+    pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: OM) {
         let to_libp2p: libp2p::PeerId = (&to.0).into();
         if self.swarm.local_peer_id() == &to_libp2p {
             // we need special case send to self
             // this is because dialing to self will fail
             self.self_events.push_back(message.into().event(*to));
-            self.self_events.push_back(on_ack);
             return;
         }
         let id = message.as_ref().id();
@@ -169,7 +168,7 @@ where
             .behaviour_mut()
             .request_response
             .send_request(&to_libp2p, message.clone());
-        self.outbound_messages.insert(request_id, (message, on_ack));
+        self.outbound_messages.insert(request_id, message);
         self.outbound_messages_lookup
             .insert((to_libp2p, id), request_id);
         assert_eq!(
@@ -208,11 +207,7 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                RouterCommand::Publish {
-                    to,
-                    message,
-                    on_ack,
-                } => self.publish_message(&to, message, on_ack),
+                RouterCommand::Publish { to, message } => self.publish_message(&to, message),
                 RouterCommand::Unpublish { to, id } => self.unpublish_message(&to, &id),
             }
         }
@@ -276,14 +271,11 @@ where
                             request_id,
                             response: (),
                         } => {
-                            if let Some((message, on_ack)) =
-                                service.outbound_messages.remove(&request_id)
-                            {
+                            if let Some(message) = service.outbound_messages.remove(&request_id) {
                                 service
                                     .outbound_messages_lookup
                                     .remove(&(peer, message.id()))
                                     .expect("outbound_messages_lookup out of sync");
-                                return Poll::Ready(Some(on_ack));
                             }
                         }
                     }
@@ -329,7 +321,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     enum TestEvent {
         Message(monad_executor::PeerId, TestMessage),
-        Ack(monad_executor::PeerId, <TestMessage as Message>::Id),
     }
 
     impl Message for TestMessage {
@@ -408,13 +399,11 @@ mod tests {
     fn test_send_self() {
         let (peer_id, mut service) = create_random_node();
         let message = TestMessage(0);
-        let on_ack_event = TestEvent::Ack(peer_id, message.id());
-        service.publish_message(&peer_id, message.clone(), on_ack_event.clone());
+        service.publish_message(&peer_id, message.clone());
 
-        let mut expected_events: HashSet<_> =
-            vec![TestEvent::Message(peer_id, message), on_ack_event]
-                .into_iter()
-                .collect();
+        let mut expected_events: HashSet<_> = vec![TestEvent::Message(peer_id, message)]
+            .into_iter()
+            .collect();
 
         while !expected_events.is_empty() {
             let event = futures::executor::block_on(service.next()).unwrap();
@@ -430,18 +419,15 @@ mod tests {
             (peer_ids.next().unwrap(), peer_ids.next().unwrap())
         };
         let message = TestMessage(0);
-        let on_ack_event = TestEvent::Ack(peer_id_2, message.id());
         {
             let service_1 = nodes.get_mut(&peer_id_1).unwrap();
-            service_1.publish_message(&peer_id_2, message.clone(), on_ack_event.clone());
+            service_1.publish_message(&peer_id_2, message.clone());
         }
 
-        let mut expected_events: HashSet<_> = vec![
-            (peer_id_1, on_ack_event),
-            (peer_id_2, TestEvent::Message(peer_id_1, message)),
-        ]
-        .into_iter()
-        .collect();
+        let mut expected_events: HashSet<_> =
+            vec![(peer_id_2, TestEvent::Message(peer_id_1, message))]
+                .into_iter()
+                .collect();
 
         while !expected_events.is_empty() {
             // this future resolves to the next available event (across all nodes)

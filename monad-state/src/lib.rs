@@ -76,11 +76,6 @@ where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
-    Ack {
-        peer: PeerId,
-        id: <MonadMessage<ST, SCT> as Message>::Id,
-        round: Round,
-    },
     ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
 
@@ -257,18 +252,6 @@ where
         event: Self::Event,
     ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
         match event {
-            MonadEvent::Ack { peer, id, round } => self
-                .message_state
-                .handle_ack(round, peer, id)
-                .into_iter()
-                .map(|cmd| {
-                    Command::RouterCommand(RouterCommand::Unpublish {
-                        to: cmd.to,
-                        id: cmd.id,
-                    })
-                })
-                .collect(),
-
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(pacemaker_expire) => self
@@ -357,14 +340,6 @@ where
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
                                 to: publish_action.to,
                                 message: publish_action.message,
-                                on_ack: MonadEvent::Ack {
-                                    peer: publish_action.to,
-                                    id,
-
-                                    // TODO verify that this is the correct round()?
-                                    // should we be extracting this from `message` instead?
-                                    round: self.message_state.round(),
-                                },
                             }))
                         }
                         ConsensusCommand::Broadcast { message } => {
@@ -378,14 +353,6 @@ where
                                     Command::RouterCommand(RouterCommand::Publish {
                                         to: publish_action.to,
                                         message: publish_action.message,
-                                        on_ack: MonadEvent::Ack {
-                                            peer: publish_action.to,
-                                            id,
-
-                                            // TODO verify that this is the correct round()?
-                                            // should we be extracting this from `message` instead?
-                                            round: self.message_state.round(),
-                                        },
                                     })
                                 },
                             ));

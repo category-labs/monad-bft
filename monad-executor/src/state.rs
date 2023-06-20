@@ -15,15 +15,8 @@ pub enum RouterCommand<M, OM>
 where
     M: Message,
 {
-    Publish {
-        to: PeerId,
-        message: OM,
-        on_ack: M::Event,
-    },
-    Unpublish {
-        to: PeerId,
-        id: M::Id,
-    },
+    Publish { to: PeerId, message: OM },
+    Unpublish { to: PeerId, id: M::Id },
 }
 
 pub enum TimerCommand<E> {

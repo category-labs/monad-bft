@@ -214,33 +214,12 @@ fn bench_local_timeout(c: &mut Criterion) {
     });
 }
 
-fn bench_ack(c: &mut Criterion) {
-    let msg_hash = Hash([0xab_u8; 32].into());
-    let keypair: KeyPair = get_key(1);
-    let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> = MonadEvent::Ack {
-        peer: PeerId(keypair.pubkey()),
-        id: keypair.sign(msg_hash.as_ref()),
-        round: Round(1),
-    };
-
-    let mut bencher = MonadEventBencher::new(event);
-
-    c.bench_function("bench_ack", |b| {
-        b.iter(|| {
-            for _ in 0..N_VALIDATORS {
-                bencher.append();
-            }
-        })
-    });
-}
-
 criterion_group!(
     bench,
     bench_proposal,
     bench_vote,
     bench_timeout,
     bench_local_timeout,
-    bench_ack
 );
 
 #[cfg(target_os = "linux")]

@@ -14,17 +14,11 @@ use tracing::info_span;
 
 use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
-#[derive(Clone, Debug)]
-pub enum LinkMessageType<M: Message> {
-    Message(M),
-    Ack(M::Id),
-}
-
 #[derive(Clone)]
 pub struct LinkMessage<M: Message> {
     pub from: PeerId,
     pub to: PeerId,
-    pub message: LinkMessageType<M>,
+    pub message: M,
 
     /// absolute time
     pub from_tick: Duration,
@@ -279,23 +273,7 @@ where
                 let lm = LinkMessage {
                     from: *peer_id,
                     to,
-                    message: LinkMessageType::Message(outbound_message.into()),
-
-                    from_tick: tick,
-                };
-                let transformed = if self.enable_transformer {
-                    self.transformer.transform(lm)
-                } else {
-                    vec![(Duration::ZERO, lm)]
-                };
-
-                outbounds.extend(transformed.into_iter());
-            }
-            while let Some((to, message_id)) = executor.receive_ack() {
-                let lm = LinkMessage {
-                    from: *peer_id,
-                    to,
-                    message: LinkMessageType::Ack(message_id),
+                    message: outbound_message.into(),
 
                     from_tick: tick,
                 };
@@ -322,15 +300,7 @@ where
         ) in outbounds
         {
             let to_state = &mut self.states.get_mut(&to).unwrap().0;
-
-            match message {
-                LinkMessageType::Message(m) => {
-                    to_state.send_message(tick + delay, from, m, from_tick)
-                }
-                LinkMessageType::Ack(m_id) => {
-                    to_state.send_ack(tick + delay, from, m_id, from_tick)
-                }
-            }
+            to_state.send_message(tick + delay, from, message, from_tick)
         }
     }
 
