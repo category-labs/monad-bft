@@ -13,7 +13,6 @@ use super::mempool::MockMempool;
 use crate::{
     state::PeerId, Command, Executor, Message, RouterCommand, RouterTarget, State, TimerCommand,
 };
-
 use futures::{Stream, StreamExt};
 
 pub struct MockExecutor<S>
@@ -468,6 +467,21 @@ mod tests {
         Vote { peer: PeerId, round: u64 },
     }
 
+    use monad_types::{Deserializable, Serializable};
+
+    impl Serializable for SimpleChainEvent {
+        fn serialize(&self) -> Vec<u8> {
+            unreachable!("not used")
+        }
+    }
+
+    impl Deserializable for SimpleChainEvent {
+        type ReadError = ReadError;
+        fn deserialize(_buf: &[u8]) -> Result<Self, Self::ReadError> {
+            unreachable!("not used")
+        }
+    }
+
     #[derive(Debug)]
     struct ReadError {}
 
@@ -574,6 +588,7 @@ mod tests {
 
     #[test]
     fn test_nodes() {
+        use crate::timed_event::TimedEvent;
         let pubkeys = create_keys(NUM_NODES as u32)
             .iter()
             .map(KeyPair::pubkey)
@@ -589,10 +604,11 @@ mod tests {
             .zip(std::iter::repeat(MockWALoggerConfig {}))
             .map(|((a, b), c)| (a, b, c))
             .collect();
-        let mut nodes = Nodes::<SimpleChainState, _, MockWALogger<SimpleChainEvent>>::new(
-            peers,
-            LatencyTransformer(Duration::from_millis(50)),
-        );
+        let mut nodes =
+            Nodes::<SimpleChainState, _, MockWALogger<TimedEvent<SimpleChainEvent>>>::new(
+                peers,
+                LatencyTransformer(Duration::from_millis(50)),
+            );
 
         while let Some((duration, id, event)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")

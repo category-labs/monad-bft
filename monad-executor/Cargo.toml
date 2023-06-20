@@ -14,6 +14,7 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
 monad-wal = { path = "../monad-wal" }
+monad-types = { path = "../monad-types"  }
 
 futures = { workspace = true }
 rand = { workspace = true }
@@ -23,7 +24,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
-monad-types = { path = "../monad-types"  }
+
 
 tokio = { workspace = true, features = ["macros", "rt"] }
 

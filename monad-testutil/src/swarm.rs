@@ -8,10 +8,14 @@ use monad_consensus_types::{
     multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
     validation::Sha256Hash,
 };
-use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature, Signature};
+use monad_crypto::{
+    secp256k1::{KeyPair, PubKey},
+    NopSignature, Signature,
+};
 use monad_executor::{
     executor::mock::MockExecutor,
     mock_swarm::{LinkMessage, Nodes, Transformer},
+    timed_event::TimedEvent,
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
@@ -23,7 +27,8 @@ type SignatureCollectionType = MultiSig<SignatureType>;
 type MS = MonadState<SignatureType, SignatureCollectionType>;
 type MC = MonadConfig<SignatureCollectionType>;
 type MM = <MS as State>::Message;
-type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
+type PersistenceLoggerType =
+    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 
 pub enum TransformerReplayOrder {
     Forward,

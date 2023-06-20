@@ -76,6 +76,30 @@ where
     ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
 
+impl monad_types::Deserializable
+    for MonadEvent<
+        monad_crypto::NopSignature,
+        monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
+    >
+{
+    type ReadError = monad_proto::error::ProtoError;
+
+    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
+        crate::convert::interface::deserialize_event(data)
+    }
+}
+
+impl monad_types::Serializable
+    for MonadEvent<
+        monad_crypto::NopSignature,
+        monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
+    >
+{
+    fn serialize(&self) -> Vec<u8> {
+        crate::convert::interface::serialize_event(self)
+    }
+}
+
 #[cfg(feature = "proto")]
 impl monad_types::Deserializable
     for MonadEvent<

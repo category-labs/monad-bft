@@ -1,11 +1,13 @@
-use std::time::Duration;
+use std::{fmt::Debug, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
     executor::mock::MockExecutor,
     mock_swarm::{Nodes, Transformer},
+    timed_event::TimedEvent,
     Message, PeerId,
 };
+use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 pub enum NodeEvent<'s, Id, M, E> {
     Message {
@@ -43,11 +45,19 @@ pub trait Graph {
     fn set_tick(&mut self, tick: Duration);
 }
 
+pub trait ReplayConfig<S>
+where
+    S: monad_executor::State,
+{
+    fn max_tick(&self) -> Duration;
+    fn nodes(&self) -> Vec<(PubKey, S::Config)>;
+}
+
 pub trait SimulationConfig<S, T, LGR>
 where
     S: monad_executor::State,
     T: Transformer<S::Message>,
-    LGR: PersistenceLogger<Event = S::Event>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     fn max_tick(&self) -> Duration;
     fn transformer(&self) -> &T;
@@ -58,7 +68,7 @@ pub struct NodesSimulation<S, T, LGR, C>
 where
     S: monad_executor::State,
     T: Transformer<S::Message>,
-    LGR: PersistenceLogger<Event = S::Event>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, T, LGR>,
 {
     config: C,
@@ -73,8 +83,9 @@ where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
     T: Transformer<S::Message> + Clone,
-    LGR: PersistenceLogger<Event = S::Event>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, T, LGR>,
+    S::Event: Serializable + Deserializable + Debug,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -107,8 +118,9 @@ where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
     T: Transformer<S::Message> + Clone,
-    LGR: PersistenceLogger<Event = S::Event>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, T, LGR>,
+    S::Event: Serializable + Deserializable + Debug,
 {
     type State = S;
     type Message = S::Message;

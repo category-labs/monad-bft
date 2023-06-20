@@ -1,14 +1,16 @@
-use std::collections::HashMap;
-use std::{f32::consts::PI, time::Duration};
-
 mod config;
 mod graph;
+mod replay_graph;
 
-use config::{ConfigEditor, SimConfig};
+use std::{
+    cmp::max,
+    collections::{BTreeMap, HashMap},
+    f32::consts::PI,
+    path::PathBuf,
+    time::Duration,
+};
 
-use graph::NodesSimulation;
-use graph::{Graph, NodeEvent};
-
+use clap::Parser;
 use iced::widget::canvas::{Frame, Path, Program, Text};
 use iced::widget::{Canvas, Row, VerticalSlider};
 use iced::{
@@ -16,28 +18,59 @@ use iced::{
     Vector,
 };
 
-use monad_consensus_types::multi_sig::MultiSig;
+use config::{ConfigEditor, SimConfig};
+use graph::{Graph, NodeEvent, NodeState, NodesSimulation, ReplayConfig};
 use monad_crypto::NopSignature;
+
+use monad_consensus_types::{block::Block, multi_sig::MultiSig};
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
 };
-use monad_executor::State;
+use monad_executor::{timed_event::TimedEvent, PeerId, State};
 use monad_state::{MonadEvent, MonadState};
-use monad_wal::mock::MockWALogger;
+use monad_wal::{
+    mock::MockWALogger,
+    wal::{WALogger, WALoggerConfig},
+    PersistenceLogger,
+};
+use replay_graph::{RepConfig, ReplayNodesSimulation};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
+type NS<'a> = NodeState<
+    'a,
+    PeerId,
+    MS,
+    monad_state::MonadMessage<SignatureType, SignatureCollectionType>,
+    MonadEvent<NopSignature, MultiSig<NopSignature>>,
+>;
 type MS = MonadState<SignatureType, SignatureCollectionType>;
 type MM = <MS as State>::Message;
-type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
+type PersistenceLoggerType =
+    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 type Sim = NodesSimulation<MS, LayerTransformer<MM>, PersistenceLoggerType, SimConfig>;
+type ReplaySim = ReplayNodesSimulation<MS, RepConfig>;
+
+#[derive(Parser, Default)]
+struct Arg {
+    logdir: Option<PathBuf>,
+}
 
 pub fn main() -> iced::Result {
-    Viz::run(Settings::default())
+    let cli = Arg::parse();
+    Viz::run(Settings::<Arg> {
+        flags: cli,
+        ..Default::default()
+    })
+}
+
+pub enum SimType {
+    S(Sim),
+    RS(ReplaySim),
 }
 
 struct Viz {
-    simulation: Sim,
+    simulation: SimType,
 }
 
 #[derive(Debug, Clone)]
@@ -49,27 +82,73 @@ enum Message {
 
 impl Application for Viz {
     type Executor = executor::Default;
-    type Flags = ();
+    type Flags = Arg;
     type Message = Message;
     type Theme = Theme;
 
-    fn new(_flags: ()) -> (Self, Command<Self::Message>) {
-        let config = SimConfig {
-            num_nodes: 7,
-            delta: Duration::from_millis(101),
-            max_tick: Duration::from_secs_f32(4.0),
-            transformer: vec![
-                Layer::Latency(LatencyTransformer(Duration::from_millis(100))),
-                Layer::XorLatency(XorLatencyTransformer(Duration::from_millis(20))),
-            ],
-        };
-        let simulation = {
-            NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _, _>::new(
-                config,
-            )
-        };
+    fn new(flags: Arg) -> (Self, Command<Self::Message>) {
+        if let Some(logdir) = flags.logdir {
+            let mut config = RepConfig {
+                num_nodes: 4,
+                delta: Duration::from_millis(101),
+                max_tick: Duration::from_secs_f32(0.0),
+            };
+            let pubkeys = config.nodes();
+            let mut replay_events = BTreeMap::new();
+            for (pk, _) in pubkeys.iter() {
+                let log_config = WALoggerConfig {
+                    file_path: logdir.join(format!("{:?}.log", pk)),
+                };
+                let (_, event_vec) = WALogger::<
+                    TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>,
+                >::new(log_config)
+                .unwrap();
+                replay_events.insert(PeerId(*pk), event_vec.clone());
+                config.max_tick = max(
+                    config.max_tick,
+                    event_vec
+                        .iter()
+                        .max_by_key(|x| x.timestamp)
+                        .unwrap()
+                        .timestamp,
+                );
+            }
+            let simulation = {
+                ReplayNodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
+                    config,
+                    replay_events,
+                )
+            };
 
-        (Self { simulation }, Command::none())
+            (
+                Self {
+                    simulation: SimType::RS(simulation),
+                },
+                Command::none(),
+            )
+        } else {
+            let config = SimConfig {
+                num_nodes: 4,
+                delta: Duration::from_millis(101),
+                max_tick: Duration::from_secs_f32(4.0),
+                transformer: vec![
+                    Layer::Latency(LatencyTransformer(Duration::from_millis(100))),
+                    Layer::XorLatency(XorLatencyTransformer(Duration::from_millis(20))),
+                ],
+            };
+            let simulation = {
+                NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _, _>::new(
+                    config,
+                )
+            };
+
+            (
+                Self {
+                    simulation: SimType::S(simulation),
+                },
+                Command::none(),
+            )
+        }
     }
 
     fn title(&self) -> String {
@@ -77,47 +156,63 @@ impl Application for Viz {
     }
 
     fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
-        match message {
-            Message::SetTick(tick) => {
-                self.simulation.set_tick(Duration::from_secs_f32(tick));
-            }
-            Message::AddTick(delta) => {
-                self.simulation.set_tick(Duration::from_secs_f32(
-                    (self.simulation.tick().as_secs_f32() + delta).clamp(
-                        self.simulation.min_tick().as_secs_f32(),
-                        self.simulation.max_tick().as_secs_f32(),
-                    ),
-                ));
-            }
-            Message::SetConfig(config) => {
-                self.simulation.update_config(config);
-            }
+        match self.simulation {
+            SimType::S(ref mut sim) => match message {
+                Message::SetTick(tick) => {
+                    sim.set_tick(Duration::from_secs_f32(tick));
+                }
+                Message::AddTick(delta) => {
+                    sim.set_tick(Duration::from_secs_f32(
+                        (sim.tick().as_secs_f32() + delta)
+                            .clamp(sim.min_tick().as_secs_f32(), sim.max_tick().as_secs_f32()),
+                    ));
+                }
+                Message::SetConfig(config) => {
+                    sim.update_config(config);
+                }
+            },
+            SimType::RS(ref mut sim) => match message {
+                Message::SetTick(tick) => {
+                    sim.set_tick(Duration::from_secs_f32(tick));
+                }
+                Message::AddTick(delta) => {
+                    sim.set_tick(Duration::from_secs_f32(
+                        (sim.tick().as_secs_f32() + delta)
+                            .clamp(sim.min_tick().as_secs_f32(), sim.max_tick().as_secs_f32()),
+                    ));
+                }
+                _ => {}
+            },
         }
-
         Command::none()
     }
 
     fn view(&self) -> iced::Element<'_, Self::Message> {
-        Row::new()
-            .push(
-                VerticalSlider::new(
-                    self.simulation.min_tick().as_secs_f32()
-                        ..=self.simulation.max_tick().as_secs_f32(),
-                    self.simulation.tick().as_secs_f32(),
-                    Message::SetTick,
+        match self.simulation {
+            SimType::S(ref sim) => Row::new()
+                .push(
+                    VerticalSlider::new(
+                        sim.min_tick().as_secs_f32()..=sim.max_tick().as_secs_f32(),
+                        sim.tick().as_secs_f32(),
+                        Message::SetTick,
+                    )
+                    .step(0.001),
                 )
-                .step(0.001),
-            )
-            .push(
-                Canvas::new(&self.simulation)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .push(ConfigEditor::new(
-                self.simulation.config(),
-                Message::SetConfig,
-            ))
-            .into()
+                .push(Canvas::new(sim).width(Length::Fill).height(Length::Fill))
+                .push(ConfigEditor::new(sim.config(), Message::SetConfig))
+                .into(),
+            SimType::RS(ref sim) => Row::new()
+                .push(
+                    VerticalSlider::new(
+                        sim.min_tick().as_secs_f32()..=sim.max_tick().as_secs_f32(),
+                        sim.tick().as_secs_f32(),
+                        Message::SetTick,
+                    )
+                    .step(0.001),
+                )
+                .push(Canvas::new(sim).width(Length::Fill).height(Length::Fill))
+                .into(),
+        }
     }
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
@@ -140,15 +235,90 @@ impl Application for Viz {
     }
 }
 
-impl Program<Message> for &Sim {
+fn draw_ledger(
+    frame: &mut Frame,
+    ledger: &Vec<Block<MultiSig<NopSignature>>>,
+    idx: usize,
+    x: &f32,
+    y: &f32,
+) {
+    frame.fill_text(Text {
+        content: format!(
+            "node-{} ledger_len={}, last_id={:?}",
+            idx,
+            ledger.len(),
+            ledger.last().map(|block| block.get_id())
+        ),
+        position: frame.center() + Vector::new(x + 5.0, y - 5.0),
+        size: 20.0,
+        color: Color::BLACK,
+        ..Default::default()
+    })
+}
+
+fn draw_circle(frame: &mut Frame, x: &f32, y: &f32) {
+    let circle = Path::circle(frame.center() + Vector::new(*x, *y), 5.0);
+    frame.fill(&circle, Color::from_rgb(255.0, 0.0, 0.0));
+}
+
+fn draw_msg(frame: &mut Frame, state: &Vec<NS>, tick: f32, points: &[(f32, f32)]) {
+    let node_indices = state
+        .iter()
+        .enumerate()
+        .map(|(idx, peer)| (*peer.id, idx))
+        .collect::<HashMap<_, _>>();
+
+    for node in state {
+        let rx_peer = node.id;
+        for pending_event in &node.pending_events {
+            match pending_event {
+                NodeEvent::Message {
+                    tx_time,
+                    rx_time,
+                    tx_peer,
+                    message,
+                } => {
+                    if *tx_time == Duration::from_secs_f32(tick) || *rx_peer == **tx_peer {
+                        continue;
+                    }
+                    let (x1, y1) = points[node_indices[tx_peer]];
+                    let (x2, y2) = points[node_indices[rx_peer]];
+                    let ratio =
+                        (tick - tx_time.as_secs_f32()) / (*rx_time - *tx_time).as_secs_f32();
+                    let (x, y) = (x1 + (x2 - x1) * ratio, y1 + (y2 - y1) * ratio);
+
+                    let circle = Path::circle(frame.center() + Vector::new(x, y), 4.0);
+                    frame.fill(&circle, Color::from_rgb(0.0, 0.0, 255.0));
+
+                    frame.fill_text(Text {
+                        content: format!("{:?}", message),
+                        position: frame.center() + Vector::new(x + 5.0, y - 5.0),
+                        size: 20.0,
+                        color: Color::BLACK,
+                        ..Default::default()
+                    })
+                }
+                NodeEvent::Timer {
+                    scheduled_time,
+                    trip_time,
+                    event,
+                } => {
+                    // TODO
+                }
+            };
+        }
+    }
+}
+
+impl Program<Message> for &ReplaySim {
     type State = ();
 
     fn draw(
         &self,
         _state: &(),
-        theme: &iced::Theme,
+        _theme: &iced::Theme,
         bounds: iced::Rectangle,
-        cursor: iced::widget::canvas::Cursor,
+        _cursor: iced::widget::canvas::Cursor,
     ) -> Vec<iced::widget::canvas::Geometry> {
         let tick = self.tick().as_secs_f32();
         let state = self.state();
@@ -159,85 +329,54 @@ impl Program<Message> for &Sim {
 
         let mut frame = Frame::new(bounds.size());
         for (idx, (node, (x, y))) in state.iter().zip(&points).enumerate() {
-            let circle = Path::circle(frame.center() + Vector::new(*x, *y), 5.0);
-            frame.fill(&circle, Color::from_rgb(255.0, 0.0, 0.0));
-
-            let ledger = self.nodes.states().get(node.id).unwrap().0.ledger();
-            frame.fill_text(Text {
-                content: format!(
-                    "node-{} ledger_len={}, last_id={:?}",
-                    idx,
-                    ledger.get_blocks().len(),
-                    ledger.get_blocks().last().map(|block| block.get_id())
-                ),
-                position: frame.center() + Vector::new(x + 5.0, y - 5.0),
-                size: 20.0,
-                color: Color::BLACK,
-                ..Default::default()
-            })
+            let ledger = self
+                .nodes
+                .replay_nodes_info
+                .get(node.id)
+                .unwrap()
+                .blockchain();
+            draw_circle(&mut frame, x, y);
+            draw_ledger(&mut frame, ledger, idx, x, y);
         }
 
-        // for (x1, y1) in &points {
-        //     for (x2, y2) in &points {
-        //         let line = Path::line(
-        //             frame.center() + Vector::new(*x1, *y1),
-        //             frame.center() + Vector::new(*x2, *y2),
-        //         );
-        //         frame.stroke(
-        //             &line,
-        //             Stroke::default()
-        //                 .with_color(Color::from_rgb(0.0, 255.0, 0.0))
-        //                 .with_width(1.0),
-        //         );
-        //     }
-        // }
+        draw_msg(&mut frame, &state, tick, &points);
 
-        let node_indices = state
-            .iter()
-            .enumerate()
-            .map(|(idx, peer)| (*peer.id, idx))
-            .collect::<HashMap<_, _>>();
+        vec![frame.into_geometry()]
+    }
+}
 
-        for node in state {
-            let rx_peer = node.id;
-            for pending_event in node.pending_events {
-                match pending_event {
-                    NodeEvent::Message {
-                        tx_time,
-                        rx_time,
-                        tx_peer,
-                        message,
-                    } => {
-                        if tx_time == Duration::from_secs_f32(tick) || rx_peer == tx_peer {
-                            continue;
-                        }
-                        let (x1, y1) = points[node_indices[tx_peer]];
-                        let (x2, y2) = points[node_indices[rx_peer]];
-                        let ratio =
-                            (tick - tx_time.as_secs_f32()) / (rx_time - tx_time).as_secs_f32();
-                        let (x, y) = (x1 + (x2 - x1) * ratio, y1 + (y2 - y1) * ratio);
+impl Program<Message> for &Sim {
+    type State = ();
 
-                        let circle = Path::circle(frame.center() + Vector::new(x, y), 4.0);
-                        frame.fill(&circle, Color::from_rgb(0.0, 0.0, 255.0));
+    fn draw(
+        &self,
+        _state: &(),
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::widget::canvas::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        let tick = self.tick().as_secs_f32();
+        let state = self.state();
 
-                        frame.fill_text(Text {
-                            content: format!("{:?}", message),
-                            position: frame.center() + Vector::new(x + 5.0, y - 5.0),
-                            size: 20.0,
-                            color: Color::BLACK,
-                            ..Default::default()
-                        })
-                    }
-                    NodeEvent::Timer {
-                        scheduled_time,
-                        trip_time,
-                        event,
-                    } => {
-                        // TODO
-                    }
-                };
-            }
+        let vw = bounds.width;
+        let vh = bounds.height;
+        let points = get_circle_points(state.len(), f32::min(vw, vh) / 3.0);
+
+        let mut frame = Frame::new(bounds.size());
+        for (idx, (node, (x, y))) in state.iter().zip(&points).enumerate() {
+            let ledger = self
+                .nodes
+                .states()
+                .get(node.id)
+                .unwrap()
+                .0
+                .ledger()
+                .get_blocks();
+            draw_circle(&mut frame, x, y);
+            draw_ledger(&mut frame, ledger, idx, x, y);
         }
+
+        draw_msg(&mut frame, &state, tick, &points);
 
         vec![frame.into_geometry()]
     }

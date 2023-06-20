@@ -11,6 +11,7 @@ mod test {
     use monad_crypto::secp256k1::SecpSignature;
     use monad_executor::mock_swarm::Nodes;
     use monad_executor::mock_swarm::XorLatencyTransformer;
+    use monad_executor::timed_event::TimedEvent;
     use monad_state::{MonadEvent, MonadState};
     use monad_wal::wal::{WALogger, WALoggerConfig};
 
@@ -51,7 +52,7 @@ mod test {
         let mut nodes = Nodes::<
             MonadState<SignatureType, SignatureCollectionType>,
             _,
-            WALogger<MonadEvent<SignatureType, SignatureCollectionType>>,
+            WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         >::new(
             peers,
             XorLatencyTransformer(Duration::from_millis(u8::MAX as u64)),
@@ -106,7 +107,7 @@ mod test {
             Nodes::<
                 MonadState<SignatureType, SignatureCollectionType>,
                 _,
-                WALogger<MonadEvent<SignatureType, SignatureCollectionType>>,
+                WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
             >::new(peers_clone, LatencyTransformer(Duration::from_millis(1)));
 
         let node_ledger_recovered = nodes_recovered

@@ -1,0 +1,167 @@
+use crate::graph::{Graph, NodeEvent, NodeState, ReplayConfig};
+use crate::{SignatureCollectionType, MS};
+use monad_consensus_types::{quorum_certificate::genesis_vote_info, validation::Sha256Hash};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_executor::{
+    executor::mock::MockExecutor, replay_nodes::ReplayNodes, timed_event::TimedEvent, Message,
+    PeerId, State,
+};
+use monad_state::MonadConfig;
+use monad_testutil::signing::{create_keys, get_genesis_config};
+use monad_types::{Deserializable, Serializable};
+use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
+
+#[derive(Debug, Clone)]
+pub struct RepConfig {
+    pub num_nodes: u32,
+    pub max_tick: Duration,
+    pub delta: Duration,
+}
+
+impl ReplayConfig<MS> for RepConfig {
+    fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
+        let keys = create_keys(self.num_nodes);
+        let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+
+        let state_configs = keys
+            .into_iter()
+            .zip(std::iter::repeat(pubkeys.clone()))
+            .map(|(key, pubkeys)| MonadConfig {
+                key,
+                validators: pubkeys,
+                delta: self.delta,
+                genesis_block: genesis_block.clone(),
+                genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
+                genesis_signatures: genesis_sigs.clone(),
+            })
+            .collect::<Vec<_>>();
+        pubkeys.into_iter().zip(state_configs).collect::<Vec<_>>()
+    }
+
+    fn max_tick(&self) -> Duration {
+        self.max_tick
+    }
+}
+
+pub struct ReplayNodesSimulation<S, C>
+where
+    S: monad_executor::State,
+    C: ReplayConfig<S>,
+{
+    pub nodes: ReplayNodes<S>,
+    pub current_tick: Duration,
+    config: C,
+    pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>,
+}
+
+impl<S, C> ReplayNodesSimulation<S, C>
+where
+    S: monad_executor::State,
+    MockExecutor<S>: Unpin,
+    S::Event: Serializable + Deserializable + Debug + Eq,
+    C: ReplayConfig<S>,
+{
+    pub fn new(config: C, replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>) -> Self {
+        Self {
+            nodes: ReplayNodes::new(config.nodes()),
+            current_tick: Duration::ZERO,
+            replay_events,
+            config,
+        }
+    }
+
+    pub fn config(&self) -> &C {
+        &self.config
+    }
+
+    fn reset(&mut self) {
+        self.nodes = ReplayNodes::new(self.config.nodes());
+        self.current_tick = self.min_tick();
+    }
+
+    fn get_pending_events(
+        &self,
+        node_id: &PeerId,
+    ) -> Vec<NodeEvent<PeerId, <S as State>::Message, S::Event>> {
+        let mut nes = vec![];
+        for pmsg in self
+            .nodes
+            .replay_nodes_info
+            .get(node_id)
+            .unwrap()
+            .pending_messages()
+        {
+            let tx_id = &pmsg.send_id;
+            let tx_time = pmsg.send_tick;
+            let msg = &pmsg.message;
+            let event = pmsg.event.clone();
+            for evt in self.replay_events.get(node_id).unwrap() {
+                if self.tick() > tx_time && self.tick() < evt.timestamp && evt.event == event {
+                    nes.push(NodeEvent::Message {
+                        tx_time,
+                        rx_time: evt.timestamp,
+                        tx_peer: tx_id,
+                        message: msg,
+                    });
+                }
+            }
+        }
+        nes
+    }
+}
+
+impl<S, C> Graph for ReplayNodesSimulation<S, C>
+where
+    S: monad_executor::State,
+    S::Event: Serializable + Deserializable + Eq + Debug,
+    MockExecutor<S>: Unpin,
+    C: ReplayConfig<S>,
+{
+    type State = S;
+    type Message = S::Message;
+    type MessageId = <S::Message as Message>::Id;
+    type Event = S::Event;
+    type NodeId = PeerId;
+
+    fn state(&self) -> Vec<NodeState<Self::NodeId, S, S::Message, S::Event>> {
+        let mut state = self
+            .nodes
+            .replay_nodes_info
+            .iter()
+            .map(|(peer_id, replay_node_info)| NodeState {
+                id: peer_id,
+                state: replay_node_info.state(),
+                pending_events: self.get_pending_events(peer_id),
+            })
+            .collect::<Vec<_>>();
+        state.sort_by_key(|node| node.id);
+        state
+    }
+
+    fn tick(&self) -> Duration {
+        self.current_tick
+    }
+
+    fn min_tick(&self) -> Duration {
+        Duration::from_secs(0)
+    }
+
+    fn max_tick(&self) -> Duration {
+        self.config.max_tick()
+    }
+
+    fn set_tick(&mut self, tick: Duration) {
+        self.reset();
+        for (pid, tevents) in self.replay_events.iter() {
+            for (i, tevent) in tevents.iter().enumerate() {
+                if (i < tevents.len() - 1) && (tevents[i].timestamp > tick) {
+                    break;
+                }
+                self.nodes.step(pid, tevent.event.clone(), tevent.timestamp);
+            }
+        }
+        self.current_tick = tick
+    }
+}

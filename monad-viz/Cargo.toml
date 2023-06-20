@@ -15,9 +15,11 @@ monad-executor = { path = "../monad-executor" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-wal = { path = "../monad-wal" }
+monad-types = { path = "../monad-types" }
 
 iced = { version = "0.9", features = ["canvas"] }
 iced_native = { version = "0.10" }
 iced_lazy = { version = "0.6" }
+clap = {version = "4.3.11", features= ["derive"] }
 
 futures = { workspace = true }

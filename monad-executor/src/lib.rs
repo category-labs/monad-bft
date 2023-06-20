@@ -4,8 +4,9 @@ mod state;
 pub use state::*;
 
 pub mod executor;
-
 pub mod mock_swarm;
+pub mod replay_nodes;
+pub mod timed_event;
 
 #[cfg(feature = "proto")]
 pub mod convert;

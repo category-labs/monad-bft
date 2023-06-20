@@ -7,13 +7,13 @@ use rand::Rng;
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaChaRng;
 
+use crate::timed_event::TimedEvent;
+use crate::RouterTarget;
+use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
 use monad_wal::PersistenceLogger;
 use tracing::info_span;
-
-use crate::RouterTarget;
-use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
 #[derive(Clone)]
 pub struct LinkMessage<M: Message> {
@@ -181,7 +181,7 @@ pub struct Nodes<S, T, LGR>
 where
     S: State,
     T: Transformer<S::Message>,
-    LGR: PersistenceLogger<Event = S::Event>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     states: BTreeMap<PeerId, (MockExecutor<S>, S, LGR)>,
     transformer: T,
@@ -192,7 +192,7 @@ impl<S, T, LGR> Nodes<S, T, LGR>
 where
     S: State,
     T: Transformer<S::Message>,
-    LGR: PersistenceLogger<Event = S::Event>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
     MockExecutor<S>: Unpin,
 {
@@ -207,7 +207,7 @@ where
             let (mut state, mut init_commands) = S::init(state_config);
 
             for event in replay_events {
-                init_commands.extend(state.update(event));
+                init_commands.extend(state.update(event.event));
             }
 
             executor.exec(init_commands);
@@ -250,7 +250,11 @@ where
         {
             let id = *id;
             let event = futures::executor::block_on(executor.next()).unwrap();
-            wal.push(&event).unwrap(); // FIXME: propagate the error
+            let timed_event = TimedEvent {
+                timestamp: tick,
+                event: event.clone(),
+            };
+            wal.push(&timed_event).unwrap(); // FIXME: propagate the error
             let node_span = info_span!("node", id = ?id);
             let _guard = node_span.enter();
             let commands = state.update(event.clone());
