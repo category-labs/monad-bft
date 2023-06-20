@@ -1,7 +1,6 @@
 #[cfg(feature = "proto")]
 pub mod convert;
 
-use std::error::Error;
 use std::ops::Add;
 use std::ops::AddAssign;
 use std::ops::Deref;
@@ -87,14 +86,4 @@ impl std::fmt::Debug for BlockId {
             self.0[0], self.0[1], self.0[30], self.0[31]
         )
     }
-}
-
-pub trait Serializable {
-    fn serialize(&self) -> Vec<u8>;
-}
-
-pub trait Deserializable: Sized {
-    type ReadError: Error + Send + Sync;
-
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError>;
 }

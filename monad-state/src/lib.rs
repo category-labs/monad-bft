@@ -85,7 +85,7 @@ where
 }
 
 #[cfg(feature = "proto")]
-impl monad_types::Deserializable
+impl monad_traits::Deserializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<
@@ -101,7 +101,7 @@ impl monad_types::Deserializable
 }
 
 #[cfg(feature = "proto")]
-impl monad_types::Serializable
+impl monad_traits::Serializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<
@@ -123,7 +123,7 @@ pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>
 pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_types::Serializable
+impl<S: Signature> monad_traits::Serializable
     for VerifiedMonadMessage<
         S,
         monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>,
@@ -135,7 +135,7 @@ impl<S: Signature> monad_types::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_types::Deserializable
+impl<S: Signature> monad_traits::Deserializable
     for MonadMessage<S, monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>>
 {
     type ReadError = monad_proto::error::ProtoError;

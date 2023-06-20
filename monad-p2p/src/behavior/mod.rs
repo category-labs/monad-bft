@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use libp2p::{request_response::ProtocolSupport, swarm::NetworkBehaviour};
-use monad_types::{Deserializable, Serializable};
+use monad_traits::{Deserializable, Serializable};
 
 mod codec;
 pub use codec::WrappedMessage;

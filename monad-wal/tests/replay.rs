@@ -3,7 +3,7 @@ mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
     use monad_executor::{Message, State};
-    use monad_types::{Deserializable, Serializable};
+    use monad_traits::{Deserializable, Serializable};
     use monad_wal::wal::{WALogger, WALoggerConfig};
     use monad_wal::PersistenceLogger;
 

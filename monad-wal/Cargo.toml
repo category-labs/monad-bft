@@ -9,7 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-types = { path = "../monad-types" }
+monad-traits = { path = "../monad-traits" }
 
 [dev-dependencies]
 monad-consensus = { path = "../monad-consensus" }

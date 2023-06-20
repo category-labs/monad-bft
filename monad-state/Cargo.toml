@@ -14,6 +14,7 @@ monad-consensus = { path = "../monad-consensus" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-proto = { path = "../monad-proto", optional = true }
+monad-traits = { path = "../monad-traits" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }

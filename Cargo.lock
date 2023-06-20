@@ -3472,7 +3472,7 @@ dependencies = [
  "monad-consensus",
  "monad-crypto",
  "monad-executor",
- "monad-types",
+ "monad-traits",
  "tracing",
 ]
 
@@ -3509,6 +3509,7 @@ dependencies = [
  "monad-proto",
  "monad-testutil",
  "monad-tracing-counter",
+ "monad-traits",
  "monad-types",
  "monad-validator",
  "monad-wal",
@@ -3547,6 +3548,10 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "monad-traits"
+version = "0.1.0"
 
 [[package]]
 name = "monad-types"
@@ -3592,6 +3597,7 @@ dependencies = [
  "monad-executor",
  "monad-state",
  "monad-testutil",
+ "monad-traits",
  "monad-types",
  "tempfile",
 ]
