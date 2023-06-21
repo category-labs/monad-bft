@@ -12,6 +12,7 @@ use monad_crypto::secp256k1::PubKey;
 use monad_wal::PersistenceLogger;
 use tracing::info_span;
 
+use crate::RouterTarget;
 use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 
 #[derive(Clone)]
@@ -265,25 +266,33 @@ where
     }
 
     fn simulate_peer(&mut self, peer_id: &PeerId, tick: Duration) {
+        let peer_ids: Vec<_> = self.states().keys().copied().collect();
         let outbounds = {
             let mut outbounds: Vec<(Duration, LinkMessage<<S as State>::Message>)> = Vec::new();
             let (executor, _, _) = self.states.get_mut(peer_id).unwrap();
 
-            while let Some((to, outbound_message)) = executor.receive_message() {
-                let lm = LinkMessage {
-                    from: *peer_id,
-                    to,
-                    message: outbound_message.into(),
-
-                    from_tick: tick,
+            while let Some((target, outbound_message)) = executor.receive_message() {
+                let message = outbound_message.into();
+                let tos = match target {
+                    RouterTarget::PointToPoint(to) => vec![to],
+                    RouterTarget::Broadcast => peer_ids.clone(),
                 };
-                let transformed = if self.enable_transformer {
-                    self.transformer.transform(lm)
-                } else {
-                    vec![(Duration::ZERO, lm)]
-                };
+                for to in tos {
+                    let lm = LinkMessage {
+                        from: *peer_id,
+                        to,
+                        message: message.clone(),
 
-                outbounds.extend(transformed.into_iter());
+                        from_tick: tick,
+                    };
+                    let transformed = if self.enable_transformer {
+                        self.transformer.transform(lm)
+                    } else {
+                        vec![(Duration::ZERO, lm)]
+                    };
+
+                    outbounds.extend(transformed.into_iter());
+                }
             }
 
             outbounds

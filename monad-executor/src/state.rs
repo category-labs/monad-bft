@@ -11,12 +11,19 @@ impl std::fmt::Debug for PeerId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RouterTarget {
+    Broadcast,
+    PointToPoint(PeerId),
+}
+
 pub enum RouterCommand<M, OM>
 where
     M: Message,
 {
-    Publish { to: PeerId, message: OM },
-    Unpublish { to: PeerId, id: M::Id },
+    // TODO add a RouterCommand for setting peer set for broadcast
+    Publish { target: RouterTarget, message: OM },
+    Unpublish { target: RouterTarget, id: M::Id },
 }
 
 pub enum TimerCommand<E> {

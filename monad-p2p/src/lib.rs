@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ops::DerefMut,
     sync::Arc,
     task::Poll,
@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_executor::{Executor, Message, RouterCommand};
+use monad_executor::{Executor, Message, RouterCommand, RouterTarget};
 use monad_types::{Deserializable, Serializable};
 
 use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
@@ -31,6 +31,9 @@ where
     outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
 
     self_events: VecDeque<M::Event>,
+
+    // TODO deprecate this once we have a RouterCommand for setting peers
+    peers: HashSet<monad_executor::PeerId>,
 }
 
 pub enum Auth {
@@ -74,6 +77,12 @@ where
             outbound_messages_lookup: HashMap::new(),
 
             self_events: VecDeque::new(),
+
+            peers: {
+                let mut peers = HashSet::new();
+                peers.insert(monad_executor::PeerId(local_peer_id.try_into().unwrap()));
+                peers
+            },
         }
     }
 
@@ -137,10 +146,19 @@ where
             outbound_messages_lookup: HashMap::new(),
 
             self_events: VecDeque::new(),
+
+            peers: {
+                let mut peers = HashSet::new();
+                peers.insert(monad_executor::PeerId(local_peer_id.try_into().unwrap()));
+                peers
+            },
         }
     }
 
     pub fn add_peer(&mut self, peer: &libp2p::PeerId, address: Multiaddr) {
+        self.peers
+            .insert(monad_executor::PeerId((*peer).try_into().unwrap()));
+
         self.swarm
             .behaviour_mut()
             .request_response
@@ -200,15 +218,31 @@ where
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
 
-    OM: Into<M> + AsRef<M>,
+    OM: Into<M> + AsRef<M> + Clone,
 {
     type Command = RouterCommand<M, OM>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                RouterCommand::Publish { to, message } => self.publish_message(&to, message),
-                RouterCommand::Unpublish { to, id } => self.unpublish_message(&to, &id),
+                RouterCommand::Publish { target, message } => {
+                    let peers = match target {
+                        RouterTarget::Broadcast => self.peers.iter().copied().collect(),
+                        RouterTarget::PointToPoint(peer) => vec![peer],
+                    };
+                    for to in peers {
+                        self.publish_message(&to, message.clone())
+                    }
+                }
+                RouterCommand::Unpublish { target, id } => {
+                    let peers = match target {
+                        RouterTarget::Broadcast => self.peers.iter().copied().collect(),
+                        RouterTarget::PointToPoint(peer) => vec![peer],
+                    };
+                    for to in peers {
+                        self.unpublish_message(&to, &id)
+                    }
+                }
             }
         }
     }

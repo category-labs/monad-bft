@@ -4,11 +4,11 @@ use std::{
     marker::PhantomData,
 };
 
-use monad_executor::{Message, PeerId};
+use monad_executor::{Message, PeerId, RouterTarget};
 use monad_types::Round;
 
 pub struct MessageState<M: Message, OM: Into<M> + Clone> {
-    messages: VecDeque<HashSet<(PeerId, M::Id)>>,
+    messages: VecDeque<HashSet<(RouterTarget, M::Id)>>,
     round: Round, // round # of messages.back()
     // min round == round - messages.len() + 1
     peers: Vec<PeerId>,
@@ -21,7 +21,7 @@ where
     M: Message,
     OM: Into<M>,
 {
-    pub to: PeerId,
+    pub target: RouterTarget,
     pub message: OM,
     _marker: PhantomData<M>,
 }
@@ -31,9 +31,9 @@ where
     M: Message,
     OM: Into<M>,
 {
-    fn new(to: PeerId, message: OM) -> Self {
+    fn new(target: RouterTarget, message: OM) -> Self {
         Self {
-            to,
+            target,
             message,
             _marker: PhantomData,
         }
@@ -45,7 +45,7 @@ pub struct MessageActionUnpublish<M>
 where
     M: Message,
 {
-    pub to: PeerId,
+    pub target: RouterTarget,
     pub id: M::Id,
 }
 
@@ -99,9 +99,9 @@ where
         while round > self.round {
             self.messages.rotate_left(1);
             let back = self.messages.back_mut().unwrap();
-            for (peer, message_id) in back.drain() {
+            for (target, message_id) in back.drain() {
                 commands.push(MessageActionUnpublish {
-                    to: peer,
+                    target,
                     id: message_id,
                 })
             }
@@ -113,28 +113,19 @@ where
         commands
     }
 
-    pub fn send(&mut self, peer: PeerId, message: OM) -> MessageActionPublish<M, OM> {
+    pub fn send(&mut self, target: RouterTarget, message: OM) -> MessageActionPublish<M, OM> {
         self.messages
             .back_mut()
             .unwrap()
-            .insert((peer, message.clone().into().id()));
+            .insert((target, message.clone().into().id()));
 
-        MessageActionPublish::new(peer, message)
-    }
-
-    pub fn broadcast(&mut self, message: OM) -> Vec<MessageActionPublish<M, OM>> {
-        let mut commands = Vec::new();
-        for peer in self.peers.to_vec() {
-            commands.push(self.send(peer, message.clone()));
-        }
-
-        commands
+        MessageActionPublish::new(target, message)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use monad_executor::{Message, PeerId};
+    use monad_executor::{Message, PeerId, RouterTarget};
     use monad_testutil::signing::node_id;
     use monad_types::Round;
 
@@ -176,22 +167,25 @@ mod tests {
     #[test]
     fn send() {
         let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
-        let action = state.send(PeerId(node_id().0), TestMessage);
+        let action = state.send(RouterTarget::PointToPoint(PeerId(node_id().0)), TestMessage);
 
-        assert_eq!(action.to, PeerId(node_id().0));
+        assert_eq!(
+            action.target,
+            RouterTarget::PointToPoint(PeerId(node_id().0))
+        );
         assert_eq!(action.message, TestMessage);
     }
 
     #[test]
     fn set_round_eviction() {
         let mut state = MessageState::<TestMessage, TestMessage>::new(5, Vec::new());
-        let _ = state.send(PeerId(node_id().0), TestMessage);
+        let _ = state.send(RouterTarget::PointToPoint(PeerId(node_id().0)), TestMessage);
 
         let evicted = state.set_round(Round(10), Vec::new());
         assert_eq!(
             evicted,
             vec![MessageActionUnpublish {
-                to: PeerId(node_id().0),
+                target: RouterTarget::PointToPoint(PeerId(node_id().0)),
                 id: TestMessage,
             }],
         )

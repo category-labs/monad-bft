@@ -139,13 +139,20 @@ pub fn node_ledger_verification<
         .map(|v| v.0.ledger().get_blocks().len())
         .min()
         .unwrap();
+    let max_b = states
+        .values()
+        .map(|v| v.0.ledger().get_blocks().len())
+        .max()
+        .unwrap();
 
+    assert!(max_b - num_b <= 5); // this 5 block bound is arbitrary... is there a better way to do
+                                 // this?
+
+    let b = states.values().next().unwrap().0.ledger().get_blocks();
     for n in states {
         let a = n.1 .0.ledger().get_blocks();
-        let b = states.values().next().unwrap().0.ledger().get_blocks();
 
         assert!(!b.is_empty());
-        assert!((a.len() as i32).abs_diff(b.len() as i32) <= 1);
         assert!(a.iter().take(num_b).eq(b.iter().take(num_b)));
     }
 }

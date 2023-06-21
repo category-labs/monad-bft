@@ -26,7 +26,8 @@ use monad_crypto::{
     Signature,
 };
 use monad_executor::{
-    Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, State, TimerCommand,
+    Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, RouterTarget, State,
+    TimerCommand,
 };
 use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{
@@ -284,7 +285,8 @@ where
                                 last_round_tc: fetched.last_round_tc,
                             };
 
-                            cmds.push(ConsensusCommand::Broadcast {
+                            cmds.push(ConsensusCommand::Publish {
+                                target: RouterTarget::Broadcast,
                                 message: ConsensusMessage::Proposal(p),
                             })
                         }
@@ -331,31 +333,16 @@ where
                 let mut cmds = Vec::new();
                 for consensus_command in consensus_commands {
                     match consensus_command {
-                        ConsensusCommand::Send { to, message } => {
+                        ConsensusCommand::Publish { target, message } => {
                             let message = VerifiedMonadMessage(
                                 message.sign::<HasherType>(&self.consensus_state.keypair),
                             );
-                            let publish_action = self.message_state.send(to, message);
+                            let publish_action = self.message_state.send(target, message);
                             let id = Self::Message::from(publish_action.message.clone()).id();
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
-                                to: publish_action.to,
+                                target: publish_action.target,
                                 message: publish_action.message,
                             }))
-                        }
-                        ConsensusCommand::Broadcast { message } => {
-                            let message = VerifiedMonadMessage(
-                                message.sign::<HasherType>(&self.consensus_state.keypair),
-                            );
-                            cmds.extend(self.message_state.broadcast(message).into_iter().map(
-                                |publish_action| {
-                                    let id =
-                                        Self::Message::from(publish_action.message.clone()).id();
-                                    Command::RouterCommand(RouterCommand::Publish {
-                                        to: publish_action.to,
-                                        message: publish_action.message,
-                                    })
-                                },
-                            ));
                         }
                         ConsensusCommand::Schedule {
                             duration,
@@ -434,11 +421,8 @@ pub struct FetchedTxs<ST, SCT> {
 }
 
 pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
-    Send {
-        to: PeerId,
-        message: ConsensusMessage<ST, SCT>,
-    },
-    Broadcast {
+    Publish {
+        target: RouterTarget,
         message: ConsensusMessage<ST, SCT>,
     },
     Schedule {
@@ -537,8 +521,8 @@ where
 
         if let Some(v) = vote_msg {
             let next_leader = validators.get_leader(round + Round(1));
-            let send_cmd = ConsensusCommand::Send {
-                to: PeerId(next_leader.0),
+            let send_cmd = ConsensusCommand::Publish {
+                target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
                 message: ConsensusMessage::Vote(v),
             };
             cmds.push(send_cmd);
@@ -697,7 +681,8 @@ where
 impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for ConsensusCommand<S, T> {
     fn from(cmd: PacemakerCommand<S, T>) -> Self {
         match cmd {
-            PacemakerCommand::Broadcast(message) => ConsensusCommand::Broadcast {
+            PacemakerCommand::Broadcast(message) => ConsensusCommand::Publish {
+                target: RouterTarget::Broadcast,
                 message: ConsensusMessage::Timeout(message),
             },
             PacemakerCommand::Schedule {
@@ -729,7 +714,7 @@ mod test {
     use monad_consensus::validation::signing::Verified;
     use monad_crypto::secp256k1::KeyPair;
     use monad_crypto::{NopSignature, Signature};
-    use monad_executor::PeerId;
+    use monad_executor::{PeerId, RouterTarget};
     use monad_testutil::proposal::ProposalGen;
     use monad_testutil::signing::{create_keys, get_genesis_config};
     use monad_types::{BlockId, Hash, Round};
@@ -846,8 +831,8 @@ mod test {
         let result = cmds.iter().find(|&c| {
             matches!(
                 c,
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(_),
                 }
             )
@@ -869,8 +854,8 @@ mod test {
         let result = cmds.iter().find(|&c| {
             matches!(
                 c,
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(_),
                 }
             )
@@ -886,8 +871,8 @@ mod test {
         let result = cmds.iter().find(|&c| {
             matches!(
                 c,
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(_),
                 }
             )
@@ -925,8 +910,8 @@ mod test {
             let result = cmds.iter().find(|&c| {
                 matches!(
                     c,
-                    ConsensusCommand::Send {
-                        to: _,
+                    ConsensusCommand::Publish {
+                        target: RouterTarget::PointToPoint(_),
                         message: ConsensusMessage::Vote(_),
                     }
                 )
@@ -966,8 +951,8 @@ mod test {
         let result = cmds.iter().find(|&c| {
             matches!(
                 c,
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(_),
                 }
             )
@@ -1003,8 +988,8 @@ mod test {
         let result = cmds.iter().find(|&c| {
             matches!(
                 c,
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(_),
                 }
             )
@@ -1021,8 +1006,8 @@ mod test {
         let result = cmds.iter().find(|&c| {
             matches!(
                 c,
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(_),
                 }
             )
@@ -1064,8 +1049,8 @@ mod test {
                 .filter(|m| {
                     matches!(
                         m,
-                        ConsensusCommand::Send {
-                            to: _,
+                        ConsensusCommand::Publish {
+                            target: RouterTarget::PointToPoint(_),
                             message: ConsensusMessage::Proposal(_),
                         }
                     )
@@ -1080,8 +1065,8 @@ mod test {
             };
 
             match c {
-                ConsensusCommand::Send {
-                    to: _self_id,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_self_id),
                     message: ConsensusMessage::Proposal(m),
                 } => {
                     proposals.extend(state.handle_proposal_message::<Sha256Hash, _>(
@@ -1127,8 +1112,8 @@ mod test {
         let p1_votes = p1_cmds
             .into_iter()
             .filter_map(|c| match c {
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(vote),
                 } => Some(vote),
                 _ => None,
@@ -1152,8 +1137,8 @@ mod test {
         let p2_votes = p2_cmds
             .into_iter()
             .filter_map(|c| match c {
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(vote),
                 } => Some(vote),
                 _ => None,
@@ -1197,8 +1182,8 @@ mod test {
         let p2_votes = p2_cmds
             .into_iter()
             .filter_map(|c| match c {
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(vote),
                 } => Some(vote),
                 _ => None,
@@ -1239,8 +1224,8 @@ mod test {
         let p3_votes = p3_cmds
             .into_iter()
             .filter_map(|c| match c {
-                ConsensusCommand::Send {
-                    to: _,
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
                     message: ConsensusMessage::Vote(vote),
                 } => Some(vote),
                 _ => None,

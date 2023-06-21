@@ -10,7 +10,9 @@ use std::{
 
 use super::ledger::MockLedger;
 use super::mempool::MockMempool;
-use crate::{state::PeerId, Command, Executor, Message, RouterCommand, State, TimerCommand};
+use crate::{
+    state::PeerId, Command, Executor, Message, RouterCommand, RouterTarget, State, TimerCommand,
+};
 
 use futures::{Stream, StreamExt};
 
@@ -29,7 +31,7 @@ where
     inbound_messages: BinaryHeap<SequencedPeerEvent<S::Message>>,
 
     // caller pop_front outbounds from this (via MockExecutor::receive_*)
-    outbound_messages: VecDeque<(PeerId, S::OutboundMessage)>,
+    outbound_messages: VecDeque<(RouterTarget, S::OutboundMessage)>,
 }
 
 pub struct TimerEvent<E> {
@@ -100,7 +102,7 @@ where
             tx_tick,
         });
     }
-    pub fn receive_message(&mut self) -> Option<(PeerId, S::OutboundMessage)> {
+    pub fn receive_message(&mut self) -> Option<(RouterTarget, S::OutboundMessage)> {
         self.outbound_messages.pop_front()
     }
 
@@ -175,11 +177,11 @@ where
             Self::Command::split_commands(commands);
         for command in router_cmds {
             match command {
-                RouterCommand::Publish { to, message } => {
-                    to_publish.push((to, message));
+                RouterCommand::Publish { target, message } => {
+                    to_publish.push((target, message));
                 }
-                RouterCommand::Unpublish { to, id } => {
-                    to_unpublish.insert((to, id));
+                RouterCommand::Unpublish { target, id } => {
+                    to_unpublish.insert((target, id));
                 }
             }
         }
@@ -202,12 +204,12 @@ where
         self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
 
-        for (to, message) in to_publish {
+        for (target, message) in to_publish {
             let id = message.as_ref().id();
-            if to_unpublish.contains(&(to, id)) {
+            if to_unpublish.contains(&(target, id)) {
                 continue;
             }
-            self.outbound_messages.push_back((to, message));
+            self.outbound_messages.push_back((target, message));
         }
     }
 }
@@ -496,7 +498,7 @@ mod tests {
                 .iter()
                 .map(|peer| {
                     Command::RouterCommand(RouterCommand::Publish {
-                        to: *peer,
+                        target: RouterTarget::PointToPoint(*peer),
                         message: SimpleChainMessage { round: 0 },
                     })
                 })
@@ -529,7 +531,7 @@ mod tests {
 
                         commands.extend(self.peers.iter().map(|peer| {
                             Command::RouterCommand(RouterCommand::Publish {
-                                to: *peer,
+                                target: RouterTarget::PointToPoint(*peer),
                                 message: SimpleChainMessage {
                                     round: self.chain.len() as u64 - 1,
                                 },
