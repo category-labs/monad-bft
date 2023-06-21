@@ -1,4 +1,7 @@
-use monad_crypto::Signature;
+use monad_crypto::{
+    secp256k1::{SecpError, SecpPubKey},
+    Signature,
+};
 use prost::Message;
 
 use monad_proto::error::ProtoError;
@@ -13,7 +16,9 @@ pub fn serialize_verified_consensus_message(
     proto_msg.encode_to_vec()
 }
 
-pub fn deserialize_unverified_consensus_message<S: Signature>(
+pub fn deserialize_unverified_consensus_message<
+    S: Signature<PubKey = SecpPubKey, Error = SecpError>,
+>(
     data: &[u8],
 ) -> Result<UnverifiedConsensusMessage<S>, ProtoError> {
     let msg = ProtoUnverifiedConsensusMessage::decode(data)?;

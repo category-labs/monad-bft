@@ -24,7 +24,8 @@ use monad_consensus::{
         signing::Unverified,
     },
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+use monad_crypto::KeyPair;
 use monad_executor::PeerId;
 use monad_state::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
@@ -91,7 +92,7 @@ fn bench_proposal(c: &mut Criterion) {
 }
 
 fn bench_vote(c: &mut Criterion) {
-    let keypair: KeyPair = get_key(1);
+    let keypair: SecpKeyPair = get_key(1);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32].into())),
         round: Round(1),
@@ -216,7 +217,7 @@ fn bench_local_timeout(c: &mut Criterion) {
 
 fn bench_ack(c: &mut Criterion) {
     let msg_hash = Hash([0xab_u8; 32].into());
-    let keypair: KeyPair = get_key(1);
+    let keypair: SecpKeyPair = get_key(1);
     let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> = MonadEvent::Ack {
         peer: PeerId(keypair.pubkey()),
         id: keypair.sign(msg_hash.as_ref()),

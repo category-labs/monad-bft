@@ -1,5 +1,5 @@
 use monad_crypto::{
-    secp256k1::{Error, PubKey},
+    secp256k1::{SecpError, SecpPubKey},
     Signature,
 };
 use monad_types::Hash;
@@ -18,7 +18,9 @@ impl<S: Signature> Default for AggregateSignatures<S> {
     }
 }
 
-impl<S: Signature> SignatureCollection for AggregateSignatures<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> SignatureCollection
+    for AggregateSignatures<S>
+{
     type SignatureType = S;
 
     fn new() -> Self {
@@ -39,7 +41,7 @@ impl<S: Signature> SignatureCollection for AggregateSignatures<S> {
         self.sigs.push(sig);
     }
 
-    fn verify_signatures(&self, msg: &[u8]) -> Result<(), Error> {
+    fn verify_signatures(&self, msg: &[u8]) -> Result<(), SecpError> {
         for s in self.sigs.iter() {
             let pubkey = s.recover_pubkey(msg)?;
             s.verify(msg, &pubkey)?;
@@ -47,10 +49,10 @@ impl<S: Signature> SignatureCollection for AggregateSignatures<S> {
         Ok(())
     }
 
-    fn get_pubkeys(&self, msg: &[u8]) -> Result<Vec<PubKey>, Error> {
+    fn get_pubkeys(&self, msg: &[u8]) -> Result<Vec<SecpPubKey>, SecpError> {
         self.sigs
             .iter()
-            .map(|s| -> Result<PubKey, Error> { s.recover_pubkey(msg) })
+            .map(|s| -> Result<SecpPubKey, SecpError> { s.recover_pubkey(msg) })
             .collect()
     }
 

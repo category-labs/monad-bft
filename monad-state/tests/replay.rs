@@ -92,8 +92,10 @@ mod test {
         // drop the nodes -> close the files
         drop(nodes);
 
-        let (pubkeys_clone, state_configs_clone) =
-            get_configs::<SignatureCollectionType>(num_nodes, Duration::from_millis(2));
+        let (pubkeys_clone, state_configs_clone) = get_configs::<
+            SignatureCollectionType,
+            SignatureType,
+        >(num_nodes, Duration::from_millis(2));
 
         let peers_clone = pubkeys_clone
             .into_iter()

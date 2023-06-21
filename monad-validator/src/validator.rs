@@ -1,10 +1,10 @@
 use std::fmt::Debug;
 
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::secp256k1::SecpPubKey;
 
 #[derive(Clone, Copy)]
 pub struct Validator {
-    pub pubkey: PubKey,
+    pub pubkey: SecpPubKey,
     pub stake: i64,
 }
 

@@ -92,7 +92,8 @@ mod test {
     use crate::types::voting::VoteInfo;
     use crate::validation::hashing::Sha256Hash;
     use crate::validation::signing::Verified;
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+    use monad_crypto::KeyPair;
     use monad_testutil::signing::get_key;
     use monad_testutil::signing::*;
     use monad_testutil::validators::MockLeaderElection;
@@ -103,7 +104,7 @@ mod test {
 
     use super::VoteState;
 
-    fn create_valset(num_nodes: u32) -> (Vec<KeyPair>, ValidatorSet<MockLeaderElection>) {
+    fn create_valset(num_nodes: u32) -> (Vec<SecpKeyPair>, ValidatorSet<MockLeaderElection>) {
         let keys = create_keys(num_nodes);
 
         let mut nodes = Vec::new();
@@ -119,7 +120,7 @@ mod test {
     }
 
     fn create_signed_vote_message(
-        keypair: &KeyPair,
+        keypair: &SecpKeyPair,
         vote_round: Round,
     ) -> Verified<SecpSignature, VoteMessage> {
         let vi = VoteInfo {

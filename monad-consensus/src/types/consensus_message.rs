@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use monad_crypto::{secp256k1::KeyPair, Signature};
+use monad_crypto::{secp256k1::SecpKeyPair, Signature};
 
 use crate::{
     types::message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -52,10 +52,10 @@ where
 
 impl<ST, SCT> ConsensusMessage<ST, SCT>
 where
-    ST: Signature,
+    ST: Signature<KeyPair = SecpKeyPair>,
     SCT: SignatureCollection<SignatureType = ST>,
 {
-    pub fn sign<H: Hasher>(self, keypair: &KeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {
+    pub fn sign<H: Hasher>(self, keypair: &SecpKeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {
         Verified::new::<H>(self, keypair)
     }
 }

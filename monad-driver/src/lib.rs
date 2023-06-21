@@ -7,7 +7,8 @@ mod tests {
         signatures::aggregate_signature::AggregateSignatures,
         types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+    use monad_crypto::KeyPair;
     use monad_executor::{
         executor::{ledger::MockLedger, mempool::MockMempool},
         Executor, State,
@@ -35,7 +36,7 @@ mod tests {
         let mut node_configs = (0..NUM_NODES)
             .map(|i| {
                 let mut k: [u8; 32] = [(i + 1) as u8; 32];
-                let (key, key_libp2p) = KeyPair::libp2p_from_bytes(&mut k).unwrap();
+                let (key, key_libp2p) = SecpKeyPair::libp2p_from_bytes(&mut k).unwrap();
 
                 let executor = monad_executor::executor::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
@@ -72,11 +73,12 @@ mod tests {
 
         let pubkeys = node_configs
             .iter()
-            .map(|(key, _, _)| KeyPair::pubkey(key))
+            .map(|(key, _, _)| SecpKeyPair::pubkey(key))
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            node_configs.iter().map(|(key, _, _)| key),
-        );
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<Sha256Hash, SignatureCollectionType, SignatureType>(
+                node_configs.iter().map(|(key, _, _)| key),
+            );
 
         let state_configs = node_configs
             .into_iter()

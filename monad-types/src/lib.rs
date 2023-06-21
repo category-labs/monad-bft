@@ -6,7 +6,7 @@ use std::ops::AddAssign;
 use std::ops::Deref;
 use std::ops::Sub;
 
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::secp256k1::SecpPubKey;
 use zerocopy::AsBytes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -66,7 +66,7 @@ impl std::fmt::Debug for Round {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct NodeId(pub PubKey);
+pub struct NodeId(pub SecpPubKey);
 
 impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

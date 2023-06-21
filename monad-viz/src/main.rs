@@ -17,7 +17,7 @@ use iced::{
 };
 
 use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
-use monad_crypto::NopSignature;
+use monad_crypto::nop::NopSignature;
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
 };

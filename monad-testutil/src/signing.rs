@@ -7,8 +7,8 @@ use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::validation::hashing::Hasher;
 use monad_consensus::validation::signing::Unverified;
 use monad_crypto::{
-    secp256k1::{Error, KeyPair, PubKey, SecpSignature},
-    Signature,
+    secp256k1::{SecpError, SecpKeyPair, SecpPubKey, SecpSignature},
+    KeyPair, Signature,
 };
 use monad_types::{Hash, NodeId, Round};
 
@@ -27,11 +27,11 @@ impl SignatureCollection for MockSignatures {
 
     fn add_signature(&mut self, _s: SecpSignature) {}
 
-    fn verify_signatures(&self, _msg: &[u8]) -> Result<(), Error> {
+    fn verify_signatures(&self, _msg: &[u8]) -> Result<(), SecpError> {
         Ok(())
     }
 
-    fn get_pubkeys(&self, _msg: &[u8]) -> Result<Vec<PubKey>, Error> {
+    fn get_pubkeys(&self, _msg: &[u8]) -> Result<Vec<SecpPubKey>, SecpError> {
         Ok(Vec::new())
     }
 
@@ -55,11 +55,11 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
 
 pub fn node_id() -> NodeId {
     let mut privkey: [u8; 32] = [127; 32];
-    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+    let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
     NodeId(keypair.pubkey())
 }
 
-pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
+pub fn create_keys(num_keys: u32) -> Vec<SecpKeyPair> {
     let mut res = Vec::new();
     for i in 0..num_keys {
         let keypair = get_key(i.into());
@@ -69,14 +69,23 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
     res
 }
 
-pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
-    keys: impl Iterator<Item = &'k KeyPair>,
+pub fn get_genesis_config<
+    'k,
+    H: Hasher,
+    T: SignatureCollection<SignatureType = S>,
+    S: Signature<KeyPair = SecpKeyPair>,
+>(
+    keys: impl Iterator<Item = &'k SecpKeyPair>,
 ) -> (Block<T>, T) {
     let genesis_txn = TransactionList::default();
     let genesis_prime_qc = QuorumCertificate::<T>::genesis_prime_qc::<H>();
     let genesis_block = Block::<T>::new::<H>(
         // FIXME init from genesis config, don't use random key
-        NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
+        NodeId(
+            SecpKeyPair::from_bytes(&mut [0xBE_u8; 32])
+                .unwrap()
+                .pubkey(),
+        ),
         Round(0),
         &genesis_txn,
         &genesis_prime_qc,
@@ -99,16 +108,16 @@ pub struct TestSigner<S> {
 }
 
 impl TestSigner<SecpSignature> {
-    pub fn sign_object<T>(o: T, msg: &[u8], key: &KeyPair) -> Unverified<SecpSignature, T> {
+    pub fn sign_object<T>(o: T, msg: &[u8], key: &SecpKeyPair) -> Unverified<SecpSignature, T> {
         let sig = key.sign(msg);
 
         Unverified::new(o, sig)
     }
 }
 
-pub fn get_key(seed: u64) -> KeyPair {
+pub fn get_key(seed: u64) -> SecpKeyPair {
     let mut hasher = Sha256::new();
     hasher.update(seed.to_le_bytes());
     let mut hash = hasher.finalize();
-    KeyPair::from_bytes(&mut hash).unwrap()
+    SecpKeyPair::from_bytes(&mut hash).unwrap()
 }

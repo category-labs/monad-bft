@@ -7,7 +7,8 @@ mod test {
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
     use monad_consensus::{pacemaker::PacemakerTimerExpire, validation::signing::Unverified};
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+    use monad_crypto::KeyPair;
     use monad_executor::PeerId;
     use monad_state::{
         convert::interface::{deserialize_event, serialize_event},
@@ -50,7 +51,7 @@ mod test {
 
     #[test]
     fn test_consensus_message_event() {
-        let keypair: KeyPair = get_key(0);
+        let keypair: SecpKeyPair = get_key(0);
         let vi = VoteInfo {
             id: BlockId(Hash([42_u8; 32])),
             round: Round(1),

@@ -8,8 +8,9 @@ use monad_consensus::types::signature::SignatureCollection;
 use monad_consensus::types::voting::VoteInfo;
 use monad_consensus::validation::hashing::Hasher;
 use monad_consensus::validation::hashing::Sha256Hash;
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::secp256k1::SecpKeyPair;
 use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::KeyPair;
 use monad_types::BlockId;
 use monad_types::Hash;
 use monad_types::NodeId;
@@ -20,7 +21,7 @@ pub fn setup_block(
     block_round: u64,
     qc_round: u64,
     txns: TransactionList,
-    keypairs: &[KeyPair],
+    keypairs: &[SecpKeyPair],
 ) -> Block<AggregateSignatures<SecpSignature>> {
     let txns = txns;
     let round = Round(block_round);

@@ -1,9 +1,9 @@
 use std::hash::Hash;
 
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::secp256k1::SecpPubKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PeerId(pub PubKey);
+pub struct PeerId(pub SecpPubKey);
 
 impl std::fmt::Debug for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

@@ -9,7 +9,9 @@ use monad_consensus::{
     types::{quorum_certificate::genesis_vote_info, signature::SignatureCollection},
     validation::hashing::Sha256Hash,
 };
-use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature, Signature};
+use monad_crypto::nop::NopSignature;
+use monad_crypto::secp256k1::{SecpKeyPair, SecpPubKey};
+use monad_crypto::{KeyPair, Signature};
 use monad_executor::{
     executor::mock::MockExecutor,
     mock_swarm::{LinkMessage, Nodes, Transformer},
@@ -102,13 +104,16 @@ impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>> Transformer<Mo
     }
 }
 
-pub fn get_configs<SCT: SignatureCollection>(
+pub fn get_configs<
+    SCT: SignatureCollection<SignatureType = S>,
+    S: Signature<KeyPair = SecpKeyPair>,
+>(
     num_nodes: u16,
     delta: Duration,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT>>) {
+) -> (Vec<SecpPubKey>, Vec<MonadConfig<SCT>>) {
     let keys = create_keys(num_nodes as u32);
-    let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
+    let pubkeys = keys.iter().map(SecpKeyPair::pubkey).collect::<Vec<_>>();
+    let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT, S>(keys.iter());
 
     let state_configs = keys
         .into_iter()
@@ -128,7 +133,7 @@ pub fn get_configs<SCT: SignatureCollection>(
 }
 
 pub fn node_ledger_verification<
-    ST: Signature,
+    ST: Signature<PubKey = SecpPubKey, KeyPair = SecpKeyPair>,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
     PL: PersistenceLogger,
 >(
@@ -186,7 +191,7 @@ pub fn run_nodes<T: Transformer<MM>>(
 
 pub fn run_one_delayed_node<T: Transformer<MM>>(
     transformer: T,
-    pubkeys: Vec<PubKey>,
+    pubkeys: Vec<SecpPubKey>,
     state_configs: Vec<MC>,
 ) {
     let mut nodes = Nodes::<MS, T, PersistenceLoggerType>::new(

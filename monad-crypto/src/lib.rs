@@ -1,63 +1,47 @@
+use std::fmt::Debug;
 use std::hash::Hash;
-
-use rand::Rng;
-
-use crate::secp256k1::{Error, KeyPair, PubKey};
 
 #[cfg(feature = "proto")]
 pub mod convert;
 
+pub mod nop;
 pub mod secp256k1;
 
-pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static {
-    fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
+use monad_traits::{Deserializable, Serializable};
 
-    fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error>;
-
-    fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error>;
-
-    fn serialize(&self) -> Vec<u8>;
-    fn deserialize(signature: &[u8]) -> Result<Self, Error>;
+pub trait Compressable: Sized {
+    type UncompressError: std::error::Error + Send + Sync;
+    fn compress(&self) -> Vec<u8>;
+    fn uncompress(msg: &[u8]) -> Result<Self, Self::UncompressError>;
 }
 
-// This implementation won't sign or verify anything, but its still required to return a PubKey
-// It's Hash must also be unique (Signature's Hash is used as a MonadMessage ID) for some period
-// of time (the executor message window size?)
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NopSignature {
-    pubkey: PubKey,
-    id: u32,
+pub trait Signature:
+    Serializable + Deserializable + Copy + Clone + Debug + Eq + Hash + Send + Sync + 'static
+{
+    type Error: std::error::Error + Send + Sync;
+    type KeyPair: KeyPair<PubKey = Self::PubKey>;
+    type PubKey: PubKey;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPair) -> Self;
+
+    fn verify(&self, msg: &[u8], pubkey: &Self::PubKey) -> Result<(), Self::Error>;
+
+    fn recover_pubkey(&self, msg: &[u8]) -> Result<Self::PubKey, Self::Error>;
 }
 
-impl Signature for NopSignature {
-    fn sign(_msg: &[u8], keypair: &KeyPair) -> Self {
-        let mut rng = rand::thread_rng();
+pub trait PubKey:
+    Serializable + Deserializable + Copy + Clone + Debug + Eq + Hash + Ord + Send + Sync + 'static
+{
+}
 
-        NopSignature {
-            pubkey: keypair.pubkey(),
-            id: rng.gen::<u32>(),
-        }
-    }
+pub trait KeyPair: Sized + 'static {
+    type Signature: Signature;
+    type PubKey: PubKey;
+    type Error;
 
-    fn verify(&self, _msg: &[u8], _pubkey: &PubKey) -> Result<(), Error> {
-        Ok(())
-    }
+    fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error>;
 
-    fn recover_pubkey(&self, _msg: &[u8]) -> Result<PubKey, Error> {
-        Ok(self.pubkey)
-    }
+    fn sign(&self, msg: &[u8]) -> Self::Signature;
 
-    fn serialize(&self) -> Vec<u8> {
-        self.id
-            .to_le_bytes()
-            .into_iter()
-            .chain(self.pubkey.bytes().into_iter())
-            .collect()
-    }
-
-    fn deserialize(signature: &[u8]) -> Result<Self, Error> {
-        let id = u32::from_le_bytes(signature[..4].try_into().unwrap());
-        let pubkey = PubKey::from_slice(&signature[4..])?;
-        Ok(Self { pubkey, id })
-    }
+    fn pubkey(&self) -> Self::PubKey;
 }

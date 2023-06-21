@@ -11,7 +11,8 @@ use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus::validation::signing::Verified;
 use monad_consensus::vote_state::VoteState;
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+use monad_crypto::KeyPair;
 use monad_testutil::signing::*;
 use monad_testutil::validators::MockLeaderElection;
 use monad_types::Hash;
@@ -19,7 +20,7 @@ use monad_validator::validator::Validator;
 use monad_validator::validator_set::ValidatorSet;
 
 fn create_signed_vote_message(
-    keypair: &KeyPair,
+    keypair: &SecpKeyPair,
     vote_round: Round,
 ) -> Unverified<SecpSignature, VoteMessage> {
     let vi = VoteInfo {
@@ -45,7 +46,7 @@ fn create_signed_vote_message(
 fn setup_ctx(
     num_nodes: u32,
 ) -> (
-    Vec<KeyPair>,
+    Vec<SecpKeyPair>,
     ValidatorSet<MockLeaderElection>,
     Vec<Verified<SecpSignature, VoteMessage>>,
 ) {

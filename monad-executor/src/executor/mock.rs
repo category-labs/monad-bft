@@ -415,7 +415,8 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
 
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::secp256k1::SecpKeyPair;
+    use monad_crypto::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -924,7 +925,7 @@ mod tests {
     fn test_nodes() {
         let pubkeys = create_keys(NUM_NODES as u32)
             .iter()
-            .map(KeyPair::pubkey)
+            .map(SecpKeyPair::pubkey)
             .map(PeerId)
             .collect::<Vec<_>>();
         let state_configs = (0..NUM_NODES)

@@ -21,9 +21,10 @@ use monad_consensus::{
     },
     vote_state::VoteState,
 };
+use monad_crypto::secp256k1::SecpError;
 use monad_crypto::{
-    secp256k1::{KeyPair, PubKey},
-    Signature,
+    secp256k1::{SecpKeyPair, SecpPubKey},
+    {KeyPair, Signature},
 };
 use monad_executor::{
     Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, State, TimerCommand,
@@ -61,7 +62,7 @@ where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
-    pub fn pubkey(&self) -> PubKey {
+    pub fn pubkey(&self) -> SecpPubKey {
         self.consensus_state.nodeid.0
     }
 
@@ -135,7 +136,7 @@ impl<S: Signature> monad_traits::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_traits::Deserializable
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> monad_traits::Deserializable
     for MonadMessage<S, monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>>
 {
     type ReadError = monad_proto::error::ProtoError;
@@ -184,8 +185,8 @@ where
 }
 
 pub struct MonadConfig<SCT> {
-    pub validators: Vec<PubKey>,
-    pub key: KeyPair,
+    pub validators: Vec<SecpPubKey>,
+    pub key: SecpKeyPair,
 
     pub delta: Duration,
     pub genesis_block: Block<SCT>,
@@ -195,7 +196,7 @@ pub struct MonadConfig<SCT> {
 
 impl<ST, SCT> State for MonadState<ST, SCT>
 where
-    ST: Signature,
+    ST: Signature<KeyPair = SecpKeyPair, PubKey = SecpPubKey>,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     type Config = MonadConfig<SCT>;
@@ -429,7 +430,7 @@ where
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusEvent<ST, SCT> {
     Message {
-        sender: PubKey,
+        sender: SecpPubKey,
         unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
     },
     Timeout(PacemakerTimerExpire),
@@ -500,7 +501,7 @@ struct ConsensusState<S, T> {
     nodeid: NodeId,
 
     // TODO deprecate
-    keypair: KeyPair,
+    keypair: SecpKeyPair,
 }
 
 impl<S, T> ConsensusState<S, T>
@@ -509,13 +510,13 @@ where
     T: SignatureCollection,
 {
     pub fn new(
-        my_pubkey: PubKey,
+        my_pubkey: SecpPubKey,
         genesis_block: Block<T>,
         genesis_qc: QuorumCertificate<T>,
         delta: Duration,
 
         // TODO deprecate
-        keypair: KeyPair,
+        keypair: SecpKeyPair,
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
@@ -760,8 +761,10 @@ mod test {
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::validation::hashing::Sha256Hash;
     use monad_consensus::validation::signing::Verified;
-    use monad_crypto::secp256k1::KeyPair;
-    use monad_crypto::{NopSignature, Signature};
+    use monad_crypto::nop::NopSignature;
+    use monad_crypto::secp256k1::SecpKeyPair;
+    use monad_crypto::KeyPair;
+    use monad_crypto::Signature;
     use monad_executor::PeerId;
     use monad_testutil::proposal::ProposalGen;
     use monad_testutil::signing::{create_keys, get_genesis_config};
@@ -772,14 +775,15 @@ mod test {
 
     use crate::{ConsensusCommand, ConsensusMessage, ConsensusState};
 
-    fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>() -> (
-        Vec<KeyPair>,
+    fn setup<ST: Signature<KeyPair = SecpKeyPair>, SCT: SignatureCollection<SignatureType = ST>>(
+    ) -> (
+        Vec<SecpKeyPair>,
         ValidatorSet<WeightedRoundRobin>,
         ConsensusState<ST, SCT>,
     ) {
         let keys = create_keys(4);
-        let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
+        let pubkeys = keys.iter().map(SecpKeyPair::pubkey).collect::<Vec<_>>();
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT, ST>(keys.iter());
 
         let validator_list = pubkeys
             .into_iter()

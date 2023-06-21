@@ -242,7 +242,7 @@ where
                 libp2p::swarm::SwarmEvent::Behaviour(behavior::BehaviorEvent::RequestResponse(
                     libp2p::request_response::Event::Message { peer, message },
                 )) => {
-                    let pubkey = match monad_crypto::secp256k1::PubKey::try_from(peer) {
+                    let pubkey = match monad_crypto::secp256k1::SecpPubKey::try_from(peer) {
                         Ok(pubkey) => pubkey,
                         Err(_) => {
                             // We don't need to respond if the peer isn't using a valid secp256k1 key

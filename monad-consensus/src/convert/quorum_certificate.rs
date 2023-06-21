@@ -1,4 +1,7 @@
-use monad_crypto::Signature;
+use monad_crypto::{
+    secp256k1::{SecpError, SecpPubKey},
+    Signature,
+};
 use monad_proto::error::ProtoError;
 use monad_proto::proto::quorum_certificate::*;
 
@@ -45,7 +48,9 @@ impl<S: Signature> From<&QuorumCertificate<S>> for ProtoQuorumCertificateAggSig 
     }
 }
 
-impl<S: Signature> TryFrom<ProtoQuorumCertificateAggSig> for QuorumCertificate<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoQuorumCertificateAggSig>
+    for QuorumCertificate<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoQuorumCertificateAggSig) -> Result<Self, Self::Error> {

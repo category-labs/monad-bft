@@ -231,7 +231,8 @@ mod test {
     use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
     use monad_consensus::types::voting::VoteInfo;
     use monad_consensus::validation::hashing::Sha256Hash;
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::secp256k1::SecpKeyPair;
+    use monad_crypto::KeyPair;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, Hash, NodeId, Round};
 
@@ -243,7 +244,7 @@ mod test {
 
     fn node_id() -> NodeId {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
         NodeId(keypair.pubkey())
     }
 

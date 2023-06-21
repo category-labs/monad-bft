@@ -2,6 +2,8 @@ use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
 use monad_crypto::convert::proto_to_signature;
 use monad_crypto::convert::signature_to_proto;
+use monad_crypto::secp256k1::SecpError;
+use monad_crypto::secp256k1::SecpPubKey;
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::event::*;
@@ -42,7 +44,9 @@ impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoConsensusEvent>
+    for ConsensusEvent<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoConsensusEvent) -> Result<Self, Self::Error> {
@@ -104,7 +108,9 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
     }
 }
 
-impl<S: Signature> From<&MonadEvent<S>> for ProtoMonadEvent {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> From<&MonadEvent<S>>
+    for ProtoMonadEvent
+{
     fn from(value: &MonadEvent<S>) -> Self {
         let event = match value {
             TypeMonadEvent::Ack { peer, id, round } => {
@@ -122,7 +128,9 @@ impl<S: Signature> From<&MonadEvent<S>> for ProtoMonadEvent {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoMonadEvent> for MonadEvent<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoMonadEvent>
+    for MonadEvent<S>
+{
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
         let event: MonadEvent<S> = match value.event {

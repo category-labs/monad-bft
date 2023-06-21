@@ -8,7 +8,7 @@ use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaChaRng;
 
 use futures::StreamExt;
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::secp256k1::SecpPubKey;
 use monad_wal::PersistenceLogger;
 use tracing::info_span;
 
@@ -201,7 +201,7 @@ where
 
     MockExecutor<S>: Unpin,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config)>, transformer: T) -> Self {
+    pub fn new(peers: Vec<(SecpPubKey, S::Config, LGR::Config)>, transformer: T) -> Self {
         assert!(!peers.is_empty());
 
         let mut states = BTreeMap::new();

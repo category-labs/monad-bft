@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-proto = { path = "../monad-proto", optional = true }
+monad-traits = { path = "../monad-traits" }
 
 libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }
 multihash = { workspace = true, features = ["identity"], optional = true }

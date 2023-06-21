@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::secp256k1::SecpPubKey;
 use monad_executor::{
     executor::mock::MockExecutor,
     mock_swarm::{Nodes, Transformer},
@@ -59,7 +59,7 @@ where
 {
     fn max_tick(&self) -> Duration;
     fn transformer(&self) -> &T;
-    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config)>;
+    fn nodes(&self) -> Vec<(SecpPubKey, S::Config, LGR::Config)>;
 }
 
 pub struct NodesSimulation<S, T, LGR, C>

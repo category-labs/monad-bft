@@ -3399,6 +3399,7 @@ dependencies = [
  "hex",
  "libp2p-identity",
  "monad-proto",
+ "monad-traits",
  "multihash",
  "rand 0.8.5",
  "secp256k1",

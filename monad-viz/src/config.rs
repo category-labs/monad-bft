@@ -8,7 +8,8 @@ use iced_lazy::Component;
 use monad_consensus::{
     types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::secp256k1::{SecpKeyPair, SecpPubKey};
+use monad_crypto::KeyPair;
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
 };
@@ -18,7 +19,9 @@ use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_wal::mock::MockWALoggerConfig;
 use monad_wal::PersistenceLogger;
 
-use crate::{graph::SimulationConfig, PersistenceLoggerType, SignatureCollectionType, MM, MS};
+use crate::{
+    graph::SimulationConfig, PersistenceLoggerType, SignatureCollectionType, SignatureType, MM, MS,
+};
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
@@ -49,14 +52,14 @@ impl SimulationConfig<MS, LayerTransformer<MM>, PersistenceLoggerType> for SimCo
     fn nodes(
         &self,
     ) -> Vec<(
-        PubKey,
+        SecpPubKey,
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
     )> {
         let keys = create_keys(self.num_nodes);
-        let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+        let pubkeys = keys.iter().map(SecpKeyPair::pubkey).collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+            get_genesis_config::<Sha256Hash, SignatureCollectionType, SignatureType>(keys.iter());
 
         let state_configs = keys
             .into_iter()

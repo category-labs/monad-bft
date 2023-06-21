@@ -7,6 +7,7 @@ use monad_consensus::validation::error::Error;
 use monad_consensus::validation::hashing::*;
 use monad_consensus::validation::signing::ValidatorMember;
 use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::KeyPair;
 use monad_testutil::signing::{get_key, node_id, MockSignatures, TestSigner};
 use monad_types::*;
 use monad_validator::validator::Validator;

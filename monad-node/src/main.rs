@@ -16,8 +16,8 @@ use monad_consensus::{
     },
     validation::hashing::{Hasher, Sha256Hash},
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
-use monad_crypto::Signature;
+use monad_crypto::secp256k1::{SecpKeyPair, SecpPubKey, SecpSignature};
+use monad_crypto::{KeyPair, Signature};
 use monad_executor::{
     executor::{
         ledger::MockLedger, mempool::MockMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -43,7 +43,7 @@ pub struct Config {
     pub libp2p_keepalive: Duration,
     pub libp2p_auth: Auth,
 
-    pub genesis_peers: Vec<(Multiaddr, PubKey)>,
+    pub genesis_peers: Vec<(Multiaddr, SecpPubKey)>,
     pub delta: Duration,
     pub genesis_block: Block<SignatureCollectionType>,
     pub genesis_vote_info: VoteInfo,
@@ -112,7 +112,7 @@ fn testnet(
     let keys: Vec<_> = secrets
         .iter()
         .cloned() // It's ok to copy these secrets because this is just used for testnet config gen
-        .map(|mut secret| KeyPair::libp2p_from_bytes(secret.as_mut_slice()).unwrap())
+        .map(|mut secret| SecpKeyPair::libp2p_from_bytes(secret.as_mut_slice()).unwrap())
         .collect();
 
     let addresses = addresses
@@ -131,7 +131,11 @@ fn testnet(
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         Block::new::<HasherType>(
             // FIXME init from genesis config, don't use random key
-            NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
+            NodeId(
+                SecpKeyPair::from_bytes(&mut [0xBE_u8; 32])
+                    .unwrap()
+                    .pubkey(),
+            ),
             Round(0),
             &genesis_txn,
             &genesis_prime_qc,
@@ -171,7 +175,7 @@ fn testnet(
 
 async fn run(cx: tracing::span::Id, mut config: Config) {
     let (keypair, libp2p_keypair) =
-        KeyPair::libp2p_from_bytes(config.secret_key.as_mut_slice()).expect("invalid key");
+        SecpKeyPair::libp2p_from_bytes(config.secret_key.as_mut_slice()).expect("invalid key");
 
     let mut router = monad_p2p::Service::with_tokio_executor(
         libp2p_keypair.into(),

@@ -124,13 +124,14 @@ mod test {
     use crate::{validator::Validator, weighted_round_robin::WeightedRoundRobin};
 
     use super::ValidatorSet;
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::secp256k1::SecpKeyPair;
+    use monad_crypto::KeyPair;
     use monad_types::{NodeId, Round};
 
     #[test]
     fn test_membership() {
         let mut privkey: [u8; 32] = [100; 32];
-        let keypair1 = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair1 = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
         let v1 = Validator {
             pubkey: keypair1.pubkey(),
@@ -144,7 +145,7 @@ mod test {
 
         privkey = [101; 32];
         let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut privkey).unwrap().pubkey(),
+            pubkey: SecpKeyPair::from_bytes(&mut privkey).unwrap().pubkey(),
             stake: 2,
         };
 
@@ -156,7 +157,7 @@ mod test {
         assert!(vs.is_member(&NodeId(keypair1.pubkey())));
 
         let mut pkey3: [u8; 32] = [102; 32];
-        let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
+        let pubkey3 = SecpKeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
         assert!(!vs.is_member(&NodeId(pubkey3)));
     }
 
@@ -165,17 +166,17 @@ mod test {
         let mut pkey1: [u8; 32] = [100; 32];
         let mut pkey2: [u8; 32] = [101; 32];
         let v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut pkey1).unwrap().pubkey(),
+            pubkey: SecpKeyPair::from_bytes(&mut pkey1).unwrap().pubkey(),
             stake: 1,
         };
 
         let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut pkey2).unwrap().pubkey(),
+            pubkey: SecpKeyPair::from_bytes(&mut pkey2).unwrap().pubkey(),
             stake: 3,
         };
 
         let mut pkey3: [u8; 32] = [102; 32];
-        let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
+        let pubkey3 = SecpKeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
@@ -190,12 +191,12 @@ mod test {
         let mut pkey1: [u8; 32] = [100; 32];
         let mut pkey2: [u8; 32] = [101; 32];
         let v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut pkey1).unwrap().pubkey(),
+            pubkey: SecpKeyPair::from_bytes(&mut pkey1).unwrap().pubkey(),
             stake: 1,
         };
 
         let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut pkey2).unwrap().pubkey(),
+            pubkey: SecpKeyPair::from_bytes(&mut pkey2).unwrap().pubkey(),
             stake: 2,
         };
 
@@ -208,14 +209,14 @@ mod test {
     #[test]
     fn test_get_leader() {
         let mut pkey1: [u8; 32] = [100; 32];
-        let pubkey1 = KeyPair::from_bytes(&mut pkey1).unwrap().pubkey();
+        let pubkey1 = SecpKeyPair::from_bytes(&mut pkey1).unwrap().pubkey();
         let v1 = Validator {
             pubkey: pubkey1,
             stake: 1,
         };
 
         let mut pkey2: [u8; 32] = [101; 32];
-        let pubkey2 = KeyPair::from_bytes(&mut pkey2).unwrap().pubkey();
+        let pubkey2 = SecpKeyPair::from_bytes(&mut pkey2).unwrap().pubkey();
         let v2 = Validator {
             pubkey: pubkey2,
             stake: 1,

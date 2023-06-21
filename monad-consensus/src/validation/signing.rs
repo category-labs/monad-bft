@@ -3,8 +3,8 @@ use std::ops::Deref;
 
 #[cfg(feature = "proto")]
 use monad_crypto::convert::signature_to_proto;
-use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_crypto::Signature;
+use monad_crypto::secp256k1::{SecpKeyPair, SecpPubKey};
+use monad_crypto::{KeyPair, Signature};
 #[cfg(feature = "proto")]
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
@@ -42,8 +42,8 @@ impl<S: Signature, M> Verified<S, M> {
     }
 }
 
-impl<S: Signature, M: Hashable> Verified<S, M> {
-    pub fn new<H: Hasher>(msg: M, keypair: &KeyPair) -> Self {
+impl<S: Signature<KeyPair = SecpKeyPair>, M: Hashable> Verified<S, M> {
+    pub fn new<H: Hasher>(msg: M, keypair: &SecpKeyPair) -> Self {
         let hash = H::hash_object(&msg);
         let signature = S::sign(hash.as_ref(), keypair);
         Self {
@@ -98,7 +98,7 @@ impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
 
 impl<S, T> Unverified<S, ConsensusMessage<S, T>>
 where
-    S: Signature,
+    S: Signature<PubKey = SecpPubKey>,
     T: SignatureCollection,
 {
     // A verified proposal is one which is well-formed and has valid
@@ -106,7 +106,7 @@ where
     pub fn verify<H: Hasher>(
         self,
         validators: &ValidatorMember,
-        sender: &PubKey,
+        sender: &SecpPubKey,
     ) -> Result<Verified<S, ConsensusMessage<S, T>>, Error> {
         // FIXME this feels wrong... it feels like the enum variant should factor into the hash so
         //       signatures can't be reused across variant members
@@ -150,7 +150,7 @@ where
 
 impl<S, T> Unverified<S, ProposalMessage<S, T>>
 where
-    S: Signature,
+    S: Signature<PubKey = SecpPubKey>,
     T: SignatureCollection,
 {
     // A verified proposal is one which is well-formed and has valid
@@ -158,7 +158,7 @@ where
     pub fn verify<H: Hasher>(
         self,
         validators: &ValidatorMember,
-        sender: &PubKey,
+        sender: &SecpPubKey,
     ) -> Result<Verified<S, ProposalMessage<S, T>>, Error> {
         self.well_formed_proposal()?;
         let msg = H::hash_object(&self.obj);
@@ -182,13 +182,13 @@ where
     }
 }
 
-impl<S: Signature> Unverified<S, VoteMessage> {
+impl<S: Signature<PubKey = SecpPubKey>> Unverified<S, VoteMessage> {
     // A verified vote message has a valid signature
     // Return type must keep the signature with the message as it is used later by the protocol
     pub fn verify<H: Hasher>(
         self,
         validators: &ValidatorMember,
-        sender: &PubKey,
+        sender: &SecpPubKey,
     ) -> Result<Verified<S, VoteMessage>, Error> {
         let msg = H::hash_object(&self.obj.ledger_commit_info);
 
@@ -205,13 +205,13 @@ impl<S: Signature> Unverified<S, VoteMessage> {
 
 impl<S, T> Unverified<S, TimeoutMessage<S, T>>
 where
-    S: Signature,
+    S: Signature<PubKey = SecpPubKey>,
     T: SignatureCollection,
 {
     pub fn verify<H: Hasher>(
         self,
         validators: &ValidatorMember,
-        sender: &PubKey,
+        sender: &SecpPubKey,
     ) -> Result<Verified<S, TimeoutMessage<S, T>>, Error> {
         self.well_formed_timeout()?;
         let msg = H::hash_object(&self.obj);
@@ -244,7 +244,7 @@ fn verify_certificates<S, H, V>(
     qc: &QuorumCertificate<V>,
 ) -> Result<(), Error>
 where
-    S: Signature,
+    S: Signature<PubKey = SecpPubKey>,
     H: Hasher,
     V: SignatureCollection,
 {
@@ -259,7 +259,7 @@ where
 
 fn verify_tc<S, H>(validators: &ValidatorMember, tc: &TimeoutCertificate<S>) -> Result<(), Error>
 where
-    S: Signature,
+    S: Signature<PubKey = SecpPubKey>,
     H: Hasher,
 {
     for t in tc.high_qc_rounds.iter() {
@@ -313,10 +313,10 @@ where
 
 fn verify_author(
     validators: &ValidatorMember,
-    sender: &PubKey,
+    sender: &SecpPubKey,
     msg: &Hash,
-    sig: &impl Signature,
-) -> Result<PubKey, Error> {
+    sig: &impl Signature<PubKey = SecpPubKey>,
+) -> Result<SecpPubKey, Error> {
     let pubkey = get_pubkey(msg.as_ref(), sig)?.valid_pubkey(validators)?;
     sig.verify(msg.as_ref(), &pubkey)
         .map_err(|_| Error::InvalidSignature)?;
@@ -328,7 +328,7 @@ fn verify_author(
 }
 
 // Extract the PubKey from the Signature if possible
-fn get_pubkey(msg: &[u8], sig: &impl Signature) -> Result<PubKey, Error> {
+fn get_pubkey(msg: &[u8], sig: &impl Signature<PubKey = SecpPubKey>) -> Result<SecpPubKey, Error> {
     sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
 }
 
@@ -362,7 +362,7 @@ trait ValidatorPubKey {
         Self: Sized;
 }
 
-impl ValidatorPubKey for PubKey {
+impl ValidatorPubKey for SecpPubKey {
     fn valid_pubkey(self, validators: &ValidatorMember) -> Result<Self, Error> {
         if validators.contains_key(&NodeId(self)) {
             Ok(self)
@@ -383,6 +383,7 @@ mod test {
     use crate::validation::error::Error;
     use crate::validation::{hashing::*, signing::ValidatorMember};
     use monad_crypto::secp256k1::SecpSignature;
+    use monad_crypto::KeyPair;
     use monad_testutil::signing::get_key;
     use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator::Validator;

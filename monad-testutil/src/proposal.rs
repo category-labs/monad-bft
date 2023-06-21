@@ -8,8 +8,8 @@ use monad_consensus::types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutI
 use monad_consensus::types::voting::VoteInfo;
 use monad_consensus::validation::hashing::{Hashable, Hasher, Sha256Hash};
 use monad_consensus::validation::signing::Verified;
-use monad_crypto::secp256k1::KeyPair;
-use monad_crypto::Signature;
+use monad_crypto::secp256k1::{SecpKeyPair, SecpPubKey};
+use monad_crypto::{KeyPair, Signature};
 use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
@@ -23,7 +23,7 @@ pub struct ProposalGen<S, T> {
 impl<S, T> ProposalGen<S, T>
 where
     T: SignatureCollection<SignatureType = S>,
-    S: Signature,
+    S: Signature<KeyPair = SecpKeyPair, PubKey = SecpPubKey>,
 {
     pub fn new(genesis_qc: QuorumCertificate<T>) -> Self {
         ProposalGen {
@@ -36,7 +36,7 @@ where
 
     pub fn next_proposal<L: LeaderElection>(
         &mut self,
-        keys: &Vec<KeyPair>,
+        keys: &Vec<SecpKeyPair>,
         valset: &mut ValidatorSet<L>,
     ) -> Verified<T::SignatureType, ProposalMessage<T::SignatureType, T>> {
         // high_qc is the highest qc seen in a proposal
@@ -78,7 +78,7 @@ where
     // before adding the state's key to keys
     pub fn next_tc<L: LeaderElection>(
         &mut self,
-        keys: &Vec<KeyPair>,
+        keys: &Vec<SecpKeyPair>,
         valset: &mut ValidatorSet<L>,
     ) -> Vec<Verified<T::SignatureType, TimeoutMessage<S, T>>> {
         let node_ids = keys
@@ -125,7 +125,7 @@ where
         tmo_msgs
     }
 
-    fn get_next_qc(&self, keys: &Vec<KeyPair>, block: &Block<T>) -> QuorumCertificate<T> {
+    fn get_next_qc(&self, keys: &Vec<SecpKeyPair>, block: &Block<T>) -> QuorumCertificate<T> {
         let vi = VoteInfo {
             id: block.get_id(),
             round: block.round,

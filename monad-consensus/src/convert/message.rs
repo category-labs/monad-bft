@@ -1,6 +1,7 @@
 use std::ops::Deref;
 
 use monad_crypto::convert::{proto_to_signature, signature_to_proto};
+use monad_crypto::secp256k1::{SecpError, SecpPubKey};
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::message::*;
@@ -58,7 +59,9 @@ impl<S: Signature> From<&TimeoutMessage<S>> for ProtoTimeoutMessage {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoTimeoutMessage> for TimeoutMessage<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoTimeoutMessage>
+    for TimeoutMessage<S>
+{
     type Error = ProtoError;
     fn try_from(value: ProtoTimeoutMessage) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -83,7 +86,9 @@ impl<S: Signature> From<&ProposalMessage<S>> for ProtoProposalMessageAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoProposalMessageAggSig> for ProposalMessage<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoProposalMessageAggSig>
+    for ProposalMessage<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoProposalMessageAggSig) -> Result<Self, Self::Error> {
@@ -119,7 +124,9 @@ impl<S: Signature> From<&VerifiedConsensusMessage<S>> for ProtoUnverifiedConsens
     }
 }
 
-impl<S: Signature> TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoUnverifiedConsensusMessage>
+    for UnverifiedConsensusMessage<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoUnverifiedConsensusMessage) -> Result<Self, Self::Error> {

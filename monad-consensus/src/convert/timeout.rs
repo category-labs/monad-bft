@@ -1,5 +1,6 @@
 use monad_crypto::{
     convert::{proto_to_signature, signature_to_proto},
+    secp256k1::{SecpError, SecpPubKey},
     Signature,
 };
 use monad_proto::error::ProtoError;
@@ -109,7 +110,9 @@ impl<S: Signature> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo<S> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoTimeoutInfoAggSig>
+    for TimeoutInfo<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutInfoAggSig) -> Result<Self, Self::Error> {

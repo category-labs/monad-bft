@@ -1,26 +1,29 @@
 use secp256k1::Secp256k1;
 use sha2::Digest;
-
-use crate::Signature;
-
 use zeroize::Zeroize;
 
+use monad_traits::{Deserializable, Serializable};
+
+use crate::{Compressable, KeyPair, PubKey, Signature};
+
 #[derive(Copy, Clone)]
-pub struct PubKey(secp256k1::PublicKey);
-pub struct KeyPair(secp256k1::KeyPair);
+pub struct SecpPubKey(secp256k1::PublicKey);
+pub struct SecpKeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
 
 #[derive(Debug, Clone)]
-pub struct Error(secp256k1::Error);
+pub struct SecpError(secp256k1::Error);
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for SecpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::fmt::Debug for PubKey {
+impl std::error::Error for SecpError {}
+
+impl std::fmt::Debug for SecpPubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let ser = self.bytes();
         write!(
@@ -32,89 +35,38 @@ impl std::fmt::Debug for PubKey {
     }
 }
 
-impl std::cmp::PartialEq for PubKey {
+impl std::cmp::PartialEq for SecpPubKey {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq_fast_unstable(&other.0)
     }
 }
 
-impl std::cmp::Eq for PubKey {}
+impl std::cmp::Eq for SecpPubKey {}
 
-impl std::cmp::Ord for PubKey {
+impl std::cmp::Ord for SecpPubKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.cmp_fast_unstable(&other.0)
     }
 }
 
-impl std::cmp::PartialOrd for PubKey {
+impl std::cmp::PartialOrd for SecpPubKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::hash::Hash for PubKey {
+impl std::hash::Hash for SecpPubKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let slice = unsafe { std::mem::transmute::<Self, [u8; 64]>(*self) };
         slice.hash(state)
     }
 }
 
-fn msg_hash(msg: &[u8]) -> secp256k1::Message {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(msg);
-    let hash = hasher.finalize();
-
-    secp256k1::Message::from_slice(&hash).expect("32 bytes")
-}
-
-impl KeyPair {
-    pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, Error> {
-        let secret = secret.as_mut();
-        let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
-            .map(Self)
-            .map_err(Error);
-        secret.zeroize();
-        keypair
-    }
-
-    #[cfg(feature = "libp2p-identity")]
-    /// Special implementation for creating both a (monad_crypto::KeyPair, lib2p::KeyPair)
-    /// TODO Once we've unified those, hopefully we can deprecate this
-    pub fn libp2p_from_bytes(
-        mut secret: impl AsMut<[u8]>,
-    ) -> Result<(Self, libp2p_identity::secp256k1::Keypair), Error> {
-        let secret = secret.as_mut();
-        let monad_keypair = {
-            let secret = &*secret; // explicitly use immutable reference
-            secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
-                .map(Self)
-                .map_err(Error)?
-        };
-        let libp2p_keypair = libp2p_identity::secp256k1::SecretKey::from_bytes(secret)
-            .expect("monad_keypair parse succeeded, libp2p parse shouldn't fail")
-            .into();
-
-        Ok((monad_keypair, libp2p_keypair))
-    }
-
-    pub fn sign(&self, msg: &[u8]) -> SecpSignature {
-        SecpSignature(Secp256k1::sign_ecdsa_recoverable(
-            secp256k1::SECP256K1,
-            &msg_hash(msg),
-            &self.0.secret_key(),
-        ))
-    }
-
-    pub fn pubkey(&self) -> PubKey {
-        PubKey(self.0.public_key())
-    }
-}
-
-impl PubKey {
-    pub fn from_slice(pubkey: &[u8]) -> Result<Self, Error> {
+impl SecpPubKey {
+    pub fn from_slice(pubkey: &[u8]) -> Result<Self, SecpError> {
         secp256k1::PublicKey::from_slice(pubkey)
             .map(Self)
-            .map_err(Error)
+            .map_err(SecpError)
     }
 
     pub fn bytes(&self) -> Vec<u8> {
@@ -125,25 +77,110 @@ impl PubKey {
         self.0.serialize().to_vec()
     }
 
-    pub fn verify(&self, msg: &[u8], signature: &SecpSignature) -> Result<(), Error> {
+    pub fn verify(&self, msg: &[u8], signature: &SecpSignature) -> Result<(), SecpError> {
         Secp256k1::verify_ecdsa(
             secp256k1::SECP256K1,
             &msg_hash(msg),
             &signature.0.to_standard(),
             &self.0,
         )
-        .map_err(Error)
+        .map_err(SecpError)
+    }
+}
+
+impl Serializable for SecpPubKey {
+    fn serialize(&self) -> Vec<u8> {
+        self.bytes()
+    }
+}
+
+impl Deserializable for SecpPubKey {
+    type ReadError = SecpError;
+
+    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
+        Self::from_slice(message)
+    }
+}
+
+impl Compressable for SecpPubKey {
+    type UncompressError = SecpError;
+
+    fn compress(&self) -> Vec<u8> {
+        self.bytes_compressed()
+    }
+
+    fn uncompress(msg: &[u8]) -> Result<Self, Self::UncompressError> {
+        Self::from_slice(msg)
+    }
+}
+
+impl PubKey for SecpPubKey {}
+
+fn msg_hash(msg: &[u8]) -> secp256k1::Message {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(msg);
+    let hash = hasher.finalize();
+
+    secp256k1::Message::from_slice(&hash).expect("32 bytes")
+}
+
+impl KeyPair for SecpKeyPair {
+    type Signature = SecpSignature;
+    type PubKey = SecpPubKey;
+    type Error = SecpError;
+
+    fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, Self::Error> {
+        let secret = secret.as_mut();
+        let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
+            .map(Self)
+            .map_err(SecpError);
+        secret.zeroize();
+        keypair
+    }
+
+    fn sign(&self, msg: &[u8]) -> Self::Signature {
+        SecpSignature(Secp256k1::sign_ecdsa_recoverable(
+            secp256k1::SECP256K1,
+            &msg_hash(msg),
+            &self.0.secret_key(),
+        ))
+    }
+
+    fn pubkey(&self) -> Self::PubKey {
+        SecpPubKey(self.0.public_key())
+    }
+}
+
+impl SecpKeyPair {
+    #[cfg(feature = "libp2p-identity")]
+    /// Special implementation for creating both a (monad_crypto::KeyPair, lib2p::KeyPair)
+    /// TODO Once we've unified those, hopefully we can deprecate this
+    pub fn libp2p_from_bytes(
+        mut secret: impl AsMut<[u8]>,
+    ) -> Result<(Self, libp2p_identity::secp256k1::Keypair), SecpError> {
+        let secret = secret.as_mut();
+        let monad_keypair = {
+            let secret = &*secret; // explicitly use immutable reference
+            secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
+                .map(Self)
+                .map_err(SecpError)?
+        };
+        let libp2p_keypair = libp2p_identity::secp256k1::SecretKey::from_bytes(secret)
+            .expect("monad_keypair parse succeeded, libp2p parse shouldn't fail")
+            .into();
+
+        Ok((monad_keypair, libp2p_keypair))
     }
 }
 
 impl SecpSignature {
-    pub fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
+    fn recover_pubkey(&self, msg: &[u8]) -> Result<SecpPubKey, SecpError> {
         Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &self.0)
-            .map(PubKey)
-            .map_err(Error)
+            .map(SecpPubKey)
+            .map_err(SecpError)
     }
 
-    pub fn serialize(&self) -> [u8; 65] {
+    fn serialize(&self) -> [u8; 65] {
         // recid is 0..3, fit in a single byte (see secp256k1 https://docs.rs/secp256k1/0.27.0/src/secp256k1/ecdsa/recovery.rs.html#39)
         let (recid, sig) = self.0.serialize_compact();
         assert!((0..=3).contains(&recid.to_i32()));
@@ -152,15 +189,48 @@ impl SecpSignature {
         sig_vec.try_into().unwrap()
     }
 
-    pub fn deserialize(data: &[u8]) -> Result<Self, Error> {
+    fn deserialize(data: &[u8]) -> Result<Self, SecpError> {
         if data.len() != 64 + 1 {
-            return Err(Error(secp256k1::Error::InvalidSignature));
+            return Err(SecpError(secp256k1::Error::InvalidSignature));
         }
         let sig_data = &data[..64];
-        let recid = secp256k1::ecdsa::RecoveryId::from_i32(data[64] as i32).map_err(Error)?;
+        let recid = secp256k1::ecdsa::RecoveryId::from_i32(data[64] as i32).map_err(SecpError)?;
         Ok(SecpSignature(
-            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
+            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid)
+                .map_err(SecpError)?,
         ))
+    }
+}
+
+impl Signature for SecpSignature {
+    type Error = SecpError;
+    type KeyPair = SecpKeyPair;
+    type PubKey = SecpPubKey;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPair) -> Self {
+        keypair.sign(msg)
+    }
+
+    fn verify(&self, msg: &[u8], pubkey: &Self::PubKey) -> Result<(), Self::Error> {
+        pubkey.verify(msg, self)
+    }
+
+    fn recover_pubkey(&self, msg: &[u8]) -> Result<Self::PubKey, Self::Error> {
+        self.recover_pubkey(msg)
+    }
+}
+
+impl Serializable for SecpSignature {
+    fn serialize(&self) -> Vec<u8> {
+        self.serialize().to_vec()
+    }
+}
+
+impl Deserializable for SecpSignature {
+    type ReadError = SecpError;
+
+    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
+        Self::deserialize(message)
     }
 }
 
@@ -185,7 +255,7 @@ impl From<libp2p_identity::DecodingError> for PeerIdError {
 }
 
 #[cfg(feature = "libp2p-identity")]
-impl TryFrom<libp2p_identity::PeerId> for PubKey {
+impl TryFrom<libp2p_identity::PeerId> for SecpPubKey {
     type Error = PeerIdError;
     fn try_from(peer_id: libp2p_identity::PeerId) -> Result<Self, Self::Error> {
         let bytes = peer_id.to_bytes();
@@ -210,8 +280,8 @@ impl TryFrom<libp2p_identity::PeerId> for PubKey {
 }
 
 #[cfg(feature = "libp2p-identity")]
-impl From<&PubKey> for libp2p_identity::PeerId {
-    fn from(pubkey: &PubKey) -> Self {
+impl From<&SecpPubKey> for libp2p_identity::PeerId {
+    fn from(pubkey: &SecpPubKey) -> Self {
         let pubkey = libp2p_identity::secp256k1::PublicKey::decode(&pubkey.bytes_compressed())
             .expect("internal pubkey -> peer_id should never fail");
 
@@ -222,44 +292,38 @@ impl From<&PubKey> for libp2p_identity::PeerId {
     }
 }
 
-impl Signature for SecpSignature {
-    fn sign(msg: &[u8], keypair: &KeyPair) -> Self {
-        keypair.sign(msg)
-    }
-
-    fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error> {
-        pubkey.verify(msg, self)
-    }
-
-    fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
-        self.recover_pubkey(msg)
-    }
-
-    fn serialize(&self) -> Vec<u8> {
-        self.serialize().to_vec()
-    }
-
-    fn deserialize(signature: &[u8]) -> Result<Self, Error> {
-        Self::deserialize(signature)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::{Compressable, KeyPair};
     use tiny_keccak::Hasher;
 
-    use super::{KeyPair, PubKey, SecpSignature};
+    use super::{Deserializable, Serializable};
+    use super::{SecpKeyPair, SecpPubKey, SecpSignature};
 
     #[test]
     fn test_pubkey_roundtrip() {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
-        let pubkey_bytes = keypair.pubkey().bytes();
+        let pubkey_bytes = keypair.pubkey().serialize();
         assert_eq!(
             pubkey_bytes,
-            PubKey::from_slice(&pubkey_bytes).unwrap().bytes()
+            SecpPubKey::deserialize(&pubkey_bytes).unwrap().serialize()
         );
+    }
+
+    #[test]
+    fn test_pubkey_roundtrip_compressed() {
+        let mut privkey: [u8; 32] = [127; 32];
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
+
+        let pubkey_bytes_compressed = keypair.pubkey().compress();
+        assert_eq!(
+            pubkey_bytes_compressed,
+            SecpPubKey::uncompress(&pubkey_bytes_compressed)
+                .unwrap()
+                .compress()
+        )
     }
 
     #[test]
@@ -267,7 +331,7 @@ mod tests {
         let mut privkey =
             hex::decode("6fe42879ece8a11c0df224953ded12cd3c19d0353aaf80057bddfd4d4fc90530")
                 .unwrap();
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
         let mut hasher = tiny_keccak::Keccak::v256();
         // pubkey() returns 65 bytes, ignore first one
@@ -284,7 +348,7 @@ mod tests {
     #[test]
     fn test_verify() {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
         let signature = keypair.sign(msg);
@@ -296,7 +360,7 @@ mod tests {
     #[test]
     fn test_recovery() {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
         let signature = keypair.sign(msg);
@@ -309,7 +373,7 @@ mod tests {
     #[test]
     fn test_signature_serde() {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
         let msg = b"hello world";
         let signature = keypair.sign(msg);
@@ -324,11 +388,11 @@ mod tests {
     // THIS MUST PASS!! don't comment this test out >:(
     fn test_pubkey_peerid_roundtrip() {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
         let pubkey = keypair.pubkey();
         let peer_id: libp2p_identity::PeerId = (&pubkey).into();
-        assert_eq!(pubkey, PubKey::try_from(peer_id).unwrap());
+        assert_eq!(pubkey, SecpPubKey::try_from(peer_id).unwrap());
     }
 
     #[cfg(feature = "libp2p-identity")]
@@ -336,7 +400,7 @@ mod tests {
     // THIS MUST PASS!! don't comment this test out >:(
     fn test_keypair_pubkey_peerid_roundtrip() {
         let mut privkey: [u8; 32] = [127; 32];
-        let (monad_keypair, libp2p_keypair) = KeyPair::libp2p_from_bytes(&mut privkey).unwrap();
+        let (monad_keypair, libp2p_keypair) = SecpKeyPair::libp2p_from_bytes(&mut privkey).unwrap();
 
         let monad_pubkey = monad_keypair.pubkey();
         let libp2p_pubkey = libp2p_identity::Keypair::from(libp2p_keypair).public();
@@ -354,7 +418,7 @@ mod tests {
 
         assert_eq!(monad_peer_id, libp2p_peer_id);
 
-        assert_eq!(monad_pubkey, PubKey::try_from(monad_peer_id).unwrap());
-        assert_eq!(monad_pubkey, PubKey::try_from(libp2p_peer_id).unwrap());
+        assert_eq!(monad_pubkey, SecpPubKey::try_from(monad_peer_id).unwrap());
+        assert_eq!(monad_pubkey, SecpPubKey::try_from(libp2p_peer_id).unwrap());
     }
 }

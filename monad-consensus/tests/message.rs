@@ -10,7 +10,8 @@ use monad_consensus::types::timeout::{
     HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo,
 };
 use monad_consensus::validation::hashing::*;
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+use monad_crypto::{KeyPair, Signature};
 use monad_testutil::signing::*;
 use monad_types::*;
 use sha2::Digest;
@@ -86,7 +87,7 @@ fn proposal_msg_hash() {
     let txns = TransactionList(vec![1, 2, 3, 4]);
 
     let mut privkey: [u8; 32] = [127; 32];
-    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+    let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
     let author = NodeId(keypair.pubkey());
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new(
@@ -159,7 +160,7 @@ fn test_vote_message() {
     };
 
     let mut privkey: [u8; 32] = [127; 32];
-    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+    let keypair = SecpKeyPair::from_bytes(&mut privkey).unwrap();
 
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash;
 

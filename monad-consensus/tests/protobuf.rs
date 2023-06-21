@@ -21,13 +21,14 @@ mod test {
             signing::{ValidatorMember, Verified},
         },
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::secp256k1::{SecpKeyPair, SecpSignature};
+    use monad_crypto::KeyPair;
     use monad_testutil::block::setup_block;
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator::Validator;
 
-    fn setup_validator_member(keypairs: &[KeyPair]) -> ValidatorMember {
+    fn setup_validator_member(keypairs: &[SecpKeyPair]) -> ValidatorMember {
         let mut vmember = ValidatorMember::new();
         for keypair in keypairs.iter() {
             vmember.insert(

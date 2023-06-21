@@ -1,4 +1,7 @@
-use monad_crypto::Signature;
+use monad_crypto::{
+    secp256k1::{SecpError, SecpPubKey},
+    Signature,
+};
 use monad_proto::error::ProtoError;
 use monad_proto::proto::block::*;
 
@@ -34,7 +37,9 @@ impl<S: Signature> From<&Block<AggregateSignatures<S>>> for ProtoBlockAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoBlockAggSig> for Block<AggregateSignatures<S>> {
+impl<S: Signature<PubKey = SecpPubKey, Error = SecpError>> TryFrom<ProtoBlockAggSig>
+    for Block<AggregateSignatures<S>>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockAggSig) -> Result<Self, Self::Error> {
