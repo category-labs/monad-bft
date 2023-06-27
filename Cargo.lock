@@ -4895,6 +4895,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "monad-crypto",
+ "monad-proto",
  "monad-types",
 ]
 

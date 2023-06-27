@@ -19,7 +19,8 @@ use monad_crypto::{
 };
 use monad_executor::{
     executor::{
-        ledger::MockLedger, mempool::MockMempool, parent::ParentExecutor, timer::TokioTimer,
+        checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MockMempool,
+        parent::ParentExecutor, timer::TokioTimer,
     },
     Executor, State,
 };
@@ -277,6 +278,7 @@ async fn run(
         timer: TokioTimer::default(),
         mempool: MockMempool::default(),
         ledger: MockLedger::default(),
+        checkpoint: MockCheckpoint::default(),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {

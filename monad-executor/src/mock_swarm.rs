@@ -197,6 +197,7 @@ where
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
     MockExecutor<S>: Unpin,
+    S::Event: Unpin,
 {
     pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config)>, transformer: T) -> Self {
         assert!(!peers.is_empty());

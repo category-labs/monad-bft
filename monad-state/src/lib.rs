@@ -8,7 +8,7 @@ use monad_consensus::{
     validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
-    command::{ConsensusCommand, FetchedFullTxs, FetchedTxs},
+    command::{Checkpoint, ConsensusCommand, FetchedFullTxs, FetchedTxs},
     ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -20,11 +20,14 @@ use monad_crypto::{
     Signature,
 };
 use monad_executor::{
-    Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, RouterTarget, State,
-    TimerCommand,
+    CheckpointCommand, Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand,
+    RouterTarget, State, TimerCommand,
 };
-use monad_types::{NodeId, Stake};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_types::{Epoch, NodeId, Stake};
+use monad_validator::{
+    leader_election::LeaderElection,
+    validator_set::{ValidatorData, ValidatorSetType},
+};
 use ref_cast::RefCast;
 
 #[cfg(feature = "proto")]
@@ -42,8 +45,10 @@ where
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
     consensus: CT,
-    validator_set: VT,
+    epoch: Epoch,
     leader_election: LT,
+    validator_set: VT,
+    upcoming_validator_set: Option<VT>,
 }
 
 impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
@@ -51,6 +56,7 @@ where
     CT: ConsensusProcess<ST, SCT>,
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
+    VT: ValidatorSetType,
 {
     pub fn pubkey(&self) -> PubKey {
         self.consensus.get_pubkey()
@@ -58,6 +64,37 @@ where
 
     pub fn blocktree(&self) -> &BlockTree<SCT> {
         self.consensus.blocktree()
+    }
+
+    fn advance_epoch(&mut self, val_set: Option<ValidatorData>) {
+        self.epoch = self.epoch + Epoch(1);
+
+        if let Some(vs) = self.upcoming_validator_set.take() {
+            self.validator_set = vs;
+        }
+
+        // FIXME testnet_panic when that's implemented. TODO, decide
+        // error handling behaviour for prod
+        self.upcoming_validator_set = val_set.map(|v| {
+            VT::new(v.0).expect("ValidatorData should not have duplicates or invalid entries")
+        });
+    }
+
+    fn load_epoch(
+        &mut self,
+        epoch: Epoch,
+        val_set: ValidatorData,
+        upcoming_val_set: ValidatorData,
+    ) {
+        self.epoch = epoch;
+        // FIXME testnet_panic when that's implemented. TODO, decide
+        // error handling behaviour for prod
+        self.validator_set = VT::new(val_set.0)
+            .expect("ValidatorData should not have duplicates or invalid entries");
+        self.upcoming_validator_set = Some(
+            VT::new(upcoming_val_set.0)
+                .expect("ValidatorData should not have duplicates or invalid entries"),
+        );
     }
 }
 
@@ -210,12 +247,13 @@ where
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
     type Block = Block<SCT>;
+    type Checkpoint = Checkpoint<SCT>;
 
     fn init(
         config: Self::Config,
     ) -> (
         Self,
-        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>,
     ) {
         // create my keys and validator structs
         // FIXME stake should be configurable
@@ -243,7 +281,9 @@ where
                     .collect(),
             ),
             validator_set: val_set,
+            upcoming_validator_set: None,
             leader_election: election,
+            epoch: Epoch(0),
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
@@ -264,7 +304,7 @@ where
     fn update(
         &mut self,
         event: Self::Event,
-    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
+    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>> {
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
@@ -352,6 +392,14 @@ where
                             }
                         }
                     }
+                    ConsensusEvent::LoadEpoch(epoch, current_val_set, next_val_set) => {
+                        self.load_epoch(epoch, current_val_set, next_val_set);
+                        Vec::new()
+                    }
+                    ConsensusEvent::AdvanceEpoch(valset) => {
+                        self.advance_epoch(valset);
+                        Vec::new()
+                    }
                 };
 
                 let mut cmds = Vec::new();
@@ -404,6 +452,9 @@ where
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))
                         }
+                        ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
+                            Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
+                        ),
                     }
                 }
                 cmds
@@ -419,9 +470,10 @@ pub enum ConsensusEvent<ST, SCT> {
         unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
     },
     Timeout(PacemakerTimerExpire),
-
     FetchedTxs(FetchedTxs<ST, SCT>),
     FetchedFullTxs(FetchedFullTxs<ST, SCT>),
+    LoadEpoch(Epoch, ValidatorData, ValidatorData),
+    AdvanceEpoch(Option<ValidatorData>),
 }
 
 impl<S: Debug, SC: Debug> Debug for ConsensusEvent<S, SC> {
@@ -443,6 +495,8 @@ impl<S: Debug, SC: Debug> Debug for ConsensusEvent<S, SC> {
                 .field("proposal", &p.p)
                 .field("txns", &p.txns)
                 .finish(),
+            ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
+            ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
         }
     }
 }

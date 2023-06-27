@@ -12,7 +12,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::Signature;
 use monad_executor::RouterTarget;
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, Epoch, NodeId, Round};
 
 pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     Publish {
@@ -32,6 +32,9 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     RequestSync {
         blockid: BlockId,
     },
+    /// Checkpoints periodically can upload/backup the ledger and garbage clean
+    /// persisted events if necessary
+    CheckpointSave(Checkpoint<SCT>),
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
@@ -55,6 +58,12 @@ impl<S: Signature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
             PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint<SCT> {
+    block: Block<SCT>,
+    epoch: Epoch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

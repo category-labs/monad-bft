@@ -22,3 +22,10 @@ message ProtoBlockId  {
   ProtoHash bid = 1;
 }
 
+message ProtoEpoch {
+  uint64 epoch = 1;
+}
+
+message ProtoStake {
+  int64 stake = 1;
+}

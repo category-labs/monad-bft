@@ -9,6 +9,7 @@ import "pacemaker.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
 import "timeout.proto";
+import "validator_set.proto";
 
 message ProtoPeerId {
   monad_proto.basic.ProtoPubkey pubkey = 1;
@@ -37,12 +38,24 @@ message ProtoFetchedFullTxs {
   bytes full_txs = 3;
 }
 
+message ProtoAdvanceEpochEvent {
+  monad_proto.validator_set.ProtoValidatorSetData validator_set = 1;
+}
+
+message ProtoLoadEpochEvent {
+    monad_proto.basic.ProtoEpoch epoch = 1;
+    monad_proto.validator_set.ProtoValidatorSetData validator_set = 2;
+    monad_proto.validator_set.ProtoValidatorSetData upcoming_validator_set = 3;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
     ProtoFetchedFullTxs fetched_full_txs = 4;
+    ProtoAdvanceEpochEvent advance_epoch = 5;
+    ProtoLoadEpochEvent load_epoch = 6;
   }
 }
 

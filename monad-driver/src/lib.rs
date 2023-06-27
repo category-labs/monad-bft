@@ -10,7 +10,7 @@ mod tests {
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::{
-        executor::{ledger::MockLedger, mempool::MockMempool},
+        executor::{checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MockMempool},
         Executor, State,
     };
     use monad_state::{MonadConfig, MonadState};
@@ -50,6 +50,7 @@ mod tests {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
                     mempool: MockMempool::default(),
                     ledger: MockLedger::default(),
+                    checkpoint: MockCheckpoint::default(),
                     timer: monad_executor::executor::timer::TokioTimer::default(),
                 };
 

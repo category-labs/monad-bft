@@ -13,7 +13,7 @@ pub mod convert;
 
 // driver loop
 async fn run<S: State>(
-    mut executor: impl Executor<Command = Command<S::Message, S::OutboundMessage, S::Block>>
+    mut executor: impl Executor<Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint>>
         + Stream<Item = S::Event>
         + Unpin,
     config: S::Config,

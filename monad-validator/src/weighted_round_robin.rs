@@ -40,7 +40,7 @@ impl Voter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeightedRoundRobin {
     voters: Vec<Voter>,
     leader: usize, // voter idx

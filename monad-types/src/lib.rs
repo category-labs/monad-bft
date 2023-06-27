@@ -65,6 +65,24 @@ impl std::fmt::Debug for Round {
 }
 
 #[repr(transparent)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
+pub struct Epoch(pub u64);
+
+impl Add for Epoch {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(self.0 + rhs.0)
+    }
+}
+
+impl std::fmt::Debug for Epoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NodeId(pub PubKey);
 

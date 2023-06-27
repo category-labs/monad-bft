@@ -53,12 +53,16 @@ pub enum LedgerCommand<B> {
     LedgerCommit(B),
 }
 
+pub enum CheckpointCommand<C> {
+    Save(C),
+}
+
 pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
 
-pub enum Command<M, OM, B>
+pub enum Command<M, OM, B, C>
 where
     M: Message,
 {
@@ -67,9 +71,10 @@ where
 
     MempoolCommand(MempoolCommand<M::Event>),
     LedgerCommand(LedgerCommand<B>),
+    CheckpointCommand(CheckpointCommand<C>),
 }
 
-impl<M, OM, B> Command<M, OM, B>
+impl<M, OM, B, C> Command<M, OM, B, C>
 where
     M: Message,
 {
@@ -80,20 +85,29 @@ where
         Vec<TimerCommand<M::Event>>,
         Vec<MempoolCommand<M::Event>>,
         Vec<LedgerCommand<B>>,
+        Vec<CheckpointCommand<C>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         let mut mempool_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
+        let mut checkpoint_cmds = Vec::new();
         for command in commands {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::MempoolCommand(cmd) => mempool_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
+                Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
             }
         }
-        (router_cmds, timer_cmds, mempool_cmds, ledger_cmds)
+        (
+            router_cmds,
+            timer_cmds,
+            mempool_cmds,
+            ledger_cmds,
+            checkpoint_cmds,
+        )
     }
 }
 
@@ -103,17 +117,18 @@ pub trait State: Sized {
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
     type Message: Message<Event = Self::Event>;
     type Block;
+    type Checkpoint;
 
     fn init(
         config: Self::Config,
     ) -> (
         Self,
-        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>,
     );
     fn update(
         &mut self,
         event: Self::Event,
-    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>;
+    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>;
 }
 
 pub trait Message: Clone {

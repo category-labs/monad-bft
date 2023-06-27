@@ -82,6 +82,7 @@ impl<S, T, LGR, C> NodesSimulation<S, T, LGR, C>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
+    S::Event: Unpin,
     T: Transformer<S::Message> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, T, LGR>,
@@ -117,6 +118,7 @@ impl<S, T, LGR, C> Graph for NodesSimulation<S, T, LGR, C>
 where
     S: monad_executor::State,
     MockExecutor<S>: Unpin,
+    S::Event: Unpin,
     T: Transformer<S::Message> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, T, LGR>,

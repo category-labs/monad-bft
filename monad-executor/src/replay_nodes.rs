@@ -93,7 +93,12 @@ where
         node_id: &PeerId,
         tick: Duration,
         cmds: Vec<
-            Command<<S as State>::Message, <S as State>::OutboundMessage, <S as State>::Block>,
+            Command<
+                <S as State>::Message,
+                <S as State>::OutboundMessage,
+                <S as State>::Block,
+                <S as State>::Checkpoint,
+            >,
         >,
     ) {
         let mut to_publish = Vec::new();

@@ -10,7 +10,9 @@ use std::{
 
 use futures::{Stream, StreamExt};
 
-use super::{ledger::MockLedger, mempool::MockMempool};
+use super::{
+    checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger, mempool::MockMempool,
+};
 use crate::{
     state::PeerId, Command, Executor, Message, RouterCommand, RouterTarget, State, TimerCommand,
 };
@@ -21,6 +23,8 @@ where
 {
     mempool: MockMempool<S::Event>,
     ledger: MockLedger<S::Block>,
+    checkpoint: MockCheckpoint<S::Checkpoint>,
+    epoch: MockEpoch<S::Event>,
 
     tick: Duration,
 
@@ -74,6 +78,7 @@ impl<T> Ord for SequencedPeerEvent<T> {
 enum ExecutorEventType {
     InboundMessage,
 
+    Epoch,
     Timer,
     Mempool,
 }
@@ -127,6 +132,12 @@ where
                     .map(|TimerEvent { tick, .. }| (*tick, ExecutorEventType::Timer))
                     .into_iter(),
             )
+            .chain(
+                self.epoch
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::Epoch))
+                    .into_iter(),
+            )
             .min()
     }
 
@@ -149,8 +160,10 @@ where
 {
     fn default() -> Self {
         Self {
-            mempool: Default::default(),
+            checkpoint: Default::default(),
             ledger: Default::default(),
+            mempool: Default::default(),
+            epoch: Default::default(),
 
             tick: Duration::default(),
 
@@ -167,12 +180,12 @@ impl<S> Executor for MockExecutor<S>
 where
     S: State,
 {
-    type Command = Command<S::Message, S::OutboundMessage, S::Block>;
+    type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
 
-        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds) =
+        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds, checkpoint_cmds) =
             Self::Command::split_commands(commands);
         for command in router_cmds {
             match command {
@@ -202,6 +215,7 @@ where
         }
         self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
+        self.checkpoint.exec(checkpoint_cmds);
 
         for (target, message) in to_publish {
             let id = message.as_ref().id();
@@ -216,6 +230,7 @@ where
 impl<S> Stream for MockExecutor<S>
 where
     S: State,
+    S::Event: Unpin,
     Self: Unpin,
 {
     type Item = S::Event;
@@ -240,6 +255,7 @@ where
 
                     message.event(from)
                 }
+                ExecutorEventType::Epoch => return this.epoch.poll_next_unpin(cx),
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
                 ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
             };
@@ -496,12 +512,13 @@ mod tests {
         type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
         type Block = ();
+        type Checkpoint = ();
 
         fn init(
             config: Self::Config,
         ) -> (
             Self,
-            Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+            Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>,
         ) {
             let (pubkeys, _me) = config;
 
@@ -528,7 +545,8 @@ mod tests {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
+        ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>
+        {
             let mut commands = Vec::new();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {

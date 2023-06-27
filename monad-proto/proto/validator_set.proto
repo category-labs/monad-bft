@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package monad_proto.validator_set;
+
+import "basic.proto";
+
+message ValidatorMapEntry {
+    monad_proto.basic.ProtoNodeId key = 1;
+    monad_proto.basic.ProtoStake value = 2;
+}
+
+message ProtoValidatorSetData {
+    repeated ValidatorMapEntry validators = 1;
+}

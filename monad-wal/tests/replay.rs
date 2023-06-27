@@ -74,12 +74,20 @@ mod test {
         type OutboundMessage = MockMessage;
         type Message = MockMessage;
         type Block = ();
+        type Checkpoint = ();
 
         fn init(
             _config: Self::Config,
         ) -> (
             Self,
-            Vec<monad_executor::Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+            Vec<
+                monad_executor::Command<
+                    Self::Message,
+                    Self::OutboundMessage,
+                    Self::Block,
+                    Self::Checkpoint,
+                >,
+            >,
         ) {
             let state = VecState { events: Vec::new() };
             (state, Vec::new())
@@ -88,8 +96,14 @@ mod test {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<monad_executor::Command<Self::Message, Self::OutboundMessage, Self::Block>>
-        {
+        ) -> Vec<
+            monad_executor::Command<
+                Self::Message,
+                Self::OutboundMessage,
+                Self::Block,
+                Self::Checkpoint,
+            >,
+        > {
             self.events.push(event);
             Vec::new()
         }

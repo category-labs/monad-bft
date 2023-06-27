@@ -46,6 +46,18 @@ impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
                     full_txs: fetched_full.txns.0.clone(),
                 })
             }
+            TypeConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
+                proto_consensus_event::Event::LoadEpoch(ProtoLoadEpochEvent {
+                    epoch: Some(epoch.into()),
+                    validator_set: Some(valset.into()),
+                    upcoming_validator_set: Some(upcoming_valset.into()),
+                })
+            }
+            TypeConsensusEvent::AdvanceEpoch(validator_set) => {
+                proto_consensus_event::Event::AdvanceEpoch(ProtoAdvanceEpochEvent {
+                    validator_set: validator_set.as_ref().map(|x| x.into()),
+                })
+            }
         };
         Self { event: Some(event) }
     }
@@ -116,6 +128,36 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
                         .try_into()?,
                     txns: FullTransactionList(fetched_full_txs.full_txs),
                 })
+            }
+            Some(proto_consensus_event::Event::LoadEpoch(epoch_event)) => {
+                let e = epoch_event
+                    .epoch
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::LoadEpoch::epoch".to_owned(),
+                    ))?
+                    .try_into()?;
+                let vset = epoch_event
+                    .validator_set
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::LoadEpoch::validator_set".to_owned(),
+                    ))?
+                    .try_into()?;
+                let uvset = epoch_event
+                    .upcoming_validator_set
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::LoadEpoch::upcoming_validator_set".to_owned(),
+                    ))?
+                    .try_into()?;
+                ConsensusEvent::LoadEpoch(e, vset, uvset)
+            }
+            Some(proto_consensus_event::Event::AdvanceEpoch(epoch_event)) => {
+                match epoch_event.validator_set {
+                    None => ConsensusEvent::AdvanceEpoch(None),
+                    Some(vs) => {
+                        let a = vs.try_into()?;
+                        ConsensusEvent::AdvanceEpoch(Some(a))
+                    }
+                }
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),

@@ -15,6 +15,7 @@ fn main() {
                 "proto/quorum_certificate.proto",
                 "proto/signing.proto",
                 "proto/timeout.proto",
+                "proto/validator_set.proto",
                 "proto/voting.proto",
             ],
             &["proto/"],
