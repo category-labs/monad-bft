@@ -96,8 +96,7 @@ mod test {
     use monad_testutil::signing::get_key;
     use monad_testutil::signing::*;
     use monad_testutil::validators::MockLeaderElection;
-    use monad_types::{BlockId, Hash, Round};
-    use monad_validator::validator::Validator;
+    use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use monad_validator::validator_set::ValidatorSet;
     use monad_validator::weighted_round_robin::WeightedRoundRobin;
 
@@ -108,10 +107,7 @@ mod test {
 
         let mut nodes = Vec::new();
         for i in 0..num_nodes {
-            nodes.push(Validator {
-                pubkey: keys[i as usize].pubkey(),
-                stake: 1,
-            });
+            nodes.push((NodeId(keys[i as usize].pubkey()), Stake(1)));
         }
 
         let valset = ValidatorSet::<MockLeaderElection>::new(nodes).unwrap();
@@ -221,10 +217,7 @@ mod test {
     fn vote_idx_doesnt_match() {
         let mut vote_state = VoteState::<AggregateSignatures<SecpSignature>>::default();
         let keypair = get_key(6);
-        let val = Validator {
-            pubkey: keypair.pubkey(),
-            stake: 1,
-        };
+        let val = (NodeId(keypair.pubkey()), Stake(1));
 
         let vset = ValidatorSet::new(vec![val]).unwrap();
 

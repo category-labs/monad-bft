@@ -1,5 +1,3 @@
-use monad_consensus::types::voting::VoteInfo;
-use monad_types::{BlockId, Round};
 use test_case::test_case;
 
 use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
@@ -7,6 +5,7 @@ use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::message::VoteMessage;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
 use monad_consensus::types::signature::SignatureCollection;
+use monad_consensus::types::voting::VoteInfo;
 use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus::validation::signing::Verified;
@@ -14,8 +13,7 @@ use monad_consensus::vote_state::VoteState;
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
 use monad_testutil::validators::MockLeaderElection;
-use monad_types::Hash;
-use monad_validator::validator::Validator;
+use monad_types::{BlockId, Hash, NodeId, Round, Stake};
 use monad_validator::validator_set::ValidatorSet;
 
 fn create_signed_vote_message(
@@ -53,10 +51,7 @@ fn setup_ctx(
 
     let mut nodes = Vec::new();
     for i in 0..num_nodes {
-        nodes.push(Validator {
-            pubkey: keys[i as usize].pubkey(),
-            stake: 1,
-        });
+        nodes.push((NodeId(keys[i as usize].pubkey()), Stake(1)));
     }
 
     let valset = ValidatorSet::<MockLeaderElection>::new(nodes).unwrap();

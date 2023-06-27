@@ -9,9 +9,7 @@ use monad_crypto::Signature;
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::Hash;
-use monad_types::NodeId;
-use monad_validator::validator::Validator;
+use monad_types::{Hash, NodeId, Stake};
 
 #[cfg(feature = "proto")]
 use crate::convert::message::UnverifiedConsensusMessage;
@@ -353,7 +351,7 @@ impl<S: Signature> From<&UnverifiedConsensusMessage<S>> for ProtoUnverifiedConse
     }
 }
 
-pub type ValidatorMember = HashMap<NodeId, Validator>;
+pub type ValidatorMember = HashMap<NodeId, Stake>;
 
 trait ValidatorPubKey {
     // PubKey is valid if it is in the validator set
@@ -384,8 +382,7 @@ mod test {
     use crate::validation::{hashing::*, signing::ValidatorMember};
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::signing::get_key;
-    use monad_types::{BlockId, Hash, NodeId, Round};
-    use monad_validator::validator::Validator;
+    use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use test_case::test_case;
 
     use super::{verify_qc, verify_tc};
@@ -397,13 +394,7 @@ mod test {
         let mut vset = ValidatorMember::new();
         let keypair = get_key(6);
 
-        vset.insert(
-            NodeId(keypair.pubkey()),
-            Validator {
-                pubkey: keypair.pubkey(),
-                stake: 1,
-            },
-        );
+        vset.insert(NodeId(keypair.pubkey()), Stake(1));
 
         let high_qc_rounds = vec![
             HighQcRound { qc_round: Round(1) },
@@ -445,13 +436,7 @@ mod test {
         let mut vset = ValidatorMember::new();
         let keypair = get_key(6);
 
-        vset.insert(
-            NodeId(keypair.pubkey()),
-            Validator {
-                pubkey: keypair.pubkey(),
-                stake: 1,
-            },
-        );
+        vset.insert(NodeId(keypair.pubkey()), Stake(1));
 
         let msg = Sha256Hash::hash_object(&lci);
         let s = keypair.sign(msg.as_ref());

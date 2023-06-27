@@ -6,6 +6,7 @@ use std::ops::Add;
 use std::ops::AddAssign;
 use std::ops::Deref;
 use std::ops::Sub;
+use std::ops::SubAssign;
 
 use monad_crypto::secp256k1::PubKey;
 use zerocopy::AsBytes;
@@ -86,6 +87,44 @@ impl std::fmt::Debug for BlockId {
             "{:>02x}{:>02x}..{:>02x}{:>02x}",
             self.0[0], self.0[1], self.0[30], self.0[31]
         )
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Stake(pub i64);
+
+impl Add for Stake {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        Stake(self.0 + other.0)
+    }
+}
+
+impl Sub for Stake {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Stake(self.0 - rhs.0)
+    }
+}
+
+impl AddAssign for Stake {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0
+    }
+}
+
+impl SubAssign for Stake {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0
+    }
+}
+
+impl std::iter::Sum for Stake {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Stake(0), |a, b| a + b)
     }
 }
 

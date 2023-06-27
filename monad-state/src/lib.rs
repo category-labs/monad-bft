@@ -29,9 +29,9 @@ use monad_executor::{
     Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, RouterTarget, State,
     TimerCommand,
 };
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, Stake};
 use monad_validator::{
-    leader_election::LeaderElection, validator::Validator, validator_set::ValidatorSet,
+    leader_election::LeaderElection, validator_set::ValidatorSet,
     weighted_round_robin::WeightedRoundRobin,
 };
 
@@ -211,7 +211,7 @@ where
         let validator_list = config
             .validators
             .into_iter()
-            .map(|pubkey| Validator { pubkey, stake: 1 })
+            .map(|pubkey| (NodeId(pubkey), Stake(1)))
             .collect::<Vec<_>>();
 
         // create the initial validator set
@@ -228,7 +228,7 @@ where
                 10,
                 validator_list
                     .into_iter()
-                    .map(|v| PeerId(v.pubkey))
+                    .map(|(NodeId(pubkey), _)| PeerId(pubkey))
                     .collect(),
             ),
             validator_set: val_set,
@@ -717,10 +717,8 @@ mod test {
     use monad_executor::{PeerId, RouterTarget};
     use monad_testutil::proposal::ProposalGen;
     use monad_testutil::signing::{create_keys, get_genesis_config};
-    use monad_types::{BlockId, Hash, Round};
-    use monad_validator::{
-        validator::Validator, validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin,
-    };
+    use monad_types::{BlockId, Hash, NodeId, Round, Stake};
+    use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
 
     use crate::{ConsensusCommand, ConsensusMessage, ConsensusState};
 
@@ -735,7 +733,7 @@ mod test {
 
         let validator_list = pubkeys
             .into_iter()
-            .map(|pubkey| Validator { pubkey, stake: 1 })
+            .map(|pubkey| (NodeId(pubkey), Stake(1)))
             .collect::<Vec<_>>();
 
         let val_set: ValidatorSet<WeightedRoundRobin> =

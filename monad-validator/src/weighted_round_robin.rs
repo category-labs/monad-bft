@@ -1,14 +1,14 @@
 use super::leader_election::LeaderElection;
 use log::warn;
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, Stake};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
 #[derive(Eq, Clone, Copy, Debug)]
 struct Voter {
     address: NodeId,
-    voting_power: i64,
-    priority: i64,
+    voting_power: Stake,
+    priority: Stake,
 }
 
 // ordering Voters first on priority, then on address
@@ -35,7 +35,7 @@ impl PartialEq for Voter {
 
 impl Voter {
     pub fn verified(&self) -> bool {
-        self.voting_power > 0
+        self.voting_power > Stake(0)
     }
 }
 
@@ -43,7 +43,7 @@ impl Voter {
 pub struct WeightedRoundRobin {
     voters: Vec<Voter>,
     leader: usize, // voter idx
-    total_voting_power: i64,
+    total_voting_power: Stake,
 }
 
 impl LeaderElection for WeightedRoundRobin {
@@ -51,13 +51,13 @@ impl LeaderElection for WeightedRoundRobin {
         Self {
             voters: Vec::new(),
             leader: 0,
-            total_voting_power: 0,
+            total_voting_power: Stake(0),
         }
     }
 
-    fn start_new_epoch(&mut self, voting_powers: Vec<(NodeId, i64)>) {
+    fn start_new_epoch(&mut self, voting_powers: Vec<(NodeId, Stake)>) {
         self.voters.reserve(voting_powers.len());
-        self.total_voting_power = 0;
+        self.total_voting_power = Stake(0);
         for (addr, vp) in voting_powers.into_iter() {
             let voter = Voter {
                 address: addr,
@@ -90,7 +90,7 @@ impl LeaderElection for WeightedRoundRobin {
         &self.voters[self.leader].address
     }
 
-    fn update_voting_power(&mut self, addr: &NodeId, new_voting_power: i64) -> bool {
+    fn update_voting_power(&mut self, addr: &NodeId, new_voting_power: Stake) -> bool {
         self.panic_if_empty();
         let v = match self.voters.iter_mut().find(|v| addr == &v.address) {
             Some(v) => v,
@@ -99,7 +99,7 @@ impl LeaderElection for WeightedRoundRobin {
         self.total_voting_power -= v.voting_power;
         self.total_voting_power += new_voting_power;
         v.voting_power = new_voting_power;
-        v.priority = -self.total_voting_power;
+        v.priority = Stake(-self.total_voting_power.0);
         true
     }
 }
@@ -133,19 +133,11 @@ impl WeightedRoundRobin {
 #[cfg(test)]
 mod tests {
     use monad_crypto::secp256k1::KeyPair;
-    use monad_types::{NodeId, Round};
+    use monad_types::{NodeId, Round, Stake};
 
     use super::super::leader_election::LeaderElection;
-    use super::super::validator::Validator;
 
     use super::WeightedRoundRobin;
-
-    fn collect_voting_powers(validators: &[Validator]) -> Vec<(NodeId, i64)> {
-        validators
-            .iter()
-            .map(|v| (NodeId(v.pubkey), v.stake))
-            .collect()
-    }
 
     fn get_key1() -> [u8; 32] {
         [126; 32]
@@ -158,73 +150,73 @@ mod tests {
     // expected schedule (basic round robin)
     #[test]
     fn test_basic_round_robin() {
-        let v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
-            stake: 1,
-        };
-        let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
-            stake: 1,
-        };
+        let v1 = (
+            NodeId(KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey()),
+            Stake(1),
+        );
+        let v2 = (
+            NodeId(KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey()),
+            Stake(1),
+        );
         let validators = vec![v1, v2];
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
-        wrr.start_new_epoch(collect_voting_powers(&validators));
+        wrr.start_new_epoch(validators);
 
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
     }
 
     // expected schedule (weighted round robin)
     #[test]
     fn test_weighted_round_robin() {
-        let v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
-            stake: 1,
-        };
-        let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
-            stake: 2,
-        };
+        let v1 = (
+            NodeId(KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey()),
+            Stake(1),
+        );
+        let v2 = (
+            NodeId(KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey()),
+            Stake(2),
+        );
         let validators = vec![v1, v2];
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
-        wrr.start_new_epoch(collect_voting_powers(&validators));
+        wrr.start_new_epoch(validators);
 
         // expected schedule: (v2, v2, v1), (v2, v2, v1)...
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
         wrr.increment_view(Round(1));
 
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
     }
 
     // two instances agree on the same schedule
     #[test]
     fn test_agreement() {
-        let v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
-            stake: 1,
-        };
-        let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
-            stake: 3,
-        };
+        let v1 = (
+            NodeId(KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey()),
+            Stake(1),
+        );
+        let v2 = (
+            NodeId(KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey()),
+            Stake(3),
+        );
         let validators = vec![v1, v2];
         let mut wrr1: WeightedRoundRobin = LeaderElection::new();
         let mut wrr2: WeightedRoundRobin = LeaderElection::new();
-        wrr1.start_new_epoch(collect_voting_powers(&validators));
-        wrr2.start_new_epoch(collect_voting_powers(&validators));
+        wrr1.start_new_epoch(validators.clone());
+        wrr2.start_new_epoch(validators);
 
         for _ in 0..20 {
             assert!(wrr1.get_leader() == wrr2.get_leader());
@@ -236,19 +228,19 @@ mod tests {
     // advancing n views equivalent to incrementing 1 view n times
     #[test]
     fn test_increment_views_equivalent() {
-        let v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
-            stake: 1,
-        };
-        let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
-            stake: 3,
-        };
+        let v1 = (
+            NodeId(KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey()),
+            Stake(1),
+        );
+        let v2 = (
+            NodeId(KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey()),
+            Stake(3),
+        );
         let validators = vec![v1, v2];
         let mut wrr1: WeightedRoundRobin = LeaderElection::new();
         let mut wrr2: WeightedRoundRobin = LeaderElection::new();
-        wrr1.start_new_epoch(collect_voting_powers(&validators));
-        wrr2.start_new_epoch(collect_voting_powers(&validators));
+        wrr1.start_new_epoch(validators.clone());
+        wrr2.start_new_epoch(validators);
 
         for _ in 0..20 {
             assert!(wrr1.get_leader() == wrr2.get_leader());
@@ -261,48 +253,48 @@ mod tests {
     // update stake
     #[test]
     fn test_update_stake() {
-        let mut v1 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey(),
-            stake: 10,
-        };
-        let v2 = Validator {
-            pubkey: KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey(),
-            stake: 10,
-        };
+        let mut v1 = (
+            NodeId(KeyPair::from_bytes(&mut get_key1()).unwrap().pubkey()),
+            Stake(10),
+        );
+        let v2 = (
+            NodeId(KeyPair::from_bytes(&mut get_key2()).unwrap().pubkey()),
+            Stake(10),
+        );
 
         let validators = vec![v1, v2];
         let mut wrr: WeightedRoundRobin = LeaderElection::new();
-        wrr.start_new_epoch(collect_voting_powers(&validators));
+        wrr.start_new_epoch(validators);
 
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
         wrr.increment_view(Round(1));
 
         // now v1 gets slashed to 5
-        v1.stake = 5;
-        assert!(wrr.update_voting_power(&NodeId(v1.pubkey), v1.stake));
-        assert!(wrr.total_voting_power == 15);
+        v1.1 = Stake(5);
+        assert!(wrr.update_voting_power(&v1.0, v1.1));
+        assert!(wrr.total_voting_power == Stake(15));
 
         // we do not change the proposer intra-view; v2 is still the proposer
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
         // "compensating" v2/"slashing" v1 by giving v2 one more round
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
 
         // schedule after (v2, v2, v1), (v2, v2, v1)...
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
         wrr.increment_view(Round(1));
 
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v2.pubkey));
+        assert!(wrr.get_leader() == &v2.0);
         wrr.increment_view(Round(1));
-        assert!(wrr.get_leader() == &NodeId(v1.pubkey));
+        assert!(wrr.get_leader() == &v1.0);
     }
 }

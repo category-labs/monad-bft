@@ -9,7 +9,6 @@ use monad_consensus::validation::signing::ValidatorMember;
 use monad_crypto::secp256k1::SecpSignature;
 use monad_testutil::signing::{get_key, node_id, MockSignatures, TestSigner};
 use monad_types::*;
-use monad_validator::validator::Validator;
 
 fn setup_block(author: NodeId, block_round: u64, qc_round: u64) -> Block<MockSignatures> {
     let txns = TransactionList(vec![1, 2, 3, 4]);
@@ -43,13 +42,7 @@ fn test_proposal_hash() {
 
     let keypair = get_key(0);
 
-    vset.insert(
-        NodeId(keypair.pubkey()),
-        Validator {
-            pubkey: keypair.pubkey(),
-            stake: 0,
-        },
-    );
+    vset.insert(NodeId(keypair.pubkey()), Stake(0));
 
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
@@ -69,13 +62,7 @@ fn test_proposal_missing_tc() {
 
     let keypair = get_key(6);
 
-    vset.insert(
-        NodeId(keypair.pubkey()),
-        Validator {
-            pubkey: keypair.pubkey(),
-            stake: 0,
-        },
-    );
+    vset.insert(NodeId(keypair.pubkey()), Stake(0));
 
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
@@ -99,13 +86,7 @@ fn test_proposal_invalid_qc() {
 
     let keypair = get_key(6);
 
-    vset.insert(
-        NodeId(keypair.pubkey()),
-        Validator {
-            pubkey: keypair.pubkey(),
-            stake: 0,
-        },
-    );
+    vset.insert(NodeId(keypair.pubkey()), Stake(0));
 
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = TestSigner::sign_object(proposal, msg.as_ref(), &get_key(7));
