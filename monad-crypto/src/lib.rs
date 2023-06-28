@@ -8,6 +8,7 @@ use crate::secp256k1::{Error, KeyPair, PubKey};
 pub mod convert;
 
 pub mod secp256k1;
+pub mod bls12_381;
 
 pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static {
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
