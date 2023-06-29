@@ -443,6 +443,26 @@ struct ConsensusState<S, T> {
     keypair: KeyPair,
 }
 
+struct ConsensusStateWrapper<S: Signature, T: SignatureCollection> {
+    consensus_state: ConsensusState<S, T>,
+}
+
+impl<S: Signature, T: SignatureCollection> std::fmt::Debug for ConsensusStateWrapper<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsensusState")
+            .field(
+                "pending_block_tree",
+                &self.consensus_state.pending_block_tree,
+            )
+            .field("vote_state", &self.consensus_state.vote_state)
+            .field("high_qc", &self.consensus_state.high_qc)
+            .field("pacemaker", &self.consensus_state.pacemaker)
+            .field("safety", &self.consensus_state.safety)
+            .field("nodeid", &self.consensus_state.nodeid)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S, T> ConsensusState<S, T>
 where
     S: Signature,
@@ -664,6 +684,12 @@ where
                 txns: TransactionList(txns),
             }
         }))]
+    }
+}
+
+impl<S: Signature, T: SignatureCollection> Drop for ConsensusStateWrapper<S, T> {
+    fn drop(&mut self) {
+        eprintln!("{:?}", self);
     }
 }
 

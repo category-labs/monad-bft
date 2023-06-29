@@ -13,6 +13,7 @@ use monad_types::*;
 
 use std::cmp;
 
+#[derive(Debug)]
 pub struct Safety {
     highest_vote_round: Round,
     highest_qc_round: Round,

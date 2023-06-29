@@ -14,6 +14,7 @@ use crate::{
     validation::{message::well_formed, safety::Safety},
 };
 
+#[derive(Debug)]
 pub struct Pacemaker<S, T> {
     delta: Duration,
 
