@@ -700,6 +700,7 @@ impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for Cons
 #[cfg(test)]
 mod test {
     use itertools::Itertools;
+    use monad_consensus::types::block::TransactionList;
     use std::time::Duration;
 
     use monad_consensus::pacemaker::PacemakerTimerExpire;
@@ -722,12 +723,14 @@ mod test {
 
     use crate::{ConsensusCommand, ConsensusMessage, ConsensusState};
 
-    fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>() -> (
+    fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>(
+        num_states: u32,
+    ) -> (
         Vec<KeyPair>,
         ValidatorSet<WeightedRoundRobin>,
-        ConsensusState<ST, SCT>,
+        Vec<ConsensusState<ST, SCT>>,
     ) {
-        let keys = create_keys(4);
+        let keys = create_keys(num_states);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
 
@@ -744,24 +747,32 @@ mod test {
             genesis_sigs,
         );
 
-        let mut key = create_keys(1);
-        let consensus_state = ConsensusState::<ST, SCT>::new(
-            key[0].pubkey(),
-            genesis_block,
-            genesis_qc,
-            Duration::from_secs(1),
-            key.remove(0),
-        );
+        let mut dupkeys = create_keys(num_states);
+        let consensus_states = keys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let default_key = KeyPair::from_bytes([127; 32]).unwrap();
+                ConsensusState::<ST, SCT>::new(
+                    k.pubkey(),
+                    genesis_block.clone(),
+                    genesis_qc.clone(),
+                    Duration::from_secs(1),
+                    std::mem::replace(&mut dupkeys[i], default_key),
+                )
+            })
+            .collect::<Vec<_>>();
 
-        (keys, val_set, consensus_state)
+        (keys, val_set, consensus_states)
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[test]
     fn lock_qc_high() {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
 
+        let state = &mut states[0];
         assert_eq!(state.high_qc.info.vote.round, Round(0));
 
         let expected_qc_high_round = Round(5);
@@ -809,10 +820,11 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
-        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
 
         // local timeout for state in Round 1
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
@@ -841,11 +853,13 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
-        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p1.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -862,7 +876,7 @@ mod test {
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
         assert!(result.is_some());
 
-        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let p2 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p2.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -880,9 +894,9 @@ mod test {
         assert!(result.is_some());
 
         for _ in 0..4 {
-            propgen.next_proposal(&keys, &mut valset);
+            propgen.next_proposal(&keys, &mut valset, &Default::default());
         }
-        let p7 = propgen.next_proposal(&keys, &mut valset);
+        let p7 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p7.destructure();
         state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
@@ -891,14 +905,15 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         let mut qc2 = state.high_qc.clone();
 
         for i in 1..5 {
-            let p = propgen.next_proposal(&keys, &mut valset);
+            let p = propgen.next_proposal(&keys, &mut valset, &Default::default());
             let (author, _, verified_message) = p.clone().destructure();
             let cmds = state.handle_proposal_message::<Sha256Hash, _>(
                 author,
@@ -938,11 +953,12 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
-        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p1.clone().destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -974,12 +990,13 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         // first proposal
-        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p1.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -997,7 +1014,7 @@ mod test {
         assert!(result.is_some());
 
         // second proposal
-        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let p2 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p2.destructure();
         let cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -1016,11 +1033,11 @@ mod test {
 
         let mut missing_proposals = Vec::new();
         for _ in 0..perms.len() {
-            missing_proposals.push(propgen.next_proposal(&keys, &mut valset));
+            missing_proposals.push(propgen.next_proposal(&keys, &mut valset, &Default::default()));
         }
 
         // last proposal arrvies
-        let p_fut = propgen.next_proposal(&keys, &mut valset);
+        let p_fut = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p_fut.destructure();
         state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
@@ -1081,7 +1098,7 @@ mod test {
         // next proposal will trigger everything to be committed if there is
         // a consecutive chain as expected
         // last proposal arrvies
-        let p_last = propgen.next_proposal(&keys, &mut valset);
+        let p_last = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p_last.destructure();
         state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
@@ -1096,13 +1113,14 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
 
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         // round 1 proposal
-        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p1.destructure();
         let p1_cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -1122,7 +1140,7 @@ mod test {
         assert!(p1_votes[0].ledger_commit_info.commit_state_hash.is_some());
 
         // round 2 proposal
-        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let p2 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -1147,7 +1165,7 @@ mod test {
         // csh is some: the proposal and qc have consecutive rounds
         assert!(p2_votes[0].ledger_commit_info.commit_state_hash.is_some());
 
-        let p3 = propgen.next_proposal(&keys, &mut valset);
+        let p3 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p3.destructure();
 
         let p2_cmds =
@@ -1161,18 +1179,19 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
-        let (keys, mut valset, mut state) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>();
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
 
+        let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         // round 1 proposal
-        let p1 = propgen.next_proposal(&keys, &mut valset);
+        let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p1.destructure();
         state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
 
         // round 2 proposal
-        let p2 = propgen.next_proposal(&keys, &mut valset);
+        let p2 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds =
             state.handle_proposal_message::<Sha256Hash, _>(author, verified_message, &mut valset);
@@ -1212,7 +1231,7 @@ mod test {
         let _ = propgen.next_tc(&keys, &mut valset);
 
         // round 3 proposal, has qc(1)
-        let p3 = propgen.next_proposal(&keys, &mut valset);
+        let p3 = propgen.next_proposal(&keys, &mut valset, &Default::default());
         assert_eq!(p3.block.qc.info.vote.round, Round(1));
         assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
@@ -1233,5 +1252,179 @@ mod test {
         assert!(p3_votes.len() == 1);
         // proposal and qc have non-consecutive rounds
         assert!(p3_votes[0].ledger_commit_info.commit_state_hash.is_none());
+    }
+
+    // this test checks that a malicious proposal sent only to the next leader is
+    // not incorrectly committed
+    #[test]
+    fn test_malicious_proposal_to_next_leader() {
+        let (keys, mut valset, mut states) =
+            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+
+        let (first_state, xs) = states.split_first_mut().unwrap();
+        let (second_state, xs) = xs.split_first_mut().unwrap();
+        let (third_state, xs) = xs.split_first_mut().unwrap();
+        let fourth_state = &mut xs[0];
+
+        // first_state will send 2 different proposals, A and B. A will be sent to
+        // the next leader, all other nodes get B.
+        // effect is that nodes send votes for B to the next leader who thinks that
+        // the "correct" proposal is A.
+        let mut correct_proposal_gen = ProposalGen::new(first_state.high_qc.clone());
+        let mut mal_proposal_gen = ProposalGen::new(first_state.high_qc.clone());
+
+        let cp1 = correct_proposal_gen.next_proposal(&keys, &mut valset, &Default::default());
+        let mp1 = mal_proposal_gen.next_proposal(&keys, &mut valset, &TransactionList(vec![5]));
+
+        let (author, _, verified_message) = cp1.destructure();
+        let cmds1 = first_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message.clone(),
+            &mut valset,
+        );
+        let p1_votes = cmds1
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>()[0];
+
+        let cmds3 = third_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message.clone(),
+            &mut valset,
+        );
+        let p3_votes = cmds3
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>()[0];
+
+        let cmds4 = fourth_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message,
+            &mut valset,
+        );
+        let p4_votes = cmds4
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>()[0];
+
+        let (author, _, verified_message) = mp1.destructure();
+        let cmds2 = second_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message,
+            &mut valset,
+        );
+        let p2_votes = cmds2
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>()[0];
+
+        assert_eq!(p1_votes, p3_votes);
+        assert_eq!(p1_votes, p4_votes);
+        assert_ne!(p1_votes, p2_votes);
+
+        let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
+
+        // Deliver all the votes to second_state, who is the leader for the next round
+        for i in 0..4 {
+            let v = Verified::<NopSignature, VoteMessage>::new::<Sha256Hash>(votes[i], &keys[i]);
+            second_state.handle_vote_message::<Sha256Hash, _>(
+                *v.author(),
+                *v.author_signature(),
+                *v,
+                &mut valset,
+            );
+        }
+
+        // confirm that the votes lead to a QC forming (which leads to high_qc update)
+        assert_eq!(second_state.high_qc.info.vote, votes[0].vote_info);
+
+        // use the correct proposal gen to make next proposal and send it to second_state
+        // this should cause it to emit the RequestSync command because the the QC parent
+        // points to a different proposal (second_state has the malicious proposal in its blocktree)
+        let cp2 = correct_proposal_gen.next_proposal(&keys, &mut valset, &Default::default());
+        let (author, _, verified_message) = cp2.destructure();
+        let cmds2 = second_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message.clone(),
+            &mut valset,
+        );
+        let res = cmds2.into_iter().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_),
+                }
+            )
+        });
+        assert!(res.is_some());
+
+        // first_state has the correct block in its blocktree, so it should not request anything
+        let cmds1 = first_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message,
+            &mut valset,
+        );
+        let res = cmds1.into_iter().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_),
+                }
+            )
+        });
+        assert!(res.is_none());
+
+        // next correct proposal is created and we send it to the first two states.
+        let cp3 = correct_proposal_gen.next_proposal(&keys, &mut valset, &Default::default());
+        let (author, _, verified_message) = cp3.destructure();
+        let cmds2 = second_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message.clone(),
+            &mut valset,
+        );
+        let cmds1 = first_state.handle_proposal_message::<Sha256Hash, _>(
+            author,
+            verified_message,
+            &mut valset,
+        );
+
+        // second_state has the malicious block in the blocktree, so it will not be able to
+        // commit anything
+        assert_eq!(second_state.pending_block_tree.size(), 4);
+        let res = cmds2
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(res.is_none());
+
+        // first_state has the correct blocks, so expect to see a commit
+        assert_eq!(first_state.pending_block_tree.size(), 3);
+        let res = cmds1
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(res.is_some());
     }
 }

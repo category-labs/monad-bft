@@ -1,4 +1,4 @@
-use monad_consensus::types::block::Block;
+use monad_consensus::types::block::{Block, TransactionList};
 use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
@@ -38,6 +38,7 @@ where
         &mut self,
         keys: &Vec<KeyPair>,
         valset: &mut ValidatorSet<L>,
+        payload: &TransactionList,
     ) -> Verified<T::SignatureType, ProposalMessage<T::SignatureType, T>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
@@ -53,12 +54,7 @@ where
             .find(|k| k.pubkey() == valset.get_leader(self.round).0)
             .expect("key not in valset");
 
-        let block = Block::new::<Sha256Hash>(
-            NodeId(leader_key.pubkey()),
-            self.round,
-            &Default::default(),
-            qc,
-        );
+        let block = Block::new::<Sha256Hash>(NodeId(leader_key.pubkey()), self.round, payload, qc);
 
         self.high_qc = self.qc.clone();
         self.qc = self.get_next_qc(keys, &block);
