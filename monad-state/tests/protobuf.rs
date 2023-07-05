@@ -1,6 +1,6 @@
 #[cfg(all(test, feature = "proto"))]
 mod test {
-    use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+    use monad_consensus::signatures::multi_sig::MultiSig;
     use monad_consensus::types::consensus_message::ConsensusMessage;
     use monad_consensus::types::ledger::LedgerCommitInfo;
     use monad_consensus::types::message::VoteMessage;
@@ -20,7 +20,7 @@ mod test {
     fn test_consensus_timeout_event() {
         let event = MonadEvent::ConsensusEvent(ConsensusEvent::<
             SecpSignature,
-            AggregateSignatures<SecpSignature>,
+            MultiSig<SecpSignature>,
         >::Timeout(PacemakerTimerExpire {}));
 
         let buf = serialize_event(&event);
@@ -42,7 +42,7 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg: ConsensusMessage<SecpSignature, AggregateSignatures<SecpSignature>> =
+        let votemsg: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
             ConsensusMessage::Vote(VoteMessage {
                 vote_info: vi,
                 ledger_commit_info: lci,

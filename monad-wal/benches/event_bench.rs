@@ -10,7 +10,7 @@ use monad_consensus::types::timeout::{
     HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo,
 };
 use monad_consensus::{
-    signatures::aggregate_signature::AggregateSignatures,
+    signatures::multi_sig::MultiSig,
     types::{
         block::TransactionList,
         consensus_message::ConsensusMessage,
@@ -38,7 +38,7 @@ use monad_wal::PersistenceLogger;
 
 const N_VALIDATORS: usize = 400;
 
-type BenchEvent = MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>>;
+type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>>;
 struct MonadEventBencher {
     event: BenchEvent,
     logger: WALogger<BenchEvent>,
@@ -145,7 +145,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-    let mut aggsig = AggregateSignatures::new();
+    let mut aggsig = MultiSig::new();
     for keypair in keypairs.iter() {
         aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
     }
@@ -202,7 +202,7 @@ fn bench_timeout(c: &mut Criterion) {
 }
 
 fn bench_local_timeout(c: &mut Criterion) {
-    let event: MonadEvent<SecpSignature, AggregateSignatures<SecpSignature>> =
+    let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>> =
         MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(PacemakerTimerExpire {}));
 
     let mut bencher = MonadEventBencher::new(event);

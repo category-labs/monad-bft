@@ -6,7 +6,7 @@ use tracing::event;
 use tracing::Level;
 
 use monad_consensus::{
-    signatures::aggregate_signature::AggregateSignatures,
+    signatures::multi_sig::MultiSig,
     types::{
         block::{Block, TransactionList},
         ledger::LedgerCommitInfo,
@@ -29,7 +29,7 @@ use monad_types::{NodeId, Round};
 
 type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
-type SignatureCollectionType = AggregateSignatures<SignatureType>;
+type SignatureCollectionType = MultiSig<SignatureType>;
 type MonadState = monad_state::MonadState<SignatureType, SignatureCollectionType>;
 type MonadConfig = <MonadState as State>::Config;
 

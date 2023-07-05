@@ -3,10 +3,10 @@ use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::signing::*;
 
-use crate::signatures::aggregate_signature::AggregateSignatures;
+use crate::signatures::multi_sig::MultiSig;
 
-impl<S: Signature> From<&AggregateSignatures<S>> for ProtoAggSig {
-    fn from(value: &AggregateSignatures<S>) -> Self {
+impl<S: Signature> From<&MultiSig<S>> for ProtoMultiSig {
+    fn from(value: &MultiSig<S>) -> Self {
         Self {
             sigs: value
                 .sigs
@@ -17,10 +17,10 @@ impl<S: Signature> From<&AggregateSignatures<S>> for ProtoAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoAggSig> for AggregateSignatures<S> {
+impl<S: Signature> TryFrom<ProtoMultiSig> for MultiSig<S> {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoAggSig) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoMultiSig) -> Result<Self, Self::Error> {
         Ok(Self {
             sigs: value
                 .sigs

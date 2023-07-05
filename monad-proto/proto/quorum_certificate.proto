@@ -13,5 +13,5 @@ message ProtoQcInfo{
 
 message ProtoQuorumCertificateAggSig {
   ProtoQcInfo info = 1;
-  monad_proto.signing.ProtoAggSig signatures = 2;
+  monad_proto.signing.ProtoMultiSig signatures = 2;
 }

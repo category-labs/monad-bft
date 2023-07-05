@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, collections::HashSet, time::Duration};
 
 use crate::signing::{create_keys, get_genesis_config};
 use monad_consensus::{
-    signatures::aggregate_signature::AggregateSignatures,
+    signatures::multi_sig::MultiSig,
     types::{quorum_certificate::genesis_vote_info, signature::SignatureCollection},
     validation::hashing::Sha256Hash,
 };
@@ -20,7 +20,7 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use monad_wal::PersistenceLogger;
 
 type SignatureType = NopSignature;
-type SignatureCollectionType = AggregateSignatures<SignatureType>;
+type SignatureCollectionType = MultiSig<SignatureType>;
 type MS = MonadState<SignatureType, SignatureCollectionType>;
 type MC = MonadConfig<SignatureCollectionType>;
 type MM = <MS as State>::Message;

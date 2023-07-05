@@ -5,7 +5,7 @@ mod test {
     };
     use monad_consensus::types::timeout::HighQcRoundSigTuple;
     use monad_consensus::{
-        signatures::aggregate_signature::AggregateSignatures,
+        signatures::multi_sig::MultiSig,
         types::{
             block::TransactionList,
             consensus_message::ConsensusMessage,
@@ -46,7 +46,7 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg: ConsensusMessage<SecpSignature, AggregateSignatures<SecpSignature>> =
+        let votemsg: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
             ConsensusMessage::Vote(VoteMessage {
                 vote_info: vi,
                 ledger_commit_info: lci,
@@ -88,7 +88,7 @@ mod test {
 
         let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-        let mut aggsig = AggregateSignatures::new();
+        let mut aggsig = MultiSig::new();
         for keypair in keypairs.iter() {
             aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
         }
@@ -148,7 +148,7 @@ mod test {
             TransactionList(vec![1, 2, 3, 4]),
             &keypairs,
         );
-        let proposal: ConsensusMessage<SecpSignature, AggregateSignatures<SecpSignature>> =
+        let proposal: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
             ConsensusMessage::Proposal(ProposalMessage {
                 block: blk,
                 last_round_tc: None,

@@ -3,7 +3,7 @@ use monad_proto::error::ProtoError;
 use monad_proto::proto::block::*;
 
 use crate::{
-    signatures::aggregate_signature::AggregateSignatures,
+    signatures::multi_sig::MultiSig,
     types::block::{Block, TransactionList},
     validation::hashing::Sha256Hash,
 };
@@ -23,8 +23,8 @@ impl TryFrom<ProtoTransactionList> for TransactionList {
     }
 }
 
-impl<S: Signature> From<&Block<AggregateSignatures<S>>> for ProtoBlockAggSig {
-    fn from(value: &Block<AggregateSignatures<S>>) -> Self {
+impl<S: Signature> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
+    fn from(value: &Block<MultiSig<S>>) -> Self {
         Self {
             author: Some((&value.author).into()),
             round: Some((&value.round).into()),
@@ -34,7 +34,7 @@ impl<S: Signature> From<&Block<AggregateSignatures<S>>> for ProtoBlockAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoBlockAggSig> for Block<AggregateSignatures<S>> {
+impl<S: Signature> TryFrom<ProtoBlockAggSig> for Block<MultiSig<S>> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockAggSig) -> Result<Self, Self::Error> {

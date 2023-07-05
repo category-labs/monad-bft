@@ -1,6 +1,6 @@
 use test_case::test_case;
 
-use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+use monad_consensus::signatures::multi_sig::MultiSig;
 use monad_consensus::types::ledger::LedgerCommitInfo;
 use monad_consensus::types::message::VoteMessage;
 use monad_consensus::types::quorum_certificate::QuorumCertificate;
@@ -70,7 +70,7 @@ fn setup_ctx(
 }
 
 fn verify_qcs(
-    qcs: Vec<&Option<QuorumCertificate<AggregateSignatures<SecpSignature>>>>,
+    qcs: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>>,
     expected_qcs: u32,
     expected_sigs: u32,
 ) {
@@ -93,7 +93,7 @@ fn verify_qcs(
 fn test_votes(num_nodes: u32) {
     let (_, valset, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
+    let mut voteset = VoteState::<MultiSig<SecpSignature>>::default();
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
@@ -105,7 +105,7 @@ fn test_votes(num_nodes: u32) {
         );
         qcs.push(qc);
     }
-    let valid_qc: Vec<&Option<QuorumCertificate<AggregateSignatures<SecpSignature>>>> =
+    let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
         qcs.iter().filter(|a| a.is_some()).collect();
 
     // number of expected signatures is 2/3 + 1 for num_nodes because all weights were equal
@@ -121,7 +121,7 @@ fn test_votes(num_nodes: u32) {
 fn test_reset(num_nodes: u32, num_rounds: u32) {
     let (_, valset, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
+    let mut voteset = VoteState::<MultiSig<SecpSignature>>::default();
     let mut qcs = Vec::new();
 
     for k in 0..num_rounds {
@@ -139,7 +139,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
         voteset.start_new_round(Round(k.into()) + Round(1));
     }
 
-    let valid_qc: Vec<&Option<QuorumCertificate<AggregateSignatures<SecpSignature>>>> =
+    let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
         qcs.iter().filter(|a| a.is_some()).collect();
 
     let num_expected_sigs = 2 * num_nodes / 3 + 1;
@@ -152,7 +152,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 fn test_minority(num_nodes: u32) {
     let (_, valset, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<AggregateSignatures<SecpSignature>>::default();
+    let mut voteset = VoteState::<MultiSig<SecpSignature>>::default();
     let mut qcs = Vec::new();
 
     let majority = 2 * num_nodes / 3 + 1;
@@ -168,7 +168,7 @@ fn test_minority(num_nodes: u32) {
         qcs.push(qc);
     }
 
-    let valid_qc: Vec<&Option<QuorumCertificate<AggregateSignatures<SecpSignature>>>> =
+    let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
         qcs.iter().filter(|a| a.is_some()).collect();
 
     assert_eq!(valid_qc.len(), 0);

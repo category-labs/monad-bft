@@ -1,1 +1,1 @@
-pub mod aggregate_signature;
+pub mod multi_sig;

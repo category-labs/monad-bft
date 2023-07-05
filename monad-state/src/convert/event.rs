@@ -1,5 +1,5 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
-use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+use monad_consensus::signatures::multi_sig::MultiSig;
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::event::*;
@@ -9,8 +9,8 @@ use crate::ConsensusEvent as TypeConsensusEvent;
 use crate::FetchedTxs;
 use crate::MonadEvent as TypeMonadEvent;
 
-pub(super) type MonadEvent<S> = TypeMonadEvent<S, AggregateSignatures<S>>;
-pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, AggregateSignatures<S>>;
+pub(super) type MonadEvent<S> = TypeMonadEvent<S, MultiSig<S>>;
+pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, MultiSig<S>>;
 
 impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
     fn from(value: &ConsensusEvent<S>) -> Self {

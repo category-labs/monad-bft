@@ -8,21 +8,21 @@ use crate::types::signature::SignatureCollection;
 use sha2::Digest;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AggregateSignatures<S> {
+pub struct MultiSig<S> {
     pub sigs: Vec<S>,
 }
 
-impl<S: Signature> Default for AggregateSignatures<S> {
+impl<S: Signature> Default for MultiSig<S> {
     fn default() -> Self {
         Self { sigs: Vec::new() }
     }
 }
 
-impl<S: Signature> SignatureCollection for AggregateSignatures<S> {
+impl<S: Signature> SignatureCollection for MultiSig<S> {
     type SignatureType = S;
 
     fn new() -> Self {
-        AggregateSignatures { sigs: Vec::new() }
+        MultiSig { sigs: Vec::new() }
     }
 
     fn get_hash(&self) -> Hash {

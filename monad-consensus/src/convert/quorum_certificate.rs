@@ -3,11 +3,11 @@ use monad_proto::error::ProtoError;
 use monad_proto::proto::quorum_certificate::*;
 
 use crate::{
-    signatures::aggregate_signature::AggregateSignatures,
+    signatures::multi_sig::MultiSig,
     types::quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC},
 };
 
-type QuorumCertificate<S> = ConsensusQC<AggregateSignatures<S>>;
+type QuorumCertificate<S> = ConsensusQC<MultiSig<S>>;
 
 impl From<&QcInfo> for ProtoQcInfo {
     fn from(qcinfo: &QcInfo) -> Self {

@@ -16,7 +16,7 @@ use iced::{
     Vector,
 };
 
-use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+use monad_consensus::signatures::multi_sig::MultiSig;
 use monad_crypto::NopSignature;
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
@@ -26,7 +26,7 @@ use monad_state::{MonadEvent, MonadState};
 use monad_wal::mock::MockWALogger;
 
 type SignatureType = NopSignature;
-type SignatureCollectionType = AggregateSignatures<SignatureType>;
+type SignatureCollectionType = MultiSig<SignatureType>;
 type MS = MonadState<SignatureType, SignatureCollectionType>;
 type MM = <MS as State>::Message;
 type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;

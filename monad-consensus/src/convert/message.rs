@@ -5,19 +5,17 @@ use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::message::*;
 
-use crate::signatures::aggregate_signature::AggregateSignatures;
+use crate::signatures::multi_sig::MultiSig;
 use crate::types::consensus_message::ConsensusMessage;
 use crate::types::message::{
     ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
 };
 use crate::validation::signing::{Unverified, Verified};
 
-type TimeoutMessage<S> = ConsensusTypeTmoMsg<S, AggregateSignatures<S>>;
-type ProposalMessage<S> = ConsensusTypePropMsg<S, AggregateSignatures<S>>;
-pub(crate) type VerifiedConsensusMessage<S> =
-    Verified<S, ConsensusMessage<S, AggregateSignatures<S>>>;
-pub(crate) type UnverifiedConsensusMessage<S> =
-    Unverified<S, ConsensusMessage<S, AggregateSignatures<S>>>;
+type TimeoutMessage<S> = ConsensusTypeTmoMsg<S, MultiSig<S>>;
+type ProposalMessage<S> = ConsensusTypePropMsg<S, MultiSig<S>>;
+pub(crate) type VerifiedConsensusMessage<S> = Verified<S, ConsensusMessage<S, MultiSig<S>>>;
+pub(crate) type UnverifiedConsensusMessage<S> = Unverified<S, ConsensusMessage<S, MultiSig<S>>>;
 
 impl From<&VoteMessage> for ProtoVoteMessage {
     fn from(value: &VoteMessage) -> Self {

@@ -7,6 +7,6 @@ message ProtoSignature {
 }
 
 // AggregateSignatures
-message ProtoAggSig {
+message ProtoMultiSig {
   repeated ProtoSignature sigs = 1;
 }

@@ -86,7 +86,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::signatures::aggregate_signature::AggregateSignatures;
+    use crate::signatures::multi_sig::MultiSig;
     use crate::types::ledger::LedgerCommitInfo;
     use crate::types::message::VoteMessage;
     use crate::types::voting::VoteInfo;
@@ -137,7 +137,7 @@ mod test {
 
     #[test]
     fn clean_older_votes() {
-        let mut votestate = VoteState::<AggregateSignatures<SecpSignature>>::default();
+        let mut votestate = VoteState::<MultiSig<SecpSignature>>::default();
         let (keys, valset) = create_valset(4);
 
         // add one vote for rounds 0-3
@@ -171,7 +171,7 @@ mod test {
 
     #[test]
     fn handle_future_votes() {
-        let mut votestate = VoteState::<AggregateSignatures<SecpSignature>>::default();
+        let mut votestate = VoteState::<MultiSig<SecpSignature>>::default();
         let (keys, valset) = create_valset(4);
 
         // add one vote for rounds 0-3 and 5-8
@@ -215,7 +215,7 @@ mod test {
 
     #[test]
     fn vote_idx_doesnt_match() {
-        let mut vote_state = VoteState::<AggregateSignatures<SecpSignature>>::default();
+        let mut vote_state = VoteState::<MultiSig<SecpSignature>>::default();
         let keypair = get_key(6);
         let val = (NodeId(keypair.pubkey()), Stake(1));
 
@@ -282,7 +282,7 @@ mod test {
 
     #[test]
     fn duplicate_votes() {
-        let mut votestate = VoteState::<AggregateSignatures<SecpSignature>>::default();
+        let mut votestate = VoteState::<MultiSig<SecpSignature>>::default();
         let (keys, valset) = create_valset(4);
 
         // create a vote for round 0 from one node, but add it supermajority number of times

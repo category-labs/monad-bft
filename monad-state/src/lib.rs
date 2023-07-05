@@ -84,9 +84,7 @@ where
 impl monad_types::Deserializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
-        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
-            monad_crypto::secp256k1::SecpSignature,
-        >,
+        monad_consensus::signatures::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
     type ReadError = monad_proto::error::ProtoError;
@@ -100,9 +98,7 @@ impl monad_types::Deserializable
 impl monad_types::Serializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
-        monad_consensus::signatures::aggregate_signature::AggregateSignatures<
-            monad_crypto::secp256k1::SecpSignature,
-        >,
+        monad_consensus::signatures::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
     fn serialize(&self) -> Vec<u8> {
@@ -120,10 +116,7 @@ pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
 impl<S: Signature> monad_types::Serializable
-    for VerifiedMonadMessage<
-        S,
-        monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>,
-    >
+    for VerifiedMonadMessage<S, monad_consensus::signatures::multi_sig::MultiSig<S>>
 {
     fn serialize(&self) -> Vec<u8> {
         monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
@@ -132,7 +125,7 @@ impl<S: Signature> monad_types::Serializable
 
 #[cfg(feature = "proto")]
 impl<S: Signature> monad_types::Deserializable
-    for MonadMessage<S, monad_consensus::signatures::aggregate_signature::AggregateSignatures<S>>
+    for MonadMessage<S, monad_consensus::signatures::multi_sig::MultiSig<S>>
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -704,7 +697,7 @@ mod test {
     use std::time::Duration;
 
     use monad_consensus::pacemaker::PacemakerTimerExpire;
-    use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+    use monad_consensus::signatures::multi_sig::MultiSig;
     use monad_consensus::types::ledger::LedgerCommitInfo;
     use monad_consensus::types::message::{TimeoutMessage, VoteMessage};
     use monad_consensus::types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
@@ -769,8 +762,7 @@ mod test {
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[test]
     fn lock_qc_high() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.info.vote.round, Round(0));
@@ -820,8 +812,7 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
         let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
@@ -853,8 +844,7 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -905,8 +895,7 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
@@ -953,8 +942,7 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
@@ -990,8 +978,7 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
@@ -1113,8 +1100,7 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1179,8 +1165,7 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1258,8 +1243,7 @@ mod test {
     // not incorrectly committed
     #[test]
     fn test_malicious_proposal_to_next_leader() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, AggregateSignatures<NopSignature>>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();

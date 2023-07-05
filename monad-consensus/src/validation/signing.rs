@@ -372,7 +372,7 @@ impl ValidatorPubKey for PubKey {
 
 #[cfg(test)]
 mod test {
-    use crate::signatures::aggregate_signature::AggregateSignatures;
+    use crate::signatures::multi_sig::MultiSig;
     use crate::types::ledger::LedgerCommitInfo;
     use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
     use crate::types::signature::SignatureCollection;
@@ -441,7 +441,7 @@ mod test {
         let msg = Sha256Hash::hash_object(&lci);
         let s = keypair.sign(msg.as_ref());
 
-        let mut sigs = AggregateSignatures::new();
+        let mut sigs = MultiSig::new();
         sigs.add_signature(s);
 
         let vi2 = VoteInfo {
@@ -459,6 +459,6 @@ mod test {
             sigs,
         );
 
-        assert!(verify_qc::<AggregateSignatures<SecpSignature>, Sha256Hash>(&vset, &qc).is_err());
+        assert!(verify_qc::<MultiSig<SecpSignature>, Sha256Hash>(&vset, &qc).is_err());
     }
 }

@@ -6,7 +6,7 @@ use monad_proto::error::ProtoError;
 use monad_proto::proto::timeout::*;
 
 use crate::{
-    signatures::aggregate_signature::AggregateSignatures,
+    signatures::multi_sig::MultiSig,
     types::timeout::{
         HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
         TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
@@ -15,7 +15,7 @@ use crate::{
 
 type HighQcRoundSigTuple<S> = TypeHighQcRoundSigTuple<S>;
 type TimeoutCertificate<S> = ConsensusTC<S>;
-type TimeoutInfo<S> = ConsensusTmoInfo<AggregateSignatures<S>>;
+type TimeoutInfo<S> = ConsensusTmoInfo<MultiSig<S>>;
 
 impl From<&HighQcRound> for ProtoHighQcRound {
     fn from(value: &HighQcRound) -> Self {

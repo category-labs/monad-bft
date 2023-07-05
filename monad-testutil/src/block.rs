@@ -1,4 +1,4 @@
-use monad_consensus::signatures::aggregate_signature::AggregateSignatures;
+use monad_consensus::signatures::multi_sig::MultiSig;
 use monad_consensus::types::block::Block;
 use monad_consensus::types::block::TransactionList;
 use monad_consensus::types::ledger::LedgerCommitInfo;
@@ -21,7 +21,7 @@ pub fn setup_block(
     qc_round: u64,
     txns: TransactionList,
     keypairs: &[KeyPair],
-) -> Block<AggregateSignatures<SecpSignature>> {
+) -> Block<MultiSig<SecpSignature>> {
     let txns = txns;
     let round = Round(block_round);
 
@@ -39,12 +39,12 @@ pub fn setup_block(
     };
     let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-    let mut aggsig = AggregateSignatures::new();
+    let mut aggsig = MultiSig::new();
     for keypair in keypairs.iter() {
         aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
     }
 
-    let qc = QuorumCertificate::<AggregateSignatures<SecpSignature>>::new(qcinfo, aggsig);
+    let qc = QuorumCertificate::<MultiSig<SecpSignature>>::new(qcinfo, aggsig);
 
-    Block::<AggregateSignatures<SecpSignature>>::new::<Sha256Hash>(author, round, &txns, &qc)
+    Block::<MultiSig<SecpSignature>>::new::<Sha256Hash>(author, round, &txns, &qc)
 }
