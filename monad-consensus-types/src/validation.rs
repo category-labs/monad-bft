@@ -1,6 +1,20 @@
 use monad_types::Hash;
 use sha2::Digest;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    /// Message is signed by an author not in the validator set
+    InvalidAuthor,
+    /// Message does not contain the proper QC or TC values
+    NotWellFormed,
+    /// Bad signature
+    InvalidSignature,
+    /// Signature author doesn't match sender
+    AuthorNotSender,
+    /// There are high qc rounds larger than the TC round
+    InvalidTcRound,
+}
+
 pub trait Hashable {
     fn hash<H: Hasher>(&self, state: &mut H);
 }

@@ -1,16 +1,13 @@
 use std::fmt::Debug;
 
+use monad_consensus_types::signature::SignatureCollection;
+use monad_consensus_types::validation::{Hashable, Hasher};
 use monad_crypto::{secp256k1::KeyPair, Signature};
 
 use crate::{
-    types::message::{ProposalMessage, TimeoutMessage, VoteMessage},
-    validation::{
-        hashing::{Hashable, Hasher},
-        signing::Verified,
-    },
+    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    validation::signing::Verified,
 };
-
-use super::signature::SignatureCollection;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusMessage<ST, SCT> {

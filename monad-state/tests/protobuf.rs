@@ -1,12 +1,13 @@
 #[cfg(all(test, feature = "proto"))]
 mod test {
-    use monad_consensus::signatures::multi_sig::MultiSig;
-    use monad_consensus::types::consensus_message::ConsensusMessage;
-    use monad_consensus::types::ledger::LedgerCommitInfo;
-    use monad_consensus::types::message::VoteMessage;
-    use monad_consensus::types::voting::VoteInfo;
-    use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
+    use monad_consensus::messages::{consensus_message::ConsensusMessage, message::VoteMessage};
     use monad_consensus::{pacemaker::PacemakerTimerExpire, validation::signing::Unverified};
+    use monad_consensus_types::{
+        ledger::LedgerCommitInfo,
+        multi_sig::MultiSig,
+        validation::{Hasher, Sha256Hash},
+        voting::VoteInfo,
+    };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_state::{
         convert::interface::{deserialize_event, serialize_event},

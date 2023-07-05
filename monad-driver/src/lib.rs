@@ -3,9 +3,8 @@ mod tests {
     use std::{fs::create_dir_all, time::Duration};
 
     use futures::StreamExt;
-    use monad_consensus::{
-        signatures::multi_sig::MultiSig, types::quorum_certificate::genesis_vote_info,
-        validation::hashing::Sha256Hash,
+    use monad_consensus_types::{
+        multi_sig::MultiSig, quorum_certificate::genesis_vote_info, validation::Sha256Hash,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::{

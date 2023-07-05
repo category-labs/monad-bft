@@ -7,7 +7,7 @@ mod test {
     use std::time::Duration;
     use tempfile::tempdir;
 
-    use monad_consensus::signatures::multi_sig::MultiSig;
+    use monad_consensus_types::multi_sig::MultiSig;
     use monad_crypto::secp256k1::SecpSignature;
     use monad_executor::mock_swarm::Nodes;
     use monad_executor::mock_swarm::XorLatencyTransformer;

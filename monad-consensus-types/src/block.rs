@@ -2,9 +2,9 @@ use zerocopy::AsBytes;
 
 use monad_types::{BlockId, Hash as HashType, NodeId, Round};
 
-use crate::types::quorum_certificate::QuorumCertificate;
-use crate::types::signature::SignatureCollection;
-use crate::validation::hashing::{Hashable, Hasher};
+use crate::quorum_certificate::QuorumCertificate;
+use crate::signature::SignatureCollection;
+use crate::validation::{Hashable, Hasher};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct TransactionList(pub Vec<u8>);

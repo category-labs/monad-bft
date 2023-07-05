@@ -1,8 +1,8 @@
 use monad_types::Hash;
 
 use crate::{
-    types::voting::VoteInfo,
-    validation::hashing::{Hashable, Hasher},
+    validation::{Hashable, Hasher},
+    voting::VoteInfo,
 };
 
 #[derive(Copy, Clone, Default, PartialEq, Eq)]

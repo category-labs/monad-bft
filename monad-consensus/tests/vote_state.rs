@@ -1,15 +1,18 @@
 use test_case::test_case;
 
-use monad_consensus::signatures::multi_sig::MultiSig;
-use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::message::VoteMessage;
-use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
-use monad_consensus::validation::signing::Unverified;
-use monad_consensus::validation::signing::Verified;
-use monad_consensus::vote_state::VoteState;
+use monad_consensus::{
+    messages::message::VoteMessage,
+    validation::signing::{Unverified, Verified},
+    vote_state::VoteState,
+};
+use monad_consensus_types::{
+    ledger::LedgerCommitInfo,
+    multi_sig::MultiSig,
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    validation::{Hasher, Sha256Hash},
+    voting::VoteInfo,
+};
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
 use monad_testutil::validators::MockLeaderElection;

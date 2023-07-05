@@ -10,16 +10,14 @@ use opentelemetry_otlp::WithExportConfig;
 use tracing::event;
 use tracing::Level;
 
-use monad_consensus::{
-    signatures::multi_sig::MultiSig,
-    types::{
-        block::{Block, TransactionList},
-        ledger::LedgerCommitInfo,
-        quorum_certificate::{genesis_vote_info, QuorumCertificate},
-        signature::SignatureCollection,
-        voting::VoteInfo,
-    },
-    validation::hashing::{Hasher, Sha256Hash},
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    ledger::LedgerCommitInfo,
+    multi_sig::MultiSig,
+    quorum_certificate::{genesis_vote_info, QuorumCertificate},
+    signature::SignatureCollection,
+    validation::{Hasher, Sha256Hash},
+    voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
 use monad_crypto::Signature;

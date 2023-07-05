@@ -1,5 +1,5 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
-use monad_consensus::signatures::multi_sig::MultiSig;
+use monad_consensus_types::multi_sig::MultiSig;
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::event::*;

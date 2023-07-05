@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
+monad-consensus-types = { path = "../monad-consensus-types" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
@@ -24,4 +25,4 @@ zerocopy = { workspace = true }
 monad-testutil = { path = "../monad-testutil" }
 
 [features]
-proto = ["dep:monad-proto", "dep:prost", "monad-crypto/proto", "monad-types/proto"]
+proto = ["dep:monad-proto", "dep:prost", "monad-crypto/proto", "monad-consensus-types/proto", "monad-types/proto"]

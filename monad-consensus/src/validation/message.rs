@@ -1,7 +1,7 @@
 use monad_types::*;
 
-use crate::types::timeout::TimeoutCertificate;
-use crate::validation::error::Error;
+use monad_consensus_types::timeout::TimeoutCertificate;
+use monad_consensus_types::validation::Error;
 
 // (DiemBFT v4, p.12)
 // https://developers.diem.com/papers/diem-consensus-state-machine-replication-in-the-diem-blockchain/2021-08-17.pdf

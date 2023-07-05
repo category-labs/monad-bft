@@ -5,9 +5,7 @@ use iced::{
     Element,
 };
 use iced_lazy::Component;
-use monad_consensus::{
-    types::quorum_certificate::genesis_vote_info, validation::hashing::Sha256Hash,
-};
+use monad_consensus_types::{quorum_certificate::genesis_vote_info, validation::Sha256Hash};
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,

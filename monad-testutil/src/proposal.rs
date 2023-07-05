@@ -1,13 +1,15 @@
-use monad_consensus::types::block::{Block, TransactionList};
-use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::message::{ProposalMessage, TimeoutMessage};
-use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
-use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::types::timeout::TimeoutCertificate;
-use monad_consensus::types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutInfo};
-use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::validation::hashing::{Hashable, Hasher, Sha256Hash};
+use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage};
 use monad_consensus::validation::signing::Verified;
+use monad_consensus_types::validation::{Hashable, Hasher, Sha256Hash};
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    ledger::LedgerCommitInfo,
+    quorum_certificate::{QcInfo, QuorumCertificate},
+    signature::SignatureCollection,
+    timeout::TimeoutCertificate,
+    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutInfo},
+    voting::VoteInfo,
+};
 use monad_crypto::secp256k1::KeyPair;
 use monad_crypto::Signature;
 use monad_types::{NodeId, Round};

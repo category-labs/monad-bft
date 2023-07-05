@@ -1,10 +1,11 @@
+use crate::signature::SignatureCollection;
+
 use monad_crypto::{
     secp256k1::{Error, PubKey},
     Signature,
 };
 use monad_types::Hash;
 
-use crate::types::signature::SignatureCollection;
 use sha2::Digest;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

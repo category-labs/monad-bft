@@ -4,10 +4,9 @@ use rand_chacha::ChaChaRng;
 use std::{collections::BTreeMap, collections::HashSet, time::Duration};
 
 use crate::signing::{create_keys, get_genesis_config};
-use monad_consensus::{
-    signatures::multi_sig::MultiSig,
-    types::{quorum_certificate::genesis_vote_info, signature::SignatureCollection},
-    validation::hashing::Sha256Hash,
+use monad_consensus_types::{
+    multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
+    validation::Sha256Hash,
 };
 use monad_crypto::{secp256k1::KeyPair, secp256k1::PubKey, NopSignature, Signature};
 use monad_executor::{

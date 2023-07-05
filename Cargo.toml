@@ -3,6 +3,7 @@
 members = [
     "monad-blocktree",
     "monad-consensus",
+    "monad-consensus-types",
     "monad-crypto",
     "monad-driver",
     "monad-executor", 

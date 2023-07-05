@@ -3555,6 +3555,7 @@ name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
  "monad-tracing-counter",
@@ -3567,6 +3568,7 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
+ "monad-consensus-types",
  "monad-crypto",
  "monad-proto",
  "monad-testutil",
@@ -3576,6 +3578,18 @@ dependencies = [
  "sha2 0.10.6",
  "test-case",
  "tracing",
+ "zerocopy",
+]
+
+[[package]]
+name = "monad-consensus-types"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "monad-proto",
+ "monad-types",
+ "prost",
+ "sha2 0.10.6",
  "zerocopy",
 ]
 
@@ -3603,6 +3617,7 @@ dependencies = [
  "futures",
  "libp2p",
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-p2p",
@@ -3636,6 +3651,7 @@ dependencies = [
  "clap 4.3.0",
  "futures-util",
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-p2p",
@@ -3694,6 +3710,7 @@ dependencies = [
  "itertools",
  "monad-blocktree",
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-proto",
@@ -3718,6 +3735,7 @@ name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-state",
@@ -3765,6 +3783,7 @@ dependencies = [
  "iced_lazy",
  "iced_native",
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-state",
@@ -3778,6 +3797,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "monad-consensus",
+ "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-state",

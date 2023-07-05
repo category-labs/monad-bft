@@ -2,28 +2,24 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::fs::create_dir_all;
 use tempfile::{tempdir, TempDir};
 
+use monad_consensus::messages::{
+    consensus_message::ConsensusMessage,
+    message::{ProposalMessage, TimeoutMessage, VoteMessage},
+};
 use monad_consensus::pacemaker::PacemakerTimerExpire;
-use monad_consensus::types::message::TimeoutMessage;
-use monad_consensus::types::quorum_certificate::QcInfo;
-use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::types::timeout::{
-    HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo,
+use monad_consensus::validation::signing::Unverified;
+use monad_consensus_types::{
+    block::TransactionList,
+    ledger::LedgerCommitInfo,
+    multi_sig::MultiSig,
+    quorum_certificate::QcInfo,
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    validation::{Hasher, Sha256Hash},
+    voting::VoteInfo,
 };
-use monad_consensus::{
-    signatures::multi_sig::MultiSig,
-    types::{
-        block::TransactionList,
-        consensus_message::ConsensusMessage,
-        ledger::LedgerCommitInfo,
-        message::{ProposalMessage, VoteMessage},
-        quorum_certificate::QuorumCertificate,
-        voting::VoteInfo,
-    },
-    validation::{
-        hashing::{Hasher, Sha256Hash},
-        signing::Unverified,
-    },
-};
+
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::PeerId;
 use monad_state::{ConsensusEvent, MonadEvent};
