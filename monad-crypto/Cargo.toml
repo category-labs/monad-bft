@@ -14,7 +14,6 @@ monad-proto = { path = "../monad-proto", optional = true }
 blst = { workspace = true }
 libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }
 multihash = { workspace = true, features = ["identity"], optional = true }
-rand = { workspace = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 sha2 = { workspace = true }
 zerocopy = { workspace = true }

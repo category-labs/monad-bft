@@ -1,14 +1,13 @@
-use std::hash::Hash;
-
-use rand::Rng;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::secp256k1::{Error, KeyPair, PubKey};
 
 #[cfg(feature = "proto")]
 pub mod convert;
 
-pub mod secp256k1;
 pub mod bls12_381;
+pub mod secp256k1;
 
 pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static {
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
@@ -27,16 +26,17 @@ pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NopSignature {
     pubkey: PubKey,
-    id: u32,
+    id: u64,
 }
 
 impl Signature for NopSignature {
-    fn sign(_msg: &[u8], keypair: &KeyPair) -> Self {
-        let mut rng = rand::thread_rng();
+    fn sign(msg: &[u8], keypair: &KeyPair) -> Self {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(msg);
 
         NopSignature {
             pubkey: keypair.pubkey(),
-            id: rng.gen::<u32>(),
+            id: hasher.finish(),
         }
     }
 
@@ -57,8 +57,8 @@ impl Signature for NopSignature {
     }
 
     fn deserialize(signature: &[u8]) -> Result<Self, Error> {
-        let id = u32::from_le_bytes(signature[..4].try_into().unwrap());
-        let pubkey = PubKey::from_slice(&signature[4..])?;
+        let id = u64::from_le_bytes(signature[..8].try_into().unwrap());
+        let pubkey = PubKey::from_slice(&signature[8..])?;
         Ok(Self { pubkey, id })
     }
 }

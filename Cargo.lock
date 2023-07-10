@@ -3602,7 +3602,6 @@ dependencies = [
  "libp2p-identity",
  "monad-proto",
  "multihash",
- "rand 0.8.5",
  "secp256k1",
  "sha2 0.10.6",
  "tiny-keccak",
