@@ -1,14 +1,13 @@
-use std::hash::Hash;
-
-use rand::Rng;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::secp256k1::{Error, KeyPair, PubKey};
 
 #[cfg(feature = "proto")]
 pub mod convert;
 
-pub mod secp256k1;
 pub mod bls12_381;
+pub mod secp256k1;
 
 pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static {
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
@@ -31,12 +30,12 @@ pub struct NopSignature {
 }
 
 impl Signature for NopSignature {
-    fn sign(_msg: &[u8], keypair: &KeyPair) -> Self {
-        let mut rng = rand::thread_rng();
-
+    fn sign(msg: &[u8], keypair: &KeyPair) -> Self {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(msg);
         NopSignature {
             pubkey: keypair.pubkey(),
-            id: rng.gen::<u32>(),
+            id: hasher.finish() as u32,
         }
     }
 
