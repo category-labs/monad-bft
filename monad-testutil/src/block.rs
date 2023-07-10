@@ -1,19 +1,16 @@
-use monad_consensus::signatures::multi_sig::MultiSig;
-use monad_consensus::types::block::Block;
-use monad_consensus::types::block::TransactionList;
-use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::quorum_certificate::QcInfo;
-use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::validation::hashing::Hasher;
-use monad_consensus::validation::hashing::Sha256Hash;
-use monad_crypto::secp256k1::KeyPair;
-use monad_crypto::secp256k1::SecpSignature;
-use monad_types::BlockId;
-use monad_types::Hash;
-use monad_types::NodeId;
-use monad_types::Round;
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    ledger::LedgerCommitInfo,
+    multi_sig::MultiSig,
+    quorum_certificate::QcInfo,
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    validation::Hasher,
+    validation::Sha256Hash,
+    voting::VoteInfo,
+};
+use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_types::{BlockId, Hash, NodeId, Round};
 
 pub fn setup_block(
     author: NodeId,

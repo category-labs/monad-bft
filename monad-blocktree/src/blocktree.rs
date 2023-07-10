@@ -1,16 +1,16 @@
-use monad_consensus::types::block::Block;
-use monad_consensus::types::quorum_certificate::QuorumCertificate;
-use monad_consensus::types::signature::SignatureCollection;
+use monad_consensus_types::{
+    block::Block, quorum_certificate::QuorumCertificate, signature::SignatureCollection,
+};
 use monad_tracing_counter::inc_count;
-use monad_types::BlockId;
-use monad_types::Round;
-use ptree::print_tree;
+use monad_types::{BlockId, Round};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::result::Result as StdResult;
 use tracing::trace;
 
 use ptree::builder::TreeBuilder;
+use ptree::print_tree;
 
 type Result<T> = StdResult<T, BlockTreeError>;
 
@@ -226,11 +226,11 @@ impl<T: SignatureCollection> BlockTree<T> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_consensus::types::block::{Block as ConsensusBlock, TransactionList};
-    use monad_consensus::types::ledger::LedgerCommitInfo;
-    use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
-    use monad_consensus::types::voting::VoteInfo;
-    use monad_consensus::validation::hashing::Sha256Hash;
+    use monad_consensus_types::block::{Block as ConsensusBlock, TransactionList};
+    use monad_consensus_types::ledger::LedgerCommitInfo;
+    use monad_consensus_types::quorum_certificate::{QcInfo, QuorumCertificate};
+    use monad_consensus_types::validation::Sha256Hash;
+    use monad_consensus_types::voting::VoteInfo;
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, Hash, NodeId, Round};

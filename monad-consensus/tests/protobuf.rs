@@ -3,23 +3,20 @@ mod test {
     use monad_consensus::convert::interface::{
         deserialize_unverified_consensus_message, serialize_verified_consensus_message,
     };
-    use monad_consensus::types::timeout::HighQcRoundSigTuple;
-    use monad_consensus::{
-        signatures::multi_sig::MultiSig,
-        types::{
-            block::TransactionList,
-            consensus_message::ConsensusMessage,
-            ledger::LedgerCommitInfo,
-            message::{ProposalMessage, TimeoutMessage, VoteMessage},
-            quorum_certificate::{QcInfo, QuorumCertificate},
-            signature::SignatureCollection,
-            timeout::{HighQcRound, TimeoutCertificate, TimeoutInfo},
-            voting::VoteInfo,
-        },
-        validation::{
-            hashing::{Hasher, Sha256Hash},
-            signing::{ValidatorMember, Verified},
-        },
+    use monad_consensus::messages::{
+        consensus_message::ConsensusMessage,
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    };
+    use monad_consensus::validation::signing::{ValidatorMember, Verified};
+    use monad_consensus_types::{
+        block::TransactionList,
+        ledger::LedgerCommitInfo,
+        multi_sig::MultiSig,
+        quorum_certificate::{QcInfo, QuorumCertificate},
+        signature::SignatureCollection,
+        timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+        validation::{Hasher, Sha256Hash},
+        voting::VoteInfo,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_testutil::block::setup_block;

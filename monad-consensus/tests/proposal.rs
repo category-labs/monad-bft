@@ -1,11 +1,12 @@
-use monad_consensus::types::block::{Block, TransactionList};
-use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::message::ProposalMessage;
-use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
-use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::validation::error::Error;
-use monad_consensus::validation::hashing::*;
+use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus::validation::signing::ValidatorMember;
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    ledger::LedgerCommitInfo,
+    quorum_certificate::{QcInfo, QuorumCertificate},
+    validation::{Error, Hasher, Sha256Hash},
+    voting::VoteInfo,
+};
 use monad_crypto::secp256k1::SecpSignature;
 use monad_testutil::signing::{get_key, node_id, MockSignatures, TestSigner};
 use monad_types::*;

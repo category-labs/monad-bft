@@ -1,17 +1,17 @@
+use crate::{
+    multi_sig::MultiSig,
+    timeout::{
+        HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
+        TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
+    },
+};
+
 use monad_crypto::{
     convert::{proto_to_signature, signature_to_proto},
     Signature,
 };
 use monad_proto::error::ProtoError;
 use monad_proto::proto::timeout::*;
-
-use crate::{
-    signatures::multi_sig::MultiSig,
-    types::timeout::{
-        HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
-        TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
-    },
-};
 
 type HighQcRoundSigTuple<S> = TypeHighQcRoundSigTuple<S>;
 type TimeoutCertificate<S> = ConsensusTC<S>;

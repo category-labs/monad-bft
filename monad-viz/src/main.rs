@@ -16,7 +16,7 @@ use iced::{
     Vector,
 };
 
-use monad_consensus::signatures::multi_sig::MultiSig;
+use monad_consensus_types::multi_sig::MultiSig;
 use monad_crypto::NopSignature;
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,

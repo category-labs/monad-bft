@@ -1,11 +1,13 @@
 use std::marker::PhantomData;
 
-use monad_consensus::types::block::{Block, TransactionList};
-use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
-use monad_consensus::types::signature::SignatureCollection;
-use monad_consensus::validation::hashing::Hasher;
 use monad_consensus::validation::signing::Unverified;
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    ledger::LedgerCommitInfo,
+    quorum_certificate::{genesis_vote_info, QuorumCertificate},
+    signature::SignatureCollection,
+    validation::Hasher,
+};
 use monad_crypto::{
     secp256k1::{Error, KeyPair, PubKey, SecpSignature},
     Signature,

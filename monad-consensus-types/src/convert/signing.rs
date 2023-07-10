@@ -3,7 +3,7 @@ use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::signing::*;
 
-use crate::signatures::multi_sig::MultiSig;
+use crate::multi_sig::MultiSig;
 
 impl<S: Signature> From<&MultiSig<S>> for ProtoMultiSig {
     fn from(value: &MultiSig<S>) -> Self {

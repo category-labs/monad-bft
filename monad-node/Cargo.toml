@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
+monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-executor = { path = "../monad-executor", features = ["tokio"] }
 monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
@@ -17,7 +18,9 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
+opentelemetry_api = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }

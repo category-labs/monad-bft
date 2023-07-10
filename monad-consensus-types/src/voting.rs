@@ -2,7 +2,7 @@ use zerocopy::AsBytes;
 
 use monad_types::*;
 
-use crate::validation::hashing::{Hashable, Hasher};
+use crate::validation::{Hashable, Hasher};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteInfo {
@@ -34,7 +34,7 @@ impl Hashable for VoteInfo {
 
 #[cfg(test)]
 mod test {
-    use crate::validation::hashing::{Hasher, Sha256Hash};
+    use crate::validation::{Hasher, Sha256Hash};
     use monad_types::{BlockId, Hash, Round};
 
     use super::VoteInfo;

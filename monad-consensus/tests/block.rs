@@ -1,8 +1,10 @@
-use monad_consensus::types::block::{Block, TransactionList};
-use monad_consensus::types::ledger::LedgerCommitInfo;
-use monad_consensus::types::quorum_certificate::{QcInfo, QuorumCertificate};
-use monad_consensus::types::voting::VoteInfo;
-use monad_consensus::validation::hashing::{Hasher, Sha256Hash};
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    ledger::LedgerCommitInfo,
+    quorum_certificate::{QcInfo, QuorumCertificate},
+    validation::{Hasher, Sha256Hash},
+    voting::VoteInfo,
+};
 use monad_testutil::signing::{hash, node_id, MockSignatures};
 use monad_types::*;
 

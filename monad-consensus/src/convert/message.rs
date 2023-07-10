@@ -1,13 +1,13 @@
 use std::ops::Deref;
 
+use monad_consensus_types::multi_sig::MultiSig;
 use monad_crypto::convert::{proto_to_signature, signature_to_proto};
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::message::*;
 
-use crate::signatures::multi_sig::MultiSig;
-use crate::types::consensus_message::ConsensusMessage;
-use crate::types::message::{
+use crate::messages::consensus_message::ConsensusMessage;
+use crate::messages::message::{
     ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
 };
 use crate::validation::signing::{Unverified, Verified};

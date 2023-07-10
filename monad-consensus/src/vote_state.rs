@@ -1,20 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use monad_consensus_types::{
+    quorum_certificate::{QcInfo, QuorumCertificate},
+    signature::SignatureCollection,
+    validation::Hasher,
+};
 use monad_types::{Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
-use crate::{
-    types::{
-        message::VoteMessage,
-        quorum_certificate::{QcInfo, QuorumCertificate},
-        signature::SignatureCollection,
-    },
-    validation::hashing::Hasher,
-};
+use crate::messages::message::VoteMessage;
 
 // accumulate votes and create a QC if enough votes are received
 // only one QC should be created in a round using the first supermajority of votes received
 // At the end of a round, older rounds can be cleaned up
+#[derive(Debug)]
 pub struct VoteState<T> {
     pending_votes: BTreeMap<Round, HashMap<Hash, (T, HashSet<NodeId>)>>,
     qc_created: BTreeSet<Round>,
@@ -86,12 +85,12 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::signatures::multi_sig::MultiSig;
-    use crate::types::ledger::LedgerCommitInfo;
-    use crate::types::message::VoteMessage;
-    use crate::types::voting::VoteInfo;
-    use crate::validation::hashing::Sha256Hash;
+    use crate::messages::message::VoteMessage;
     use crate::validation::signing::Verified;
+    use monad_consensus_types::ledger::LedgerCommitInfo;
+    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_consensus_types::validation::Sha256Hash;
+    use monad_consensus_types::voting::VoteInfo;
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_testutil::signing::get_key;
     use monad_testutil::signing::*;

@@ -1,16 +1,19 @@
-use std::cmp;
+use crate::messages::message::VoteMessage;
 
+use monad_consensus_types::{
+    block::Block,
+    ledger::LedgerCommitInfo,
+    quorum_certificate::{QcInfo, QuorumCertificate},
+    signature::SignatureCollection,
+    timeout::{TimeoutCertificate, TimeoutInfo},
+    validation::Hasher,
+    voting::VoteInfo,
+};
 use monad_types::*;
 
-use crate::types::block::Block;
-use crate::types::ledger::LedgerCommitInfo;
-use crate::types::message::VoteMessage;
-use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
-use crate::types::signature::SignatureCollection;
-use crate::types::timeout::{TimeoutCertificate, TimeoutInfo};
-use crate::types::voting::VoteInfo;
-use crate::validation::hashing::Hasher;
+use std::cmp;
 
+#[derive(Debug)]
 pub struct Safety {
     highest_vote_round: Round,
     highest_qc_round: Round,

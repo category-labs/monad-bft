@@ -1,0 +1,18 @@
+[package]
+name = "monad-consensus-types"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+monad-crypto = { path = "../monad-crypto" }
+monad-proto = { path = "../monad-proto", optional = true }
+monad-types = { path = "../monad-types" }
+
+prost = { workspace = true, optional = true }
+sha2 = { workspace = true }
+zerocopy = { workspace = true }
+
+[features]
+proto = ["dep:monad-proto", "dep:prost", "monad-crypto/proto", "monad-types/proto"]

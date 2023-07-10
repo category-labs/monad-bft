@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
+use monad_consensus_types::{
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    timeout::TimeoutCertificate,
+    validation::Error,
+    validation::{Hashable, Hasher},
+};
 #[cfg(feature = "proto")]
 use monad_crypto::convert::signature_to_proto;
 use monad_crypto::secp256k1::{KeyPair, PubKey};
@@ -13,15 +20,10 @@ use monad_types::{Hash, NodeId, Stake};
 
 #[cfg(feature = "proto")]
 use crate::convert::message::UnverifiedConsensusMessage;
-use crate::types::consensus_message::ConsensusMessage;
-use crate::types::message::ProposalMessage;
-use crate::types::message::TimeoutMessage;
-use crate::types::message::VoteMessage;
-use crate::types::quorum_certificate::QuorumCertificate;
-use crate::types::signature::SignatureCollection;
-use crate::types::timeout::TimeoutCertificate;
-use crate::validation::error::Error;
-use crate::validation::hashing::{Hashable, Hasher};
+use crate::messages::{
+    consensus_message::ConsensusMessage,
+    message::{ProposalMessage, TimeoutMessage, VoteMessage},
+};
 
 use crate::validation::message::well_formed;
 
@@ -372,14 +374,14 @@ impl ValidatorPubKey for PubKey {
 
 #[cfg(test)]
 mod test {
-    use crate::signatures::multi_sig::MultiSig;
-    use crate::types::ledger::LedgerCommitInfo;
-    use crate::types::quorum_certificate::{QcInfo, QuorumCertificate};
-    use crate::types::signature::SignatureCollection;
-    use crate::types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate};
-    use crate::types::voting::VoteInfo;
-    use crate::validation::error::Error;
-    use crate::validation::{hashing::*, signing::ValidatorMember};
+    use crate::validation::signing::ValidatorMember;
+    use monad_consensus_types::ledger::LedgerCommitInfo;
+    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_consensus_types::quorum_certificate::{QcInfo, QuorumCertificate};
+    use monad_consensus_types::signature::SignatureCollection;
+    use monad_consensus_types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate};
+    use monad_consensus_types::validation::{Error, Hashable, Hasher, Sha256Hash};
+    use monad_consensus_types::voting::VoteInfo;
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};

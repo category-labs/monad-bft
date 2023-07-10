@@ -2,7 +2,7 @@ use zerocopy::AsBytes;
 
 use monad_types::*;
 
-use crate::validation::hashing::{Hashable, Hasher};
+use crate::validation::{Hashable, Hasher};
 
 use super::quorum_certificate::QuorumCertificate;
 

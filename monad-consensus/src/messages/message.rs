@@ -1,14 +1,12 @@
-use monad_crypto::Signature;
-
-use crate::validation::hashing::{Hashable, Hasher};
-
-use super::{
+use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
     signature::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
+    validation::{Hashable, Hasher},
     voting::VoteInfo,
 };
+use monad_crypto::Signature;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteMessage {

@@ -2,24 +2,20 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use monad_blocktree::blocktree::BlockTree;
-use monad_consensus::types::consensus_message::ConsensusMessage;
-use monad_consensus::validation::signing::Unverified;
 use monad_consensus::{
+    messages::consensus_message::ConsensusMessage,
+    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
-    types::{
-        block::{Block, TransactionList},
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
-        quorum_certificate::{QuorumCertificate, Rank},
-        signature::SignatureCollection,
-        timeout::TimeoutCertificate,
-        voting::VoteInfo,
-    },
-    validation::{
-        hashing::{Hasher, Sha256Hash},
-        safety::Safety,
-        signing::Verified,
-    },
+    validation::{safety::Safety, signing::Unverified, signing::Verified},
     vote_state::VoteState,
+};
+use monad_consensus_types::{
+    block::{Block, TransactionList},
+    quorum_certificate::{QuorumCertificate, Rank},
+    signature::SignatureCollection,
+    timeout::TimeoutCertificate,
+    validation::{Hasher, Sha256Hash},
+    voting::VoteInfo,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -84,7 +80,7 @@ where
 impl monad_types::Deserializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
-        monad_consensus::signatures::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
+        monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
     type ReadError = monad_proto::error::ProtoError;
@@ -98,7 +94,7 @@ impl monad_types::Deserializable
 impl monad_types::Serializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
-        monad_consensus::signatures::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
+        monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
     fn serialize(&self) -> Vec<u8> {
@@ -116,7 +112,7 @@ pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
 impl<S: Signature> monad_types::Serializable
-    for VerifiedMonadMessage<S, monad_consensus::signatures::multi_sig::MultiSig<S>>
+    for VerifiedMonadMessage<S, monad_consensus_types::multi_sig::MultiSig<S>>
 {
     fn serialize(&self) -> Vec<u8> {
         monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
@@ -125,7 +121,7 @@ impl<S: Signature> monad_types::Serializable
 
 #[cfg(feature = "proto")]
 impl<S: Signature> monad_types::Deserializable
-    for MonadMessage<S, monad_consensus::signatures::multi_sig::MultiSig<S>>
+    for MonadMessage<S, monad_consensus_types::multi_sig::MultiSig<S>>
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -447,6 +443,26 @@ struct ConsensusState<S, T> {
     keypair: KeyPair,
 }
 
+struct ConsensusStateWrapper<S: Signature, T: SignatureCollection> {
+    consensus_state: ConsensusState<S, T>,
+}
+
+impl<S: Signature, T: SignatureCollection> std::fmt::Debug for ConsensusStateWrapper<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsensusState")
+            .field(
+                "pending_block_tree",
+                &self.consensus_state.pending_block_tree,
+            )
+            .field("vote_state", &self.consensus_state.vote_state)
+            .field("high_qc", &self.consensus_state.high_qc)
+            .field("pacemaker", &self.consensus_state.pacemaker)
+            .field("safety", &self.consensus_state.safety)
+            .field("nodeid", &self.consensus_state.nodeid)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S, T> ConsensusState<S, T>
 where
     S: Signature,
@@ -671,6 +687,12 @@ where
     }
 }
 
+impl<S: Signature, T: SignatureCollection> Drop for ConsensusStateWrapper<S, T> {
+    fn drop(&mut self) {
+        eprintln!("{:?}", self);
+    }
+}
+
 impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for ConsensusCommand<S, T> {
     fn from(cmd: PacemakerCommand<S, T>) -> Self {
         match cmd {
@@ -693,19 +715,19 @@ impl<S: Signature, T: SignatureCollection> From<PacemakerCommand<S, T>> for Cons
 #[cfg(test)]
 mod test {
     use itertools::Itertools;
-    use monad_consensus::types::block::TransactionList;
+    use monad_consensus_types::block::TransactionList;
     use std::time::Duration;
 
+    use monad_consensus::messages::message::{TimeoutMessage, VoteMessage};
     use monad_consensus::pacemaker::PacemakerTimerExpire;
-    use monad_consensus::signatures::multi_sig::MultiSig;
-    use monad_consensus::types::ledger::LedgerCommitInfo;
-    use monad_consensus::types::message::{TimeoutMessage, VoteMessage};
-    use monad_consensus::types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
-    use monad_consensus::types::signature::SignatureCollection;
-    use monad_consensus::types::timeout::TimeoutInfo;
-    use monad_consensus::types::voting::VoteInfo;
-    use monad_consensus::validation::hashing::Sha256Hash;
     use monad_consensus::validation::signing::Verified;
+    use monad_consensus_types::ledger::LedgerCommitInfo;
+    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_consensus_types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
+    use monad_consensus_types::signature::SignatureCollection;
+    use monad_consensus_types::timeout::TimeoutInfo;
+    use monad_consensus_types::validation::Sha256Hash;
+    use monad_consensus_types::voting::VoteInfo;
     use monad_crypto::secp256k1::KeyPair;
     use monad_crypto::{NopSignature, Signature};
     use monad_executor::{PeerId, RouterTarget};

@@ -1,19 +1,20 @@
 use std::{collections::HashMap, time::Duration};
 
+use monad_consensus_types::{
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
+};
 use monad_crypto::Signature;
 use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 
 use crate::{
-    types::{
-        message::TimeoutMessage,
-        quorum_certificate::QuorumCertificate,
-        signature::SignatureCollection,
-        timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
-    },
+    messages::message::TimeoutMessage,
     validation::{message::well_formed, safety::Safety},
 };
 
+#[derive(Debug)]
 pub struct Pacemaker<S, T> {
     delta: Duration,
 
