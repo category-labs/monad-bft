@@ -11,3 +11,4 @@ prost-types = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
+protobuf-src = { workspace = true }

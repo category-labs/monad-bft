@@ -4717,6 +4717,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "protobuf-src",
 ]
 
 [[package]]

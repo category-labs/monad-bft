@@ -1,3 +1,7 @@
+extern crate prost_build;
+extern crate protobuf_src;
+
 fn main() {
-    prost_build::compile_protos(&["src/tx.proto"], &["src/"]).unwrap();
+    std::env::set_var("PROTOC", protobuf_src::protoc());
+    prost_build::Config::new().compile_protos(&["proto/tx.proto"], &["proto/"]).unwrap();
 }
