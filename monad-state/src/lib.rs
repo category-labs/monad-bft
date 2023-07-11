@@ -540,7 +540,7 @@ where
             .add(p.block.clone())
             .expect("Failed to add block to blocktree");
 
-        if !self.pending_block_tree.has_parent(&p.block.qc) {
+        if !self.pending_block_tree.has_parent(&p.block) {
             cmds.push(ConsensusCommand::RequestSync {
                 blockid: p.block.get_parent_id(),
             });
