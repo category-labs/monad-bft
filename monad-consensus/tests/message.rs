@@ -3,6 +3,7 @@ use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate},
+    signature::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
@@ -28,7 +29,7 @@ fn timeout_msg_hash() {
                 },
                 ledger_commit: Default::default(),
             },
-            MockSignatures,
+            MockSignatures::new(),
         ),
     };
 
@@ -67,7 +68,7 @@ fn proposal_msg_hash() {
             },
             ledger_commit: LedgerCommitInfo::default(),
         },
-        MockSignatures,
+        MockSignatures::new(),
     );
 
     let block = Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc);

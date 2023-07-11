@@ -322,7 +322,7 @@ where
                         unverified_message,
                     } => {
                         let verified_message = match unverified_message
-                            .verify::<HasherType>(self.validator_set.get_members(), &sender)
+                            .verify::<HasherType, _>(&self.validator_set, &sender)
                         {
                             Ok(m) => m,
                             Err(e) => todo!("{e:?}"),

@@ -13,6 +13,8 @@ pub enum Error {
     AuthorNotSender,
     /// There are high qc rounds larger than the TC round
     InvalidTcRound,
+    /// The SignatureCollection doesn't have +2/3 of the stake signed
+    InsufficientStake,
 }
 
 pub trait Hashable {

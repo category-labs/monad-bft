@@ -8,7 +8,7 @@ mod test {
             consensus_message::ConsensusMessage,
             message::{ProposalMessage, TimeoutMessage, VoteMessage},
         },
-        validation::signing::{ValidatorMember, Verified},
+        validation::signing::Verified,
     };
     use monad_consensus_types::{
         block::TransactionList,
@@ -26,13 +26,15 @@ mod test {
         signing::{create_keys, get_key},
     };
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
+    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
-    fn setup_validator_member(keypairs: &[KeyPair]) -> ValidatorMember {
-        let mut vmember = ValidatorMember::new();
-        for keypair in keypairs.iter() {
-            vmember.insert(NodeId(keypair.pubkey()), Stake(1));
-        }
-        vmember
+    fn setup_validator_set(keypairs: &[KeyPair]) -> ValidatorSet {
+        let vlist = keypairs
+            .iter()
+            .map(|kp| (NodeId(kp.pubkey()), Stake(1)))
+            .collect::<Vec<_>>();
+
+        ValidatorSet::new(vlist).unwrap()
     }
     // TODO: revisit to cleanup
     #[test]
@@ -54,7 +56,7 @@ mod test {
             });
         let keypairs = vec![get_key(0)];
         let author_keypair = &keypairs[0];
-        let validators = setup_validator_member(&keypairs);
+        let validators = setup_validator_set(&keypairs);
 
         let verified_votemsg = Verified::new::<Sha256Hash>(votemsg, author_keypair);
 
@@ -62,7 +64,7 @@ mod test {
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
         let verified_rx_vote = rx_msg
-            .verify::<Sha256Hash>(&validators, &author_keypair.pubkey())
+            .verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey())
             .unwrap();
 
         assert_eq!(verified_votemsg, verified_rx_vote);
@@ -71,7 +73,7 @@ mod test {
     #[test]
     fn test_timeout_message() {
         let keypairs = create_keys(2);
-        let vmember = setup_validator_member(&keypairs);
+        let validators = setup_validator_set(&keypairs);
         let author_keypair = &keypairs[0];
 
         let vi = VoteInfo {
@@ -132,7 +134,7 @@ mod test {
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
         let verified_rx_tmo_messaage =
-            rx_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+            rx_msg.verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey());
 
         assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
     }
@@ -141,7 +143,7 @@ mod test {
     fn test_proposal_qc() {
         let keypairs = create_keys(2);
         let author_keypair = &keypairs[0];
-        let vmember = setup_validator_member(&keypairs);
+        let validators = setup_validator_set(&keypairs);
         let blk = setup_block(
             NodeId(author_keypair.pubkey()),
             233,
@@ -159,7 +161,7 @@ mod test {
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        let verified_rx_msg = rx_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+        let verified_rx_msg = rx_msg.verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey());
 
         assert_eq!(verified_msg, verified_rx_msg.unwrap());
     }
@@ -167,7 +169,7 @@ mod test {
     #[test]
     fn test_unverified_proposal_tc() {
         let keypairs = create_keys(2);
-        let vmember = setup_validator_member(&keypairs);
+        let validators = setup_validator_set(&keypairs);
         let author_keypair = &keypairs[0];
         let blk = setup_block(
             NodeId(author_keypair.pubkey()),
@@ -209,7 +211,7 @@ mod test {
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        let verified_rx_msg = rx_msg.verify::<Sha256Hash>(&vmember, &author_keypair.pubkey());
+        let verified_rx_msg = rx_msg.verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey());
 
         assert_eq!(verified_msg, verified_rx_msg.unwrap());
     }
