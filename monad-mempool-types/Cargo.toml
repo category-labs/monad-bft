@@ -1,0 +1,13 @@
+[package]
+name = "monad-mempool-types"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }

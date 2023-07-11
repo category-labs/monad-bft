@@ -1,0 +1,18 @@
+[package]
+name = "monad-mempool-controller"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+monad-mempool-checker = { path = "../monad-mempool-checker" }
+monad-mempool-messenger = { path = "../monad-mempool-messenger" }
+monad-mempool-txpool = { path = "../monad-mempool-txpool" }
+monad-mempool-types = { path = "../monad-mempool-types" }
+
+ethers = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }

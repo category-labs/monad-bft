@@ -1,0 +1,17 @@
+syntax = "proto3";
+package tx;
+
+import "google/protobuf/timestamp.proto";
+
+message PriorityTx {
+    bytes hash = 1;
+    int64 priority = 2;
+    bytes rlpdata = 3;
+}
+
+message PriorityTxBatch {
+    bytes hash = 1;
+    repeated PriorityTx txs = 2;
+    google.protobuf.Timestamp time = 3;
+    uint32 numtx = 4;
+}
