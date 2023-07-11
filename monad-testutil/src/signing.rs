@@ -15,12 +15,23 @@ use monad_crypto::{
 use monad_types::{Hash, NodeId, Round};
 
 #[derive(Clone, Default, Debug)]
-pub struct MockSignatures;
+pub struct MockSignatures {
+    pubkey: Vec<PubKey>,
+}
+
+impl MockSignatures {
+    pub fn with_pubkeys(pubkeys: &[PubKey]) -> Self {
+        Self {
+            pubkey: pubkeys.to_vec(),
+        }
+    }
+}
+
 impl SignatureCollection for MockSignatures {
     type SignatureType = SecpSignature;
 
     fn new() -> Self {
-        MockSignatures {}
+        MockSignatures { pubkey: Vec::new() }
     }
 
     fn get_hash(&self) -> Hash {
@@ -34,7 +45,7 @@ impl SignatureCollection for MockSignatures {
     }
 
     fn get_pubkeys(&self, _msg: &[u8]) -> Result<Vec<PubKey>, Error> {
-        Ok(Vec::new())
+        Ok(self.pubkey.clone())
     }
 
     fn num_signatures(&self) -> usize {
