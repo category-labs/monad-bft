@@ -450,22 +450,22 @@ mod test {
         //     b6
 
         // try pruning all other nodes should return err
-        matches!(
+        assert!(matches!(
             blocktree.prune(&g.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)
-        );
-        matches!(
+        ));
+        assert!(matches!(
             blocktree.prune(&b1.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)
-        );
-        matches!(
+        ));
+        assert!(matches!(
             blocktree.prune(&b2.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)
-        );
-        matches!(
+        ));
+        assert!(matches!(
             blocktree.prune(&b4.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)
-        );
+        ));
         assert!(!blocktree.path_to_root(&g.get_id()));
         assert!(!blocktree.path_to_root(&b1.get_id()));
         assert!(!blocktree.path_to_root(&b2.get_id()));
