@@ -8,8 +8,7 @@ use std::{
     time::Duration,
 };
 
-use super::ledger::MockLedger;
-use super::mempool::MockMempool;
+use super::{ledger::MockLedger, mempool::MockMempool, state_update::MockStateUpdate};
 use crate::{
     state::PeerId, Command, Executor, Message, RouterCommand, RouterTarget, State, TimerCommand,
 };
@@ -22,6 +21,7 @@ where
 {
     mempool: MockMempool<S::Event>,
     ledger: MockLedger<S::Block>,
+    state_update: MockStateUpdate<S::Event>,
 
     tick: Duration,
 
@@ -77,6 +77,7 @@ enum ExecutorEventType {
 
     Timer,
     Mempool,
+    StateUpdate,
 }
 
 impl<S> MockExecutor<S>
@@ -152,6 +153,7 @@ where
         Self {
             mempool: Default::default(),
             ledger: Default::default(),
+            state_update: Default::default(),
 
             tick: Duration::default(),
 
@@ -217,6 +219,7 @@ where
 impl<S> Stream for MockExecutor<S>
 where
     S: State,
+    S::Event: Unpin,
     Self: Unpin,
 {
     type Item = S::Event;
@@ -243,6 +246,7 @@ where
                 }
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
                 ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
+                ExecutorEventType::StateUpdate => return this.state_update.poll_next_unpin(cx),
             };
             return Poll::Ready(Some(event));
         }

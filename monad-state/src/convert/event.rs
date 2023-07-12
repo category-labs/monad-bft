@@ -8,6 +8,7 @@ use monad_proto::proto::pacemaker::ProtoPacemakerTimerExpire;
 use crate::ConsensusEvent as TypeConsensusEvent;
 use crate::FetchedTxs;
 use crate::MonadEvent as TypeMonadEvent;
+use crate::StateRootHash;
 
 pub(super) type MonadEvent<S> = TypeMonadEvent<S, MultiSig<S>>;
 pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, MultiSig<S>>;
@@ -33,6 +34,12 @@ impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
                     txns: Some((&fetched.txns).into()),
+                })
+            }
+            TypeConsensusEvent::StateUpdate(state) => {
+                proto_consensus_event::Event::StateUpdate(ProtoStateUpdate {
+                    round: Some((&state.round).into()),
+                    root_hash: Some((&state.root_hash).into()),
                 })
             }
         };
@@ -90,6 +97,22 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
                         .txns
                         .ok_or(ProtoError::MissingRequiredField(
                             "ConsensusEvent::fetched_txs.txns".to_owned(),
+                        ))?
+                        .try_into()?,
+                })
+            }
+            Some(proto_consensus_event::Event::StateUpdate(state)) => {
+                ConsensusEvent::StateUpdate(StateRootHash {
+                    round: state
+                        .round
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.round".to_owned(),
+                        ))?
+                        .try_into()?,
+                    root_hash: state
+                        .root_hash
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.round".to_owned(),
                         ))?
                         .try_into()?,
                 })

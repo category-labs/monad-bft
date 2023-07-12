@@ -25,7 +25,7 @@ use monad_executor::{
     Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, RouterTarget, State,
     TimerCommand,
 };
-use monad_types::{BlockId, NodeId, Round, Stake};
+use monad_types::{BlockId, Hash, NodeId, Round, Stake};
 use monad_validator::{
     leader_election::LeaderElection, validator_set::ValidatorSet,
     weighted_round_robin::WeightedRoundRobin,
@@ -318,6 +318,12 @@ where
                             }
                         }
                     }
+                    ConsensusEvent::StateUpdate(state_hash) => {
+                        // TODO: state_hash update needs to check that the round
+                        //       is valid
+                        self.consensus_state.state_hash = state_hash;
+                        Vec::new()
+                    }
                 };
                 let mut cmds = Vec::new();
                 for consensus_command in consensus_commands {
@@ -378,6 +384,7 @@ pub enum ConsensusEvent<ST, SCT> {
     Timeout(PacemakerTimerExpire),
 
     FetchedTxs(FetchedTxs<ST, SCT>),
+    StateUpdate(StateRootHash),
 }
 
 impl<S: Debug, T: Debug> Debug for ConsensusEvent<S, T> {
@@ -393,6 +400,7 @@ impl<S: Debug, T: Debug> Debug for ConsensusEvent<S, T> {
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
             ConsensusEvent::FetchedTxs(p) => p.fmt(f),
+            ConsensusEvent::StateUpdate(p) => p.fmt(f),
         }
     }
 }
@@ -407,6 +415,12 @@ pub struct FetchedTxs<ST, SCT> {
     last_round_tc: Option<TimeoutCertificate<ST>>,
 
     txns: TransactionList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateRootHash {
+    round: Round,
+    root_hash: Hash,
 }
 
 pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
@@ -436,6 +450,7 @@ struct ConsensusState<S, T> {
 
     pacemaker: Pacemaker<S, T>,
     safety: Safety,
+    state_hash: StateRootHash,
 
     nodeid: NodeId,
 
@@ -477,12 +492,17 @@ where
         // TODO deprecate
         keypair: KeyPair,
     ) -> Self {
+        let genesis_round = genesis_block.round;
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
+            state_hash: StateRootHash {
+                round: genesis_round,
+                root_hash: Default::default(),
+            },
             nodeid: NodeId(my_pubkey),
 
             keypair,

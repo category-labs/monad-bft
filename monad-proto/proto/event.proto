@@ -31,11 +31,17 @@ message ProtoFetchedTxs {
   monad_proto.block.ProtoTransactionList txns = 5;
 }
 
+message ProtoStateUpdate {
+  monad_proto.basic.ProtoRound round = 1;
+  monad_proto.basic.ProtoHash root_hash = 2;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
+    ProtoStateUpdate state_update = 4;
   }
 }
 
