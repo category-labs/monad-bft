@@ -4592,6 +4592,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-consensus-state"
+version = "0.1.0"
+dependencies = [
+ "itertools",
+ "monad-blocktree",
+ "monad-consensus",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-testutil",
+ "monad-types",
+ "monad-validator",
+ "test-case",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
@@ -4805,6 +4822,7 @@ dependencies = [
  "itertools",
  "monad-blocktree",
  "monad-consensus",
+ "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",

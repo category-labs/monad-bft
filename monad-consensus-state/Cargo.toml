@@ -1,0 +1,20 @@
+[package]
+name = "monad-consensus-state"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-blocktree = { path = "../monad-blocktree" }
+monad-consensus = { path = "../monad-consensus" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-executor = { path = "../monad-executor" }
+monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
+
+[dev-dependencies]
+monad-testutil = { path = "../monad-testutil"}
+
+itertools = { workspace = true }
+test-case = { workspace = true }
+tracing-subscriber = { workspace = true }
