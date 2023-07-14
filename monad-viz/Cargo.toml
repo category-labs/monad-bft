@@ -9,12 +9,14 @@ bench = false
 
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
+monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
 iced = { version = "0.9", features = ["canvas"] }

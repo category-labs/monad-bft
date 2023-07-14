@@ -13,7 +13,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{secp256k1::KeyPair, Signature};
 use monad_types::{NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 pub struct ProposalGen<S, T> {
     round: Round,
@@ -36,10 +36,11 @@ where
         }
     }
 
-    pub fn next_proposal<L: LeaderElection>(
+    pub fn next_proposal<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         keys: &Vec<KeyPair>,
-        valset: &mut ValidatorSet<L>,
+        valset: &VT,
+        election: &LT,
         payload: &TransactionList,
     ) -> Verified<T::SignatureType, ProposalMessage<T::SignatureType, T>> {
         // high_qc is the highest qc seen in a proposal
@@ -53,7 +54,7 @@ where
 
         let leader_key = keys
             .iter()
-            .find(|k| k.pubkey() == valset.get_leader(self.round).0)
+            .find(|k| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
             .expect("key not in valset");
 
         let block = Block::new::<Sha256Hash>(NodeId(leader_key.pubkey()), self.round, payload, qc);
@@ -74,10 +75,10 @@ where
     // to ensure that the consensus state is consistent with the ProposalGen state
     // call state.pacemaker.handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
     // before adding the state's key to keys
-    pub fn next_tc<L: LeaderElection>(
+    pub fn next_tc<VT: ValidatorSetType>(
         &mut self,
         keys: &Vec<KeyPair>,
-        valset: &mut ValidatorSet<L>,
+        valset: &VT,
     ) -> Vec<Verified<T::SignatureType, TimeoutMessage<S, T>>> {
         let node_ids = keys
             .iter()

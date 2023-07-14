@@ -3,6 +3,7 @@ mod tests {
     use std::{fs::create_dir_all, time::Duration};
 
     use futures::StreamExt;
+    use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
         multi_sig::MultiSig, quorum_certificate::genesis_vote_info,
         transaction_validator::MockValidator, validation::Sha256Hash,
@@ -14,6 +15,7 @@ mod tests {
     };
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
+    use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
     use monad_wal::{
         mock::{MockWALogger, MockWALoggerConfig},
         PersistenceLogger,
@@ -23,7 +25,13 @@ mod tests {
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type TransactionValidatorType = MockValidator;
-    type S = MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>;
+    type S = MonadState<
+        ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+        SignatureType,
+        SignatureCollectionType,
+        ValidatorSet,
+        SimpleRoundRobin,
+    >;
     type PersistenceLoggerType = MockWALogger<<S as State>::Event>;
 
     #[tokio::test]

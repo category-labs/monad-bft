@@ -9,11 +9,11 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     command::{ConsensusCommand, FetchedFullTxs, FetchedTxs},
-    ConsensusState,
+    ConsensusProcess,
 };
 use monad_consensus_types::{
     block::Block, quorum_certificate::QuorumCertificate, signature::SignatureCollection,
-    transaction_validator::TransactionValidator, validation::Sha256Hash, voting::VoteInfo,
+    validation::Sha256Hash, voting::VoteInfo,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -24,7 +24,7 @@ use monad_executor::{
     TimerCommand,
 };
 use monad_types::{NodeId, Stake};
-use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 
 #[cfg(feature = "proto")]
@@ -32,31 +32,32 @@ pub mod convert;
 
 mod message;
 
-type LeaderElectionType = WeightedRoundRobin;
 type HasherType = Sha256Hash;
 
-pub struct MonadState<ST, SCT, TV>
+pub struct MonadState<CT, ST, SCT, VT, LT>
 where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
-    consensus_state: ConsensusState<ST, SCT, TV>,
-    validator_set: ValidatorSet<LeaderElectionType>,
+    consensus: CT,
+    validator_set: VT,
+    leader_election: LT,
 }
 
-impl<ST, SCT, TV> MonadState<ST, SCT, TV>
+impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
 where
+    CT: ConsensusProcess<ST, SCT>,
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     pub fn pubkey(&self) -> PubKey {
-        self.consensus_state.nodeid.0
+        self.consensus.get_pubkey()
     }
 
     pub fn blocktree(&self) -> &BlockTree<SCT> {
-        &self.consensus_state.pending_block_tree
+        self.consensus.blocktree()
     }
 }
 
@@ -196,13 +197,15 @@ pub struct MonadConfig<SCT, TV> {
     pub genesis_signatures: SCT,
 }
 
-impl<ST, SCT, TV> State for MonadState<ST, SCT, TV>
+impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
 where
+    CT: ConsensusProcess<ST, SCT>,
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
-    TV: TransactionValidator,
+    VT: ValidatorSetType,
+    LT: LeaderElection,
 {
-    type Config = MonadConfig<SCT, TV>;
+    type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
@@ -223,15 +226,15 @@ where
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set =
-            ValidatorSet::new(validator_list.clone()).expect("initial validator set init failed");
+        let val_set = VT::new(validator_list.clone()).expect("initial validator set init failed");
+        let election = LT::new();
 
         let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
             config.genesis_vote_info,
             config.genesis_signatures,
         );
 
-        let mut monad_state: MonadState<ST, SCT, TV> = Self {
+        let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             message_state: MessageState::new(
                 10,
                 validator_list
@@ -240,7 +243,8 @@ where
                     .collect(),
             ),
             validator_set: val_set,
-            consensus_state: ConsensusState::new(
+            leader_election: election,
+            consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
                 config.genesis_block,
@@ -265,23 +269,18 @@ where
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(pacemaker_expire) => self
-                        .consensus_state
-                        .pacemaker
-                        .handle_event(
-                            &mut self.consensus_state.safety,
-                            &self.consensus_state.high_qc,
-                            pacemaker_expire,
-                        )
+                        .consensus
+                        .handle_timeout_expiry(pacemaker_expire)
                         .into_iter()
                         .map(Into::into)
                         .collect(),
                     ConsensusEvent::FetchedTxs(fetched) => {
-                        assert_eq!(fetched.node_id, self.consensus_state.nodeid);
+                        assert_eq!(fetched.node_id, self.consensus.get_nodeid());
 
                         let mut cmds = vec![ConsensusCommand::FetchTxsReset];
 
                         // make sure we're still in same round
-                        if fetched.round == self.consensus_state.pacemaker.get_current_round() {
+                        if fetched.round == self.consensus.get_current_round() {
                             let b = Block::new::<HasherType>(
                                 fetched.node_id,
                                 fetched.round,
@@ -306,12 +305,13 @@ where
                         let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
 
                         cmds.extend(
-                            self.consensus_state
-                                .handle_proposal_message_full::<HasherType, LeaderElectionType>(
+                            self.consensus
+                                .handle_proposal_message_full::<HasherType, _, _>(
                                     fetched_txs.author,
                                     fetched_txs.p,
                                     fetched_txs.txns,
-                                    &mut self.validator_set,
+                                    &self.validator_set,
+                                    &self.leader_election,
                                 ),
                         );
 
@@ -330,24 +330,24 @@ where
                         let (author, signature, verified_message) = verified_message.destructure();
                         match verified_message {
                             ConsensusMessage::Proposal(msg) => self
-                                .consensus_state
-                                .handle_proposal_message::<HasherType, LeaderElectionType>(
-                                author, msg,
-                            ),
-                            ConsensusMessage::Vote(msg) => self
-                                .consensus_state
-                                .handle_vote_message::<HasherType, LeaderElectionType>(
+                                .consensus
+                                .handle_proposal_message::<HasherType>(author, msg),
+                            ConsensusMessage::Vote(msg) => {
+                                self.consensus.handle_vote_message::<HasherType, _, _>(
                                     author,
                                     signature,
                                     msg,
-                                    &mut self.validator_set,
-                                ),
+                                    &self.validator_set,
+                                    &self.leader_election,
+                                )
+                            }
                             ConsensusMessage::Timeout(msg) => {
-                                self.consensus_state.handle_timeout_message::<_>(
+                                self.consensus.handle_timeout_message::<_, _>(
                                     author,
                                     signature,
                                     msg,
-                                    &mut self.validator_set,
+                                    &self.validator_set,
+                                    &self.leader_election,
                                 )
                             }
                         }
@@ -359,7 +359,7 @@ where
                     match consensus_command {
                         ConsensusCommand::Publish { target, message } => {
                             let message = VerifiedMonadMessage(
-                                message.sign::<HasherType>(&self.consensus_state.keypair),
+                                message.sign::<HasherType>(self.consensus.get_keypair()),
                             );
                             let publish_action = self.message_state.send(target, message);
                             let id = Self::Message::from(publish_action.message.clone()).id();

@@ -1,5 +1,5 @@
 use monad_crypto::secp256k1::KeyPair;
-use monad_types::{NodeId, Round, Stake};
+use monad_types::{NodeId, Round};
 use monad_validator::leader_election::LeaderElection;
 
 pub struct MockLeaderElection {
@@ -16,15 +16,7 @@ impl LeaderElection for MockLeaderElection {
         }
     }
 
-    fn start_new_epoch(&mut self, _voting_powers: Vec<(NodeId, Stake)>) {}
-
-    fn increment_view(&mut self, _view: Round) {}
-
-    fn get_leader(&self) -> &NodeId {
-        &self.leader
-    }
-
-    fn update_voting_power(&mut self, _addr: &NodeId, _new_voting_power: Stake) -> bool {
-        true
+    fn get_leader(&self, _round: Round, _validator_list: &[NodeId]) -> NodeId {
+        self.leader
     }
 }

@@ -7,7 +7,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::Signature;
 use monad_types::{NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{
     messages::message::TimeoutMessage,
@@ -128,9 +128,9 @@ where
     }
 
     #[must_use]
-    pub fn process_remote_timeout<L: LeaderElection>(
+    pub fn process_remote_timeout<VST: ValidatorSetType>(
         &mut self,
-        validators: &ValidatorSet<L>,
+        validators: &VST,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<T>,
         author: NodeId,
@@ -149,7 +149,7 @@ where
         self.pending_timeouts
             .insert(author, (tmo.clone(), signature));
 
-        let timeouts = self.pending_timeouts.keys().copied().collect();
+        let timeouts: Vec<NodeId> = self.pending_timeouts.keys().copied().collect();
 
         if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
             // self.local_timeout_round emits PacemakerCommand::ScheduleReset

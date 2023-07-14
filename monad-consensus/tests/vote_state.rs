@@ -12,9 +12,9 @@ use monad_consensus_types::{
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-use monad_testutil::{signing::*, validators::MockLeaderElection};
+use monad_testutil::signing::*;
 use monad_types::{BlockId, Hash, NodeId, Round, Stake};
-use monad_validator::validator_set::ValidatorSet;
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 use test_case::test_case;
 
 fn create_signed_vote_message(
@@ -45,7 +45,7 @@ fn setup_ctx(
     num_nodes: u32,
 ) -> (
     Vec<KeyPair>,
-    ValidatorSet<MockLeaderElection>,
+    ValidatorSet,
     Vec<Verified<SecpSignature, VoteMessage>>,
 ) {
     let keys = create_keys(num_nodes);
@@ -55,7 +55,7 @@ fn setup_ctx(
         nodes.push((NodeId(keys[i as usize].pubkey()), Stake(1)));
     }
 
-    let valset = ValidatorSet::<MockLeaderElection>::new(nodes).unwrap();
+    let valset = ValidatorSet::new(nodes).unwrap();
 
     let mut votes = Vec::new();
     for i in 0..num_nodes {
@@ -98,12 +98,8 @@ fn test_votes(num_nodes: u32) {
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
-        let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
-            v.author(),
-            v.author_signature(),
-            v,
-            &valset,
-        );
+        let qc =
+            voteset.process_vote::<_, Sha256Hash>(v.author(), v.author_signature(), v, &valset);
         qcs.push(qc);
     }
     let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
@@ -128,12 +124,8 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
     for k in 0..num_rounds {
         for i in 0..num_nodes {
             let v = &votes[i as usize];
-            let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
-                v.author(),
-                v.author_signature(),
-                v,
-                &valset,
-            );
+            let qc =
+                voteset.process_vote::<_, Sha256Hash>(v.author(), v.author_signature(), v, &valset);
             qcs.push(qc);
         }
 
@@ -160,12 +152,8 @@ fn test_minority(num_nodes: u32) {
 
     for i in 0..majority - 1 {
         let v = &votes[i as usize];
-        let qc = voteset.process_vote::<MockLeaderElection, Sha256Hash>(
-            v.author(),
-            v.author_signature(),
-            v,
-            &valset,
-        );
+        let qc =
+            voteset.process_vote::<_, Sha256Hash>(v.author(), v.author_signature(), v, &valset);
         qcs.push(qc);
     }
 

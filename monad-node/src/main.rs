@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use futures_util::{FutureExt, StreamExt};
+use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
@@ -24,6 +25,7 @@ use monad_executor::{
 };
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::{event, instrument::WithSubscriber, Level};
@@ -33,8 +35,13 @@ type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
-type MonadState =
-    monad_state::MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>;
+type MonadState = monad_state::MonadState<
+    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    SignatureType,
+    SignatureCollectionType,
+    ValidatorSet,
+    SimpleRoundRobin,
+>;
 type MonadConfig = <MonadState as State>::Config;
 
 pub struct Config {

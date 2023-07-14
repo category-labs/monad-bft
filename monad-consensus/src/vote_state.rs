@@ -6,7 +6,7 @@ use monad_consensus_types::{
     validation::Hasher,
 };
 use monad_types::{Hash, NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSetType;
 
 use crate::messages::message::VoteMessage;
 
@@ -28,18 +28,18 @@ impl<T> Default for VoteState<T> {
     }
 }
 
-impl<T> VoteState<T>
+impl<SCT> VoteState<SCT>
 where
-    T: SignatureCollection,
+    SCT: SignatureCollection,
 {
     #[must_use]
-    pub fn process_vote<V: LeaderElection, H: Hasher>(
+    pub fn process_vote<VT: ValidatorSetType, H: Hasher>(
         &mut self,
         author: &NodeId,
-        signature: &T::SignatureType,
+        signature: &SCT::SignatureType,
         v: &VoteMessage,
-        validators: &ValidatorSet<V>,
-    ) -> Option<QuorumCertificate<T>> {
+        validators: &VT,
+    ) -> Option<QuorumCertificate<SCT>> {
         let round = v.vote_info.round;
 
         if self.qc_created.contains(&round) {
@@ -56,14 +56,14 @@ where
         let round_pending_votes = self.pending_votes.entry(round).or_insert(HashMap::new());
         let pending_entry = round_pending_votes
             .entry(vote_idx)
-            .or_insert((T::new(), HashSet::new()));
+            .or_insert((SCT::new(), HashSet::new()));
 
         pending_entry.0.add_signature(*signature);
         pending_entry.1.insert(*author);
 
         if validators.has_super_majority_votes(&pending_entry.1) {
             assert!(!self.qc_created.contains(&round));
-            let qc = QuorumCertificate::<T>::new(
+            let qc = QuorumCertificate::<SCT>::new(
                 QcInfo {
                     vote: v.vote_info,
                     ledger_commit: v.ledger_commit_info,
@@ -89,17 +89,14 @@ mod test {
         ledger::LedgerCommitInfo, multi_sig::MultiSig, validation::Sha256Hash, voting::VoteInfo,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_testutil::{
-        signing::{get_key, *},
-        validators::MockLeaderElection,
-    };
+    use monad_testutil::signing::{get_key, *};
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
-    use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
+    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::VoteState;
     use crate::{messages::message::VoteMessage, validation::signing::Verified};
 
-    fn create_valset(num_nodes: u32) -> (Vec<KeyPair>, ValidatorSet<MockLeaderElection>) {
+    fn create_valset(num_nodes: u32) -> (Vec<KeyPair>, ValidatorSet) {
         let keys = create_keys(num_nodes);
 
         let mut nodes = Vec::new();
@@ -107,7 +104,7 @@ mod test {
             nodes.push((NodeId(keys[i as usize].pubkey()), Stake(1)));
         }
 
-        let valset = ValidatorSet::<MockLeaderElection>::new(nodes).unwrap();
+        let valset = ValidatorSet::new(nodes).unwrap();
         (keys, valset)
     }
 
@@ -232,7 +229,7 @@ mod test {
         let svm = Verified::new::<Sha256Hash>(vm, &keypair);
 
         // add a valid vote message
-        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(
+        let _ = vote_state.process_vote::<_, Sha256Hash>(
             svm.author(),
             svm.author_signature(),
             &svm,
@@ -266,7 +263,7 @@ mod test {
             ),
         };
         let invalid_svm = Verified::new::<Sha256Hash>(invalid_vm, &keypair);
-        let _ = vote_state.process_vote::<WeightedRoundRobin, Sha256Hash>(
+        let _ = vote_state.process_vote::<_, Sha256Hash>(
             invalid_svm.author(),
             invalid_svm.author_signature(),
             &invalid_svm,

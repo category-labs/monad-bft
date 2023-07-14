@@ -3,12 +3,10 @@ use std::{
     time::Duration,
 };
 
+use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    multi_sig::MultiSig,
-    quorum_certificate::genesis_vote_info,
-    signature::SignatureCollection,
-    transaction_validator::{MockValidator, TransactionValidator},
-    validation::Sha256Hash,
+    multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
+    transaction_validator::MockValidator, validation::Sha256Hash,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -21,6 +19,11 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
+use monad_validator::{
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetType},
+};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
     PersistenceLogger,
@@ -33,7 +36,13 @@ use crate::signing::{create_keys, get_genesis_config};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
-type MS = MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>;
+type MS = MonadState<
+    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    SignatureType,
+    SignatureCollectionType,
+    ValidatorSet,
+    SimpleRoundRobin,
+>;
 type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
 type MM = <MS as State>::Message;
 type PersistenceLoggerType =
@@ -142,16 +151,18 @@ pub fn get_configs<SCT: SignatureCollection>(
 }
 
 pub fn node_ledger_verification<
+    CT: ConsensusProcess<ST, SCT>,
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
+    VT: ValidatorSetType,
+    LT: LeaderElection,
     PL: PersistenceLogger,
-    TV: TransactionValidator,
 >(
     states: &BTreeMap<
         PeerId,
         (
-            MockExecutor<MonadState<ST, SCT, TV>>,
-            MonadState<ST, SCT, TV>,
+            MockExecutor<MonadState<CT, ST, SCT, VT, LT>>,
+            MonadState<CT, ST, SCT, VT, LT>,
             PL,
         ),
     >,

@@ -3,9 +3,7 @@ use std::{
     error, fmt,
 };
 
-use monad_types::{NodeId, Round, Stake};
-
-use super::leader_election::LeaderElection;
+use monad_types::{NodeId, Stake};
 
 pub type Result<T> = std::result::Result<T, ValidatorSetError>;
 
@@ -28,17 +26,28 @@ impl error::Error for ValidatorSetError {
     }
 }
 
-#[derive(Debug)]
-pub struct ValidatorSet<T: LeaderElection> {
-    validators: HashMap<NodeId, Stake>,
-    validator_list: Vec<NodeId>,
-    leader_election: T,
-    total_stake: Stake,
-    round: Round, // monotonically increasing: initial 1
+pub trait ValidatorSetType {
+    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self>
+    where
+        Self: Sized;
+    fn get_members(&self) -> &HashMap<NodeId, Stake>;
+    fn get_list(&self) -> &Vec<NodeId>;
+    fn is_member(&self, addr: &NodeId) -> bool;
+    fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
+    where
+        I: IntoIterator<Item = &'a NodeId>;
+    fn has_honest_vote(&self, addrs: &[NodeId]) -> bool;
 }
 
-impl<T: LeaderElection> ValidatorSet<T> {
-    pub fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self> {
+#[derive(Debug)]
+pub struct ValidatorSet {
+    validators: HashMap<NodeId, Stake>,
+    validator_list: Vec<NodeId>,
+    total_stake: Stake,
+}
+
+impl ValidatorSetType for ValidatorSet {
+    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self> {
         let mut vmap = HashMap::new();
         let mut vlist = Vec::new();
         for (node_id, stake) in validators.into_iter() {
@@ -54,28 +63,28 @@ impl<T: LeaderElection> ValidatorSet<T> {
 
         vlist.sort();
 
-        let mut election = T::new();
-        election.start_new_epoch(vmap.iter().map(|(k, v)| (*k, *v)).collect());
         let total_stake: Stake = vmap.values().copied().sum();
 
         Ok(ValidatorSet {
             validators: vmap,
             validator_list: vlist,
-            leader_election: election,
             total_stake,
-            round: Round(1),
         })
     }
 
-    pub fn get_members(&self) -> &HashMap<NodeId, Stake> {
+    fn get_members(&self) -> &HashMap<NodeId, Stake> {
         &self.validators
     }
 
-    pub fn is_member(&self, addr: &NodeId) -> bool {
+    fn get_list(&self) -> &Vec<NodeId> {
+        &self.validator_list
+    }
+
+    fn is_member(&self, addr: &NodeId) -> bool {
         self.validators.contains_key(addr)
     }
 
-    pub fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
+    fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
     where
         I: IntoIterator<Item = &'a NodeId>,
     {
@@ -91,7 +100,7 @@ impl<T: LeaderElection> ValidatorSet<T> {
         voter_stake >= Stake(self.total_stake.0 * 2 / 3 + 1)
     }
 
-    pub fn has_honest_vote(&self, addrs: &Vec<NodeId>) -> bool {
+    fn has_honest_vote(&self, addrs: &[NodeId]) -> bool {
         assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
         addrs
             .iter()
@@ -99,33 +108,15 @@ impl<T: LeaderElection> ValidatorSet<T> {
             .sum::<Stake>()
             >= Stake(self.total_stake.0 / 3 + 1)
     }
-
-    pub fn get_leader(&mut self, round: Round) -> &NodeId {
-        // FIXME switch back to weighted round robin
-        // let mut validators = self.validators.iter().collect::<Vec<_>>();
-        // validators.sort_by_key(|(pubkey, _)| *pubkey);
-        &self.validator_list[round.0 as usize % self.validators.len()]
-        // validators[round.0 as usize % self.validators.len()].0
-        // if round < self.round {
-        //     panic!("round reversed {:?}->{:?}", self.round, round);
-        // }
-        // if round > self.round {
-        //     self.leader_election.increment_view(round - self.round);
-        // }
-        // self.leader_election.get_leader()
-    }
-    // fn udpate_stake(&mut self, validator: Validator) -> bool {}
-    // fn udpate_validators(&mut self, validators: Vec<Validator>) {}
 }
 
 #[cfg(test)]
 mod test {
-
     use monad_crypto::secp256k1::KeyPair;
-    use monad_types::{NodeId, Round, Stake};
+    use monad_types::{NodeId, Stake};
 
     use super::ValidatorSet;
-    use crate::weighted_round_robin::WeightedRoundRobin;
+    use crate::validator_set::ValidatorSetType;
 
     #[test]
     fn test_membership() {
@@ -142,10 +133,10 @@ mod test {
         );
 
         let validators_duplicate = vec![v1, v1_];
-        let _vs_err = ValidatorSet::<WeightedRoundRobin>::new(validators_duplicate).unwrap_err();
+        let _vs_err = ValidatorSet::new(validators_duplicate).unwrap_err();
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        let vs = ValidatorSet::new(validators).unwrap();
         assert!(vs.is_member(&NodeId(keypair1.pubkey())));
 
         let mut pkey3: [u8; 32] = [102; 32];
@@ -170,7 +161,7 @@ mod test {
         let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        let vs = ValidatorSet::new(validators).unwrap();
         assert!(vs.has_super_majority_votes(&vec![v2.0]));
         assert!(!vs.has_super_majority_votes(&vec![v1.0]));
         assert!(vs.has_super_majority_votes(&vec![v2.0, NodeId(pubkey3)]));
@@ -191,25 +182,8 @@ mod test {
         );
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
+        let vs = ValidatorSet::new(validators).unwrap();
         assert!(!vs.has_honest_vote(&vec![v1.0]));
         assert!(vs.has_honest_vote(&vec![v2.0]));
-    }
-
-    #[test]
-    fn test_get_leader() {
-        let mut pkey1: [u8; 32] = [100; 32];
-        let pubkey1 = KeyPair::from_bytes(&mut pkey1).unwrap().pubkey();
-        let v1 = (NodeId(pubkey1), Stake(1));
-
-        let mut pkey2: [u8; 32] = [101; 32];
-        let pubkey2 = KeyPair::from_bytes(&mut pkey2).unwrap().pubkey();
-        let v2 = (NodeId(pubkey2), Stake(1));
-
-        let validators = vec![v1, v2];
-        let mut vs = ValidatorSet::<WeightedRoundRobin>::new(validators).unwrap();
-        assert_eq!(vs.get_leader(Round(1)), &NodeId(pubkey2));
-        assert_eq!(vs.get_leader(Round(3)), &NodeId(pubkey2));
-        assert_eq!(vs.get_leader(Round(4)), &NodeId(pubkey1));
     }
 }

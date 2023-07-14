@@ -21,6 +21,7 @@ use iced::{
     },
     Application, Color, Command, Event, Length, Settings, Theme, Vector,
 };
+use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block, multi_sig::MultiSig, transaction_validator::MockValidator,
 };
@@ -31,6 +32,7 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadEvent, MonadState};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::MockWALogger,
     wal::{WALogger, WALoggerConfig},
@@ -48,7 +50,13 @@ type NS<'a> = NodeState<
     monad_state::MonadMessage<SignatureType, SignatureCollectionType>,
     MonadEvent<SignatureType, SignatureCollectionType>,
 >;
-type MS = MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>;
+type MS = MonadState<
+    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    SignatureType,
+    SignatureCollectionType,
+    ValidatorSet,
+    SimpleRoundRobin,
+>;
 type MM = <MS as State>::Message;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
@@ -119,7 +127,17 @@ impl Application for Viz {
             }
             let simulation = {
                 ReplayNodesSimulation::<
-                    MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+                    MonadState<
+                        ConsensusState<
+                            SignatureType,
+                            SignatureCollectionType,
+                            TransactionValidatorType,
+                        >,
+                        SignatureType,
+                        SignatureCollectionType,
+                        ValidatorSet,
+                        SimpleRoundRobin,
+                    >,
                     _,
                 >::new(config, replay_events)
             };
@@ -142,7 +160,17 @@ impl Application for Viz {
             };
             let simulation = {
                 NodesSimulation::<
-                    MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+                    MonadState<
+                        ConsensusState<
+                            SignatureType,
+                            SignatureCollectionType,
+                            TransactionValidatorType,
+                        >,
+                        SignatureType,
+                        SignatureCollectionType,
+                        ValidatorSet,
+                        SimpleRoundRobin,
+                    >,
                     _,
                     _,
                     _,

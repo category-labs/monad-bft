@@ -3,6 +3,7 @@
 mod test {
     use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
+    use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
     use monad_crypto::secp256k1::SecpSignature;
     use monad_executor::{
@@ -11,6 +12,7 @@ mod test {
     };
     use monad_state::{MonadEvent, MonadState};
     use monad_testutil::swarm::{get_configs, node_ledger_verification};
+    use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
     use monad_wal::wal::{WALogger, WALoggerConfig};
     use tempfile::tempdir;
 
@@ -50,7 +52,13 @@ mod test {
             .collect::<Vec<_>>();
 
         let mut nodes = Nodes::<
-            MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+            MonadState<
+                ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+                SignatureType,
+                SignatureCollectionType,
+                ValidatorSet,
+                SimpleRoundRobin,
+            >,
             _,
             WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         >::new(
@@ -103,12 +111,19 @@ mod test {
             .map(|((a, b), c)| (a, b, c))
             .collect::<Vec<_>>();
 
-        let mut nodes_recovered =
-            Nodes::<
-                MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
-                _,
-                WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
-            >::new(peers_clone, LatencyTransformer(Duration::from_millis(1)));
+        let mut nodes_recovered = Nodes::<
+            MonadState<
+                ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+                SignatureType,
+                SignatureCollectionType,
+                ValidatorSet,
+                SimpleRoundRobin,
+            >,
+            _,
+            WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
+        >::new(
+            peers_clone, LatencyTransformer(Duration::from_millis(1))
+        );
 
         let node_ledger_recovered = nodes_recovered
             .states()
