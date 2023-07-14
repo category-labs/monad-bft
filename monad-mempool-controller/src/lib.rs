@@ -48,8 +48,8 @@ pub struct ControllerConfig {
     local_mempool: bool,
 }
 
-impl ControllerConfig {
-    pub fn default() -> Self {
+impl Default for ControllerConfig {
+    fn default() -> Self {
         Self {
             checker_config: CheckerConfig::default(),
             messenger_config: MessengerConfig::default(),
@@ -61,7 +61,9 @@ impl ControllerConfig {
             local_mempool: false,
         }
     }
+}
 
+impl ControllerConfig {
     pub fn with_checker_config(mut self, checker_config: CheckerConfig) -> Self {
         self.checker_config = checker_config;
         self
@@ -139,7 +141,7 @@ impl Controller {
     pub fn get_sender(&mut self) -> Result<mpsc::Sender<String>, ControllerError> {
         self.tx_sender
             .as_ref()
-            .map(|sender| sender.clone())
+            .cloned()
             .ok_or(ControllerError::NotStartedError)
     }
 
@@ -184,8 +186,10 @@ impl Controller {
     }
 
     pub fn create_proposal(&self) -> Vec<ethers::types::Bytes> {
-        let mut pool = self.pool.lock().unwrap();
-        return pool.create_proposal(self.local_mempool);
+        self.pool
+            .lock()
+            .unwrap()
+            .create_proposal(self.local_mempool)
     }
 
     fn listen_server(&self, mut tx_receiver: mpsc::Receiver<String>) -> impl Future<Output = ()> {
@@ -221,7 +225,7 @@ impl Controller {
                     lock.push(priority_tx);
                     lock.len()
                 };
-                if !local_mempool && new_len >= tx_threshold as usize {
+                if !local_mempool && new_len >= tx_threshold {
                     if let Err(e) =
                         Self::broadcast_tx_batch(&pending_tx_batch, &messenger_sender).await
                     {
@@ -313,8 +317,8 @@ impl Controller {
         Ok(())
     }
 
-    fn calculate_batch_hash(txs: &Vec<PriorityTx>) -> H256 {
-        let tx_hashes: Vec<u8> = txs.iter().map(|tx| tx.hash.clone()).flatten().collect();
+    fn calculate_batch_hash(txs: &[PriorityTx]) -> H256 {
+        let tx_hashes: Vec<u8> = txs.iter().flat_map(|tx| tx.hash.clone()).collect();
         hash_message(tx_hashes)
     }
 

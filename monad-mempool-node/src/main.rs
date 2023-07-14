@@ -31,7 +31,6 @@ mod test {
         types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest},
     };
     use monad_mempool_controller::{Controller, ControllerConfig};
-    use monad_mempool_types::tx::PriorityTx;
     use oorandom::Rand32;
 
     const NUM_CONTROLLER: u16 = 4;

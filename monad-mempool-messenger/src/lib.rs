@@ -20,14 +20,16 @@ pub struct MessengerConfig {
     port: u16,
 }
 
-impl MessengerConfig {
-    pub fn default() -> Self {
+impl Default for MessengerConfig {
+    fn default() -> Self {
         Self {
             local_key: Keypair::generate_ed25519(),
             port: 0,
         }
     }
+}
 
+impl MessengerConfig {
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self

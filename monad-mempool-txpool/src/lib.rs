@@ -41,14 +41,16 @@ pub struct PoolConfig {
     block_tx_limit: usize,
 }
 
-impl PoolConfig {
-    pub fn default() -> Self {
+impl Default for PoolConfig {
+    fn default() -> Self {
         Self {
             ttl_duration: Duration::from_secs(120),
             block_tx_limit: 10000,
         }
     }
+}
 
+impl PoolConfig {
     pub fn new(ttl_duration: Duration, block_tx_limit: usize) -> Self {
         Self {
             ttl_duration,
@@ -81,6 +83,7 @@ impl Pool {
             self.map.remove(tx_hash);
         }
 
+        #[allow(clippy::mutable_key_type)]
         let set = tx_hashes.into_iter().collect::<HashSet<_>>();
         self.pq = self
             .pq
@@ -217,8 +220,9 @@ mod test {
 
         // Create 2 batches of transactions + 1 extra tx, with the second batch having a higher priority
         let mut txs = create_priority_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
-        for i in TX_BATCH_SIZE..TX_BATCH_SIZE * 2 {
-            txs[i].priority = -1;
+
+        for tx in txs.iter_mut().take(TX_BATCH_SIZE * 2).skip(TX_BATCH_SIZE) {
+            tx.priority = -1;
         }
 
         for tx in &txs {

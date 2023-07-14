@@ -47,14 +47,16 @@ pub struct CheckerConfig {
     skip_check_tx: bool,
 }
 
-impl CheckerConfig {
-    pub fn default() -> Self {
+impl Default for CheckerConfig {
+    fn default() -> Self {
         Self {
             gas_limit: BLOCK_GAS_LIMIT.into(),
             skip_check_tx: false,
         }
     }
+}
 
+impl CheckerConfig {
     pub fn with_gas_limit(mut self, gas_limit: U256) -> Self {
         self.gas_limit = gas_limit;
         self
@@ -83,8 +85,8 @@ impl Checker {
     pub fn check_priority_tx(&self, priority_tx: &PriorityTx) -> Result<(), CheckerError> {
         let rlp = rlp::Rlp::new(priority_tx.rlpdata.as_slice());
         // This also ensures that sender is valid by recovering it from the signature
-        let (tx, signature) = TypedTransaction::decode_signed(&rlp)
-            .map_err(|e| CheckerError::TransactionDecodeError(e))?;
+        let (tx, signature) =
+            TypedTransaction::decode_signed(&rlp).map_err(CheckerError::TransactionDecodeError)?;
 
         if !self.skip_check_tx {
             if priority_tx.hash != tx.hash(&signature).as_bytes() {
@@ -156,8 +158,7 @@ pub fn intrinsic_gas(
         let nz_gas = u64::checked_mul(nz, nz_gas_cost).ok_or(CheckerError::GasOverflowError)?;
         gas = u64::checked_add(gas, nz_gas).ok_or(CheckerError::GasOverflowError)?;
 
-        let z_gas =
-            u64::checked_mul(z, TX_ZERO_DATA_COST as u64).ok_or(CheckerError::GasOverflowError)?;
+        let z_gas = u64::checked_mul(z, TX_ZERO_DATA_COST).ok_or(CheckerError::GasOverflowError)?;
         gas = u64::checked_add(gas, z_gas).ok_or(CheckerError::GasOverflowError)?;
     }
 
@@ -203,11 +204,11 @@ mod test {
             priority: 0,
         };
 
-        return priority_tx;
+        priority_tx
     }
 
     fn create_valid_tx(gas: Option<U256>, data: Option<Vec<u8>>) -> TypedTransaction {
-        let tx = TransactionRequest::new()
+        TransactionRequest::new()
             .to("0xc582768697b4a6798f286a03A2A774c8743163BB"
                 .parse::<Address>()
                 .unwrap())
@@ -217,9 +218,7 @@ mod test {
             .data(data.unwrap_or(vec![]))
             .nonce(1)
             .chain_id(15446)
-            .into();
-
-        return tx;
+            .into()
     }
 
     #[test]
