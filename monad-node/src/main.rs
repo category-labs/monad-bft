@@ -27,7 +27,7 @@ use monad_executor::{
     },
     Executor, State,
 };
-use monad_p2p::{Auth, Multiaddr};
+use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
 use tracing::instrument::WithSubscriber;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -47,7 +47,6 @@ pub struct Config {
     pub bind_address: Multiaddr,
     pub libp2p_timeout: Duration,
     pub libp2p_keepalive: Duration,
-    pub libp2p_auth: Auth,
 
     pub genesis_peers: Vec<(Multiaddr, PubKey)>,
     pub delta: Duration,
@@ -92,6 +91,7 @@ fn make_provider(
 #[tokio::main]
 async fn main() {
     // tracing_subscriber::fmt::init();
+    env_logger::init();
 
     let args = Args::parse();
 
@@ -119,7 +119,7 @@ async fn main() {
                 })
                 .collect(),
             Duration::from_secs(10),
-            Duration::from_secs(5),
+            Duration::from_secs(1),
             Duration::from_secs(60),
         )
         .map(|config| {
@@ -182,7 +182,7 @@ fn testnet(
 
     let addresses = addresses
         .into_iter()
-        .map(|(host, port)| format!("/ip4/{host}/tcp/{port}").parse().unwrap())
+        .map(|(host, port)| format!("/ip4/{host}/udp/{port}/quic-v1").parse().unwrap())
         .collect::<Vec<Multiaddr>>();
 
     let peers = addresses
@@ -233,7 +233,6 @@ fn testnet(
             bind_address,
             libp2p_timeout: delta,
             libp2p_keepalive: keepalive,
-            libp2p_auth: Auth::None,
             genesis_peers: peers.clone(),
             delta,
             genesis_block: genesis_block.clone(),
@@ -256,13 +255,16 @@ async fn run(
         config.bind_address,
         config.libp2p_timeout,
         config.libp2p_keepalive,
-        config.libp2p_auth,
     )
     .await;
     let num_nodes = config.genesis_peers.len();
     for (address, peer) in &config.genesis_peers {
         router.add_peer(&peer.into(), address.clone())
     }
+
+    // FIXME hack so all tcp sockets are bound before they try and send mesages
+    // we can delete this once we support retry at the monad-p2p executor level
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let mut executor = ParentExecutor {
         router,
@@ -284,10 +286,6 @@ async fn run(
         genesis_signatures: config.genesis_signatures,
     });
     executor.exec(init_commands);
-
-    // FIXME hack so all tcp sockets are bound before they try and send mesages
-    // we can delete this once we support retry at the monad-p2p executor level
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let total_start = Instant::now();
     let mut start = total_start;

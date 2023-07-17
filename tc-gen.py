@@ -42,11 +42,7 @@ regions = [
 #                 "up_Mbps": 100,
 #                 "down_Mbps": 100,
 #             },
-#             {
-#                 "up_Mbps": 100,
-#                 "down_Mbps": 100,
-#             },
-#         ],
+#         ] * 2,
 #     },
 # ]
 
@@ -99,7 +95,7 @@ for region_idx, region in enumerate(regions):
                 htb_qdisc,
             )
         )
-        node_ips.append(node_ip)
+        node_ips.append(node_ip + ":5000")
 
         drr_qdisc = next_class_id()
         commands.append(
@@ -159,7 +155,7 @@ for region_idx, region in enumerate(regions):
 
 commands.append("")
 commands.append("")
-commands.append("monad-node --addresses {}".format(" ".join(node_ips)))
+commands.append("monad-node -o http://jaeger:4317 --addresses {}".format(" ".join(node_ips)))
 
 for command in commands:
     print(command)

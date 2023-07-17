@@ -20,4 +20,5 @@ libp2p = { workspace = true, features = ["macros", "mplex", "noise", "plaintext"
 tracing = { workspace = true }
 
 [features]
-tokio = ["libp2p/tcp", "libp2p/tokio"]
+tokio = ["libp2p/quic", "libp2p/tokio"]
+

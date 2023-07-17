@@ -36,11 +36,6 @@ where
     peers: HashSet<monad_executor::PeerId>,
 }
 
-pub enum Auth {
-    None,
-    Noise,
-}
-
 impl<M, OM> Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
@@ -92,38 +87,11 @@ where
         address: Multiaddr,
         timeout: Duration,
         keepalive: Duration,
-        auth: Auth,
     ) -> Self {
-        use libp2p::multiaddr::Protocol;
-
-        let transport = libp2p::tcp::tokio::Transport::new(
-            libp2p::tcp::Config::new()
-                .nodelay(true)
-                .dial_bind_address(&std::net::SocketAddr::new(
-                    address
-                        .iter()
-                        .find_map(|protocol| match protocol {
-                            Protocol::Ip4(ip) => Some(ip.into()),
-                            _ => None,
-                        })
-                        .unwrap(),
-                    0,
-                )),
-        )
-        .upgrade(libp2p::core::upgrade::Version::V1Lazy);
-
-        let transport = match auth {
-            Auth::None => transport
-                .authenticate(libp2p::plaintext::PlainText2Config {
-                    local_public_key: identity.public(),
-                })
-                .multiplex(libp2p::mplex::MplexConfig::new())
-                .boxed(),
-            Auth::Noise => transport
-                .authenticate(libp2p::noise::NoiseAuthenticated::xx(&identity).unwrap())
-                .multiplex(libp2p::mplex::MplexConfig::new())
-                .boxed(),
-        };
+        use libp2p::core::muxing::StreamMuxerBox;
+        let transport = libp2p::quic::tokio::Transport::new(libp2p::quic::Config::new(&identity))
+            .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
+            .boxed();
 
         let pubkey = identity.public();
         let behavior = Behavior::new(&pubkey, timeout, keepalive);

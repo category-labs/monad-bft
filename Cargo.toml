@@ -35,8 +35,8 @@ opt-level = 1
 debug = true
 
 [workspace.dependencies]
-libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "a2a5160b" }
-libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "a2a5160b" }
+libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
+libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
 
 async-trait = "0.1"
 axum = "0.6.12"
