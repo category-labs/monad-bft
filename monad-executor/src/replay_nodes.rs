@@ -90,7 +90,12 @@ where
         node_id: &PeerId,
         tick: Duration,
         cmds: Vec<
-            Command<<S as State>::Message, <S as State>::OutboundMessage, <S as State>::Block>,
+            Command<
+                <S as State>::Message,
+                <S as State>::OutboundMessage,
+                <S as State>::Block,
+                <S as State>::TransactionCollection,
+            >,
         >,
     ) {
         let mut to_publish = Vec::new();
@@ -142,7 +147,9 @@ where
                 msg_queue.push(PendingMsg {
                     send_id: *node_id,
                     send_tick: tick,
-                    event: message.clone().event(*node_id),
+                    event: message
+                        .clone()
+                        .event::<<S as State>::TransactionCollection>(*node_id),
                     message: message.clone(),
                 });
             }

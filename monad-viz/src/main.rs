@@ -22,6 +22,7 @@ use config::{ConfigEditor, SimConfig};
 use graph::{Graph, NodeEvent, NodeState, NodesSimulation, ReplayConfig};
 use monad_crypto::NopSignature;
 
+use monad_consensus_types::transaction::MockTransactions;
 use monad_consensus_types::{block::Block, multi_sig::MultiSig};
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
@@ -37,17 +38,19 @@ use replay_graph::{RepConfig, ReplayNodesSimulation};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
+type TransactionCollection = MockTransactions;
 type NS<'a> = NodeState<
     'a,
     PeerId,
     MS,
     monad_state::MonadMessage<SignatureType, SignatureCollectionType>,
-    MonadEvent<NopSignature, MultiSig<NopSignature>>,
+    MonadEvent<SignatureType, SignatureCollectionType, TransactionCollection>,
 >;
-type MS = MonadState<SignatureType, SignatureCollectionType>;
+type MS = MonadState<SignatureType, SignatureCollectionType, TransactionCollection>;
 type MM = <MS as State>::Message;
-type PersistenceLoggerType =
-    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
+type PersistenceLoggerType = MockWALogger<
+    TimedEvent<MonadEvent<SignatureType, SignatureCollectionType, TransactionCollection>>,
+>;
 type Sim = NodesSimulation<MS, LayerTransformer<MM>, PersistenceLoggerType, SimConfig>;
 type ReplaySim = ReplayNodesSimulation<MS, RepConfig>;
 
@@ -100,7 +103,9 @@ impl Application for Viz {
                     file_path: logdir.join(format!("{:?}.log", pk)),
                 };
                 let (_, event_vec) = WALogger::<
-                    TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>,
+                    TimedEvent<
+                        MonadEvent<SignatureType, SignatureCollectionType, TransactionCollection>,
+                    >,
                 >::new(log_config)
                 .unwrap();
                 replay_events.insert(PeerId(*pk), event_vec.clone());
@@ -114,10 +119,10 @@ impl Application for Viz {
                 );
             }
             let simulation = {
-                ReplayNodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _>::new(
-                    config,
-                    replay_events,
-                )
+                ReplayNodesSimulation::<
+                    MonadState<SignatureType, SignatureCollectionType, TransactionCollection>,
+                    _,
+                >::new(config, replay_events)
             };
 
             (
@@ -137,9 +142,12 @@ impl Application for Viz {
                 ],
             };
             let simulation = {
-                NodesSimulation::<MonadState<SignatureType, SignatureCollectionType>, _, _, _>::new(
-                    config,
-                )
+                NodesSimulation::<
+                    MonadState<SignatureType, SignatureCollectionType, TransactionCollection>,
+                    _,
+                    _,
+                    _,
+                >::new(config)
             };
 
             (

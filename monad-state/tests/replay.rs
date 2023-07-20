@@ -1,6 +1,7 @@
 #[cfg(test)]
 #[cfg(feature = "proto")]
 mod test {
+    use monad_consensus_types::transaction::MockTransactions;
     use monad_testutil::swarm::{get_configs, node_ledger_verification};
     use std::collections::HashMap;
     use std::fs::create_dir_all;
@@ -17,6 +18,7 @@ mod test {
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
+    type TransactionCollectionType = MockTransactions;
 
     #[test]
     fn test_replay() {
@@ -50,9 +52,9 @@ mod test {
             .collect::<Vec<_>>();
 
         let mut nodes = Nodes::<
-            MonadState<SignatureType, SignatureCollectionType>,
+            MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>,
             _,
-            WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
+            WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType, _>>>,
         >::new(
             peers,
             XorLatencyTransformer(Duration::from_millis(u8::MAX as u64)),
@@ -105,9 +107,9 @@ mod test {
 
         let mut nodes_recovered =
             Nodes::<
-                MonadState<SignatureType, SignatureCollectionType>,
+                MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>,
                 _,
-                WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
+                WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType, _>>>,
             >::new(peers_clone, LatencyTransformer(Duration::from_millis(1)));
 
         let node_ledger_recovered = nodes_recovered

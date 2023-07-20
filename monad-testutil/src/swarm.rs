@@ -4,6 +4,7 @@ use rand_chacha::ChaChaRng;
 use std::{collections::BTreeMap, collections::HashSet, time::Duration};
 
 use crate::signing::{create_keys, get_genesis_config};
+use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
 use monad_consensus_types::{
     multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
     validation::Sha256Hash,
@@ -24,11 +25,13 @@ use monad_wal::PersistenceLogger;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
-type MS = MonadState<SignatureType, SignatureCollectionType>;
+type TransactionCollectionType = MockTransactions;
+type MS = MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>;
 type MC = MonadConfig<SignatureCollectionType>;
 type MM = <MS as State>::Message;
-type PersistenceLoggerType =
-    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
+type PersistenceLoggerType = MockWALogger<
+    TimedEvent<MonadEvent<SignatureType, SignatureCollectionType, TransactionCollectionType>>,
+>;
 
 pub enum TransformerReplayOrder {
     Forward,
@@ -134,9 +137,17 @@ pub fn get_configs<SCT: SignatureCollection>(
 pub fn node_ledger_verification<
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
+    TC: TransactionCollection,
     PL: PersistenceLogger,
 >(
-    states: &BTreeMap<PeerId, (MockExecutor<MonadState<ST, SCT>>, MonadState<ST, SCT>, PL)>,
+    states: &BTreeMap<
+        PeerId,
+        (
+            MockExecutor<MonadState<ST, SCT, TC>>,
+            MonadState<ST, SCT, TC>,
+            PL,
+        ),
+    >,
 ) {
     let num_b = states
         .values()

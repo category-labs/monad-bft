@@ -1,4 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(target_os = "linux")]
+use criterion::criterion_main;
+
+use criterion::{criterion_group, Criterion};
 use std::fs::create_dir_all;
 use tempfile::{tempdir, TempDir};
 
@@ -20,8 +23,8 @@ use monad_consensus_types::{
     voting::VoteInfo,
 };
 
+use monad_consensus_types::transaction::MockTransactions;
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-use monad_executor::PeerId;
 use monad_state::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
     block::setup_block,
@@ -34,7 +37,7 @@ use monad_wal::PersistenceLogger;
 
 const N_VALIDATORS: usize = 400;
 
-type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>>;
+type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>, MockTransactions>;
 struct MonadEventBencher {
     event: BenchEvent,
     logger: WALogger<BenchEvent>,
@@ -198,7 +201,7 @@ fn bench_timeout(c: &mut Criterion) {
 }
 
 fn bench_local_timeout(c: &mut Criterion) {
-    let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>> =
+    let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>, MockTransactions> =
         MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(PacemakerTimerExpire {}));
 
     let mut bencher = MonadEventBencher::new(event);

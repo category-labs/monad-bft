@@ -7,42 +7,67 @@ use std::{
 use crate::{Executor, MempoolCommand};
 
 use futures::Stream;
+use monad_consensus_types::transaction::TransactionCollection;
 
-pub struct MockMempool<E> {
+pub struct MockMempool<E, TC>
+where
+    TC: TransactionCollection,
+{
     fetch_txs_state: Option<Box<dyn (FnOnce(Vec<u8>) -> E) + Send + Sync>>,
+    fetch_full_txs_state: Option<Box<dyn (FnOnce(TC) -> E) + Send + Sync>>,
     waker: Option<Waker>,
 }
 
-impl<E> MockMempool<E> {
+impl<E, TC> MockMempool<E, TC>
+where
+    TC: TransactionCollection,
+{
     pub fn ready(&self) -> bool {
-        self.fetch_txs_state.is_some()
+        self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
     }
 }
 
-impl<E> Default for MockMempool<E> {
+impl<E, TC> Default for MockMempool<E, TC>
+where
+    TC: TransactionCollection,
+{
     fn default() -> Self {
         Self {
             fetch_txs_state: None,
+            fetch_full_txs_state: None,
             waker: None,
         }
     }
 }
-impl<E> Executor for MockMempool<E> {
-    type Command = MempoolCommand<E>;
+impl<E, TC> Executor for MockMempool<E, TC>
+where
+    TC: TransactionCollection,
+{
+    type Command = MempoolCommand<E, TC>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
+
         for command in commands {
-            self.fetch_txs_state = match command {
+            match command {
                 MempoolCommand::FetchTxs(cb) => {
+                    self.fetch_txs_state = Some(cb);
                     wake = true;
-                    Some(cb)
                 }
                 MempoolCommand::FetchReset => {
-                    wake = false;
-                    None
+                    self.fetch_txs_state = None;
+                    wake = self.fetch_full_txs_state.is_some();
+                }
+                MempoolCommand::FetchFullTxs(cb) => {
+                    self.fetch_full_txs_state = Some(cb);
+                    wake = true;
+                }
+                MempoolCommand::FetchFullReset => {
+                    self.fetch_full_txs_state = None;
+                    wake = self.fetch_txs_state.is_some();
                 }
             }
         }
+
         if wake {
             if let Some(waker) = self.waker.take() {
                 waker.wake();
@@ -50,9 +75,10 @@ impl<E> Executor for MockMempool<E> {
         }
     }
 }
-impl<E> Stream for MockMempool<E>
+impl<E, TC> Stream for MockMempool<E, TC>
 where
     Self: Unpin,
+    TC: TransactionCollection,
 {
     type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -60,6 +86,10 @@ where
 
         if let Some(cb) = this.fetch_txs_state.take() {
             return Poll::Ready(Some(cb(Vec::new())));
+        }
+
+        if let Some(cb) = this.fetch_full_txs_state.take() {
+            return Poll::Ready(Some(cb(TC::default())));
         }
 
         self.waker = Some(cx.waker().clone());
@@ -70,12 +100,13 @@ where
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
+    use monad_consensus_types::transaction::MockTransactions;
 
     use super::*;
 
     #[test]
     fn test_fetch() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![MempoolCommand::FetchTxs(Box::new(|_| {}))]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -83,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_double_fetch() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![MempoolCommand::FetchTxs(Box::new(|_| {}))]);
         mempool.exec(vec![MempoolCommand::FetchTxs(Box::new(|_| {}))]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
@@ -92,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![MempoolCommand::FetchTxs(Box::new(|_| {}))]);
         mempool.exec(vec![MempoolCommand::FetchReset]);
         assert!(!mempool.ready());
@@ -100,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_inline_double_fetch() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![
             MempoolCommand::FetchTxs(Box::new(|_| {})),
             MempoolCommand::FetchTxs(Box::new(|_| {})),
@@ -111,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_inline_reset() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![
             MempoolCommand::FetchTxs(Box::new(|_| {})),
             MempoolCommand::FetchReset,
@@ -121,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_inline_reset_fetch() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![
             MempoolCommand::FetchReset,
             MempoolCommand::FetchTxs(Box::new(|_| {})),
@@ -132,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_noop_exec() {
-        let mut mempool = MockMempool::default();
+        let mut mempool = MockMempool::<(), MockTransactions>::default();
         mempool.exec(vec![MempoolCommand::FetchTxs(Box::new(|_| {}))]);
         mempool.exec(Vec::new());
         assert!(futures::executor::block_on(mempool.next()).is_some());

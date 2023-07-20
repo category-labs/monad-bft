@@ -2,6 +2,7 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
+    use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
     use monad_executor::{Message, State};
     use monad_types::{Deserializable, Serializable};
     use monad_wal::wal::{WALogger, WALoggerConfig};
@@ -48,14 +49,17 @@ mod test {
     struct MockMessage;
 
     impl Message for MockMessage {
-        type Event = TestEvent;
+        type Event<TC: TransactionCollection> = TestEvent;
         type Id = i32;
 
         fn id(&self) -> Self::Id {
             0
         }
 
-        fn event(self, _from: monad_executor::PeerId) -> Self::Event {
+        fn event<TC: TransactionCollection>(
+            self,
+            _from: monad_executor::PeerId,
+        ) -> Self::Event<TC> {
             TestEvent { data: 0 }
         }
     }
@@ -72,12 +76,20 @@ mod test {
         type OutboundMessage = MockMessage;
         type Message = MockMessage;
         type Block = ();
+        type TransactionCollection = MockTransactions;
 
         fn init(
             _config: Self::Config,
         ) -> (
             Self,
-            Vec<monad_executor::Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+            Vec<
+                monad_executor::Command<
+                    Self::Message,
+                    Self::OutboundMessage,
+                    Self::Block,
+                    Self::TransactionCollection,
+                >,
+            >,
         ) {
             let state = VecState { events: Vec::new() };
             (state, Vec::new())
@@ -86,8 +98,14 @@ mod test {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<monad_executor::Command<Self::Message, Self::OutboundMessage, Self::Block>>
-        {
+        ) -> Vec<
+            monad_executor::Command<
+                Self::Message,
+                Self::OutboundMessage,
+                Self::Block,
+                Self::TransactionCollection,
+            >,
+        > {
             self.events.push(event);
             Vec::new()
         }

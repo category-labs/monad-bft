@@ -125,6 +125,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use monad_consensus_types::transaction::TransactionCollection;
     use monad_executor::{Message, PeerId, RouterTarget};
     use monad_testutil::signing::node_id;
     use monad_types::Round;
@@ -135,14 +136,14 @@ mod tests {
     struct TestMessage;
 
     impl Message for TestMessage {
-        type Event = TestMessage;
+        type Event<TC: TransactionCollection> = TestMessage;
         type Id = TestMessage;
 
         fn id(&self) -> Self::Id {
             self.clone()
         }
 
-        fn event(self, _from: PeerId) -> Self::Event {
+        fn event<TC: TransactionCollection>(self, _from: PeerId) -> Self::Event<TC> {
             unreachable!()
         }
     }

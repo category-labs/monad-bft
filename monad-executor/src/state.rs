@@ -1,5 +1,6 @@
 use std::hash::Hash;
 
+use monad_consensus_types::transaction::TransactionCollection;
 use monad_crypto::secp256k1::PubKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -37,13 +38,15 @@ pub enum TimerCommand<E> {
     ScheduleReset,
 }
 
-pub enum MempoolCommand<E> {
+pub enum MempoolCommand<E, TC> {
     // TODO consider moving away from dynamic dispatch
     /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
     // TODO create test to demonstrate faulty behavior if written improperly
     FetchTxs(Box<dyn (FnOnce(Vec<u8>) -> E) + Send + Sync>),
     FetchReset,
+    FetchFullTxs(Box<dyn (FnOnce(TC) -> E) + Send + Sync>),
+    FetchFullReset,
 }
 
 pub enum LedgerCommand<B> {
@@ -55,27 +58,29 @@ pub trait Executor {
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
 
-pub enum Command<M, OM, B>
+pub enum Command<M, OM, B, TC>
 where
     M: Message,
+    TC: TransactionCollection,
 {
     RouterCommand(RouterCommand<M, OM>),
-    TimerCommand(TimerCommand<M::Event>),
+    TimerCommand(TimerCommand<M::Event<TC>>),
 
-    MempoolCommand(MempoolCommand<M::Event>),
+    MempoolCommand(MempoolCommand<M::Event<TC>, TC>),
     LedgerCommand(LedgerCommand<B>),
 }
 
-impl<M, OM, B> Command<M, OM, B>
+impl<M, OM, B, TC> Command<M, OM, B, TC>
 where
     M: Message,
+    TC: TransactionCollection,
 {
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
         Vec<RouterCommand<M, OM>>,
-        Vec<TimerCommand<M::Event>>,
-        Vec<MempoolCommand<M::Event>>,
+        Vec<TimerCommand<M::Event<TC>>>,
+        Vec<MempoolCommand<M::Event<TC>, TC>>,
         Vec<LedgerCommand<B>>,
     ) {
         let mut router_cmds = Vec::new();
@@ -98,26 +103,29 @@ pub trait State: Sized {
     type Config;
     type Event: Clone;
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
-    type Message: Message<Event = Self::Event>;
+    type Message: Message<Event<Self::TransactionCollection> = Self::Event>;
     type Block;
+    type TransactionCollection: TransactionCollection;
 
     fn init(
         config: Self::Config,
     ) -> (
         Self,
-        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+        Vec<
+            Command<Self::Message, Self::OutboundMessage, Self::Block, Self::TransactionCollection>,
+        >,
     );
     fn update(
         &mut self,
         event: Self::Event,
-    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>;
+    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::TransactionCollection>>;
 }
 
 pub trait Message: Clone {
-    type Event;
+    type Event<TC: TransactionCollection>;
     type Id: Eq + Hash + Clone;
 
     fn id(&self) -> Self::Id;
     // TODO PeerId -> &PeerId
-    fn event(self, from: PeerId) -> Self::Event;
+    fn event<TC: TransactionCollection>(self, from: PeerId) -> Self::Event<TC>;
 }

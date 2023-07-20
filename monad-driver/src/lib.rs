@@ -4,7 +4,8 @@ mod tests {
 
     use futures::StreamExt;
     use monad_consensus_types::{
-        multi_sig::MultiSig, quorum_certificate::genesis_vote_info, validation::Sha256Hash,
+        multi_sig::MultiSig, quorum_certificate::genesis_vote_info, transaction::MockTransactions,
+        validation::Sha256Hash,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::{
@@ -21,7 +22,8 @@ mod tests {
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
-    type S = MonadState<SignatureType, SignatureCollectionType>;
+    type TransactionCollectionType = MockTransactions;
+    type S = MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>;
     type PersistenceLoggerType = MockWALogger<<S as State>::Event>;
 
     #[tokio::test]

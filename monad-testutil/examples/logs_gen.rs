@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use monad_consensus_types::multi_sig::MultiSig;
+use monad_consensus_types::transaction::MockTransactions;
 use monad_crypto::NopSignature;
 use monad_executor::{
     mock_swarm::{Nodes, Transformer},
@@ -12,10 +13,11 @@ use monad_state::{MonadEvent, MonadState};
 use monad_testutil::swarm::get_configs;
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
-type MS = MonadState<SignatureType, SignatureCollectionType>;
-type MM = <MS as State>::Message;
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
+type TransactionCollection = MockTransactions;
+type MS = MonadState<SignatureType, SignatureCollectionType, TransactionCollection>;
+type MM = <MS as State>::Message;
 
 pub fn generate_log<T: Transformer<MM>>(
     num_nodes: u16,
@@ -25,7 +27,9 @@ pub fn generate_log<T: Transformer<MM>>(
 ) where
     T: Clone,
 {
-    type WALoggerType = WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
+    type WALoggerType = WALogger<
+        TimedEvent<MonadEvent<SignatureType, SignatureCollectionType, TransactionCollection>>,
+    >;
     let (pubkeys, state_configs) = get_configs(num_nodes, delta);
     let binding = pubkeys.clone();
     let file_path_vec = binding.iter().map(|pubkey| WALoggerConfig {

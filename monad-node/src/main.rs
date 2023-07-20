@@ -16,6 +16,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature::SignatureCollection,
+    transaction::MockTransactions,
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
@@ -35,7 +36,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
-type MonadState = monad_state::MonadState<SignatureType, SignatureCollectionType>;
+type TransactionCollectionType = MockTransactions;
+type MonadState =
+    monad_state::MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>;
 type MonadConfig = <MonadState as State>::Config;
 
 pub struct Config {

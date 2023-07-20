@@ -9,6 +9,7 @@ import "pacemaker.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
 import "timeout.proto";
+import "transaction.proto";
 
 message ProtoPeerId {
   monad_proto.basic.ProtoPubkey pubkey = 1;
@@ -31,11 +32,18 @@ message ProtoFetchedTxs {
   monad_proto.block.ProtoTransactionList txns = 5;
 }
 
+message ProtoFetchedFullTxs {
+  monad_proto.basic.ProtoNodeId author = 1;
+  monad_proto.message.ProtoProposalMessageAggSig p = 2;
+  monad_proto.transaction.ProtoTransactionCollection txns = 3;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
+    ProtoFetchedFullTxs fetched_full_txs = 4;
   }
 }
 

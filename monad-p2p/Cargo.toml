@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
+monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-executor = { path = "../monad-executor" }
 monad-types = { path = "../monad-types" }

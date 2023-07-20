@@ -19,7 +19,7 @@ pub struct MockExecutor<S>
 where
     S: State,
 {
-    mempool: MockMempool<S::Event>,
+    mempool: MockMempool<S::Event, S::TransactionCollection>,
     ledger: MockLedger<S::Block>,
 
     tick: Duration,
@@ -167,7 +167,7 @@ impl<S> Executor for MockExecutor<S>
 where
     S: State,
 {
-    type Command = Command<S::Message, S::OutboundMessage, S::Block>;
+    type Command = Command<S::Message, S::OutboundMessage, S::Block, S::TransactionCollection>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
@@ -238,7 +238,7 @@ where
                         tx_tick: _,
                     } = this.inbound_messages.pop().unwrap();
 
-                    message.event(from)
+                    message.event::<S::TransactionCollection>(from)
                 }
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
                 ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
@@ -320,8 +320,10 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
 
+    use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
+    use monad_types::{Deserializable, Serializable};
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
     use crate::{
@@ -467,8 +469,6 @@ mod tests {
         Vote { peer: PeerId, round: u64 },
     }
 
-    use monad_types::{Deserializable, Serializable};
-
     impl Serializable for SimpleChainEvent {
         fn serialize(&self) -> Vec<u8> {
             unreachable!("not used")
@@ -499,14 +499,22 @@ mod tests {
         type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
         type Block = ();
+        type TransactionCollection = MockTransactions;
 
         fn init(
             config: Self::Config,
         ) -> (
             Self,
-            Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
+            Vec<
+                Command<
+                    Self::Message,
+                    Self::OutboundMessage,
+                    Self::Block,
+                    Self::TransactionCollection,
+                >,
+            >,
         ) {
-            let (pubkeys, me) = config;
+            let (pubkeys, _me) = config;
 
             let init_cmds = pubkeys
                 .iter()
@@ -531,7 +539,9 @@ mod tests {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
+        ) -> Vec<
+            Command<Self::Message, Self::OutboundMessage, Self::Block, Self::TransactionCollection>,
+        > {
             let mut commands = Vec::new();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {
@@ -571,15 +581,15 @@ mod tests {
     }
 
     impl Message for SimpleChainMessage {
-        type Event = SimpleChainEvent;
+        type Event<TC: TransactionCollection> = SimpleChainEvent;
         type Id = u64;
 
         fn id(&self) -> Self::Id {
             self.round
         }
 
-        fn event(self, from: PeerId) -> Self::Event {
-            Self::Event::Vote {
+        fn event<TC: TransactionCollection>(self, from: PeerId) -> Self::Event<TC> {
+            Self::Event::<TC>::Vote {
                 round: self.round,
                 peer: from,
             }
