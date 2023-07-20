@@ -15,36 +15,6 @@ use sha2::Digest;
 use test_case::test_case;
 use zerocopy::AsBytes;
 
-#[test_case(None ; "None commit_state")]
-#[test_case(Some(Default::default()) ; "Some commit_state")]
-fn vote_msg_hash(cs: Option<Hash>) {
-    let lci = LedgerCommitInfo {
-        commit_state_hash: cs,
-        vote_info_hash: Default::default(),
-    };
-
-    let vm = VoteMessage {
-        vote_info: VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-        },
-        ledger_commit_info: lci,
-    };
-
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(vm.vote_info.id.0.as_bytes());
-    hasher.update(vm.vote_info.round.as_bytes());
-    hasher.update(vm.vote_info.parent_id.0.as_bytes());
-    hasher.update(vm.vote_info.parent_round.as_bytes());
-    let h1: Hash = Hash(hasher.finalize_reset().into());
-
-    let h2 = Sha256Hash::hash_object(&vm.vote_info);
-
-    assert_eq!(h1, h2);
-}
-
 #[test]
 fn timeout_msg_hash() {
     let ti = TimeoutInfo {
@@ -175,4 +145,34 @@ fn test_vote_message() {
     //     svm.obj.ledger_commit_info.vote_info_hash,
     //     expected_vote_info_hash
     // );
+}
+
+#[test_case(None ; "None commit_state")]
+#[test_case(Some(Default::default()) ; "Some commit_state")]
+fn vote_msg_hash(cs: Option<Hash>) {
+    let lci = LedgerCommitInfo {
+        commit_state_hash: cs,
+        vote_info_hash: Default::default(),
+    };
+
+    let vm = VoteMessage {
+        vote_info: VoteInfo {
+            id: BlockId(Hash([0x00_u8; 32])),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        },
+        ledger_commit_info: lci,
+    };
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(vm.vote_info.id.0.as_bytes());
+    hasher.update(vm.vote_info.round.as_bytes());
+    hasher.update(vm.vote_info.parent_id.0.as_bytes());
+    hasher.update(vm.vote_info.parent_round.as_bytes());
+    let h1: Hash = Hash(hasher.finalize_reset().into());
+
+    let h2 = Sha256Hash::hash_object(&vm.vote_info);
+
+    assert_eq!(h1, h2);
 }
