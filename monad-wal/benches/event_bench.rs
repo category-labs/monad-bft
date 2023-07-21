@@ -49,12 +49,10 @@ impl MonadEventBencher {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let file_path = tmpdir.path().join("wal");
-        let config = WALoggerConfig {
-            file_path: file_path,
-        };
+        let config = WALoggerConfig { file_path };
         println!("size of event: {}", event.serialize().len());
         Self {
-            event: event,
+            event,
             logger: WALogger::<BenchEvent>::new(config).unwrap().0,
             _tmpdir: tmpdir,
         }
@@ -81,7 +79,7 @@ fn bench_proposal(c: &mut Criterion) {
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: author_keypair.pubkey(),
-        unverified_message: unverified_message,
+        unverified_message,
     });
 
     let mut bencher = MonadEventBencher::new(event);
@@ -92,14 +90,14 @@ fn bench_proposal(c: &mut Criterion) {
 fn bench_vote(c: &mut Criterion) {
     let keypair: KeyPair = get_key(1);
     let vi = VoteInfo {
-        id: BlockId(Hash([42_u8; 32].into())),
+        id: BlockId(Hash([42_u8; 32])),
         round: Round(1),
-        parent_id: BlockId(Hash([43_u8; 32].into())),
+        parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
     };
     let lci = LedgerCommitInfo {
         commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32].into()),
+        vote_info_hash: Hash([42_u8; 32]),
     };
     let vote = ConsensusMessage::Vote(VoteMessage {
         vote_info: vi,
@@ -111,7 +109,7 @@ fn bench_vote(c: &mut Criterion) {
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),
-        unverified_message: unverified_message,
+        unverified_message,
     });
 
     let mut bencher = MonadEventBencher::new(event);
@@ -130,9 +128,9 @@ fn bench_timeout(c: &mut Criterion) {
     let author_keypair = &keypairs[0];
 
     let vi = VoteInfo {
-        id: BlockId(Hash([42_u8; 32].into())),
+        id: BlockId(Hash([42_u8; 32])),
         round: Round(1),
-        parent_id: BlockId(Hash([43_u8; 32].into())),
+        parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
     };
     let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
@@ -166,14 +164,14 @@ fn bench_timeout(c: &mut Criterion) {
     let mut high_qc_rounds = Vec::new();
     for keypair in keypairs.iter() {
         high_qc_rounds.push(HighQcRoundSigTuple {
-            high_qc_round: high_qc_round,
+            high_qc_round,
             author_signature: keypair.sign(high_qc_round_hash.as_ref()),
         });
     }
 
     let tc = TimeoutCertificate {
         round: tc_round,
-        high_qc_rounds: high_qc_rounds,
+        high_qc_rounds,
     };
 
     let tmo = ConsensusMessage::Timeout(TimeoutMessage {
@@ -186,7 +184,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: author_keypair.pubkey(),
-        unverified_message: unverified_message,
+        unverified_message,
     });
 
     let mut bencher = MonadEventBencher::new(event);

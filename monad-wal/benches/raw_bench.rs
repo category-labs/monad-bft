@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, Criterion};
 use std::error::Error;
 use std::fmt::Debug;
 use std::fs::create_dir_all;
@@ -124,7 +124,7 @@ criterion_group!(
 );
 
 #[cfg(target_os = "linux")]
-criterion_main!(bench);
+criterion::criterion_main!(bench);
 
 #[cfg(not(target_os = "linux"))]
 fn main() {

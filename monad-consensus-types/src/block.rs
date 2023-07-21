@@ -37,7 +37,7 @@ impl<T> std::fmt::Debug for Block<T> {
 
 impl<T: SignatureCollection> Hashable for Block<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.update(&self.author.0.bytes());
+        state.update(self.author.0.bytes());
         state.update(self.round.as_bytes());
         state.update(self.payload.0.as_bytes());
         state.update(self.qc.info.vote.id.0.as_bytes());

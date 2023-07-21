@@ -58,7 +58,7 @@ fn map_err_to_result(bls_error: blst::BLST_ERROR) -> Result<(), BlsError> {
 #[derive(Debug, Clone, Copy)]
 pub struct BlsAggregatePubKey(blst_core::AggregatePublicKey);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlsPubKey(blst_core::PublicKey);
 
 impl From<blst_core::PublicKey> for BlsPubKey {
@@ -75,6 +75,14 @@ impl std::hash::Hash for BlsPubKey {
         }
     }
 }
+
+impl PartialEq for BlsPubKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl Eq for BlsPubKey {}
 
 impl BlsPubKey {
     pub fn validate(&self) -> Result<(), BlsError> {
@@ -210,7 +218,7 @@ impl BlsKeyPair {
 #[derive(Debug, Clone, Copy)]
 pub struct BlsAggregateSignature(blst_core::AggregateSignature);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlsSignature(blst_core::Signature);
 
 impl From<blst_core::Signature> for BlsSignature {
@@ -228,6 +236,14 @@ impl std::hash::Hash for BlsSignature {
         }
     }
 }
+
+impl PartialEq for BlsSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl Eq for BlsSignature {}
 
 impl BlsSignature {
     pub fn serialize(&self) -> Vec<u8> {
