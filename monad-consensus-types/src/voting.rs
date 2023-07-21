@@ -1,7 +1,10 @@
 use monad_types::*;
 use zerocopy::AsBytes;
 
-use crate::validation::{Hashable, Hasher};
+use crate::{
+    ledger::LedgerCommitInfo,
+    validation::{Hashable, Hasher},
+};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteInfo {
@@ -31,6 +34,27 @@ impl Hashable for VoteInfo {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Vote {
+    pub vote_info: VoteInfo,
+    pub ledger_commit_info: LedgerCommitInfo,
+}
+
+impl std::fmt::Debug for Vote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoteMessage")
+            .field("info", &self.vote_info)
+            .field("lc", &self.ledger_commit_info)
+            .finish()
+    }
+}
+
+impl Hashable for Vote {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ledger_commit_info.hash(state)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use monad_types::{BlockId, Hash, Round};
@@ -39,7 +63,7 @@ mod test {
     use super::VoteInfo;
     use crate::validation::{Hasher, Sha256Hash};
 
-    pub fn hash_vote(v: &VoteInfo) -> Hash {
+    pub fn hash_vote_info(v: &VoteInfo) -> Hash {
         let mut hasher = sha2::Sha256::new();
         hasher.update(v.id.0);
         hasher.update(v.round);
@@ -59,8 +83,10 @@ mod test {
         };
 
         let h1 = Sha256Hash::hash_object(&vi);
-        let h2 = hash_vote(&vi);
+        let h2 = hash_vote_info(&vi);
 
         assert_eq!(h1, h2);
     }
+
+    // TODO: test_vote_hash
 }

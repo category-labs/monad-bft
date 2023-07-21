@@ -10,7 +10,7 @@ use monad_consensus_types::{
 use monad_crypto::convert::signature_to_proto;
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
-    Signature,
+    GenericKeyPair, GenericSignature, Signature,
 };
 #[cfg(feature = "proto")]
 use monad_proto::proto::message::{
@@ -204,15 +204,18 @@ where
     }
 }
 
-impl<S: Signature> Unverified<S, VoteMessage> {
+impl<ST, SCT> Unverified<ST, VoteMessage<SCT>>
+where
+    ST: Signature,
+    SCT: SignatureCollection,
+{
     // A verified vote message has a valid signature
-    // Return type must keep the signature with the message as it is used later by the protocol
     pub fn verify<H: Hasher>(
         self,
         validators: &ValidatorMember,
         sender: &PubKey,
-    ) -> Result<Verified<S, VoteMessage>, Error> {
-        let msg = H::hash_object(&self.obj.ledger_commit_info);
+    ) -> Result<Verified<ST, VoteMessage<SCT>>, Error> {
+        let msg = H::hash_object(&self.obj);
 
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
 
@@ -375,7 +378,9 @@ fn get_pubkey(msg: &[u8], sig: &impl Signature) -> Result<PubKey, Error> {
 }
 
 #[cfg(feature = "proto")]
-impl<S: Signature> From<&UnverifiedConsensusMessage<S>> for ProtoUnverifiedConsensusMessage {
+impl<S: Signature + GenericSignature + Hashable> From<&UnverifiedConsensusMessage<S>>
+    for ProtoUnverifiedConsensusMessage
+{
     fn from(value: &UnverifiedConsensusMessage<S>) -> Self {
         let oneof_message = match &value.obj {
             ConsensusMessage::Proposal(msg) => {
@@ -425,7 +430,7 @@ mod test {
         validation::{Error, Hashable, Hasher, Sha256Hash},
         voting::VoteInfo,
     };
-    use monad_crypto::secp256k1::SecpSignature;
+    use monad_crypto::{secp256k1::SecpSignature, GenericKeyPair};
     use monad_testutil::signing::{create_keys, create_keys_bls, get_key, get_key_bls};
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use monad_validator::{

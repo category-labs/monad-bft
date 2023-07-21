@@ -12,13 +12,13 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusMessage<ST, SCT> {
+pub enum ConsensusMessage<ST, SCT: SignatureCollection> {
     Proposal(ProposalMessage<ST, SCT>),
-    Vote(VoteMessage),
+    Vote(VoteMessage<SCT>),
     Timeout(TimeoutMessage<ST, SCT>),
 }
 
-impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
+impl<ST: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusMessage<ST, SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),

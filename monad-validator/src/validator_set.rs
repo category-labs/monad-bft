@@ -110,7 +110,7 @@ impl ValidatorSetType for ValidatorSet {
 
 #[cfg(test)]
 mod test {
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::{secp256k1::KeyPair, GenericKeyPair};
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 

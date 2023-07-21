@@ -18,16 +18,20 @@ mod test {
         signature::{SignatureBuilder, SignatureCollection},
         timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
         validation::{Hasher, Sha256Hash},
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
-    use monad_crypto::secp256k1::SecpSignature;
+    use monad_crypto::{secp256k1::SecpSignature, GenericKeyPair, GenericSignature};
     use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
     use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::validator_property::ValidatorSetPropertyType;
 
+    type SignatureCollectionType = MultiSig<SecpSignature>;
+
     // TODO: revisit to cleanup
     #[test]
     fn test_vote_message() {
+        let (keypairs, _blskeys, vote_keys, validators, vprop) =
+            create_keys_w_validators::<SignatureCollectionType>(1);
         let vi = VoteInfo {
             id: BlockId(Hash([42_u8; 32])),
             round: Round(1),
@@ -38,13 +42,20 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
-            ConsensusMessage::Vote(VoteMessage {
-                vote_info: vi,
-                ledger_commit_info: lci,
-            });
 
-        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(1);
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        };
+
+        let vote_hash = Sha256Hash::hash_object(&vote);
+        let sig =
+            <<SignatureCollectionType as SignatureCollection>::SignatureType as GenericSignature>::sign(
+                vote_hash.as_ref(),
+                &vote_keys[0],
+            );
+
+        let votemsg = ConsensusMessage::Vote(VoteMessage::<SignatureCollectionType> { vote, sig });
 
         let author_keypair = &keypairs[0];
 
@@ -54,7 +65,7 @@ mod test {
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
         let verified_rx_vote = rx_msg
-            .verify::<Sha256Hash, _, _>(&validators, &validators_prop, &author_keypair.pubkey())
+            .verify::<Sha256Hash, _, _>(&validators, &vprop, &author_keypair.pubkey())
             .unwrap();
 
         assert_eq!(verified_votemsg, verified_rx_vote);
@@ -62,7 +73,8 @@ mod test {
 
     #[test]
     fn test_timeout_message() {
-        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(2);
+        let (keypairs, _blskeys, _vote_keys, validators, validators_prop) =
+            create_keys_w_validators::<SignatureCollectionType>(2);
 
         let author_keypair = &keypairs[0];
 
@@ -145,18 +157,24 @@ mod test {
 
     #[test]
     fn test_proposal_qc() {
-        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(2);
+        let (keypairs, _blskeys, votekeys, validators, validators_prop) =
+            create_keys_w_validators::<SignatureCollectionType>(2);
 
         let author_keypair = &keypairs[0];
+        let voters = keypairs
+            .iter()
+            .map(|key| NodeId(key.pubkey()))
+            .zip(votekeys.iter());
+
         let blk = setup_block(
             NodeId(author_keypair.pubkey()),
             233,
             232,
             TransactionList(vec![1, 2, 3, 4]),
-            &keypairs,
+            voters.into_iter(),
             &validators_prop,
         );
-        let proposal: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
+        let proposal: ConsensusMessage<SecpSignature, SignatureCollectionType> =
             ConsensusMessage::Proposal(ProposalMessage {
                 block: blk,
                 last_round_tc: None,
@@ -177,15 +195,21 @@ mod test {
 
     #[test]
     fn test_unverified_proposal_tc() {
-        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(2);
+        let (keypairs, _blskeys, votekeys, validators, validators_prop) =
+            create_keys_w_validators::<SignatureCollectionType>(2);
 
         let author_keypair = &keypairs[0];
+        let voters = keypairs
+            .iter()
+            .map(|key| NodeId(key.pubkey()))
+            .zip(votekeys.iter());
+
         let blk = setup_block(
             NodeId(author_keypair.pubkey()),
             233,
             231,
             TransactionList(vec![1, 2, 3, 4]),
-            &keypairs,
+            voters.into_iter(),
             &validators_prop,
         );
 

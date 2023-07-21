@@ -1,17 +1,19 @@
 use std::collections::{HashMap, HashSet};
 
-use monad_crypto::{bls12_381::BlsPubKey, secp256k1::PubKey, Signature};
+use monad_crypto::{bls12_381::BlsPubKey, secp256k1::PubKey, GenericSignature, Signature};
 use monad_types::{Hash, NodeId};
-use sha2::Digest;
 
-use crate::signature::{SignatureBuilder, SignatureCollection};
+use crate::{
+    signature::{SignatureBuilder, SignatureCollection},
+    validation::{Hashable, Hasher, Sha256Hash},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultiSig<S> {
     pub sigs: Vec<S>,
 }
 
-impl<S: Signature> Default for MultiSig<S> {
+impl<S: Signature + GenericSignature + Hashable> Default for MultiSig<S> {
     fn default() -> Self {
         Self { sigs: Vec::new() }
     }
@@ -28,7 +30,7 @@ pub enum MultiSigError<S> {
     InvalidSignature((NodeId, S)),
 }
 
-impl<S: Signature> std::fmt::Display for MultiSigError<S> {
+impl<S: Signature + GenericSignature + Hashable> std::fmt::Display for MultiSigError<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             MultiSigError::NodeIdIdxOutOfRange((idx, sig)) => {
@@ -56,10 +58,11 @@ impl<S: Signature> std::fmt::Display for MultiSigError<S> {
     }
 }
 
-impl<S: Signature> std::error::Error for MultiSigError<S> {}
+impl<S: Signature + GenericSignature + Hashable> std::error::Error for MultiSigError<S> {}
 
+// TODO: consider removing the Signature trait bound - use the pubkey from the validator set to verify
 // TODO: test duplicate votes
-impl<S: Signature> SignatureCollection for MultiSig<S> {
+impl<S: Signature + GenericSignature + Hashable> SignatureCollection for MultiSig<S> {
     type SignatureError = MultiSigError<S>;
     type SignatureType = S;
 
@@ -93,7 +96,7 @@ impl<S: Signature> SignatureCollection for MultiSig<S> {
                     sig,
                 )));
             }
-            sig.verify(msg, &pubkey)
+            <S as Signature>::verify(&sig, msg, &pubkey)
                 .map_err(|_| MultiSigError::InvalidSignature((NodeId(pubkey), sig)))?;
             multi_sig.push(sig);
         }
@@ -101,13 +104,13 @@ impl<S: Signature> SignatureCollection for MultiSig<S> {
     }
 
     fn get_hash(&self) -> Hash {
-        let mut hasher = sha2::Sha256::new();
+        let mut hasher = Sha256Hash::new();
 
-        for v in self.sigs.iter() {
-            hasher.update(v.serialize());
+        for s in self.sigs.iter() {
+            <S as Hashable>::hash(s, &mut hasher);
         }
 
-        Hash(hasher.finalize().into())
+        hasher.hash()
     }
 
     fn num_signatures(&self) -> usize {
@@ -130,7 +133,7 @@ impl<S: Signature> SignatureCollection for MultiSig<S> {
             if !validator_set.contains(&node_id) {
                 return Err(MultiSigError::NodeIdNotExist((node_id, *sig)));
             }
-            sig.verify(msg, &pubkey)
+            <S as Signature>::verify(sig, msg, &pubkey)
                 .map_err(|_| MultiSigError::InvalidSignature((node_id, *sig)))?;
 
             node_ids.push(NodeId(pubkey));

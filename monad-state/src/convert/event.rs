@@ -2,8 +2,9 @@ use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus_types::{
     block::{FullTransactionList, TransactionList},
     multi_sig::MultiSig,
+    validation::Hashable,
 };
-use monad_crypto::Signature;
+use monad_crypto::{GenericSignature, Signature};
 use monad_proto::{
     error::ProtoError,
     proto::{event::*, pacemaker::ProtoPacemakerTimerExpire},
@@ -16,7 +17,7 @@ use crate::{
 pub(super) type MonadEvent<S> = TypeMonadEvent<S, MultiSig<S>>;
 pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, MultiSig<S>>;
 
-impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
+impl<S: Signature + GenericSignature + Hashable> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
     fn from(value: &ConsensusEvent<S>) -> Self {
         let event = match value {
             TypeConsensusEvent::Message {
@@ -51,7 +52,9 @@ impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
+impl<S: Signature + GenericSignature + Hashable> TryFrom<ProtoConsensusEvent>
+    for ConsensusEvent<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoConsensusEvent) -> Result<Self, Self::Error> {
@@ -125,7 +128,7 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
     }
 }
 
-impl<S: Signature> From<&MonadEvent<S>> for ProtoMonadEvent {
+impl<S: Signature + GenericSignature + Hashable> From<&MonadEvent<S>> for ProtoMonadEvent {
     fn from(value: &MonadEvent<S>) -> Self {
         let event = match value {
             TypeMonadEvent::ConsensusEvent(msg) => {
@@ -136,7 +139,7 @@ impl<S: Signature> From<&MonadEvent<S>> for ProtoMonadEvent {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoMonadEvent> for MonadEvent<S> {
+impl<S: Signature + GenericSignature + Hashable> TryFrom<ProtoMonadEvent> for MonadEvent<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
         let event: MonadEvent<S> = match value.event {

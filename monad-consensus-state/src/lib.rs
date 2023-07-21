@@ -20,7 +20,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
-    Signature,
+    GenericSignature, Signature,
 };
 use monad_executor::{PeerId, RouterTarget};
 use monad_types::{NodeId, Round};
@@ -48,6 +48,7 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV> {
 
     // TODO deprecate
     keypair: KeyPair,
+    vote_keypair: <SCT::SignatureType as GenericSignature>::KeyPairType,
 }
 pub trait ConsensusProcess<ST, SCT>
 where
@@ -63,6 +64,7 @@ where
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
         keypair: KeyPair,
+        vote_keypair: <SCT::SignatureType as GenericSignature>::KeyPairType,
     ) -> Self;
 
     fn get_pubkey(&self) -> PubKey;
@@ -99,8 +101,7 @@ where
     >(
         &mut self,
         author: NodeId,
-        signature: SCT::SignatureType,
-        v: VoteMessage,
+        v: VoteMessage<SCT>,
         validators: &VT,
         validators_property: &VPT,
         election: &LT,
@@ -137,6 +138,7 @@ where
 
         // TODO deprecate
         keypair: KeyPair,
+        vote_keypair: <SCT::SignatureType as GenericSignature>::KeyPairType,
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
@@ -149,6 +151,7 @@ where
             transaction_validator,
 
             keypair,
+            vote_keypair,
         }
     }
 
@@ -218,10 +221,18 @@ where
             .make_vote::<ST, SCT, H>(&p.block, &p.last_round_tc);
 
         if let Some(v) = vote_msg {
+            // sign the Vote with vote keypair
+            let vote_hash = H::hash_object(&v);
+            let sig = <SCT::SignatureType as GenericSignature>::sign(
+                vote_hash.as_ref(),
+                &self.vote_keypair,
+            );
+            let vote_msg = VoteMessage { vote: v, sig };
+
             let next_leader = election.get_leader(round + Round(1), validators.get_list());
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
-                message: ConsensusMessage::Vote(v),
+                message: ConsensusMessage::Vote(vote_msg),
             };
             cmds.push(send_cmd);
         }
@@ -229,6 +240,8 @@ where
         cmds
     }
 
+    // this is not evidence friendly: evidence collection needs the signature from
+    // Verified::author_sig
     fn handle_vote_message<
         H: Hasher,
         VT: ValidatorSetType,
@@ -237,23 +250,18 @@ where
     >(
         &mut self,
         author: NodeId,
-        signature: SCT::SignatureType,
-        v: VoteMessage,
+        v: VoteMessage<SCT>,
         validators: &VT,
         validators_property: &VPT,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        if v.vote_info.round < self.pacemaker.get_current_round() {
+        if v.vote.vote_info.round < self.pacemaker.get_current_round() {
             return Default::default();
         }
 
-        let qc: Option<QuorumCertificate<SCT>> = self.vote_state.process_vote::<H, _, _>(
-            &author,
-            &signature,
-            &v,
-            validators,
-            validators_property,
-        );
+        let qc: Option<QuorumCertificate<SCT>> =
+            self.vote_state
+                .process_vote::<H, _, _>(&author, &v, validators, validators_property);
 
         let mut cmds = Vec::new();
         if let Some(qc) = qc {
@@ -437,20 +445,22 @@ mod test {
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
-        signature::SignatureCollection,
+        signature::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::TimeoutInfo,
         transaction_validator::MockValidator,
-        validation::Sha256Hash,
-        voting::VoteInfo,
+        validation::{Hasher, Sha256Hash},
+        voting::{Vote, VoteInfo},
     };
-    use monad_crypto::{secp256k1::KeyPair, NopSignature, Signature};
+    use monad_crypto::{
+        secp256k1::KeyPair, GenericKeyPair, GenericSignature, NopSignature, Signature,
+    };
     use monad_executor::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
-        signing::{create_keys, get_genesis_config},
+        signing::{create_keys, create_voting_keys, get_genesis_config},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, Round};
+    use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::{
         leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
         validator_property::ValidatorSetProperty, validator_set::ValidatorSet,
@@ -458,17 +468,28 @@ mod test {
 
     use crate::{ConsensusCommand, ConsensusMessage, ConsensusProcess, ConsensusState};
 
-    fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>(
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<NopSignature>;
+
+    fn setup<ST: Signature, SCT: SignatureCollection>(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
+        Vec<SignatureCollectionKeyPairType<SCT>>,
         ValidatorSet,
         ValidatorSetProperty,
         Vec<ConsensusState<ST, SCT, MockValidator>>,
     ) {
-        let (keys, _blskeys, val_set, vprop) = create_keys_w_validators(num_states);
+        let (keys, _blskeys, vote_keys, val_set, vprop) =
+            create_keys_w_validators::<SCT>(num_states);
+        let voters = keys
+            .iter()
+            .map(|k| NodeId(k.pubkey()))
+            .zip(vote_keys.iter())
+            .collect::<Vec<_>>();
+
         let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SCT>(keys.iter(), &vprop);
+            get_genesis_config::<Sha256Hash, SCT>(voters.into_iter(), &vprop);
 
         let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
             genesis_vote_info(genesis_block.get_id()),
@@ -476,11 +497,15 @@ mod test {
         );
 
         let mut dupkeys = create_keys(num_states);
+        let mut dup_votekeys = create_voting_keys::<SCT>(num_states);
         let consensus_states = keys
             .iter()
             .enumerate()
             .map(|(i, k)| {
                 let default_key = KeyPair::from_bytes([127; 32]).unwrap();
+                let default_vote_key =
+                    <SignatureCollectionKeyPairType<SCT> as GenericKeyPair>::from_bytes([127; 32])
+                        .unwrap();
                 ConsensusState::<ST, SCT, _>::new(
                     MockValidator,
                     k.pubkey(),
@@ -488,19 +513,22 @@ mod test {
                     genesis_qc.clone(),
                     Duration::from_secs(1),
                     std::mem::replace(&mut dupkeys[i], default_key),
+                    std::mem::replace(&mut dup_votekeys[i], default_vote_key),
                 )
             })
             .collect::<Vec<_>>();
 
-        (keys, val_set, vprop, consensus_states)
+        (keys, vote_keys, val_set, vprop, consensus_states)
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[test]
     fn lock_qc_high() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votingkeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
 
+        // states offsets are off by 1
         let state = &mut states[0];
         assert_eq!(state.high_qc.info.vote.round, Round(0));
 
@@ -512,18 +540,38 @@ mod test {
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
         };
-        let vm = VoteMessage {
+        let v = Vote {
             vote_info: vi,
             ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(None, &vi),
         };
 
-        let v1 = Verified::<_, VoteMessage>::new::<Sha256Hash>(vm, &keys[1]);
-        let v2 = Verified::<_, VoteMessage>::new::<Sha256Hash>(vm, &keys[2]);
-        let v3 = Verified::<_, VoteMessage>::new::<Sha256Hash>(vm, &keys[3]);
+        let v_hash = Sha256Hash::hash_object(&v);
+
+        let vm1 = VoteMessage::<MultiSig<NopSignature>> {
+            vote: v,
+            sig: <SignatureType as GenericSignature>::sign(v_hash.as_ref(), &votingkeys[1]),
+        };
+        let vm2 = VoteMessage::<MultiSig<NopSignature>> {
+            vote: v,
+            sig: <SignatureType as GenericSignature>::sign(v_hash.as_ref(), &votingkeys[2]),
+        };
+        let vm3 = VoteMessage::<MultiSig<NopSignature>> {
+            vote: v,
+            sig: <SignatureType as GenericSignature>::sign(v_hash.as_ref(), &votingkeys[3]),
+        };
+
+        let v1 = Verified::<NopSignature, VoteMessage<SignatureCollectionType>>::new::<Sha256Hash>(
+            vm1, &keys[1],
+        );
+        let v2 = Verified::<NopSignature, VoteMessage<SignatureCollectionType>>::new::<Sha256Hash>(
+            vm2, &keys[2],
+        );
+        let v3 = Verified::<NopSignature, VoteMessage<SignatureCollectionType>>::new::<Sha256Hash>(
+            vm3, &keys[3],
+        );
 
         state.handle_vote_message::<Sha256Hash, _, _, _>(
             *v1.author(),
-            *v1.author_signature(),
             *v1,
             &valset,
             &valprop,
@@ -531,7 +579,6 @@ mod test {
         );
         state.handle_vote_message::<Sha256Hash, _, _, _>(
             *v2.author(),
-            *v2.author_signature(),
             *v2,
             &valset,
             &valprop,
@@ -543,7 +590,6 @@ mod test {
 
         state.handle_vote_message::<Sha256Hash, _, _, _>(
             *v3.author(),
-            *v3.author_signature(),
             *v3,
             &valset,
             &valprop,
@@ -555,11 +601,19 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
-        let p1 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p1 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
 
         // local timeout for state in Round 1
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
@@ -593,12 +647,20 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
-        let p1 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p1 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p1.destructure();
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -620,7 +682,14 @@ mod test {
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
         assert!(result.is_some());
 
-        let p2 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p2 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p2.destructure();
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -643,9 +712,23 @@ mod test {
         assert!(result.is_some());
 
         for _ in 0..4 {
-            propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+            propgen.next_proposal(
+                &keys,
+                &votekeys,
+                &valset,
+                &election,
+                &valprop,
+                &Default::default(),
+            );
         }
-        let p7 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p7 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p7.destructure();
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -660,7 +743,8 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -668,7 +752,14 @@ mod test {
         let mut qc2 = state.high_qc.clone();
 
         for i in 1..5 {
-            let p = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+            let p = propgen.next_proposal(
+                &keys,
+                &votekeys,
+                &valset,
+                &election,
+                &valprop,
+                &Default::default(),
+            );
             let (author, _, verified_message) = p.clone().destructure();
             let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
                 author,
@@ -710,12 +801,20 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
-        let p1 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p1 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p1.clone().destructure();
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -757,13 +856,21 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         // first proposal
-        let p1 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p1 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p1.destructure();
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -786,7 +893,14 @@ mod test {
         assert!(result.is_some());
 
         // second proposal
-        let p2 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p2 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p2.destructure();
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -812,6 +926,7 @@ mod test {
         for _ in 0..perms.len() {
             missing_proposals.push(propgen.next_proposal(
                 &keys,
+                &votekeys,
                 &valset,
                 &election,
                 &valprop,
@@ -820,7 +935,14 @@ mod test {
         }
 
         // last proposal arrvies
-        let p_fut = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p_fut = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p_fut.destructure();
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -891,8 +1013,14 @@ mod test {
         // next proposal will trigger everything to be committed if there is
         // a consecutive chain as expected
         // last proposal arrvies
-        let p_last =
-            propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p_last = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p_last.destructure();
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -913,13 +1041,21 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         // round 1 proposal
-        let p1 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p1 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p1.destructure();
         let p1_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -941,10 +1077,21 @@ mod test {
             .collect::<Vec<_>>();
 
         assert!(p1_votes.len() == 1);
-        assert!(p1_votes[0].ledger_commit_info.commit_state_hash.is_some());
+        assert!(p1_votes[0]
+            .vote
+            .ledger_commit_info
+            .commit_state_hash
+            .is_some());
 
         // round 2 proposal
-        let p2 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p2 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -972,9 +1119,20 @@ mod test {
 
         assert!(p2_votes.len() == 1);
         // csh is some: the proposal and qc have consecutive rounds
-        assert!(p2_votes[0].ledger_commit_info.commit_state_hash.is_some());
+        assert!(p2_votes[0]
+            .vote
+            .ledger_commit_info
+            .commit_state_hash
+            .is_some());
 
-        let p3 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p3 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p3.destructure();
 
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
@@ -993,13 +1151,21 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
         // round 1 proposal
-        let p1 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p1 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p1.destructure();
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -1010,7 +1176,14 @@ mod test {
         );
 
         // round 2 proposal
-        let p2 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p2 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
@@ -1032,7 +1205,11 @@ mod test {
             .collect::<Vec<_>>();
 
         assert!(p2_votes.len() == 1);
-        assert!(p2_votes[0].ledger_commit_info.commit_state_hash.is_some());
+        assert!(p2_votes[0]
+            .vote
+            .ledger_commit_info
+            .commit_state_hash
+            .is_some());
 
         // round 2 timeout
         let pacemaker_cmds =
@@ -1055,7 +1232,14 @@ mod test {
         let _ = propgen.next_tc(&keys, &valset);
 
         // round 3 proposal, has qc(1)
-        let p3 = propgen.next_proposal(&keys, &valset, &election, &valprop, &Default::default());
+        let p3 = propgen.next_proposal(
+            &keys,
+            &votekeys,
+            &valset,
+            &election,
+            &valprop,
+            &Default::default(),
+        );
         assert_eq!(p3.block.qc.info.vote.round, Round(1));
         assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
@@ -1080,14 +1264,19 @@ mod test {
 
         assert!(p3_votes.len() == 1);
         // proposal and qc have non-consecutive rounds
-        assert!(p3_votes[0].ledger_commit_info.commit_state_hash.is_none());
+        assert!(p3_votes[0]
+            .vote
+            .ledger_commit_info
+            .commit_state_hash
+            .is_none());
     }
 
     // this test checks that a malicious proposal sent only to the next leader is
     // not incorrectly committed
     #[test]
     fn test_malicious_proposal_to_next_leader() {
-        let (keys, valset, valprop, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
+        let (keys, votekeys, valset, valprop, mut states) =
+            setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -1103,6 +1292,7 @@ mod test {
 
         let cp1 = correct_proposal_gen.next_proposal(
             &keys,
+            &votekeys,
             &valset,
             &election,
             &valprop,
@@ -1110,6 +1300,7 @@ mod test {
         );
         let mp1 = mal_proposal_gen.next_proposal(
             &keys,
+            &votekeys,
             &valset,
             &election,
             &valprop,
@@ -1190,18 +1381,19 @@ mod test {
             })
             .collect::<Vec<_>>()[0];
 
-        assert_eq!(p1_votes, p3_votes);
-        assert_eq!(p1_votes, p4_votes);
-        assert_ne!(p1_votes, p2_votes);
+        assert_eq!(p1_votes.vote, p3_votes.vote);
+        assert_eq!(p1_votes.vote, p4_votes.vote);
+        assert_ne!(p1_votes.vote, p2_votes.vote);
 
         let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
 
         // Deliver all the votes to second_state, who is the leader for the next round
         for i in 0..4 {
-            let v = Verified::<NopSignature, VoteMessage>::new::<Sha256Hash>(votes[i], &keys[i]);
+            let v = Verified::<NopSignature, VoteMessage<SignatureCollectionType>>::new::<Sha256Hash>(
+                votes[i], &keys[i],
+            );
             second_state.handle_vote_message::<Sha256Hash, _, _, _>(
                 *v.author(),
-                *v.author_signature(),
                 *v,
                 &valset,
                 &valprop,
@@ -1210,13 +1402,14 @@ mod test {
         }
 
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
-        assert_eq!(second_state.high_qc.info.vote, votes[0].vote_info);
+        assert_eq!(second_state.high_qc.info.vote, votes[0].vote.vote_info);
 
         // use the correct proposal gen to make next proposal and send it to second_state
         // this should cause it to emit the RequestSync command because the the QC parent
         // points to a different proposal (second_state has the malicious proposal in its blocktree)
         let cp2 = correct_proposal_gen.next_proposal(
             &keys,
+            &votekeys,
             &valset,
             &election,
             &valprop,
@@ -1261,6 +1454,7 @@ mod test {
         // next correct proposal is created and we send it to the first two states.
         let cp3 = correct_proposal_gen.next_proposal(
             &keys,
+            &votekeys,
             &valset,
             &election,
             &valprop,

@@ -9,9 +9,12 @@ mod test {
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
         validation::{Hasher, Sha256Hash},
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::{
+        secp256k1::{KeyPair, SecpSignature},
+        GenericKeyPair,
+    };
     use monad_state::{
         convert::interface::{deserialize_event, serialize_event},
         ConsensusEvent, MonadEvent,
@@ -45,15 +48,21 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
-            ConsensusMessage::Vote(VoteMessage {
-                vote_info: vi,
-                ledger_commit_info: lci,
-            });
-        let votemsg_hash = Sha256Hash::hash_object(&votemsg);
-        let sig = keypair.sign(votemsg_hash.as_ref());
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        };
+        let vote_hash = Sha256Hash::hash_object(&vote);
+        let vote_sig = keypair.sign(vote_hash.as_ref());
+        let consensus_vote = ConsensusMessage::Vote(VoteMessage::<MultiSig<SecpSignature>> {
+            vote,
+            sig: vote_sig,
+        });
 
-        let unverified_votemsg = Unverified::new(votemsg, sig);
+        let consensus_vote_hash = Sha256Hash::hash_object(&consensus_vote);
+        let sig = keypair.sign(consensus_vote_hash.as_ref());
+
+        let unverified_votemsg = Unverified::new(consensus_vote, sig);
 
         let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
             sender: keypair.pubkey(),

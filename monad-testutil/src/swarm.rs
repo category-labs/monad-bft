@@ -5,12 +5,15 @@ use std::{
 
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
-    transaction_validator::MockValidator, validation::Sha256Hash,
+    multi_sig::MultiSig,
+    quorum_certificate::genesis_vote_info,
+    signature::SignatureCollection,
+    transaction_validator::MockValidator,
+    validation::{Hashable, Sha256Hash},
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
-    NopSignature, Signature,
+    GenericKeyPair, GenericSignature, NopSignature, Signature,
 };
 use monad_executor::{
     executor::mock::MockExecutor,
@@ -19,6 +22,7 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
+use monad_types::NodeId;
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -57,7 +61,7 @@ pub enum TransformerReplayOrder {
 }
 
 pub struct PartitionThenReplayTransformer<
-    ST: Signature,
+    ST: Signature + GenericSignature + Hashable,
     SCT: SignatureCollection<SignatureType = ST>,
 > {
     pub peers: HashSet<PeerId>,
@@ -67,7 +71,7 @@ pub struct PartitionThenReplayTransformer<
     pub order: TransformerReplayOrder,
 }
 
-impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>
+impl<ST: Signature + GenericSignature + Hashable, SCT: SignatureCollection<SignatureType = ST>>
     PartitionThenReplayTransformer<ST, SCT>
 {
     pub fn new(peers: HashSet<PeerId>, cnt_limit: u32, order: TransformerReplayOrder) -> Self {
@@ -81,8 +85,8 @@ impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>
     }
 }
 
-impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>> Transformer<MonadMessage<ST, SCT>>
-    for PartitionThenReplayTransformer<ST, SCT>
+impl<ST: Signature + GenericSignature + Hashable, SCT: SignatureCollection<SignatureType = ST>>
+    Transformer<MonadMessage<ST, SCT>> for PartitionThenReplayTransformer<ST, SCT>
 {
     fn transform(
         &mut self,
@@ -130,17 +134,25 @@ pub fn get_configs<SCT: SignatureCollection>(
     num_nodes: u16,
     delta: Duration,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TransactionValidatorType>>) {
-    let (keys, blskeys, validators, validators_prop) = create_keys_w_validators(num_nodes as u32);
+    let (keys, blskeys, voting_keys, validators, validators_prop) =
+        create_keys_w_validators::<SCT>(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+    let voters = pubkeys
+        .iter()
+        .map(|pk| NodeId(*pk))
+        .zip(voting_keys.iter())
+        .collect::<Vec<_>>();
     let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, SCT>(keys.iter(), &validators_prop);
+        get_genesis_config::<Sha256Hash, SCT>(voters.into_iter(), &validators_prop);
 
     let state_configs = keys
         .into_iter()
         .zip(std::iter::repeat(pubkeys.clone()))
-        .map(|(key, pubkeys)| MonadConfig {
-            transaction_validator: TransactionValidatorType {},
+        .zip(voting_keys.into_iter())
+        .map(|((key, pubkeys), voting_key)| MonadConfig {
+            transaction_validator: MockValidator,
             key,
+            voting_key,
             validators: pubkeys
                 .iter()
                 .cloned()
@@ -159,7 +171,7 @@ pub fn get_configs<SCT: SignatureCollection>(
 
 pub fn node_ledger_verification<
     CT: ConsensusProcess<ST, SCT>,
-    ST: Signature,
+    ST: Signature + GenericSignature + Hashable,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
     VT: ValidatorSetType,
     VPT: ValidatorSetPropertyType,

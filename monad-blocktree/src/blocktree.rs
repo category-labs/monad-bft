@@ -318,7 +318,7 @@ mod test {
         validation::Sha256Hash,
         voting::VoteInfo,
     };
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::{secp256k1::KeyPair, GenericKeyPair};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, Hash, NodeId, Round};
 

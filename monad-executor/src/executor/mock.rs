@@ -319,7 +319,7 @@ mod tests {
     use std::{collections::HashSet, fmt::Debug, time::Duration};
 
     use futures::{FutureExt, StreamExt};
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::{secp256k1::KeyPair, GenericKeyPair};
     use monad_testutil::signing::{create_keys, node_id};
     use monad_types::{Deserializable, Serializable};
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};

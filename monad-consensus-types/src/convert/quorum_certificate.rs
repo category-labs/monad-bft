@@ -1,9 +1,10 @@
-use monad_crypto::Signature;
+use monad_crypto::{GenericSignature, Signature};
 use monad_proto::{error::ProtoError, proto::quorum_certificate::*};
 
 use crate::{
     multi_sig::MultiSig,
     quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC},
+    validation::Hashable,
 };
 
 type QuorumCertificate<S> = ConsensusQC<MultiSig<S>>;
@@ -35,7 +36,10 @@ impl TryFrom<ProtoQcInfo> for QcInfo {
     }
 }
 
-impl<S: Signature> From<&QuorumCertificate<S>> for ProtoQuorumCertificateAggSig {
+// TODO: generalize over signature collection
+impl<S: Signature + GenericSignature + Hashable> From<&QuorumCertificate<S>>
+    for ProtoQuorumCertificateAggSig
+{
     fn from(value: &QuorumCertificate<S>) -> Self {
         Self {
             info: Some((&value.info).into()),
@@ -44,7 +48,9 @@ impl<S: Signature> From<&QuorumCertificate<S>> for ProtoQuorumCertificateAggSig 
     }
 }
 
-impl<S: Signature> TryFrom<ProtoQuorumCertificateAggSig> for QuorumCertificate<S> {
+impl<S: Signature + GenericSignature + Hashable> TryFrom<ProtoQuorumCertificateAggSig>
+    for QuorumCertificate<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoQuorumCertificateAggSig) -> Result<Self, Self::Error> {

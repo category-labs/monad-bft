@@ -1,3 +1,4 @@
+use monad_crypto::{secp256k1::SecpSignature, NopSignature};
 use monad_types::Hash;
 use sha2::Digest;
 
@@ -43,5 +44,19 @@ impl Hasher for Sha256Hash {
     }
     fn hash(self) -> Hash {
         Hash(self.0.finalize().into())
+    }
+}
+
+impl Hashable for SecpSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };
+        state.update(slice);
+    }
+}
+
+impl Hashable for NopSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let slice = unsafe { std::mem::transmute::<Self, [u8; 72]>(*self) };
+        state.update(slice);
     }
 }

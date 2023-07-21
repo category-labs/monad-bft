@@ -17,9 +17,12 @@ use monad_consensus_types::{
     signature::{SignatureBuilder, SignatureCollection},
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
-    voting::VoteInfo,
+    voting::{Vote, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::{
+    secp256k1::{KeyPair, SecpSignature},
+    GenericKeyPair, GenericSignature,
+};
 use monad_state::{ConsensusEvent, MonadEvent};
 use monad_testutil::{block::setup_block, signing::get_key, validators::create_keys_w_validators};
 use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
@@ -32,7 +35,9 @@ use tempfile::{tempdir, TempDir};
 
 const N_VALIDATORS: usize = 400;
 
-type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>>;
+type SignatureCollectionType = MultiSig<SecpSignature>;
+type BenchEvent = MonadEvent<SecpSignature, SignatureCollectionType>;
+
 struct MonadEventBencher {
     event: BenchEvent,
     logger: WALogger<BenchEvent>,
@@ -60,15 +65,21 @@ impl MonadEventBencher {
 
 fn bench_proposal(c: &mut Criterion) {
     let txns = TransactionList(vec![0x23_u8; 32 * 10000]);
-    let (keypairs, _blskeypairs, validators, validators_prop) = create_keys_w_validators(1);
+    let (keypairs, _blskeypairs, votekeys, validators, validators_prop) =
+        create_keys_w_validators::<SignatureCollectionType>(1);
     let author_keypair = &keypairs[0];
+
+    let voters = keypairs
+        .iter()
+        .map(|key| NodeId(key.pubkey()))
+        .zip(votekeys.iter());
 
     let blk = setup_block(
         NodeId(author_keypair.pubkey()),
         10,
         9,
         txns,
-        &keypairs,
+        voters.into_iter(),
         &validators_prop,
     );
 
@@ -101,13 +112,21 @@ fn bench_vote(c: &mut Criterion) {
         commit_state_hash: None,
         vote_info_hash: Hash([42_u8; 32]),
     };
-    let vote = ConsensusMessage::Vote(VoteMessage {
+
+    let vote = Vote {
         vote_info: vi,
         ledger_commit_info: lci,
-    });
+    };
 
-    let vote_hash = Sha256Hash::hash_object(&vote);
-    let unverified_message = Unverified::new(vote, keypair.sign(vote_hash.as_ref()));
+    let vote_msg = VoteMessage::<SignatureCollectionType> {
+        vote,
+        sig:<<SignatureCollectionType as SignatureCollection>::SignatureType as GenericSignature>::sign(Sha256Hash::hash_object(&vote).as_ref(), &keypair),
+    };
+
+    let consensus_vote = ConsensusMessage::Vote(vote_msg);
+
+    let vote_hash = Sha256Hash::hash_object(&consensus_vote);
+    let unverified_message = Unverified::new(consensus_vote, keypair.sign(vote_hash.as_ref()));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),
@@ -126,8 +145,8 @@ fn bench_vote(c: &mut Criterion) {
 }
 
 fn bench_timeout(c: &mut Criterion) {
-    let (keypairs, _blskeypairs, _validators, validators_prop) =
-        create_keys_w_validators(N_VALIDATORS as u32);
+    let (keypairs, _blskeypairs, votekeys, _validators, validators_prop) =
+        create_keys_w_validators::<SignatureCollectionType>(N_VALIDATORS as u32);
     let author_keypair = &keypairs[0];
 
     let vi = VoteInfo {
@@ -147,7 +166,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let mut builder = SignatureBuilder::new();
 
-    for keypair in keypairs.iter() {
+    for keypair in votekeys.iter() {
         let idx = validators_prop
             .get_index(&NodeId(keypair.pubkey()))
             .unwrap();

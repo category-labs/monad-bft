@@ -1,6 +1,6 @@
 use monad_crypto::{
     convert::{proto_to_signature, signature_to_proto},
-    Signature,
+    GenericSignature, Signature,
 };
 use monad_proto::{error::ProtoError, proto::timeout::*};
 
@@ -10,6 +10,7 @@ use crate::{
         HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
         TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
     },
+    validation::Hashable,
 };
 
 type HighQcRoundSigTuple<S> = TypeHighQcRoundSigTuple<S>;
@@ -99,7 +100,7 @@ impl<S: Signature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<S> {
     }
 }
 
-impl<S: Signature> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
+impl<S: Signature + GenericSignature + Hashable> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
     fn from(value: &TimeoutInfo<S>) -> Self {
         Self {
             round: Some((&value.round).into()),
@@ -108,7 +109,9 @@ impl<S: Signature> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo<S> {
+impl<S: Signature + GenericSignature + Hashable> TryFrom<ProtoTimeoutInfoAggSig>
+    for TimeoutInfo<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutInfoAggSig) -> Result<Self, Self::Error> {

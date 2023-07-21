@@ -1,31 +1,42 @@
 use monad_consensus_types::{
     block::Block,
-    ledger::LedgerCommitInfo,
     signature::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     validation::{Hashable, Hasher},
-    voting::VoteInfo,
+    voting::Vote,
 };
 use monad_crypto::Signature;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct VoteMessage {
-    pub vote_info: VoteInfo,
-    pub ledger_commit_info: LedgerCommitInfo,
+#[derive(PartialEq, Eq)]
+pub struct VoteMessage<SCT: SignatureCollection> {
+    pub vote: Vote,
+    pub sig: SCT::SignatureType,
 }
 
-impl std::fmt::Debug for VoteMessage {
+impl<SCT: SignatureCollection> Copy for VoteMessage<SCT> {}
+
+impl<SCT: SignatureCollection> Clone for VoteMessage<SCT> {
+    fn clone(&self) -> Self {
+        Self {
+            vote: self.vote,
+            sig: self.sig,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> std::fmt::Debug for VoteMessage<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VoteMessage")
-            .field("info", &self.vote_info)
-            .field("lc", &self.ledger_commit_info)
+        f.debug_struct("VoteMessageSigned")
+            .field("vote", &self.vote)
+            .field("sig", &self.sig)
             .finish()
     }
 }
 
-impl Hashable for VoteMessage {
+impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ledger_commit_info.hash(state)
+        self.vote.hash(state);
+        self.sig.hash(state);
     }
 }
 

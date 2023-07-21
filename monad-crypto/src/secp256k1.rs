@@ -2,7 +2,7 @@ use secp256k1::Secp256k1;
 use sha2::Digest;
 use zeroize::Zeroize;
 
-use crate::Signature;
+use crate::{GenericKeyPair, GenericSignature, Signature};
 
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
@@ -68,8 +68,25 @@ fn msg_hash(msg: &[u8]) -> secp256k1::Message {
     secp256k1::Message::from_slice(&hash).expect("32 bytes")
 }
 
+impl GenericKeyPair for KeyPair {
+    type SignatureType = SecpSignature;
+    type Error = Error;
+
+    fn sign(&self, msg: &[u8]) -> Self::SignatureType {
+        self.sign(msg)
+    }
+
+    fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, Self::Error> {
+        Self::from_bytes(&mut secret)
+    }
+
+    fn pubkey(&self) -> <Self::SignatureType as crate::GenericSignature>::PubKeyType {
+        self.pubkey()
+    }
+}
+
 impl KeyPair {
-    pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, Error> {
+    fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, Error> {
         let secret = secret.as_mut();
         let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
             .map(Self)
@@ -98,7 +115,7 @@ impl KeyPair {
         Ok((monad_keypair, libp2p_keypair))
     }
 
-    pub fn sign(&self, msg: &[u8]) -> SecpSignature {
+    fn sign(&self, msg: &[u8]) -> SecpSignature {
         SecpSignature(Secp256k1::sign_ecdsa_recoverable(
             secp256k1::SECP256K1,
             &msg_hash(msg),
@@ -106,7 +123,7 @@ impl KeyPair {
         ))
     }
 
-    pub fn pubkey(&self) -> PubKey {
+    fn pubkey(&self) -> PubKey {
         PubKey(self.0.public_key())
     }
 }
@@ -134,6 +151,28 @@ impl PubKey {
             &self.0,
         )
         .map_err(Error)
+    }
+}
+
+impl GenericSignature for SecpSignature {
+    type KeyPairType = KeyPair;
+    type PubKeyType = PubKey;
+    type Error = Error;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
+        keypair.sign(msg)
+    }
+
+    fn verify(&self, msg: &[u8], pubkey: &Self::PubKeyType) -> Result<(), Self::Error> {
+        pubkey.verify(msg, self)
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        self.serialize().to_vec()
+    }
+
+    fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
+        Self::deserialize(signature)
     }
 }
 

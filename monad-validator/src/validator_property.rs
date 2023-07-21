@@ -78,6 +78,7 @@ impl ValidatorSetPropertyType for ValidatorSetProperty {
 
 #[cfg(test)]
 mod test {
+    use monad_crypto::GenericKeyPair;
     use monad_testutil::signing::{create_keys, create_keys_bls, get_key, get_key_bls};
     use monad_types::NodeId;
 

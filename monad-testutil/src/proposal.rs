@@ -6,12 +6,12 @@ use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::{SignatureBuilder, SignatureCollection},
+    signature::{SignatureBuilder, SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hashable, Hasher, Sha256Hash},
     voting::VoteInfo,
 };
-use monad_crypto::{secp256k1::KeyPair, Signature};
+use monad_crypto::{secp256k1::KeyPair, GenericKeyPair, GenericSignature, Signature};
 use monad_types::{NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection, validator_property::ValidatorSetPropertyType,
@@ -45,7 +45,8 @@ where
         LT: LeaderElection,
     >(
         &mut self,
-        keys: &Vec<KeyPair>,
+        keys: &[KeyPair],
+        voting_keys: &[SignatureCollectionKeyPairType<SCT>],
         valset: &VT,
         election: &LT,
         valset_prop: &VPT,
@@ -68,7 +69,13 @@ where
         let block = Block::new::<Sha256Hash>(NodeId(leader_key.pubkey()), self.round, payload, qc);
 
         self.high_qc = self.qc.clone();
-        self.qc = self.get_next_qc(keys, &block, valset_prop);
+
+        let voters = keys
+            .iter()
+            .map(|k| NodeId(k.pubkey()))
+            .zip(voting_keys.iter());
+
+        self.qc = self.get_next_qc(voters, &block, valset_prop);
 
         let proposal = ProposalMessage {
             block,
@@ -87,7 +94,7 @@ where
         &mut self,
         keys: &Vec<KeyPair>,
         valset: &VT,
-    ) -> Vec<Verified<SCT::SignatureType, TimeoutMessage<ST, SCT>>> {
+    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId(keypair.pubkey()))
@@ -132,9 +139,9 @@ where
         tmo_msgs
     }
 
-    fn get_next_qc<VPT: ValidatorSetPropertyType>(
+    fn get_next_qc<'k, VPT: ValidatorSetPropertyType>(
         &self,
-        keys: &Vec<KeyPair>,
+        voters: impl Iterator<Item = (NodeId, &'k SignatureCollectionKeyPairType<SCT>)>,
         block: &Block<SCT>,
         valset_prop: &VPT,
     ) -> QuorumCertificate<SCT> {
@@ -154,9 +161,9 @@ where
         let msg = Sha256Hash::hash_object(&lci);
 
         let mut builder = SignatureBuilder::new();
-        for k in keys {
-            let idx = valset_prop.get_index(&NodeId(k.pubkey())).unwrap();
-            let s = SCT::SignatureType::sign(msg.as_ref(), k);
+        for (nodeid, key) in voters {
+            let idx = valset_prop.get_index(&nodeid).unwrap();
+            let s = SCT::SignatureType::sign(msg.as_ref(), key);
             builder.add_signature(idx, s);
         }
 

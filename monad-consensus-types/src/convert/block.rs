@@ -1,10 +1,10 @@
-use monad_crypto::Signature;
+use monad_crypto::{GenericSignature, Signature};
 use monad_proto::{error::ProtoError, proto::block::*};
 
 use crate::{
     block::{Block, TransactionList},
     multi_sig::MultiSig,
-    validation::Sha256Hash,
+    validation::{Hashable, Sha256Hash},
 };
 
 impl From<&TransactionList> for ProtoTransactionList {
@@ -22,7 +22,7 @@ impl TryFrom<ProtoTransactionList> for TransactionList {
     }
 }
 
-impl<S: Signature> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
+impl<S: Signature + GenericSignature + Hashable> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
     fn from(value: &Block<MultiSig<S>>) -> Self {
         Self {
             author: Some((&value.author).into()),
@@ -33,7 +33,7 @@ impl<S: Signature> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoBlockAggSig> for Block<MultiSig<S>> {
+impl<S: Signature + GenericSignature + Hashable> TryFrom<ProtoBlockAggSig> for Block<MultiSig<S>> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockAggSig) -> Result<Self, Self::Error> {

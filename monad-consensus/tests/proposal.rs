@@ -6,7 +6,10 @@ use monad_consensus_types::{
     validation::{Error, Hasher, Sha256Hash},
     voting::VoteInfo,
 };
-use monad_crypto::secp256k1::{PubKey, SecpSignature};
+use monad_crypto::{
+    secp256k1::{PubKey, SecpSignature},
+    GenericKeyPair,
+};
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
     validators::create_keys_w_validators,
@@ -40,7 +43,7 @@ fn setup_block(
 
 #[test]
 fn test_proposal_hash() {
-    let (keypairs, _blskeys, vset, vprop) = create_keys_w_validators(1);
+    let (keypairs, _blskeys, _, vset, vprop) = create_keys_w_validators::<MockSignatures>(1);
     let author = NodeId(keypairs[0].pubkey());
 
     let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
@@ -56,6 +59,7 @@ fn test_proposal_hash() {
         ),
         last_round_tc: None,
     };
+
     let msg = Sha256Hash::hash_object(&proposal);
     let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypairs[0]);
 
@@ -66,7 +70,7 @@ fn test_proposal_hash() {
 
 #[test]
 fn test_proposal_missing_tc() {
-    let (keypairs, _blskeys, vset, vprop) = create_keys_w_validators(1);
+    let (keypairs, _blskeys, _, vset, vprop) = create_keys_w_validators::<MockSignatures>(1);
     let author = NodeId(keypairs[0].pubkey());
 
     let proposal = ProposalMessage {
@@ -95,7 +99,7 @@ fn test_proposal_missing_tc() {
 
 #[test]
 fn test_proposal_invalid_qc() {
-    let (keypairs, _blskeys, vset, vprop) = create_keys_w_validators(1);
+    let (keypairs, _blskeys, _, vset, vprop) = create_keys_w_validators::<MockSignatures>(1);
     let author = NodeId(keypairs[0].pubkey());
 
     let proposal = ProposalMessage {

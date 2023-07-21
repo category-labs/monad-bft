@@ -6,11 +6,13 @@ mod tests {
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
         multi_sig::MultiSig, quorum_certificate::genesis_vote_info,
-        transaction_validator::MockValidator, validation::Sha256Hash,
+        signature::SignatureCollectionKeyPairType, transaction_validator::MockValidator,
+        validation::Sha256Hash,
     };
     use monad_crypto::{
         bls12_381::BlsKeyPair,
         secp256k1::{KeyPair, SecpSignature},
+        GenericKeyPair,
     };
     use monad_executor::{
         executor::{ledger::MockLedger, mempool::MockMempool},
@@ -56,7 +58,8 @@ mod tests {
                 let (key, key_libp2p) =
                     KeyPair::libp2p_from_bytes(k.clone().as_mut_slice()).unwrap();
 
-                let blskey = BlsKeyPair::from_bytes(&mut k).unwrap();
+                let blskey = BlsKeyPair::from_bytes(k.clone().as_mut_slice()).unwrap();
+                let voting_key = <SignatureCollectionKeyPairType<SignatureCollectionType> as GenericKeyPair>::from_bytes(k.as_mut_slice()).expect("voting key");
 
                 let executor = monad_executor::executor::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
@@ -66,14 +69,15 @@ mod tests {
                 };
 
                 let logger_config = MockWALoggerConfig {};
-                (key, blskey, executor, logger_config)
+                (key, blskey, voting_key, executor, logger_config)
             })
             .collect::<Vec<_>>();
 
         // set up executors - dial each other
         for i in 0..NUM_NODES {
-            let (key, blskey, mut executor, logger_config) = node_configs.pop().unwrap();
-            for (_, _, executor_to_dial, _) in &mut node_configs {
+            let (key, blskey, voting_key, mut executor, logger_config) =
+                node_configs.pop().unwrap();
+            for (_, _, _, executor_to_dial, _) in &mut node_configs {
                 let addresses = executor_to_dial
                     .router
                     .listeners()
@@ -87,18 +91,18 @@ mod tests {
                 }
             }
 
-            node_configs.push((key, blskey, executor, logger_config));
+            node_configs.push((key, blskey, voting_key, executor, logger_config));
             node_configs.swap(i as usize, NUM_NODES as usize - 1);
         }
 
         let pubkeys = node_configs
             .iter()
-            .map(|(key, _, _, _)| KeyPair::pubkey(key))
+            .map(|(key, _, _, _, _)| KeyPair::pubkey(key))
             .collect::<Vec<_>>();
 
         let prop_list = node_configs
             .iter()
-            .map(|(key, blskey, _, _)| (NodeId(key.pubkey()), blskey.pubkey()))
+            .map(|(key, blskey, _, _, _)| (NodeId(key.pubkey()), blskey.pubkey()))
             .collect::<Vec<_>>();
 
         let validators_property =
@@ -106,23 +110,26 @@ mod tests {
 
         let config_validators = node_configs
             .iter()
-            .map(|(key, blskey, _, _)| (key.pubkey(), blskey.pubkey()))
+            .map(|(key, blskey, _, _, _)| (key.pubkey(), blskey.pubkey()))
             .collect::<Vec<_>>();
 
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            node_configs.iter().map(|(key, _, _, _)| key),
-            &validators_property,
-        );
+        let voters = pubkeys
+            .iter()
+            .map(|pk| NodeId(*pk))
+            .zip(node_configs.iter().map(|(_, _, key, _, _)| key));
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<Sha256Hash, SignatureCollectionType>(voters, &validators_property);
 
         let state_configs = node_configs
             .into_iter()
             .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|((key, _, exec, logger_config), _)| {
+            .map(|((key, _, voting_key, exec, logger_config), _)| {
                 (
                     exec,
                     MonadConfig {
                         transaction_validator: TransactionValidatorType {},
                         key,
+                        voting_key,
                         validators: config_validators.clone(),
                         delta: Duration::from_millis(2),
                         genesis_block: genesis_block.clone(),

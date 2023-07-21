@@ -5,13 +5,13 @@ use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    signature::{SignatureBuilder, SignatureCollection},
+    signature::{SignatureBuilder, SignatureCollection, SignatureCollectionKeyPairType},
     validation::Hasher,
 };
 use monad_crypto::{
     bls12_381::{BlsKeyPair, BlsPubKey},
     secp256k1::{Error as SecpError, KeyPair, PubKey, SecpSignature},
-    Signature,
+    GenericKeyPair, GenericSignature,
 };
 use monad_types::{Hash, NodeId, Round};
 use monad_validator::validator_property::{ValidatorSetProperty, ValidatorSetPropertyType};
@@ -107,8 +107,22 @@ pub fn create_keys_bls(num_keys: u32) -> Vec<BlsKeyPair> {
     res
 }
 
+pub fn create_voting_keys<SCT: SignatureCollection>(
+    num_keys: u32,
+) -> Vec<<SCT::SignatureType as GenericSignature>::KeyPairType> {
+    let mut res = Vec::new();
+    for i in 0..num_keys {
+        let keypair = <SignatureCollectionKeyPairType<SCT> as GenericKeyPair>::from_bytes(
+            get_secret(i.into()),
+        )
+        .unwrap();
+        res.push(keypair);
+    }
+    res
+}
+
 pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
-    keys: impl Iterator<Item = &'k KeyPair>,
+    signers: impl Iterator<Item = (NodeId, &'k SignatureCollectionKeyPairType<T>)>,
     validators_property: &ValidatorSetProperty,
 ) -> (Block<T>, T) {
     let genesis_txn = TransactionList::default();
@@ -125,8 +139,8 @@ pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
     let msg = H::hash_object(&genesis_lci);
 
     let mut builder = SignatureBuilder::new();
-    for k in keys {
-        let idx = validators_property.get_index(&NodeId(k.pubkey())).unwrap();
+    for (node_id, k) in signers {
+        let idx = validators_property.get_index(&node_id).unwrap();
         let sig = T::SignatureType::sign(msg.as_ref(), k);
         builder.add_signature(idx, sig);
     }
@@ -147,16 +161,16 @@ impl TestSigner<SecpSignature> {
     }
 }
 
-pub fn get_key(seed: u64) -> KeyPair {
+pub fn get_secret(seed: u64) -> impl AsMut<[u8]> {
     let mut hasher = Sha256::new();
     hasher.update(seed.to_le_bytes());
-    let mut hash = hasher.finalize();
-    KeyPair::from_bytes(&mut hash).unwrap()
+    hasher.finalize()
+}
+
+pub fn get_key(seed: u64) -> KeyPair {
+    KeyPair::from_bytes(get_secret(seed).as_mut()).unwrap()
 }
 
 pub fn get_key_bls(seed: u64) -> BlsKeyPair {
-    let mut hasher = Sha256::new();
-    hasher.update(seed.to_le_bytes());
-    let mut hash = hasher.finalize();
-    BlsKeyPair::from_bytes(&mut hash).unwrap()
+    BlsKeyPair::from_bytes(get_secret(seed).as_mut()).unwrap()
 }

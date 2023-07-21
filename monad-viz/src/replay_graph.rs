@@ -4,14 +4,17 @@ use monad_consensus_types::{
     quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
     validation::Sha256Hash,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    secp256k1::{KeyPair, PubKey},
+    GenericKeyPair,
+};
 use monad_executor::{
     executor::mock::MockExecutor, replay_nodes::ReplayNodes, timed_event::TimedEvent, Message,
     PeerId, State,
 };
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
-use monad_types::{Deserializable, Serializable};
+use monad_types::{Deserializable, NodeId, Serializable};
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
@@ -27,20 +30,28 @@ pub struct RepConfig {
 
 impl ReplayConfig<MS> for RepConfig {
     fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
-        let (keys, blskeys, validators, validators_prop) = create_keys_w_validators(self.num_nodes);
+        let (keys, blskeys, votekeys, validators, validators_prop) =
+            create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
+
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+        let voters = pubkeys
+            .iter()
+            .map(|pk| NodeId(*pk))
+            .zip(votekeys.iter())
+            .collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            keys.iter(),
+            voters.into_iter(),
             &validators_prop,
         );
 
         let state_configs = keys
             .into_iter()
             .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|(key, pubkeys)| MonadConfig {
+            .zip(votekeys.into_iter())
+            .map(|((key, pubkeys), voting_key)| MonadConfig {
                 transaction_validator: MockValidator,
-
                 key,
+                voting_key,
                 validators: pubkeys
                     .iter()
                     .cloned()

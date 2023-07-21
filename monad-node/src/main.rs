@@ -8,7 +8,7 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    signature::{SignatureBuilder, SignatureCollection},
+    signature::{SignatureBuilder, SignatureCollection, SignatureCollectionKeyPairType},
     transaction_validator::MockValidator,
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
@@ -16,7 +16,7 @@ use monad_consensus_types::{
 use monad_crypto::{
     bls12_381::{BlsKeyPair, BlsPubKey},
     secp256k1::{KeyPair, PubKey, SecpSignature},
-    Signature,
+    GenericKeyPair, GenericSignature,
 };
 use monad_executor::{
     executor::{
@@ -238,7 +238,7 @@ fn testnet(
         let mut builder = SignatureBuilder::new();
         for (key, _) in keys.iter() {
             let idx = vprop.get_index(&NodeId(key.pubkey())).unwrap();
-            let sig = <SignatureCollectionType as SignatureCollection>::SignatureType::sign(
+            let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as GenericSignature>::sign(
                 msg.as_ref(),
                 key,
             );
@@ -284,6 +284,12 @@ async fn run(
 ) {
     let (keypair, libp2p_keypair) =
         KeyPair::libp2p_from_bytes(config.secret_key.as_mut_slice()).expect("invalid key");
+    let mut secret_copy = config.secret_key.clone();
+    let voting_keypair =
+        <SignatureCollectionKeyPairType<SignatureCollectionType> as GenericKeyPair>::from_bytes(
+            secret_copy.as_mut_slice(),
+        )
+        .expect("voting keypair");
 
     let mut router = monad_p2p::Service::with_tokio_executor(
         libp2p_keypair.into(),
@@ -316,6 +322,7 @@ async fn run(
             .map(|(_, peer, blspk)| (peer, blspk))
             .collect(),
         key: keypair,
+        voting_key: voting_keypair,
         delta: config.delta,
         genesis_block: config.genesis_block,
         genesis_vote_info: config.genesis_vote_info,

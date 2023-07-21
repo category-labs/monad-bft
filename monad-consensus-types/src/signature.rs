@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 
-use monad_crypto::{bls12_381::BlsPubKey, Signature};
+use monad_crypto::{bls12_381::BlsPubKey, GenericSignature};
 use monad_types::{Hash, NodeId};
+
+use crate::validation::Hashable;
 
 #[derive(Clone, Debug)]
 pub struct SignatureBuilder<SCT: SignatureCollection> {
@@ -33,9 +35,13 @@ impl<SCT: SignatureCollection> IntoIterator for SignatureBuilder<SCT> {
     }
 }
 
+pub type SignatureCollectionKeyPairType<SCT> =
+    <<SCT as SignatureCollection>::SignatureType as GenericSignature>::KeyPairType;
+
 pub trait SignatureCollection: Clone + Send + Sync + std::fmt::Debug + 'static {
     type SignatureError: std::error::Error + Send + Sync;
-    type SignatureType: Signature + Copy;
+    type SignatureType: GenericSignature + Copy + Hashable;
+    // need Hashable to create signtaure over the SignatureCollection
 
     /// the new() function verifies:
     ///   1. nodeId idx is in range

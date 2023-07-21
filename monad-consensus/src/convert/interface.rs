@@ -1,17 +1,18 @@
-use monad_crypto::Signature;
+use monad_consensus_types::validation::Hashable;
+use monad_crypto::{GenericSignature, Signature};
 use monad_proto::{error::ProtoError, proto::message::ProtoUnverifiedConsensusMessage};
 use prost::Message;
 
 use super::message::{UnverifiedConsensusMessage, VerifiedConsensusMessage};
 
 pub fn serialize_verified_consensus_message(
-    msg: &VerifiedConsensusMessage<impl Signature>,
+    msg: &VerifiedConsensusMessage<impl Signature + GenericSignature + Hashable>,
 ) -> Vec<u8> {
     let proto_msg: ProtoUnverifiedConsensusMessage = msg.into();
     proto_msg.encode_to_vec()
 }
 
-pub fn deserialize_unverified_consensus_message<S: Signature>(
+pub fn deserialize_unverified_consensus_message<S: Signature + GenericSignature + Hashable>(
     data: &[u8],
 ) -> Result<UnverifiedConsensusMessage<S>, ProtoError> {
     let msg = ProtoUnverifiedConsensusMessage::decode(data)?;

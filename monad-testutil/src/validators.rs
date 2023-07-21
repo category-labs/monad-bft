@@ -1,4 +1,5 @@
-use monad_crypto::{bls12_381::BlsKeyPair, secp256k1::KeyPair};
+use monad_consensus_types::signature::{SignatureCollection, SignatureCollectionKeyPairType};
+use monad_crypto::{bls12_381::BlsKeyPair, secp256k1::KeyPair, GenericKeyPair};
 use monad_types::{NodeId, Round, Stake};
 use monad_validator::{
     leader_election::LeaderElection,
@@ -6,7 +7,7 @@ use monad_validator::{
     validator_set::{ValidatorSet, ValidatorSetType},
 };
 
-use crate::signing::{create_keys, create_keys_bls};
+use crate::signing::{create_keys, create_keys_bls, create_voting_keys};
 
 pub struct MockLeaderElection {
     leader: NodeId,
@@ -27,16 +28,18 @@ impl LeaderElection for MockLeaderElection {
     }
 }
 
-pub fn create_keys_w_validators(
+pub fn create_keys_w_validators<SCT: SignatureCollection>(
     num_nodes: u32,
 ) -> (
     Vec<KeyPair>,
     Vec<BlsKeyPair>,
+    Vec<SignatureCollectionKeyPairType<SCT>>,
     ValidatorSet,
     ValidatorSetProperty,
 ) {
     let keys = create_keys(num_nodes);
     let blskeys = create_keys_bls(num_nodes);
+    let voting_keys = create_voting_keys::<SCT>(num_nodes);
 
     let staking_list = keys
         .iter()
@@ -54,5 +57,5 @@ pub fn create_keys_w_validators(
     let validators_property =
         ValidatorSetProperty::new(prop_list).expect("create validator set property");
 
-    (keys, blskeys, validators, validators_property)
+    (keys, blskeys, voting_keys, validators, validators_property)
 }

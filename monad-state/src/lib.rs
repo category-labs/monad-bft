@@ -12,13 +12,16 @@ use monad_consensus_state::{
     ConsensusProcess,
 };
 use monad_consensus_types::{
-    block::Block, quorum_certificate::QuorumCertificate, signature::SignatureCollection,
-    validation::Sha256Hash, voting::VoteInfo,
+    block::Block,
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    validation::{Hashable, Sha256Hash},
+    voting::VoteInfo,
 };
 use monad_crypto::{
     bls12_381::BlsPubKey,
     secp256k1::{KeyPair, PubKey},
-    Signature,
+    GenericKeyPair, GenericSignature, Signature,
 };
 use monad_executor::{
     Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, RouterTarget, State,
@@ -40,7 +43,7 @@ type HasherType = Sha256Hash;
 
 pub struct MonadState<CT, ST, SCT, VT, VPT, LT>
 where
-    ST: Signature,
+    ST: Signature + GenericSignature + Hashable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
@@ -54,7 +57,8 @@ where
 impl<CT, ST, SCT, VT, VPT, LT> MonadState<CT, ST, SCT, VT, VPT, LT>
 where
     CT: ConsensusProcess<ST, SCT>,
-    ST: Signature,
+    ST: Signature + GenericSignature + Hashable,
+
     SCT: SignatureCollection<SignatureType = ST>,
 {
     pub fn pubkey(&self) -> PubKey {
@@ -69,7 +73,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
 where
-    ST: Signature,
+    ST: Signature + GenericSignature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     ConsensusEvent(ConsensusEvent<ST, SCT>),
@@ -126,15 +130,17 @@ impl monad_types::Serializable
 }
 
 #[derive(Debug, Clone)]
-pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>);
+pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
+    Verified<ST, ConsensusMessage<ST, SCT>>,
+);
 
 #[derive(RefCast)]
 #[repr(transparent)]
 #[derive(Debug, Clone)]
-pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
+pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_types::Serializable
+impl<S: Signature + GenericSignature + Hashable> monad_types::Serializable
     for VerifiedMonadMessage<S, monad_consensus_types::multi_sig::MultiSig<S>>
 {
     fn serialize(&self) -> Vec<u8> {
@@ -143,7 +149,7 @@ impl<S: Signature> monad_types::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_types::Deserializable
+impl<S: Signature + GenericSignature + Hashable> monad_types::Deserializable
     for MonadMessage<S, monad_consensus_types::multi_sig::MultiSig<S>>
 {
     type ReadError = monad_proto::error::ProtoError;
@@ -155,13 +161,13 @@ impl<S: Signature> monad_types::Deserializable
     }
 }
 
-impl<ST, SCT> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
+impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         MonadMessage(value.0.into())
     }
 }
 
-impl<ST, SCT> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
+impl<ST, SCT: SignatureCollection> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
     fn as_ref(&self) -> &MonadMessage<ST, SCT> {
         MonadMessage::ref_cast(self.0.as_ref())
     }
@@ -169,7 +175,7 @@ impl<ST, SCT> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
 
 impl<ST, SCT> Message for MonadMessage<ST, SCT>
 where
-    ST: Signature,
+    ST: Signature + GenericSignature + Hashable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     type Event = MonadEvent<ST, SCT>;
@@ -191,10 +197,11 @@ where
     }
 }
 
-pub struct MonadConfig<SCT, TV> {
+pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub transaction_validator: TV,
     pub validators: Vec<(PubKey, BlsPubKey)>,
     pub key: KeyPair,
+    pub voting_key: <SCT::SignatureType as GenericSignature>::KeyPairType,
 
     pub delta: Duration,
     pub genesis_block: Block<SCT>,
@@ -205,7 +212,7 @@ pub struct MonadConfig<SCT, TV> {
 impl<CT, ST, SCT, VT, VPT, LT> State for MonadState<CT, ST, SCT, VT, VPT, LT>
 where
     CT: ConsensusProcess<ST, SCT>,
-    ST: Signature,
+    ST: Signature + GenericSignature + Hashable,
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
     VPT: ValidatorSetPropertyType,
@@ -264,6 +271,7 @@ where
                 genesis_qc,
                 config.delta,
                 config.key,
+                config.voting_key,
             ),
         };
 
@@ -350,7 +358,6 @@ where
                             ConsensusMessage::Vote(msg) => {
                                 self.consensus.handle_vote_message::<HasherType, _, _, _>(
                                     author,
-                                    signature,
                                     msg,
                                     &self.validator_set,
                                     &self.validator_set_property,
@@ -429,7 +436,7 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusEvent<ST, SCT> {
+pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
         sender: PubKey,
         unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
@@ -440,7 +447,7 @@ pub enum ConsensusEvent<ST, SCT> {
     FetchedFullTxs(FetchedFullTxs<ST, SCT>),
 }
 
-impl<S: Debug, SC: Debug> Debug for ConsensusEvent<S, SC> {
+impl<S: Debug, SC: Debug + SignatureCollection> Debug for ConsensusEvent<S, SC> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusEvent::Message {
