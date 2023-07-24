@@ -4,9 +4,11 @@ use rand_chacha::ChaChaRng;
 use std::{collections::BTreeMap, collections::HashSet, time::Duration};
 
 use crate::signing::{create_keys, get_genesis_config};
-use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
 use monad_consensus_types::{
-    multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
+    multi_sig::MultiSig,
+    quorum_certificate::genesis_vote_info,
+    signature::SignatureCollection,
+    transaction_validator::{MockValidator, TransactionValidator},
     validation::Sha256Hash,
 };
 use monad_crypto::{
@@ -25,13 +27,12 @@ use monad_wal::PersistenceLogger;
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
-type TransactionCollectionType = MockTransactions;
-type MS = MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>;
-type MC = MonadConfig<SignatureCollectionType>;
+type TransactionValidatorType = MockValidator;
+type MS = MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>;
+type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
 type MM = <MS as State>::Message;
-type PersistenceLoggerType = MockWALogger<
-    TimedEvent<MonadEvent<SignatureType, SignatureCollectionType, TransactionCollectionType>>,
->;
+type PersistenceLoggerType =
+    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 
 pub enum TransformerReplayOrder {
     Forward,
@@ -112,7 +113,7 @@ impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>> Transformer<Mo
 pub fn get_configs<SCT: SignatureCollection>(
     num_nodes: u16,
     delta: Duration,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT>>) {
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TransactionValidatorType>>) {
     let keys = create_keys(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
@@ -121,6 +122,7 @@ pub fn get_configs<SCT: SignatureCollection>(
         .into_iter()
         .zip(std::iter::repeat(pubkeys.clone()))
         .map(|(key, pubkeys)| MonadConfig {
+            transaction_validator: TransactionValidatorType {},
             key,
             validators: pubkeys,
 
@@ -137,14 +139,14 @@ pub fn get_configs<SCT: SignatureCollection>(
 pub fn node_ledger_verification<
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
-    TC: TransactionCollection,
     PL: PersistenceLogger,
+    TV: TransactionValidator,
 >(
     states: &BTreeMap<
         PeerId,
         (
-            MockExecutor<MonadState<ST, SCT, TC>>,
-            MonadState<ST, SCT, TC>,
+            MockExecutor<MonadState<ST, SCT, TV>>,
+            MonadState<ST, SCT, TV>,
             PL,
         ),
     >,

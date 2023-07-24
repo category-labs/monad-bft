@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
+use monad_consensus_types::transaction_validator::MockValidator;
 use opentelemetry::trace::Span;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::Tracer;
@@ -16,7 +17,6 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature::SignatureCollection,
-    transaction::MockTransactions,
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
@@ -36,9 +36,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
-type TransactionCollectionType = MockTransactions;
+type TransactionValidatorType = MockValidator;
 type MonadState =
-    monad_state::MonadState<SignatureType, SignatureCollectionType, TransactionCollectionType>;
+    monad_state::MonadState<SignatureType, SignatureCollectionType, TransactionValidatorType>;
 type MonadConfig = <MonadState as State>::Config;
 
 pub struct Config {
@@ -277,6 +277,7 @@ async fn run(
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {
+        transaction_validator: TransactionValidatorType {},
         validators: config
             .genesis_peers
             .into_iter()

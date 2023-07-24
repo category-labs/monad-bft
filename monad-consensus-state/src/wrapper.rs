@@ -1,22 +1,20 @@
-use monad_consensus_types::{signature::SignatureCollection, transaction::TransactionCollection};
+use monad_consensus_types::signature::SignatureCollection;
 use monad_crypto::Signature;
 
 use crate::ConsensusState;
 
-struct ConsensusStateWrapper<S: Signature, SC: SignatureCollection, T: TransactionCollection> {
-    consensus_state: ConsensusState<S, SC, T>,
+struct ConsensusStateWrapper<S: Signature, SC: SignatureCollection, TV> {
+    consensus_state: ConsensusState<S, SC, TV>,
 }
 
-impl<S: Signature, SC: SignatureCollection, T: TransactionCollection> Drop
-    for ConsensusStateWrapper<S, SC, T>
-{
+impl<S: Signature, SC: SignatureCollection, TV> Drop for ConsensusStateWrapper<S, SC, TV> {
     fn drop(&mut self) {
         eprintln!("{:?}", self);
     }
 }
 
-impl<S: Signature, SC: SignatureCollection, T: TransactionCollection> std::fmt::Debug
-    for ConsensusStateWrapper<S, SC, T>
+impl<S: Signature, SC: SignatureCollection, TV> std::fmt::Debug
+    for ConsensusStateWrapper<S, SC, TV>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")

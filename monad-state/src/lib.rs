@@ -13,12 +13,8 @@ use monad_consensus_state::{
     ConsensusState,
 };
 use monad_consensus_types::{
-    block::Block,
-    quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection,
-    transaction::{MockTransactions, TransactionCollection},
-    validation::Sha256Hash,
-    voting::VoteInfo,
+    block::Block, quorum_certificate::QuorumCertificate, signature::SignatureCollection,
+    transaction_validator::TransactionValidator, validation::Sha256Hash, voting::VoteInfo,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -42,23 +38,21 @@ mod message;
 type LeaderElectionType = WeightedRoundRobin;
 type HasherType = Sha256Hash;
 
-pub struct MonadState<ST, SCT, TC>
+pub struct MonadState<ST, SCT, TV>
 where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
-    TC: TransactionCollection,
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
-    consensus_state: ConsensusState<ST, SCT, TC>,
+    consensus_state: ConsensusState<ST, SCT, TV>,
     validator_set: ValidatorSet<LeaderElectionType>,
 }
 
-impl<ST, SCT, TC> MonadState<ST, SCT, TC>
+impl<ST, SCT, TV> MonadState<ST, SCT, TV>
 where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
-    TC: TransactionCollection,
 {
     pub fn pubkey(&self) -> PubKey {
         self.consensus_state.nodeid.0
@@ -70,20 +64,18 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MonadEvent<ST, SCT, TC>
+pub enum MonadEvent<ST, SCT>
 where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
-    TC: TransactionCollection,
 {
-    ConsensusEvent(ConsensusEvent<ST, SCT, TC>),
+    ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
 
 impl monad_types::Deserializable
     for MonadEvent<
         monad_crypto::NopSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
-        MockTransactions,
     >
 {
     type ReadError = monad_proto::error::ProtoError;
@@ -97,7 +89,6 @@ impl monad_types::Serializable
     for MonadEvent<
         monad_crypto::NopSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
-        MockTransactions,
     >
 {
     fn serialize(&self) -> Vec<u8> {
@@ -106,14 +97,11 @@ impl monad_types::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl<T> monad_types::Deserializable
+impl monad_types::Deserializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
-        T,
     >
-where
-    T: TransactionCollection,
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -123,14 +111,11 @@ where
 }
 
 #[cfg(feature = "proto")]
-impl<T> monad_types::Serializable
+impl monad_types::Serializable
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
-        T,
     >
-where
-    T: TransactionCollection,
 {
     fn serialize(&self) -> Vec<u8> {
         crate::convert::interface::serialize_event(self)
@@ -184,14 +169,14 @@ where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
-    type Event<TC: TransactionCollection> = MonadEvent<ST, SCT, TC>;
+    type Event = MonadEvent<ST, SCT>;
     type Id = ST;
 
     fn id(&self) -> Self::Id {
         *self.0.author_signature()
     }
 
-    fn event<TC: TransactionCollection>(self, from: PeerId) -> Self::Event<TC> {
+    fn event(self, from: PeerId) -> Self::Event {
         // MUST assert that output is valid and came from the `from` PeerId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
@@ -203,7 +188,8 @@ where
     }
 }
 
-pub struct MonadConfig<SCT> {
+pub struct MonadConfig<SCT, TV> {
+    pub transaction_validator: TV,
     pub validators: Vec<PubKey>,
     pub key: KeyPair,
 
@@ -213,26 +199,23 @@ pub struct MonadConfig<SCT> {
     pub genesis_signatures: SCT,
 }
 
-impl<ST, SCT, TC> State for MonadState<ST, SCT, TC>
+impl<ST, SCT, TV> State for MonadState<ST, SCT, TV>
 where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
-    TC: TransactionCollection,
+    TV: TransactionValidator,
 {
-    type Config = MonadConfig<SCT>;
-    type Event = MonadEvent<ST, SCT, TC>;
+    type Config = MonadConfig<SCT, TV>;
+    type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
     type Block = Block<SCT>;
-    type TransactionCollection = TC;
 
     fn init(
         config: Self::Config,
     ) -> (
         Self,
-        Vec<
-            Command<Self::Message, Self::OutboundMessage, Self::Block, Self::TransactionCollection>,
-        >,
+        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
     ) {
         // create my keys and validator structs
         // FIXME stake should be configurable
@@ -251,7 +234,7 @@ where
             config.genesis_signatures,
         );
 
-        let mut monad_state: MonadState<ST, SCT, TC> = Self {
+        let mut monad_state: MonadState<ST, SCT, TV> = Self {
             message_state: MessageState::new(
                 10,
                 validator_list
@@ -261,6 +244,7 @@ where
             ),
             validator_set: val_set,
             consensus_state: ConsensusState::new(
+                config.transaction_validator,
                 config.key.pubkey(),
                 config.genesis_block,
                 genesis_qc,
@@ -279,11 +263,10 @@ where
     fn update(
         &mut self,
         event: Self::Event,
-    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::TransactionCollection>>
-    {
+    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
-                let consensus_commands: Vec<ConsensusCommand<ST, SCT, TC>> = match consensus_event {
+                let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(pacemaker_expire) => self
                         .consensus_state
                         .pacemaker
@@ -433,7 +416,7 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusEvent<ST, SCT, TC> {
+pub enum ConsensusEvent<ST, SCT> {
     Message {
         sender: PubKey,
         unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
@@ -441,10 +424,10 @@ pub enum ConsensusEvent<ST, SCT, TC> {
     Timeout(PacemakerTimerExpire),
 
     FetchedTxs(FetchedTxs<ST, SCT>),
-    FetchedFullTxs(FetchedFullTxs<ST, SCT, TC>),
+    FetchedFullTxs(FetchedFullTxs<ST, SCT>),
 }
 
-impl<S: Debug, SC: Debug, T: Debug> Debug for ConsensusEvent<S, SC, T> {
+impl<S: Debug, SC: Debug> Debug for ConsensusEvent<S, SC> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusEvent::Message {

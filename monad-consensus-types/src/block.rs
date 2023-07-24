@@ -7,9 +7,19 @@ use crate::signature::SignatureCollection;
 use crate::validation::{Hashable, Hasher};
 
 #[derive(Clone, Default, PartialEq, Eq)]
+// TODO rename to TransactionHashList or something
 pub struct TransactionList(pub Vec<u8>);
 
 impl std::fmt::Debug for TransactionList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("TxnHashes").field(&self.0).finish()
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct FullTransactionList(pub Vec<u8>);
+
+impl std::fmt::Debug for FullTransactionList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Txns").field(&self.0).finish()
     }

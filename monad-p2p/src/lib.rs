@@ -7,7 +7,6 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use monad_consensus_types::transaction::TransactionCollection;
 use monad_executor::{Executor, Message, RouterCommand, RouterTarget};
 use monad_types::{Deserializable, Serializable};
 
@@ -20,30 +19,28 @@ use crate::behavior::WrappedMessage;
 
 pub type Multiaddr = libp2p::Multiaddr;
 
-pub struct Service<M, OM, TC>
+pub struct Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
-    TC: TransactionCollection,
 {
     swarm: libp2p::Swarm<Behavior<M, OM>>,
 
     outbound_messages: HashMap<RequestId, Arc<WrappedMessage<M, OM>>>,
     outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
 
-    self_events: VecDeque<M::Event<TC>>,
+    self_events: VecDeque<M::Event>,
 
     // TODO deprecate this once we have a RouterCommand for setting peers
     peers: HashSet<monad_executor::PeerId>,
 }
 
-impl<M, OM, TC> Service<M, OM, TC>
+impl<M, OM> Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
-    TC: TransactionCollection,
 
     OM: Into<M> + AsRef<M>,
 {
@@ -183,12 +180,11 @@ where
     }
 }
 
-impl<M, OM, TC> Executor for Service<M, OM, TC>
+impl<M, OM> Executor for Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
     OM: Serializable + Send + Sync + 'static,
-    TC: TransactionCollection,
 
     OM: Into<M> + AsRef<M> + Clone,
 {
@@ -220,17 +216,16 @@ where
     }
 }
 
-impl<M, OM, TC> Stream for Service<M, OM, TC>
+impl<M, OM> Stream for Service<M, OM>
 where
     M: Message + Deserializable + Send + Sync + 'static,
     <M as Deserializable>::ReadError: 'static,
     OM: AsRef<M> + Serializable + Send + Sync + 'static,
-    TC: TransactionCollection,
 
     OM: Into<M> + AsRef<M>,
     Self: Unpin,
 {
-    type Item = M::Event<TC>;
+    type Item = M::Event;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -317,7 +312,6 @@ mod tests {
     };
 
     use crate::Service;
-    use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
     use monad_executor::Message;
     use monad_types::{Deserializable, Serializable};
 
@@ -332,7 +326,7 @@ mod tests {
     }
 
     impl Message for TestMessage {
-        type Event<TC: TransactionCollection> = TestEvent;
+        type Event = TestEvent;
 
         type Id = u64;
 
@@ -340,8 +334,8 @@ mod tests {
             self.0
         }
 
-        fn event<TC: TransactionCollection>(self, from: monad_executor::PeerId) -> Self::Event<TC> {
-            Self::Event::<TC>::Message(from, self)
+        fn event(self, from: monad_executor::PeerId) -> Self::Event {
+            Self::Event::Message(from, self)
         }
     }
     impl Serializable for TestMessage {
@@ -365,14 +359,10 @@ mod tests {
         }
     }
 
-    fn create_random_node() -> (
-        monad_executor::PeerId,
-        Service<TestMessage, TestMessage, MockTransactions>,
-    ) {
+    fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage, TestMessage>) {
         let keypair = libp2p::identity::Keypair::generate_secp256k1();
         let public = keypair.public();
-        let service =
-            Service::<TestMessage, TestMessage, MockTransactions>::without_executor(keypair);
+        let service = Service::<TestMessage, TestMessage>::without_executor(keypair);
         let libp2p_peer_id = public.to_peer_id();
         (
             monad_executor::PeerId(libp2p_peer_id.try_into().unwrap()),
@@ -382,7 +372,7 @@ mod tests {
 
     fn create_random_nodes(
         num: usize,
-    ) -> BTreeMap<monad_executor::PeerId, Service<TestMessage, TestMessage, MockTransactions>> {
+    ) -> BTreeMap<monad_executor::PeerId, Service<TestMessage, TestMessage>> {
         let mut nodes: BTreeMap<_, _> = std::iter::repeat_with(create_random_node)
             .take(num)
             .collect();

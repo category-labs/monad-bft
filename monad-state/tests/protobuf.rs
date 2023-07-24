@@ -2,7 +2,6 @@
 mod test {
     use monad_consensus::messages::{consensus_message::ConsensusMessage, message::VoteMessage};
     use monad_consensus::{pacemaker::PacemakerTimerExpire, validation::signing::Unverified};
-    use monad_consensus_types::transaction::MockTransactions;
     use monad_consensus_types::{
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
@@ -23,7 +22,6 @@ mod test {
         let event = MonadEvent::ConsensusEvent(ConsensusEvent::<
             SecpSignature,
             MultiSig<SecpSignature>,
-            MockTransactions,
         >::Timeout(PacemakerTimerExpire {}));
 
         let buf = serialize_event(&event);
@@ -61,7 +59,7 @@ mod test {
         });
 
         let buf = serialize_event(&event);
-        let rx_event = deserialize_event::<SecpSignature, MockTransactions>(&buf);
+        let rx_event = deserialize_event::<SecpSignature>(&buf);
 
         assert_eq!(event, rx_event.unwrap());
     }

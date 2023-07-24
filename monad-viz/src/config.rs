@@ -5,7 +5,10 @@ use iced::{
     Element,
 };
 use iced_lazy::Component;
-use monad_consensus_types::{quorum_certificate::genesis_vote_info, validation::Sha256Hash};
+use monad_consensus_types::{
+    quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
+    validation::Sha256Hash,
+};
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::mock_swarm::{
     LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
@@ -60,6 +63,7 @@ impl SimulationConfig<MS, LayerTransformer<MM>, PersistenceLoggerType> for SimCo
             .into_iter()
             .zip(std::iter::repeat(pubkeys.clone()))
             .map(|(key, pubkeys)| MonadConfig {
+                transaction_validator: MockValidator,
                 key,
                 validators: pubkeys,
 

@@ -1,6 +1,7 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
+use monad_consensus_types::block::FullTransactionList;
+use monad_consensus_types::block::TransactionList;
 use monad_consensus_types::multi_sig::MultiSig;
-use monad_consensus_types::transaction::TransactionCollection;
 use monad_crypto::Signature;
 use monad_proto::error::ProtoError;
 use monad_proto::proto::event::*;
@@ -11,11 +12,11 @@ use crate::FetchedFullTxs;
 use crate::FetchedTxs;
 use crate::MonadEvent as TypeMonadEvent;
 
-pub(super) type MonadEvent<S, T> = TypeMonadEvent<S, MultiSig<S>, T>;
-pub(super) type ConsensusEvent<S, T> = TypeConsensusEvent<S, MultiSig<S>, T>;
+pub(super) type MonadEvent<S> = TypeMonadEvent<S, MultiSig<S>>;
+pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, MultiSig<S>>;
 
-impl<S: Signature, T: TransactionCollection> From<&ConsensusEvent<S, T>> for ProtoConsensusEvent {
-    fn from(value: &ConsensusEvent<S, T>) -> Self {
+impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
+    fn from(value: &ConsensusEvent<S>) -> Self {
         let event = match value {
             TypeConsensusEvent::Message {
                 sender,
@@ -34,14 +35,14 @@ impl<S: Signature, T: TransactionCollection> From<&ConsensusEvent<S, T>> for Pro
                     high_qc: Some((&fetched.high_qc).into()),
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
-                    txns: Some((&fetched.txns).into()),
+                    tx_hashes: fetched.txns.0.clone(),
                 })
             }
             TypeConsensusEvent::FetchedFullTxs(fetched_full) => {
                 proto_consensus_event::Event::FetchedFullTxs(ProtoFetchedFullTxs {
                     author: Some((&fetched_full.author).into()),
                     p: Some((&fetched_full.p).into()),
-                    txns: Some(fetched_full.txns.into()),
+                    full_txs: fetched_full.txns.0.clone(),
                 })
             }
         };
@@ -49,7 +50,7 @@ impl<S: Signature, T: TransactionCollection> From<&ConsensusEvent<S, T>> for Pro
     }
 }
 
-impl<S: Signature, T: TransactionCollection> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S, T> {
+impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoConsensusEvent) -> Result<Self, Self::Error> {
@@ -95,12 +96,7 @@ impl<S: Signature, T: TransactionCollection> TryFrom<ProtoConsensusEvent> for Co
                         .last_round_tc
                         .map(TryInto::try_into)
                         .transpose()?,
-                    txns: fetched_txs
-                        .txns
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_txs.txns".to_owned(),
-                        ))?
-                        .try_into()?,
+                    txns: TransactionList(fetched_txs.tx_hashes),
                 })
             }
             Some(proto_consensus_event::Event::FetchedFullTxs(fetched_full_txs)) => {
@@ -117,12 +113,7 @@ impl<S: Signature, T: TransactionCollection> TryFrom<ProtoConsensusEvent> for Co
                             "ConsensusEvent::fetched_full_txs.p".to_owned(),
                         ))?
                         .try_into()?,
-                    txns: fetched_full_txs
-                        .txns
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_full_txs.txns".to_owned(),
-                        ))?
-                        .try_into()?,
+                    txns: FullTransactionList(fetched_full_txs.full_txs),
                 })
             }
             None => Err(ProtoError::MissingRequiredField(
@@ -133,8 +124,8 @@ impl<S: Signature, T: TransactionCollection> TryFrom<ProtoConsensusEvent> for Co
     }
 }
 
-impl<S: Signature, T: TransactionCollection> From<&MonadEvent<S, T>> for ProtoMonadEvent {
-    fn from(value: &MonadEvent<S, T>) -> Self {
+impl<S: Signature> From<&MonadEvent<S>> for ProtoMonadEvent {
+    fn from(value: &MonadEvent<S>) -> Self {
         let event = match value {
             TypeMonadEvent::ConsensusEvent(msg) => {
                 proto_monad_event::Event::ConsensusEvent(msg.into())
@@ -144,10 +135,10 @@ impl<S: Signature, T: TransactionCollection> From<&MonadEvent<S, T>> for ProtoMo
     }
 }
 
-impl<S: Signature, T: TransactionCollection> TryFrom<ProtoMonadEvent> for MonadEvent<S, T> {
+impl<S: Signature> TryFrom<ProtoMonadEvent> for MonadEvent<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
-        let event: MonadEvent<S, T> = match value.event {
+        let event: MonadEvent<S> = match value.event {
             Some(proto_monad_event::Event::ConsensusEvent(event)) => {
                 MonadEvent::ConsensusEvent(event.try_into()?)
             }

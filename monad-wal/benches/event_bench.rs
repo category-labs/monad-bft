@@ -23,7 +23,6 @@ use monad_consensus_types::{
     voting::VoteInfo,
 };
 
-use monad_consensus_types::transaction::MockTransactions;
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_state::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
@@ -37,7 +36,7 @@ use monad_wal::PersistenceLogger;
 
 const N_VALIDATORS: usize = 400;
 
-type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>, MockTransactions>;
+type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>>;
 struct MonadEventBencher {
     event: BenchEvent,
     logger: WALogger<BenchEvent>,
@@ -199,7 +198,7 @@ fn bench_timeout(c: &mut Criterion) {
 }
 
 fn bench_local_timeout(c: &mut Criterion) {
-    let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>, MockTransactions> =
+    let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>> =
         MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(PacemakerTimerExpire {}));
 
     let mut bencher = MonadEventBencher::new(event);

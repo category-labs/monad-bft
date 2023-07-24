@@ -19,7 +19,7 @@ pub struct MockExecutor<S>
 where
     S: State,
 {
-    mempool: MockMempool<S::Event, S::TransactionCollection>,
+    mempool: MockMempool<S::Event>,
     ledger: MockLedger<S::Block>,
 
     tick: Duration,
@@ -167,7 +167,7 @@ impl<S> Executor for MockExecutor<S>
 where
     S: State,
 {
-    type Command = Command<S::Message, S::OutboundMessage, S::Block, S::TransactionCollection>;
+    type Command = Command<S::Message, S::OutboundMessage, S::Block>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
@@ -238,7 +238,7 @@ where
                         tx_tick: _,
                     } = this.inbound_messages.pop().unwrap();
 
-                    message.event::<S::TransactionCollection>(from)
+                    message.event(from)
                 }
                 ExecutorEventType::Timer => this.timer.take().unwrap().event,
                 ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
@@ -320,7 +320,6 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
 
-    use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
     use monad_types::{Deserializable, Serializable};
@@ -499,20 +498,12 @@ mod tests {
         type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
         type Block = ();
-        type TransactionCollection = MockTransactions;
 
         fn init(
             config: Self::Config,
         ) -> (
             Self,
-            Vec<
-                Command<
-                    Self::Message,
-                    Self::OutboundMessage,
-                    Self::Block,
-                    Self::TransactionCollection,
-                >,
-            >,
+            Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
         ) {
             let (pubkeys, _me) = config;
 
@@ -539,9 +530,7 @@ mod tests {
         fn update(
             &mut self,
             event: Self::Event,
-        ) -> Vec<
-            Command<Self::Message, Self::OutboundMessage, Self::Block, Self::TransactionCollection>,
-        > {
+        ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>> {
             let mut commands = Vec::new();
             match event {
                 SimpleChainEvent::Vote { peer, round } => {
@@ -581,15 +570,15 @@ mod tests {
     }
 
     impl Message for SimpleChainMessage {
-        type Event<TC: TransactionCollection> = SimpleChainEvent;
+        type Event = SimpleChainEvent;
         type Id = u64;
 
         fn id(&self) -> Self::Id {
             self.round
         }
 
-        fn event<TC: TransactionCollection>(self, from: PeerId) -> Self::Event<TC> {
-            Self::Event::<TC>::Vote {
+        fn event(self, from: PeerId) -> Self::Event {
+            Self::Event::Vote {
                 round: self.round,
                 peer: from,
             }

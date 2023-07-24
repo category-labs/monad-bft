@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use monad_blocktree::blocktree::BlockTree;
@@ -10,11 +9,11 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::{Block, FullTransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature::SignatureCollection,
     timeout::TimeoutCertificate,
-    transaction::TransactionCollection,
+    transaction_validator::TransactionValidator,
     validation::Hasher,
 };
 use monad_crypto::{
@@ -30,7 +29,7 @@ use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 pub mod command;
 pub mod wrapper;
 
-pub struct ConsensusState<S, SC, T> {
+pub struct ConsensusState<S, SC, TV> {
     pub pending_block_tree: BlockTree<SC>,
     pub vote_state: VoteState<SC>,
     pub high_qc: QuorumCertificate<SC>,
@@ -38,20 +37,23 @@ pub struct ConsensusState<S, SC, T> {
     pub pacemaker: Pacemaker<S, SC>,
     pub safety: Safety,
 
-    transaction_type: PhantomData<T>,
     pub nodeid: NodeId,
+
+    pub transaction_validator: TV,
 
     // TODO deprecate
     pub keypair: KeyPair,
 }
 
-impl<S, SC, T> ConsensusState<S, SC, T>
+impl<S, SC, TV> ConsensusState<S, SC, TV>
 where
     S: Signature,
     SC: SignatureCollection,
-    T: TransactionCollection,
+    TV: TransactionValidator,
 {
     pub fn new(
+        transaction_validator: TV,
+
         my_pubkey: PubKey,
         genesis_block: Block<SC>,
         genesis_qc: QuorumCertificate<SC>,
@@ -66,8 +68,9 @@ where
             high_qc: genesis_qc,
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
-            transaction_type: PhantomData,
             nodeid: NodeId(my_pubkey),
+
+            transaction_validator,
 
             keypair,
         }
@@ -77,7 +80,7 @@ where
         &mut self,
         author: NodeId,
         p: ProposalMessage<S, SC>,
-    ) -> Vec<ConsensusCommand<S, SC, T>> {
+    ) -> Vec<ConsensusCommand<S, SC>> {
         vec![ConsensusCommand::FetchFullTxs(Box::new(move |txns| {
             FetchedFullTxs { author, p, txns }
         }))]
@@ -87,12 +90,12 @@ where
         &mut self,
         author: NodeId,
         p: ProposalMessage<S, SC>,
-        txns: T,
+        txns: FullTransactionList,
         validators: &mut ValidatorSet<V>,
-    ) -> Vec<ConsensusCommand<S, SC, T>> {
+    ) -> Vec<ConsensusCommand<S, SC>> {
         let mut cmds = vec![];
 
-        if !txns.validate() {
+        if !self.transaction_validator.validate(&txns) {
             return cmds;
         }
 
@@ -147,7 +150,7 @@ where
         signature: SC::SignatureType,
         v: VoteMessage,
         validators: &mut ValidatorSet<V>,
-    ) -> Vec<ConsensusCommand<S, SC, T>> {
+    ) -> Vec<ConsensusCommand<S, SC>> {
         if v.vote_info.round < self.pacemaker.get_current_round() {
             return Default::default();
         }
@@ -173,7 +176,7 @@ where
         signature: S,
         tm: TimeoutMessage<S, SC>,
         validators: &mut ValidatorSet<V>,
-    ) -> Vec<ConsensusCommand<S, SC, T>> {
+    ) -> Vec<ConsensusCommand<S, SC>> {
         let mut cmds = Vec::new();
         if tm.tminfo.round < self.pacemaker.get_current_round() {
             return cmds;
@@ -220,7 +223,7 @@ where
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
-    pub fn process_qc(&mut self, qc: &QuorumCertificate<SC>) -> Vec<ConsensusCommand<S, SC, T>> {
+    pub fn process_qc(&mut self, qc: &QuorumCertificate<SC>) -> Vec<ConsensusCommand<S, SC>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
             return Vec::new();
         }
@@ -241,7 +244,7 @@ where
                 cmds.extend(
                     blocks_to_commit
                         .into_iter()
-                        .map(ConsensusCommand::<S, SC, T>::LedgerCommit),
+                        .map(ConsensusCommand::<S, SC>::LedgerCommit),
                 );
             }
         }
@@ -253,7 +256,7 @@ where
     pub fn process_certificate_qc(
         &mut self,
         qc: &QuorumCertificate<SC>,
-    ) -> Vec<ConsensusCommand<S, SC, T>> {
+    ) -> Vec<ConsensusCommand<S, SC>> {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
@@ -271,7 +274,7 @@ where
     pub fn process_new_round_event(
         &mut self,
         last_round_tc: Option<TimeoutCertificate<S>>,
-    ) -> Vec<ConsensusCommand<S, SC, T>> {
+    ) -> Vec<ConsensusCommand<S, SC>> {
         self.vote_state
             .start_new_round(self.pacemaker.get_current_round());
 
@@ -285,7 +288,7 @@ where
                 round,
                 high_qc,
                 last_round_tc,
-                txns: TransactionList(txns),
+                txns,
             }
         }))]
     }
@@ -294,7 +297,8 @@ where
 #[cfg(test)]
 mod test {
     use itertools::Itertools;
-    use monad_consensus_types::block::TransactionList;
+    use monad_consensus_types::block::{FullTransactionList, TransactionList};
+    use monad_consensus_types::transaction_validator::MockValidator;
     use std::time::Duration;
 
     use monad_consensus::messages::message::{TimeoutMessage, VoteMessage};
@@ -305,7 +309,6 @@ mod test {
     use monad_consensus_types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
     use monad_consensus_types::signature::SignatureCollection;
     use monad_consensus_types::timeout::TimeoutInfo;
-    use monad_consensus_types::transaction::{MockTransactions, TransactionCollection};
     use monad_consensus_types::validation::Sha256Hash;
     use monad_consensus_types::voting::VoteInfo;
     use monad_crypto::secp256k1::KeyPair;
@@ -318,16 +321,12 @@ mod test {
 
     use crate::{ConsensusCommand, ConsensusMessage, ConsensusState};
 
-    fn setup<
-        ST: Signature,
-        SCT: SignatureCollection<SignatureType = ST>,
-        TC: TransactionCollection,
-    >(
+    fn setup<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
         ValidatorSet<WeightedRoundRobin>,
-        Vec<ConsensusState<ST, SCT, TC>>,
+        Vec<ConsensusState<ST, SCT, MockValidator>>,
     ) {
         let keys = create_keys(num_states);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -352,7 +351,8 @@ mod test {
             .enumerate()
             .map(|(i, k)| {
                 let default_key = KeyPair::from_bytes([127; 32]).unwrap();
-                ConsensusState::<ST, SCT, TC>::new(
+                ConsensusState::<ST, SCT, _>::new(
+                    MockValidator,
                     k.pubkey(),
                     genesis_block.clone(),
                     genesis_qc.clone(),
@@ -368,8 +368,7 @@ mod test {
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[test]
     fn lock_qc_high() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.info.vote.round, Round(0));
@@ -419,8 +418,7 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
         let p1 = propgen.next_proposal(&keys, &mut valset, &Default::default());
@@ -438,7 +436,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let result = cmds.iter().find(|&c| {
@@ -456,8 +454,7 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -467,7 +464,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let result = cmds.iter().find(|&c| {
@@ -488,7 +485,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let result = cmds.iter().find(|&c| {
@@ -512,7 +509,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -521,8 +518,7 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
@@ -534,7 +530,7 @@ mod test {
             let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
                 author,
                 verified_message,
-                MockTransactions::default(),
+                FullTransactionList(Vec::new()),
                 &mut valset,
             );
             let result = cmds.iter().find(|&c| {
@@ -570,8 +566,7 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
@@ -580,7 +575,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let result = cmds.iter().find(|&c| {
@@ -599,7 +594,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         assert!(cmds.is_empty());
@@ -615,8 +610,7 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
 
@@ -626,7 +620,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let result = cmds.iter().find(|&c| {
@@ -648,7 +642,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let result = cmds.iter().find(|&c| {
@@ -675,7 +669,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -689,7 +683,7 @@ mod test {
             cmds.extend(state.handle_proposal_message_full::<Sha256Hash, _>(
                 author,
                 verified_message,
-                MockTransactions::default(),
+                FullTransactionList(Vec::new()),
                 &mut valset,
             ));
         }
@@ -726,7 +720,7 @@ mod test {
                     proposals.extend(state.handle_proposal_message_full::<Sha256Hash, _>(
                         m.block.author,
                         m.clone(),
-                        MockTransactions::default(),
+                        FullTransactionList(Vec::new()),
                         &mut valset,
                     ));
                 }
@@ -743,7 +737,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -758,8 +752,7 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -770,7 +763,7 @@ mod test {
         let p1_cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -794,7 +787,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -824,7 +817,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let lc = p2_cmds
@@ -836,8 +829,7 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -848,7 +840,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -858,7 +850,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -904,7 +896,7 @@ mod test {
         let p3_cmds = state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 
@@ -928,8 +920,7 @@ mod test {
     // not incorrectly committed
     #[test]
     fn test_malicious_proposal_to_next_leader() {
-        let (keys, mut valset, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, MockTransactions>(4);
+        let (keys, mut valset, mut states) = setup::<NopSignature, MultiSig<NopSignature>>(4);
 
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -950,7 +941,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message.clone(),
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let p1_votes = cmds1
@@ -967,7 +958,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message.clone(),
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let p3_votes = cmds3
@@ -984,7 +975,7 @@ mod test {
         let cmds4 = fourth_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let p4_votes = cmds4
@@ -1002,7 +993,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let p2_votes = cmds2
@@ -1044,7 +1035,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message.clone(),
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let res = cmds2.into_iter().find(|c| {
@@ -1061,7 +1052,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let res = cmds1.into_iter().find(|c| {
@@ -1080,13 +1071,13 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message.clone(),
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _>(
             author,
             verified_message,
-            MockTransactions::default(),
+            FullTransactionList(Vec::new()),
             &mut valset,
         );
 

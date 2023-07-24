@@ -1,7 +1,6 @@
 use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use monad_consensus_types::transaction::TransactionCollection;
 use monad_executor::{Message, PeerId};
 use monad_types::{Deserializable, Serializable};
 
@@ -44,7 +43,7 @@ where
         }
     }
 
-    pub fn event<TC: TransactionCollection>(self, peer_id: PeerId) -> M::Event<TC> {
+    pub fn event(self, peer_id: PeerId) -> M::Event {
         match self {
             WrappedMessage::Receive(m) => m.event(peer_id),
             WrappedMessage::Send(om) => om.into().event(peer_id),

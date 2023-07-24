@@ -10,7 +10,6 @@ use crate::{
 
 use futures::Stream;
 use futures::StreamExt;
-use monad_consensus_types::transaction::TransactionCollection;
 
 pub struct ParentExecutor<R, T, M, L> {
     pub router: R,
@@ -20,19 +19,18 @@ pub struct ParentExecutor<R, T, M, L> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, ME, LE, M, OM, B, TC> Executor for ParentExecutor<RE, TE, ME, LE>
+impl<RE, TE, ME, LE, M, OM, B> Executor for ParentExecutor<RE, TE, ME, LE>
 where
     RE: Executor<Command = RouterCommand<M, OM>>,
-    TE: Executor<Command = TimerCommand<M::Event<TC>>>,
+    TE: Executor<Command = TimerCommand<M::Event>>,
 
-    ME: Executor<Command = MempoolCommand<M::Event<TC>, TC>>,
+    ME: Executor<Command = MempoolCommand<M::Event>>,
     LE: Executor<Command = LedgerCommand<B>>,
 
     M: Message,
-    TC: TransactionCollection,
 {
-    type Command = Command<M, OM, B, TC>;
-    fn exec(&mut self, commands: Vec<Command<M, OM, B, TC>>) {
+    type Command = Command<M, OM, B>;
+    fn exec(&mut self, commands: Vec<Command<M, OM, B>>) {
         let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds) =
             Command::split_commands(commands);
         self.router.exec(router_cmds);

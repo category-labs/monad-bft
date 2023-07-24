@@ -6,17 +6,16 @@ use monad_consensus::{
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::{Block, FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
     signature::SignatureCollection,
     timeout::TimeoutCertificate,
-    transaction::TransactionCollection,
 };
 use monad_crypto::Signature;
 use monad_executor::RouterTarget;
 use monad_types::{BlockId, NodeId, Round};
 
-pub enum ConsensusCommand<ST, SCT: SignatureCollection, TC: TransactionCollection> {
+pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     Publish {
         target: RouterTarget,
         message: ConsensusMessage<ST, SCT>,
@@ -26,9 +25,9 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection, TC: TransactionCollectio
         on_timeout: PacemakerTimerExpire,
     },
     ScheduleReset,
-    FetchTxs(Box<dyn (FnOnce(Vec<u8>) -> FetchedTxs<ST, SCT>) + Send + Sync>),
+    FetchTxs(Box<dyn (FnOnce(TransactionList) -> FetchedTxs<ST, SCT>) + Send + Sync>),
     FetchTxsReset,
-    FetchFullTxs(Box<dyn (FnOnce(TC) -> FetchedFullTxs<ST, SCT, TC>) + Send + Sync>),
+    FetchFullTxs(Box<dyn (FnOnce(FullTransactionList) -> FetchedFullTxs<ST, SCT>) + Send + Sync>),
     FetchFullTxsReset,
     LedgerCommit(Block<SCT>),
     RequestSync {
@@ -38,8 +37,8 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection, TC: TransactionCollectio
     // - to handle this command, we need to call message_state.set_round()
 }
 
-impl<S: Signature, SC: SignatureCollection, T: TransactionCollection> From<PacemakerCommand<S, SC>>
-    for ConsensusCommand<S, SC, T>
+impl<S: Signature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
+    for ConsensusCommand<S, SC>
 {
     fn from(cmd: PacemakerCommand<S, SC>) -> Self {
         match cmd {
@@ -72,8 +71,8 @@ pub struct FetchedTxs<ST, SCT> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedFullTxs<ST, SCT, TC> {
+pub struct FetchedFullTxs<ST, SCT> {
     pub author: NodeId,
     pub p: ProposalMessage<ST, SCT>,
-    pub txns: TC,
+    pub txns: FullTransactionList,
 }
