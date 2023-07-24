@@ -251,11 +251,15 @@ impl<T: SignatureCollection> BlockTree<T> {
             RootKind::Unrooted(r) => block_tree_block.block.round == r,
         };
         loop {
-            let Some(i) = self.tree.get(bid) else { return false };
+            let Some(i) = self.tree.get(bid) else {
+                return false;
+            };
             if root_match(i) {
                 return true;
             }
-            let Some(parent_id) = &i.parent else {return false };
+            let Some(parent_id) = &i.parent else {
+                return false;
+            };
             bid = parent_id;
         }
     }
