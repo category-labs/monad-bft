@@ -1,5 +1,7 @@
-use monad_proto::error::ProtoError;
-use monad_proto::proto::basic::{ProtoBlockId, ProtoHash, ProtoNodeId, ProtoRound};
+use monad_proto::{
+    error::ProtoError,
+    proto::basic::{ProtoBlockId, ProtoHash, ProtoNodeId, ProtoRound},
+};
 
 use crate::{BlockId, Hash, NodeId, Round};
 

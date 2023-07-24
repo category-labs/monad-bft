@@ -4,10 +4,10 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::{Executor, MempoolCommand};
-
 use futures::Stream;
 use monad_consensus_types::block::{FullTransactionList, TransactionList};
+
+use crate::{Executor, MempoolCommand};
 
 pub struct MockMempool<E> {
     fetch_txs_state: Option<Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>>,

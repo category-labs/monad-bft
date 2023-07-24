@@ -1,12 +1,15 @@
-use crate::RandomizedTest;
+use std::{collections::HashSet, time::Duration};
+
 use monad_executor::{
     mock_swarm::{LatencyTransformer, RandLatencyTransformer, Transformer},
     PeerId,
 };
-use monad_testutil::swarm::{get_configs, run_nodes, run_one_delayed_node};
-use monad_testutil::swarm::{PartitionThenReplayTransformer, TransformerReplayOrder};
-use std::collections::HashSet;
-use std::time::Duration;
+use monad_testutil::swarm::{
+    get_configs, run_nodes, run_one_delayed_node, PartitionThenReplayTransformer,
+    TransformerReplayOrder,
+};
+
+use crate::RandomizedTest;
 
 fn random_latency_test(seed: u64) {
     run_nodes(

@@ -1,6 +1,5 @@
-use zerocopy::AsBytes;
-
 use monad_types::*;
+use zerocopy::AsBytes;
 
 use crate::validation::{Hashable, Hasher};
 
@@ -34,11 +33,11 @@ impl Hashable for VoteInfo {
 
 #[cfg(test)]
 mod test {
-    use crate::validation::{Hasher, Sha256Hash};
     use monad_types::{BlockId, Hash, Round};
+    use sha2::Digest;
 
     use super::VoteInfo;
-    use sha2::Digest;
+    use crate::validation::{Hasher, Sha256Hash};
 
     pub fn hash_vote(v: &VoteInfo) -> Hash {
         let mut hasher = sha2::Sha256::new();

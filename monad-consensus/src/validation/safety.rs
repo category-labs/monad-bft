@@ -1,4 +1,4 @@
-use crate::messages::message::VoteMessage;
+use std::cmp;
 
 use monad_consensus_types::{
     block::Block,
@@ -11,7 +11,7 @@ use monad_consensus_types::{
 };
 use monad_types::*;
 
-use std::cmp;
+use crate::messages::message::VoteMessage;
 
 #[derive(Debug)]
 pub struct Safety {

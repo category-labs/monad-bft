@@ -1,12 +1,10 @@
 #[cfg(feature = "proto")]
 pub mod convert;
 
-use std::error::Error;
-use std::ops::Add;
-use std::ops::AddAssign;
-use std::ops::Deref;
-use std::ops::Sub;
-use std::ops::SubAssign;
+use std::{
+    error::Error,
+    ops::{Add, AddAssign, Deref, Sub, SubAssign},
+};
 
 use monad_crypto::secp256k1::PubKey;
 use zerocopy::AsBytes;

@@ -1,11 +1,11 @@
+use monad_crypto::Signature;
+use monad_proto::{error::ProtoError, proto::block::*};
+
 use crate::{
     block::{Block, TransactionList},
     multi_sig::MultiSig,
     validation::Sha256Hash,
 };
-use monad_crypto::Signature;
-use monad_proto::error::ProtoError;
-use monad_proto::proto::block::*;
 
 impl From<&TransactionList> for ProtoTransactionList {
     fn from(value: &TransactionList) -> Self {

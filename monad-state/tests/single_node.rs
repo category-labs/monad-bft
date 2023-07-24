@@ -2,8 +2,9 @@ use monad_testutil::swarm::run_nodes;
 
 #[test]
 fn two_nodes() {
-    use monad_executor::mock_swarm::LatencyTransformer;
     use std::time::Duration;
+
+    use monad_executor::mock_swarm::LatencyTransformer;
 
     tracing_subscriber::fmt::init();
 

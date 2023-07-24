@@ -1,9 +1,12 @@
+use std::{
+    collections::HashMap,
+    env,
+    fs::File,
+    panic,
+    time::{Duration, Instant},
+};
+
 use simple_xml_builder::XMLElement;
-use std::collections::HashMap;
-use std::env;
-use std::fs::File;
-use std::panic;
-use std::time::{Duration, Instant};
 
 pub mod testcases;
 

@@ -8,12 +8,12 @@ use std::{
     time::Duration,
 };
 
-use super::ledger::MockLedger;
-use super::mempool::MockMempool;
+use futures::{Stream, StreamExt};
+
+use super::{ledger::MockLedger, mempool::MockMempool};
 use crate::{
     state::PeerId, Command, Executor, Message, RouterCommand, RouterTarget, State, TimerCommand,
 };
-use futures::{Stream, StreamExt};
 
 pub struct MockExecutor<S>
 where
@@ -319,19 +319,17 @@ mod tests {
     use std::{collections::HashSet, fmt::Debug, time::Duration};
 
     use futures::{FutureExt, StreamExt};
-
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, node_id};
     use monad_types::{Deserializable, Serializable};
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
+    use super::*;
     use crate::{
         mock_swarm::{LatencyTransformer, Nodes},
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         Message,
     };
-
-    use super::*;
 
     #[test]
     fn test_mock_timer_schedule() {

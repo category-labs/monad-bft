@@ -2,11 +2,9 @@ use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    quorum_certificate::QcInfo,
-    quorum_certificate::QuorumCertificate,
+    quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
-    validation::Hasher,
-    validation::Sha256Hash,
+    validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};

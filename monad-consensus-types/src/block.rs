@@ -1,10 +1,11 @@
+use monad_types::{BlockId, Hash as HashType, NodeId, Round};
 use zerocopy::AsBytes;
 
-use monad_types::{BlockId, Hash as HashType, NodeId, Round};
-
-use crate::quorum_certificate::QuorumCertificate;
-use crate::signature::SignatureCollection;
-use crate::validation::{Hashable, Hasher};
+use crate::{
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    validation::{Hashable, Hasher},
+};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 // TODO rename to TransactionHashList or something

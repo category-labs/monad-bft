@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 
-use monad_consensus_types::signature::SignatureCollection;
-use monad_consensus_types::validation::{Hashable, Hasher};
+use monad_consensus_types::{
+    signature::SignatureCollection,
+    validation::{Hashable, Hasher},
+};
 use monad_crypto::{secp256k1::KeyPair, Signature};
 
 use crate::{

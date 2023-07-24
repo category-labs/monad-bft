@@ -1,7 +1,6 @@
+use std::{array::TryFromSliceError, fmt::Debug, time::Duration};
+
 use monad_types::{Deserializable, Serializable};
-use std::array::TryFromSliceError;
-use std::fmt::Debug;
-use std::time::Duration;
 
 #[derive(Clone)]
 pub struct TimedEvent<M> {

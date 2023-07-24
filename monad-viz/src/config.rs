@@ -10,14 +10,13 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::mock_swarm::{
-    LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
+use monad_executor::{
+    mock_swarm::{LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer},
+    State,
 };
-use monad_executor::State;
 use monad_state::MonadConfig;
 use monad_testutil::signing::{create_keys, get_genesis_config};
-use monad_wal::mock::MockWALoggerConfig;
-use monad_wal::PersistenceLogger;
+use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
 use crate::{graph::SimulationConfig, PersistenceLoggerType, SignatureCollectionType, MM, MS};
 

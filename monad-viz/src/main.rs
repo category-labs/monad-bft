@@ -11,24 +11,25 @@ use std::{
 };
 
 use clap::Parser;
-use iced::widget::canvas::{Frame, Path, Program, Text};
-use iced::widget::{Canvas, Row, VerticalSlider};
-use iced::{
-    executor, keyboard, subscription, Application, Color, Command, Event, Length, Settings, Theme,
-    Vector,
-};
-
 use config::{ConfigEditor, SimConfig};
 use graph::{Graph, NodeEvent, NodeState, NodesSimulation, ReplayConfig};
-use monad_crypto::NopSignature;
-
+use iced::{
+    executor, keyboard, subscription,
+    widget::{
+        canvas::{Frame, Path, Program, Text},
+        Canvas, Row, VerticalSlider,
+    },
+    Application, Color, Command, Event, Length, Settings, Theme, Vector,
+};
 use monad_consensus_types::{
     block::Block, multi_sig::MultiSig, transaction_validator::MockValidator,
 };
-use monad_executor::mock_swarm::{
-    LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer,
+use monad_crypto::NopSignature;
+use monad_executor::{
+    mock_swarm::{LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer},
+    timed_event::TimedEvent,
+    PeerId, State,
 };
-use monad_executor::{timed_event::TimedEvent, PeerId, State};
 use monad_state::{MonadEvent, MonadState};
 use monad_wal::{
     mock::MockWALogger,

@@ -1,11 +1,10 @@
 use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use monad_executor::{Message, PeerId};
-use monad_types::{Deserializable, Serializable};
-
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response::Codec;
+use monad_executor::{Message, PeerId};
+use monad_types::{Deserializable, Serializable};
 
 pub(crate) struct ReliableMessageCodec<M, OM> {
     _marker: PhantomData<fn(OM) -> M>,

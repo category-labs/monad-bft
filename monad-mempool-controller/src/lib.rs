@@ -9,14 +9,13 @@ use ethers::{
     types::{transaction::eip2718::TypedTransaction, H256},
     utils::{hash_message, rlp::Rlp},
 };
-use thiserror::Error;
-use tokio::sync::mpsc::{self, Sender};
-use tracing::{event, Level};
-
 use monad_mempool_checker::{Checker, CheckerConfig};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
 use monad_mempool_txpool::{Pool, PoolConfig};
 use monad_mempool_types::tx::{PriorityTx, PriorityTxBatch};
+use thiserror::Error;
+use tokio::sync::mpsc::{self, Sender};
+use tracing::{event, Level};
 
 const DEFAULT_TX_THRESHOLD: usize = 1000;
 const DEFAULT_TIME_THRESHOLD_S: u64 = 1;

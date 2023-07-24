@@ -1,6 +1,8 @@
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Read, Write},
+    path::PathBuf,
+};
 
 #[derive(Debug)]
 pub(crate) struct AppendOnlyFile {

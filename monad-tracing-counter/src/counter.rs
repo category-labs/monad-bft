@@ -1,12 +1,12 @@
-use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::sync::RwLock;
-use std::sync::RwLockReadGuard;
-use std::sync::RwLockWriteGuard;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        RwLock, RwLockReadGuard, RwLockWriteGuard,
+    },
+};
 
-use tracing_core::field::Visit;
-use tracing_core::{span, Event, Interest, Metadata, Subscriber as CoreSubscriber};
+use tracing_core::{field::Visit, span, Event, Interest, Metadata, Subscriber as CoreSubscriber};
 use tracing_subscriber::layer::Filter;
 
 const METRIC_PREFIX_MONOTONIC_COUNTER: &str = "monotonic_counter.";

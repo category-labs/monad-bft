@@ -1,14 +1,10 @@
+use std::{collections::HashMap, fmt, result::Result as StdResult};
+
 use monad_consensus_types::{block::Block, signature::SignatureCollection};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Round};
-
-use std::collections::HashMap;
-use std::fmt;
-use std::result::Result as StdResult;
+use ptree::{builder::TreeBuilder, print_tree};
 use tracing::trace;
-
-use ptree::builder::TreeBuilder;
-use ptree::print_tree;
 
 type Result<T> = StdResult<T, BlockTreeError>;
 
@@ -311,11 +307,13 @@ impl<T: SignatureCollection> BlockTree<T> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_consensus_types::block::{Block as ConsensusBlock, TransactionList};
-    use monad_consensus_types::ledger::LedgerCommitInfo;
-    use monad_consensus_types::quorum_certificate::{QcInfo, QuorumCertificate};
-    use monad_consensus_types::validation::Sha256Hash;
-    use monad_consensus_types::voting::VoteInfo;
+    use monad_consensus_types::{
+        block::{Block as ConsensusBlock, TransactionList},
+        ledger::LedgerCommitInfo,
+        quorum_certificate::{QcInfo, QuorumCertificate},
+        validation::Sha256Hash,
+        voting::VoteInfo,
+    };
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, Hash, NodeId, Round};

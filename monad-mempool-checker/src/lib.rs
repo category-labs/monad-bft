@@ -1,8 +1,10 @@
-use ethers::types::{transaction::eip2930::AccessList, Bytes};
 use ethers::{
     types::{
-        transaction::eip2718::{TypedTransaction, TypedTransactionError},
-        SignatureError, U256,
+        transaction::{
+            eip2718::{TypedTransaction, TypedTransactionError},
+            eip2930::AccessList,
+        },
+        Bytes, SignatureError, U256,
     },
     utils::rlp,
 };
@@ -182,13 +184,14 @@ pub fn intrinsic_gas(
 
 #[cfg(test)]
 mod test {
-    use super::{Checker, CheckerConfig, CheckerError};
     use ethers::{
         signers::LocalWallet,
         types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest, U256},
         utils::keccak256,
     };
     use monad_mempool_types::tx::PriorityTx;
+
+    use super::{Checker, CheckerConfig, CheckerError};
 
     const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
 

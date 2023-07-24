@@ -4,9 +4,9 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::{Executor, TimerCommand};
-
 use futures::{FutureExt, Stream};
+
+use crate::{Executor, TimerCommand};
 
 pub struct TokioTimer<E> {
     state: Option<(Pin<Box<tokio::time::Sleep>>, E)>,

@@ -1,7 +1,8 @@
-use super::event::MonadEvent;
 use monad_crypto::Signature;
 use monad_proto::{error::ProtoError, proto::event::ProtoMonadEvent};
 use prost::Message;
+
+use super::event::MonadEvent;
 
 pub fn serialize_event(event: &MonadEvent<impl Signature>) -> Vec<u8> {
     let proto_event: ProtoMonadEvent = event.into();

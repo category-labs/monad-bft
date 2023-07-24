@@ -2,8 +2,10 @@ use std::time::Duration;
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
-    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    },
     pacemaker::Pacemaker,
     validation::safety::Safety,
     vote_state::VoteState,
@@ -296,26 +298,31 @@ where
 
 #[cfg(test)]
 mod test {
-    use itertools::Itertools;
-    use monad_consensus_types::block::{FullTransactionList, TransactionList};
-    use monad_consensus_types::transaction_validator::MockValidator;
     use std::time::Duration;
 
-    use monad_consensus::messages::message::{TimeoutMessage, VoteMessage};
-    use monad_consensus::pacemaker::PacemakerTimerExpire;
-    use monad_consensus::validation::signing::Verified;
-    use monad_consensus_types::ledger::LedgerCommitInfo;
-    use monad_consensus_types::multi_sig::MultiSig;
-    use monad_consensus_types::quorum_certificate::{genesis_vote_info, QuorumCertificate};
-    use monad_consensus_types::signature::SignatureCollection;
-    use monad_consensus_types::timeout::TimeoutInfo;
-    use monad_consensus_types::validation::Sha256Hash;
-    use monad_consensus_types::voting::VoteInfo;
-    use monad_crypto::secp256k1::KeyPair;
-    use monad_crypto::{NopSignature, Signature};
+    use itertools::Itertools;
+    use monad_consensus::{
+        messages::message::{TimeoutMessage, VoteMessage},
+        pacemaker::PacemakerTimerExpire,
+        validation::signing::Verified,
+    };
+    use monad_consensus_types::{
+        block::{FullTransactionList, TransactionList},
+        ledger::LedgerCommitInfo,
+        multi_sig::MultiSig,
+        quorum_certificate::{genesis_vote_info, QuorumCertificate},
+        signature::SignatureCollection,
+        timeout::TimeoutInfo,
+        transaction_validator::MockValidator,
+        validation::Sha256Hash,
+        voting::VoteInfo,
+    };
+    use monad_crypto::{secp256k1::KeyPair, NopSignature, Signature};
     use monad_executor::{PeerId, RouterTarget};
-    use monad_testutil::proposal::ProposalGen;
-    use monad_testutil::signing::{create_keys, get_genesis_config};
+    use monad_testutil::{
+        proposal::ProposalGen,
+        signing::{create_keys, get_genesis_config},
+    };
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
 

@@ -4,12 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
+use futures::{Stream, StreamExt};
+
 use crate::{
     Command, Executor, LedgerCommand, MempoolCommand, Message, RouterCommand, TimerCommand,
 };
-
-use futures::Stream;
-use futures::StreamExt;
 
 pub struct ParentExecutor<R, T, M, L> {
     pub router: R,

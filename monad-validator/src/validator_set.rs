@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
-use std::error;
+use std::{
+    collections::{HashMap, HashSet},
+    error, fmt,
+};
 
 use monad_types::{NodeId, Round, Stake};
 
 use super::leader_election::LeaderElection;
-use std::fmt;
 
 pub type Result<T> = std::result::Result<T, ValidatorSetError>;
 
@@ -120,11 +121,11 @@ impl<T: LeaderElection> ValidatorSet<T> {
 #[cfg(test)]
 mod test {
 
-    use crate::weighted_round_robin::WeightedRoundRobin;
-
-    use super::ValidatorSet;
     use monad_crypto::secp256k1::KeyPair;
     use monad_types::{NodeId, Round, Stake};
+
+    use super::ValidatorSet;
+    use crate::weighted_round_robin::WeightedRoundRobin;
 
     #[test]
     fn test_membership() {

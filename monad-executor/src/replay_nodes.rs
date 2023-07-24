@@ -1,8 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
+
+use monad_crypto::secp256k1::PubKey;
 
 use crate::{Command, LedgerCommand, Message, PeerId, RouterCommand, RouterTarget, State};
-use monad_crypto::secp256k1::PubKey;
 
 pub struct PendingMsg<S>
 where

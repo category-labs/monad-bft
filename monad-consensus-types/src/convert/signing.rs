@@ -1,7 +1,8 @@
-use monad_crypto::convert::{proto_to_signature, signature_to_proto};
-use monad_crypto::Signature;
-use monad_proto::error::ProtoError;
-use monad_proto::proto::signing::*;
+use monad_crypto::{
+    convert::{proto_to_signature, signature_to_proto},
+    Signature,
+};
+use monad_proto::{error::ProtoError, proto::signing::*};
 
 use crate::multi_sig::MultiSig;
 

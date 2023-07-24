@@ -1,8 +1,6 @@
 use monad_crypto::Signature;
+use monad_proto::{error::ProtoError, proto::message::ProtoUnverifiedConsensusMessage};
 use prost::Message;
-
-use monad_proto::error::ProtoError;
-use monad_proto::proto::message::ProtoUnverifiedConsensusMessage;
 
 use super::message::{UnverifiedConsensusMessage, VerifiedConsensusMessage};
 

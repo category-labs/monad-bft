@@ -1,8 +1,7 @@
-use crate::voting::VoteInfo;
-
-use monad_proto::error::ProtoError;
-use monad_proto::proto::voting::*;
+use monad_proto::{error::ProtoError, proto::voting::*};
 use monad_types::Round;
+
+use crate::voting::VoteInfo;
 
 impl From<&VoteInfo> for ProtoVoteInfo {
     fn from(vi: &VoteInfo) -> Self {

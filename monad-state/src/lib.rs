@@ -1,12 +1,11 @@
-use std::fmt::Debug;
-use std::time::Duration;
+use std::{fmt::Debug, time::Duration};
 
+use message::MessageState;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
-    messages::message::ProposalMessage,
+    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
     pacemaker::PacemakerTimerExpire,
-    validation::{signing::Unverified, signing::Verified},
+    validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
     command::{ConsensusCommand, FetchedFullTxs, FetchedTxs},
@@ -26,8 +25,6 @@ use monad_executor::{
 };
 use monad_types::{NodeId, Stake};
 use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
-
-use message::MessageState;
 use ref_cast::RefCast;
 
 #[cfg(feature = "proto")]

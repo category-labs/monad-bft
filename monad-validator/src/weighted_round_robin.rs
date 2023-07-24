@@ -1,8 +1,9 @@
-use super::leader_election::LeaderElection;
+use std::{cmp::Ordering, fmt::Debug};
+
 use log::warn;
 use monad_types::{NodeId, Round, Stake};
-use std::cmp::Ordering;
-use std::fmt::Debug;
+
+use super::leader_election::LeaderElection;
 
 #[derive(Eq, Clone, Copy, Debug)]
 struct Voter {
@@ -135,9 +136,7 @@ mod tests {
     use monad_crypto::secp256k1::KeyPair;
     use monad_types::{NodeId, Round, Stake};
 
-    use super::super::leader_election::LeaderElection;
-
-    use super::WeightedRoundRobin;
+    use super::{super::leader_election::LeaderElection, WeightedRoundRobin};
 
     fn get_key1() -> [u8; 32] {
         [126; 32]

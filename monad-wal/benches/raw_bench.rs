@@ -1,12 +1,9 @@
-use criterion::{criterion_group, Criterion};
-use std::error::Error;
-use std::fmt::Debug;
-use std::fs::create_dir_all;
-use tempfile::{tempdir, TempDir};
+use std::{error::Error, fmt::Debug, fs::create_dir_all};
 
+use criterion::{criterion_group, Criterion};
 use monad_types::{Deserializable, Serializable};
-use monad_wal::wal::*;
-use monad_wal::PersistenceLogger;
+use monad_wal::{wal::*, PersistenceLogger};
+use tempfile::{tempdir, TempDir};
 
 const VOTE_SIZE: usize = 400;
 const BLOCK_SIZE: usize = 32 * 10000;

@@ -1,5 +1,4 @@
-use monad_proto::error::ProtoError;
-use monad_proto::proto::pacemaker::ProtoPacemakerTimerExpire;
+use monad_proto::{error::ProtoError, proto::pacemaker::ProtoPacemakerTimerExpire};
 
 use crate::pacemaker::PacemakerTimerExpire;
 

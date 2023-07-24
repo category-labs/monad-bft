@@ -2,7 +2,6 @@ mod rpc;
 
 use std::net::SocketAddr;
 
-use crate::rpc::{RpcRequest, RpcResponse};
 use axum::{
     extract::{rejection::JsonRejection, State},
     routing::post,
@@ -11,6 +10,8 @@ use axum::{
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{event, Level};
+
+use crate::rpc::{RpcRequest, RpcResponse};
 
 #[derive(Clone)]
 struct ServerState {

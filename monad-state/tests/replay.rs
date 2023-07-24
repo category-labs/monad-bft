@@ -1,20 +1,18 @@
 #[cfg(test)]
 #[cfg(feature = "proto")]
 mod test {
-    use monad_consensus_types::transaction_validator::MockValidator;
-    use monad_testutil::swarm::{get_configs, node_ledger_verification};
-    use std::collections::HashMap;
-    use std::fs::create_dir_all;
-    use std::time::Duration;
-    use tempfile::tempdir;
+    use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
-    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
     use monad_crypto::secp256k1::SecpSignature;
-    use monad_executor::mock_swarm::Nodes;
-    use monad_executor::mock_swarm::XorLatencyTransformer;
-    use monad_executor::timed_event::TimedEvent;
+    use monad_executor::{
+        mock_swarm::{Nodes, XorLatencyTransformer},
+        timed_event::TimedEvent,
+    };
     use monad_state::{MonadEvent, MonadState};
+    use monad_testutil::swarm::{get_configs, node_ledger_verification};
     use monad_wal::wal::{WALogger, WALoggerConfig};
+    use tempfile::tempdir;
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;

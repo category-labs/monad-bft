@@ -4,8 +4,10 @@ mod test {
 
     use monad_executor::{Message, State};
     use monad_types::{Deserializable, Serializable};
-    use monad_wal::wal::{WALogger, WALoggerConfig};
-    use monad_wal::PersistenceLogger;
+    use monad_wal::{
+        wal::{WALogger, WALoggerConfig},
+        PersistenceLogger,
+    };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEvent {
@@ -105,8 +107,8 @@ mod test {
 
     fn test_replay_configurable(test_config: TestConfig) {
         // setup
-        use std::fs;
-        use std::fs::create_dir_all;
+        use std::{fs, fs::create_dir_all};
+
         use tempfile::tempdir;
 
         let input1 = generate_test_events(10);

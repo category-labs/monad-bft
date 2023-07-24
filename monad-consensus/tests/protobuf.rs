@@ -1,13 +1,15 @@
 #[cfg(all(test, feature = "proto"))]
 mod test {
-    use monad_consensus::convert::interface::{
-        deserialize_unverified_consensus_message, serialize_verified_consensus_message,
+    use monad_consensus::{
+        convert::interface::{
+            deserialize_unverified_consensus_message, serialize_verified_consensus_message,
+        },
+        messages::{
+            consensus_message::ConsensusMessage,
+            message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        },
+        validation::signing::{ValidatorMember, Verified},
     };
-    use monad_consensus::messages::{
-        consensus_message::ConsensusMessage,
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
-    };
-    use monad_consensus::validation::signing::{ValidatorMember, Verified};
     use monad_consensus_types::{
         block::TransactionList,
         ledger::LedgerCommitInfo,
@@ -19,8 +21,10 @@ mod test {
         voting::VoteInfo,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_testutil::block::setup_block;
-    use monad_testutil::signing::{create_keys, get_key};
+    use monad_testutil::{
+        block::setup_block,
+        signing::{create_keys, get_key},
+    };
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
 
     fn setup_validator_member(keypairs: &[KeyPair]) -> ValidatorMember {

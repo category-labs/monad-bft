@@ -1,9 +1,6 @@
 use monad_types::*;
 
-use crate::ledger::*;
-use crate::signature::SignatureCollection;
-use crate::validation::Hasher;
-use crate::voting::*;
+use crate::{ledger::*, signature::SignatureCollection, validation::Hasher, voting::*};
 
 pub const GENESIS_PRIME_QC_HASH: Hash = Hash([0xAA; 32]);
 

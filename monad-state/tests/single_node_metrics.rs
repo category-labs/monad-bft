@@ -2,14 +2,12 @@ use std::time::Duration;
 
 use monad_executor::mock_swarm::LatencyTransformer;
 use monad_testutil::swarm::run_nodes;
-use monad_tracing_counter::counter::CounterLayer;
-use monad_tracing_counter::counter::MetricFilter;
-use monad_tracing_counter::counter_status;
-
+use monad_tracing_counter::{
+    counter::{CounterLayer, MetricFilter},
+    counter_status,
+};
 use tracing_core::LevelFilter;
-use tracing_subscriber::filter::Targets;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::Registry;
+use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 
 #[test]
 fn two_nodes() {

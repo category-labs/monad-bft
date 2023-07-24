@@ -1,38 +1,38 @@
+use std::fs::create_dir_all;
+
 #[cfg(target_os = "linux")]
 use criterion::criterion_main;
-
 use criterion::{criterion_group, Criterion};
-use std::fs::create_dir_all;
-use tempfile::{tempdir, TempDir};
-
-use monad_consensus::messages::{
-    consensus_message::ConsensusMessage,
-    message::{ProposalMessage, TimeoutMessage, VoteMessage},
+use monad_consensus::{
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    },
+    pacemaker::PacemakerTimerExpire,
+    validation::signing::Unverified,
 };
-use monad_consensus::pacemaker::PacemakerTimerExpire;
-use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
     block::TransactionList,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    quorum_certificate::QcInfo,
-    quorum_certificate::QuorumCertificate,
+    quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
-
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_state::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
     block::setup_block,
     signing::{create_keys, get_key},
 };
-use monad_types::Serializable;
-use monad_types::{BlockId, Hash, NodeId, Round};
-use monad_wal::wal::{WALogger, WALoggerConfig};
-use monad_wal::PersistenceLogger;
+use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
+use monad_wal::{
+    wal::{WALogger, WALoggerConfig},
+    PersistenceLogger,
+};
+use tempfile::{tempdir, TempDir};
 
 const N_VALIDATORS: usize = 400;
 

@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
-    messages::message::ProposalMessage,
+    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{

@@ -1,12 +1,8 @@
-use std::error::Error;
-use std::marker::PhantomData;
-use std::path::PathBuf;
-use std::{fmt::Debug, io};
+use std::{error::Error, fmt::Debug, io, marker::PhantomData, path::PathBuf};
 
 use monad_types::{Deserializable, Serializable};
 
-use crate::aof::AppendOnlyFile;
-use crate::PersistenceLogger;
+use crate::{aof::AppendOnlyFile, PersistenceLogger};
 
 #[derive(Debug)]
 pub enum WALError<E: Error> {

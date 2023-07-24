@@ -1,5 +1,4 @@
-use monad_consensus::messages::message::ProposalMessage;
-use monad_consensus::validation::signing::ValidatorMember;
+use monad_consensus::{messages::message::ProposalMessage, validation::signing::ValidatorMember};
 use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,

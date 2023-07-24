@@ -1,19 +1,21 @@
-use std::collections::{BTreeMap, HashSet};
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt::Debug,
+    marker::PhantomData,
+    time::Duration,
+};
 
-use rand::Rng;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaChaRng;
-
-use crate::timed_event::TimedEvent;
-use crate::RouterTarget;
-use crate::{executor::mock::MockExecutor, Executor, Message, PeerId, State};
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
 use monad_wal::PersistenceLogger;
+use rand::Rng;
+use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use tracing::info_span;
+
+use crate::{
+    executor::mock::MockExecutor, timed_event::TimedEvent, Executor, Message, PeerId, RouterTarget,
+    State,
+};
 
 #[derive(Clone)]
 pub struct LinkMessage<M: Message> {

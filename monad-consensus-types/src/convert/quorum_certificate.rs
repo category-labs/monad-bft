@@ -1,6 +1,5 @@
 use monad_crypto::Signature;
-use monad_proto::error::ProtoError;
-use monad_proto::proto::quorum_certificate::*;
+use monad_proto::{error::ProtoError, proto::quorum_certificate::*};
 
 use crate::{
     multi_sig::MultiSig,

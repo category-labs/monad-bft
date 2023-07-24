@@ -1,10 +1,8 @@
+use monad_types::*;
 use zerocopy::AsBytes;
 
-use monad_types::*;
-
-use crate::validation::{Hashable, Hasher};
-
 use super::quorum_certificate::QuorumCertificate;
+use crate::validation::{Hashable, Hasher};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutInfo<T> {

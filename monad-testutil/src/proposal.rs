@@ -1,17 +1,17 @@
-use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage};
-use monad_consensus::validation::signing::Verified;
-use monad_consensus_types::validation::{Hashable, Hasher, Sha256Hash};
+use monad_consensus::{
+    messages::message::{ProposalMessage, TimeoutMessage},
+    validation::signing::Verified,
+};
 use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
-    timeout::TimeoutCertificate,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    validation::{Hashable, Hasher, Sha256Hash},
     voting::VoteInfo,
 };
-use monad_crypto::secp256k1::KeyPair;
-use monad_crypto::Signature;
+use monad_crypto::{secp256k1::KeyPair, Signature};
 use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSet};
 

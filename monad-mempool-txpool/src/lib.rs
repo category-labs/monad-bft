@@ -5,9 +5,8 @@ use std::{
 };
 
 use ethers::{types::Bytes, utils::keccak256};
-use thiserror::Error;
-
 use monad_mempool_types::tx::PriorityTx;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum PoolError {
@@ -162,16 +161,14 @@ impl Pool {
 
 #[cfg(test)]
 mod test {
-    use super::{Pool, PoolConfig};
-
-    use ethers::types::Bytes;
     use ethers::{
         signers::LocalWallet,
-        types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest},
+        types::{transaction::eip2718::TypedTransaction, Address, Bytes, TransactionRequest},
     };
+    use monad_mempool_types::tx::PriorityTx;
     use oorandom::Rand32;
 
-    use monad_mempool_types::tx::PriorityTx;
+    use super::{Pool, PoolConfig};
 
     const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
 

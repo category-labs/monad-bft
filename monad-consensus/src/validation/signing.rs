@@ -1,17 +1,17 @@
-use std::collections::HashMap;
-use std::ops::Deref;
+use std::{collections::HashMap, ops::Deref};
 
 use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
     signature::SignatureCollection,
     timeout::TimeoutCertificate,
-    validation::Error,
-    validation::{Hashable, Hasher},
+    validation::{Error, Hashable, Hasher},
 };
 #[cfg(feature = "proto")]
 use monad_crypto::convert::signature_to_proto;
-use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_crypto::Signature;
+use monad_crypto::{
+    secp256k1::{KeyPair, PubKey},
+    Signature,
+};
 #[cfg(feature = "proto")]
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
@@ -20,12 +20,13 @@ use monad_types::{Hash, NodeId, Stake};
 
 #[cfg(feature = "proto")]
 use crate::convert::message::UnverifiedConsensusMessage;
-use crate::messages::{
-    consensus_message::ConsensusMessage,
-    message::{ProposalMessage, TimeoutMessage, VoteMessage},
+use crate::{
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    },
+    validation::message::well_formed,
 };
-
-use crate::validation::message::well_formed;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verified<S, M> {
@@ -374,20 +375,22 @@ impl ValidatorPubKey for PubKey {
 
 #[cfg(test)]
 mod test {
-    use crate::validation::signing::ValidatorMember;
-    use monad_consensus_types::ledger::LedgerCommitInfo;
-    use monad_consensus_types::multi_sig::MultiSig;
-    use monad_consensus_types::quorum_certificate::{QcInfo, QuorumCertificate};
-    use monad_consensus_types::signature::SignatureCollection;
-    use monad_consensus_types::timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate};
-    use monad_consensus_types::validation::{Error, Hashable, Hasher, Sha256Hash};
-    use monad_consensus_types::voting::VoteInfo;
+    use monad_consensus_types::{
+        ledger::LedgerCommitInfo,
+        multi_sig::MultiSig,
+        quorum_certificate::{QcInfo, QuorumCertificate},
+        signature::SignatureCollection,
+        timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
+        validation::{Error, Hashable, Hasher, Sha256Hash},
+        voting::VoteInfo,
+    };
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::signing::get_key;
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use test_case::test_case;
 
     use super::{verify_qc, verify_tc};
+    use crate::validation::signing::ValidatorMember;
 
     #[test_case(4 => matches Err(_) ; "TC has an older round")]
     #[test_case(6 => matches Err(_); "TC has a newer round")]

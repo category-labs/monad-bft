@@ -1,16 +1,22 @@
 use std::ops::Deref;
 
 use monad_consensus_types::multi_sig::MultiSig;
-use monad_crypto::convert::{proto_to_signature, signature_to_proto};
-use monad_crypto::Signature;
-use monad_proto::error::ProtoError;
-use monad_proto::proto::message::*;
-
-use crate::messages::consensus_message::ConsensusMessage;
-use crate::messages::message::{
-    ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
+use monad_crypto::{
+    convert::{proto_to_signature, signature_to_proto},
+    Signature,
 };
-use crate::validation::signing::{Unverified, Verified};
+use monad_proto::{error::ProtoError, proto::message::*};
+
+use crate::{
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{
+            ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg,
+            VoteMessage,
+        },
+    },
+    validation::signing::{Unverified, Verified},
+};
 
 type TimeoutMessage<S> = ConsensusTypeTmoMsg<S, MultiSig<S>>;
 type ProposalMessage<S> = ConsensusTypePropMsg<S, MultiSig<S>>;

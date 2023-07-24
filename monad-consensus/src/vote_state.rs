@@ -85,21 +85,19 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::messages::message::VoteMessage;
-    use crate::validation::signing::Verified;
-    use monad_consensus_types::ledger::LedgerCommitInfo;
-    use monad_consensus_types::multi_sig::MultiSig;
-    use monad_consensus_types::validation::Sha256Hash;
-    use monad_consensus_types::voting::VoteInfo;
+    use monad_consensus_types::{
+        ledger::LedgerCommitInfo, multi_sig::MultiSig, validation::Sha256Hash, voting::VoteInfo,
+    };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_testutil::signing::get_key;
-    use monad_testutil::signing::*;
-    use monad_testutil::validators::MockLeaderElection;
+    use monad_testutil::{
+        signing::{get_key, *},
+        validators::MockLeaderElection,
+    };
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
-    use monad_validator::validator_set::ValidatorSet;
-    use monad_validator::weighted_round_robin::WeightedRoundRobin;
+    use monad_validator::{validator_set::ValidatorSet, weighted_round_robin::WeightedRoundRobin};
 
     use super::VoteState;
+    use crate::{messages::message::VoteMessage, validation::signing::Verified};
 
     fn create_valset(num_nodes: u32) -> (Vec<KeyPair>, ValidatorSet<MockLeaderElection>) {
         let keys = create_keys(num_nodes);

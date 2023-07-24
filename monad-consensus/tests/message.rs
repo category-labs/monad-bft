@@ -10,7 +10,6 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
 use monad_types::*;
-
 use sha2::Digest;
 use test_case::test_case;
 use zerocopy::AsBytes;

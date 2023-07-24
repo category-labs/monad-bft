@@ -7,10 +7,9 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
+use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 use monad_executor::{Executor, Message, RouterCommand, RouterTarget};
 use monad_types::{Deserializable, Serializable};
-
-use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
 
 mod behavior;
 use behavior::Behavior;
@@ -311,11 +310,11 @@ mod tests {
         collections::{BTreeMap, HashSet},
     };
 
-    use crate::Service;
+    use futures::StreamExt;
     use monad_executor::Message;
     use monad_types::{Deserializable, Serializable};
 
-    use futures::StreamExt;
+    use crate::Service;
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct TestMessage(u64);

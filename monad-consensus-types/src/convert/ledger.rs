@@ -1,7 +1,6 @@
-use crate::ledger::LedgerCommitInfo;
+use monad_proto::{error::ProtoError, proto::ledger::*};
 
-use monad_proto::error::ProtoError;
-use monad_proto::proto::ledger::*;
+use crate::ledger::LedgerCommitInfo;
 
 impl From<&LedgerCommitInfo> for ProtoLedgerCommitInfo {
     fn from(value: &LedgerCommitInfo) -> Self {

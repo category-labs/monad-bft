@@ -1,9 +1,8 @@
 use secp256k1::Secp256k1;
 use sha2::Digest;
+use zeroize::Zeroize;
 
 use crate::Signature;
-
-use zeroize::Zeroize;
 
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);

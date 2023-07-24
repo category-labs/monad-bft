@@ -1,5 +1,3 @@
-use test_case::test_case;
-
 use monad_consensus::{
     messages::message::VoteMessage,
     validation::signing::{Unverified, Verified},
@@ -14,10 +12,10 @@ use monad_consensus_types::{
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-use monad_testutil::signing::*;
-use monad_testutil::validators::MockLeaderElection;
+use monad_testutil::{signing::*, validators::MockLeaderElection};
 use monad_types::{BlockId, Hash, NodeId, Round, Stake};
 use monad_validator::validator_set::ValidatorSet;
+use test_case::test_case;
 
 fn create_signed_vote_message(
     keypair: &KeyPair,

@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use libp2p::{
     bytes::Bytes,
     futures::stream::StreamExt,
@@ -5,7 +7,6 @@ use libp2p::{
     swarm::{dial_opts::DialOpts, NetworkBehaviour, SwarmBuilder, SwarmEvent},
     PeerId, Swarm,
 };
-use std::error::Error;
 use tokio::sync::mpsc;
 use tracing::{event, instrument, Level};
 

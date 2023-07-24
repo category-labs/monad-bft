@@ -1,5 +1,4 @@
-use monad_proto::error::ProtoError;
-use monad_proto::proto::event::ProtoPeerId;
+use monad_proto::{error::ProtoError, proto::event::ProtoPeerId};
 
 use crate::state::PeerId;
 

@@ -1,16 +1,17 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
-use monad_consensus_types::block::FullTransactionList;
-use monad_consensus_types::block::TransactionList;
-use monad_consensus_types::multi_sig::MultiSig;
+use monad_consensus_types::{
+    block::{FullTransactionList, TransactionList},
+    multi_sig::MultiSig,
+};
 use monad_crypto::Signature;
-use monad_proto::error::ProtoError;
-use monad_proto::proto::event::*;
-use monad_proto::proto::pacemaker::ProtoPacemakerTimerExpire;
+use monad_proto::{
+    error::ProtoError,
+    proto::{event::*, pacemaker::ProtoPacemakerTimerExpire},
+};
 
-use crate::ConsensusEvent as TypeConsensusEvent;
-use crate::FetchedFullTxs;
-use crate::FetchedTxs;
-use crate::MonadEvent as TypeMonadEvent;
+use crate::{
+    ConsensusEvent as TypeConsensusEvent, FetchedFullTxs, FetchedTxs, MonadEvent as TypeMonadEvent,
+};
 
 pub(super) type MonadEvent<S> = TypeMonadEvent<S, MultiSig<S>>;
 pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, MultiSig<S>>;

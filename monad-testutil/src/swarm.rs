@@ -1,9 +1,8 @@
-use rand::prelude::SliceRandom;
-use rand::SeedableRng;
-use rand_chacha::ChaChaRng;
-use std::{collections::BTreeMap, collections::HashSet, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
 
-use crate::signing::{create_keys, get_genesis_config};
 use monad_consensus_types::{
     multi_sig::MultiSig,
     quorum_certificate::genesis_vote_info,
@@ -22,8 +21,14 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
-use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
-use monad_wal::PersistenceLogger;
+use monad_wal::{
+    mock::{MockWALogger, MockWALoggerConfig},
+    PersistenceLogger,
+};
+use rand::{prelude::SliceRandom, SeedableRng};
+use rand_chacha::ChaChaRng;
+
+use crate::signing::{create_keys, get_genesis_config};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;

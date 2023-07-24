@@ -94,9 +94,10 @@ impl Messenger {
 
 #[cfg(test)]
 mod test {
-    use super::{Messenger, MessengerConfig};
     use monad_mempool_types::tx::{PriorityTx, PriorityTxBatch};
     use tokio::time::{timeout, Duration};
+
+    use super::{Messenger, MessengerConfig};
 
     const TIMEOUT_SEC: u64 = 5;
 

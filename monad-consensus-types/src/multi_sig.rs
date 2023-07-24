@@ -1,12 +1,11 @@
-use crate::signature::SignatureCollection;
-
 use monad_crypto::{
     secp256k1::{Error, PubKey},
     Signature,
 };
 use monad_types::Hash;
-
 use sha2::Digest;
+
+use crate::signature::SignatureCollection;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultiSig<S> {

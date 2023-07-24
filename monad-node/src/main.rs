@@ -1,27 +1,21 @@
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use futures_util::FutureExt;
-use futures_util::StreamExt;
-use monad_consensus_types::transaction_validator::MockValidator;
-use opentelemetry::trace::Span;
-use opentelemetry::trace::TraceContextExt;
-use opentelemetry::trace::Tracer;
-use opentelemetry_otlp::WithExportConfig;
-use tracing::event;
-use tracing::Level;
-
+use futures_util::{FutureExt, StreamExt};
 use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature::SignatureCollection,
+    transaction_validator::MockValidator,
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
-use monad_crypto::Signature;
+use monad_crypto::{
+    secp256k1::{KeyPair, PubKey, SecpSignature},
+    Signature,
+};
 use monad_executor::{
     executor::{
         ledger::MockLedger, mempool::MockMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -30,7 +24,9 @@ use monad_executor::{
 };
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
-use tracing::instrument::WithSubscriber;
+use opentelemetry::trace::{Span, TraceContextExt, Tracer};
+use opentelemetry_otlp::WithExportConfig;
+use tracing::{event, instrument::WithSubscriber, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 type HasherType = Sha256Hash;

@@ -1,7 +1,10 @@
 #[cfg(all(test, feature = "proto"))]
 mod test {
-    use monad_consensus::messages::{consensus_message::ConsensusMessage, message::VoteMessage};
-    use monad_consensus::{pacemaker::PacemakerTimerExpire, validation::signing::Unverified};
+    use monad_consensus::{
+        messages::{consensus_message::ConsensusMessage, message::VoteMessage},
+        pacemaker::PacemakerTimerExpire,
+        validation::signing::Unverified,
+    };
     use monad_consensus_types::{
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
@@ -14,8 +17,7 @@ mod test {
         ConsensusEvent, MonadEvent,
     };
     use monad_testutil::signing::get_key;
-    use monad_types::BlockId;
-    use monad_types::{Hash, Round};
+    use monad_types::{BlockId, Hash, Round};
 
     #[test]
     fn test_consensus_timeout_event() {

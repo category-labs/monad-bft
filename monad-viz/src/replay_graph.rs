@@ -1,7 +1,9 @@
-use crate::graph::{Graph, NodeEvent, NodeState, ReplayConfig};
-use crate::{SignatureCollectionType, MS};
-use monad_consensus_types::transaction_validator::MockValidator;
-use monad_consensus_types::{quorum_certificate::genesis_vote_info, validation::Sha256Hash};
+use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
+
+use monad_consensus_types::{
+    quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
+    validation::Sha256Hash,
+};
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     executor::mock::MockExecutor, replay_nodes::ReplayNodes, timed_event::TimedEvent, Message,
@@ -10,7 +12,11 @@ use monad_executor::{
 use monad_state::MonadConfig;
 use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_types::{Deserializable, Serializable};
-use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
+
+use crate::{
+    graph::{Graph, NodeEvent, NodeState, ReplayConfig},
+    SignatureCollectionType, MS,
+};
 
 #[derive(Debug, Clone)]
 pub struct RepConfig {

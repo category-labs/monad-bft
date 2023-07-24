@@ -12,8 +12,9 @@ use test_case::test_case;
 #[test_case(9; "seed9")]
 #[test_case(10; "seed10")]
 fn nodes_with_random_latency(seed: u64) {
-    use monad_executor::mock_swarm::RandLatencyTransformer;
     use std::time::Duration;
+
+    use monad_executor::mock_swarm::RandLatencyTransformer;
 
     run_nodes(
         4,

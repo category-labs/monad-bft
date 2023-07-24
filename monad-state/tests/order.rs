@@ -1,12 +1,13 @@
-use std::collections::HashSet;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
-use monad_executor::mock_swarm::{LatencyTransformer, Transformer};
-use monad_testutil::swarm::{get_configs, run_one_delayed_node};
-use monad_testutil::swarm::{PartitionThenReplayTransformer, TransformerReplayOrder};
+use monad_executor::{
+    mock_swarm::{LatencyTransformer, Transformer},
+    PeerId,
+};
+use monad_testutil::swarm::{
+    get_configs, run_one_delayed_node, PartitionThenReplayTransformer, TransformerReplayOrder,
+};
 use test_case::test_case;
-
-use monad_executor::PeerId;
 
 #[test_case(TransformerReplayOrder::Forward; "in order")]
 #[test_case(TransformerReplayOrder::Reverse; "reverse order")]

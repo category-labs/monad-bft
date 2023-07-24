@@ -1,8 +1,8 @@
+use monad_proto::{
+    error::ProtoError,
+    proto::{basic::ProtoPubkey, signing::ProtoSignature},
+};
 use zerocopy::AsBytes;
-
-use monad_proto::error::ProtoError;
-use monad_proto::proto::basic::ProtoPubkey;
-use monad_proto::proto::signing::ProtoSignature;
 
 use crate::{PubKey, Signature};
 
