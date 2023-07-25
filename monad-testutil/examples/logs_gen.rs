@@ -10,7 +10,10 @@ use monad_executor::{
 };
 use monad_state::{MonadEvent, MonadState};
 use monad_testutil::swarm::get_configs;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin, validator_property::ValidatorSetProperty,
+    validator_set::ValidatorSet,
+};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
 type SignatureType = NopSignature;
@@ -20,6 +23,7 @@ type MS = MonadState<
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
+    ValidatorSetProperty,
     SimpleRoundRobin,
 >;
 type MM = <MS as State>::Message;

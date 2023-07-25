@@ -16,6 +16,7 @@ use monad_consensus_types::{
     validation::Sha256Hash, voting::VoteInfo,
 };
 use monad_crypto::{
+    bls12_381::BlsPubKey,
     secp256k1::{KeyPair, PubKey},
     Signature,
 };
@@ -24,7 +25,10 @@ use monad_executor::{
     TimerCommand,
 };
 use monad_types::{NodeId, Stake};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_validator::{
+    leader_election::LeaderElection, validator_property::ValidatorSetPropertyType,
+    validator_set::ValidatorSetType,
+};
 use ref_cast::RefCast;
 
 #[cfg(feature = "proto")]
@@ -34,7 +38,7 @@ mod message;
 
 type HasherType = Sha256Hash;
 
-pub struct MonadState<CT, ST, SCT, VT, LT>
+pub struct MonadState<CT, ST, SCT, VT, VPT, LT>
 where
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
@@ -43,10 +47,11 @@ where
 
     consensus: CT,
     validator_set: VT,
+    validator_set_property: VPT,
     leader_election: LT,
 }
 
-impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
+impl<CT, ST, SCT, VT, VPT, LT> MonadState<CT, ST, SCT, VT, VPT, LT>
 where
     CT: ConsensusProcess<ST, SCT>,
     ST: Signature,
@@ -188,7 +193,7 @@ where
 
 pub struct MonadConfig<SCT, TV> {
     pub transaction_validator: TV,
-    pub validators: Vec<PubKey>,
+    pub validators: Vec<(PubKey, BlsPubKey)>,
     pub key: KeyPair,
 
     pub delta: Duration,
@@ -197,12 +202,13 @@ pub struct MonadConfig<SCT, TV> {
     pub genesis_signatures: SCT,
 }
 
-impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
+impl<CT, ST, SCT, VT, VPT, LT> State for MonadState<CT, ST, SCT, VT, VPT, LT>
 where
     CT: ConsensusProcess<ST, SCT>,
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
+    VPT: ValidatorSetPropertyType,
     LT: LeaderElection,
 {
     type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
@@ -217,16 +223,22 @@ where
         Self,
         Vec<Command<Self::Message, Self::OutboundMessage, Self::Block>>,
     ) {
-        // create my keys and validator structs
         // FIXME stake should be configurable
-        let validator_list = config
+        let staking_list = config
+            .validators
+            .iter()
+            .map(|(pubkey, _)| (NodeId(*pubkey), Stake(1)))
+            .collect::<Vec<_>>();
+
+        let property_list = config
             .validators
             .into_iter()
-            .map(|pubkey| (NodeId(pubkey), Stake(1)))
+            .map(|(pubkey, blspubkey)| (NodeId(pubkey), blspubkey))
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set = VT::new(validator_list.clone()).expect("initial validator set init failed");
+        let val_set = VT::new(staking_list.clone()).expect("initial validator set init failed");
+        let val_set_prop = VPT::new(property_list).expect("validator set property init failed");
         let election = LT::new();
 
         let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
@@ -234,15 +246,16 @@ where
             config.genesis_signatures,
         );
 
-        let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
+        let mut monad_state: MonadState<CT, ST, SCT, VT, VPT, LT> = Self {
             message_state: MessageState::new(
                 10,
-                validator_list
+                staking_list
                     .into_iter()
                     .map(|(NodeId(pubkey), _)| PeerId(pubkey))
                     .collect(),
             ),
             validator_set: val_set,
+            validator_set_property: val_set_prop,
             leader_election: election,
             consensus: CT::new(
                 config.transaction_validator,
@@ -321,9 +334,11 @@ where
                         sender,
                         unverified_message,
                     } => {
-                        let verified_message = match unverified_message
-                            .verify::<HasherType, _>(&self.validator_set, &sender)
-                        {
+                        let verified_message = match unverified_message.verify::<HasherType, _, _>(
+                            &self.validator_set,
+                            &self.validator_set_property,
+                            &sender,
+                        ) {
                             Ok(m) => m,
                             Err(e) => todo!("{e:?}"),
                         };
@@ -333,11 +348,12 @@ where
                                 .consensus
                                 .handle_proposal_message::<HasherType>(author, msg),
                             ConsensusMessage::Vote(msg) => {
-                                self.consensus.handle_vote_message::<HasherType, _, _>(
+                                self.consensus.handle_vote_message::<HasherType, _, _, _>(
                                     author,
                                     signature,
                                     msg,
                                     &self.validator_set,
+                                    &self.validator_set_property,
                                     &self.leader_election,
                                 )
                             }

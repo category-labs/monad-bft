@@ -10,7 +10,7 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::MonadConfig;
-use monad_testutil::signing::{create_keys, get_genesis_config};
+use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::{Deserializable, Serializable};
 
 use crate::{
@@ -27,10 +27,12 @@ pub struct RepConfig {
 
 impl ReplayConfig<MS> for RepConfig {
     fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
-        let keys = create_keys(self.num_nodes);
+        let (keys, blskeys, validators, validators_prop) = create_keys_w_validators(self.num_nodes);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
+            keys.iter(),
+            &validators_prop,
+        );
 
         let state_configs = keys
             .into_iter()
@@ -39,7 +41,11 @@ impl ReplayConfig<MS> for RepConfig {
                 transaction_validator: MockValidator,
 
                 key,
-                validators: pubkeys,
+                validators: pubkeys
+                    .iter()
+                    .cloned()
+                    .zip(blskeys.iter().map(|k| k.pubkey()))
+                    .collect(),
                 delta: self.delta,
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

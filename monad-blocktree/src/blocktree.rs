@@ -315,7 +315,6 @@ mod test {
         block::{Block as ConsensusBlock, TransactionList},
         ledger::LedgerCommitInfo,
         quorum_certificate::{QcInfo, QuorumCertificate},
-        signature::SignatureCollection,
         validation::Sha256Hash,
         voting::VoteInfo,
     };
@@ -351,7 +350,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -371,7 +370,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -391,7 +390,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -411,7 +410,7 @@ mod test {
                     vote: v3,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -431,7 +430,7 @@ mod test {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -451,7 +450,7 @@ mod test {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -471,7 +470,7 @@ mod test {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -491,7 +490,7 @@ mod test {
                     vote: v7,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -583,7 +582,7 @@ mod test {
                     vote: v8,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -608,7 +607,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -628,7 +627,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -648,7 +647,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -692,7 +691,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -712,7 +711,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -725,7 +724,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -745,7 +744,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -791,7 +790,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -811,7 +810,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -846,7 +845,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -866,7 +865,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -886,7 +885,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -899,7 +898,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -912,7 +911,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -971,7 +970,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
         let v4 = VoteInfo {
@@ -990,7 +989,7 @@ mod test {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1010,7 +1009,7 @@ mod test {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1030,7 +1029,7 @@ mod test {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1074,7 +1073,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1094,7 +1093,7 @@ mod test {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1114,7 +1113,7 @@ mod test {
                     vote: v3,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1134,7 +1133,7 @@ mod test {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1154,7 +1153,7 @@ mod test {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1174,7 +1173,7 @@ mod test {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1224,7 +1223,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1244,7 +1243,7 @@ mod test {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1264,7 +1263,7 @@ mod test {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 

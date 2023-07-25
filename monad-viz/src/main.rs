@@ -32,7 +32,10 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadEvent, MonadState};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin, validator_property::ValidatorSetProperty,
+    validator_set::ValidatorSet,
+};
 use monad_wal::{
     mock::MockWALogger,
     wal::{WALogger, WALoggerConfig},
@@ -55,6 +58,7 @@ type MS = MonadState<
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
+    ValidatorSetProperty,
     SimpleRoundRobin,
 >;
 type MM = <MS as State>::Message;
@@ -136,6 +140,7 @@ impl Application for Viz {
                         SignatureType,
                         SignatureCollectionType,
                         ValidatorSet,
+                        ValidatorSetProperty,
                         SimpleRoundRobin,
                     >,
                     _,
@@ -169,6 +174,7 @@ impl Application for Viz {
                         SignatureType,
                         SignatureCollectionType,
                         ValidatorSet,
+                        ValidatorSetProperty,
                         SimpleRoundRobin,
                     >,
                     _,

@@ -1,7 +1,5 @@
 use std::fs::create_dir_all;
 
-#[cfg(target_os = "linux")]
-use criterion::criterion_main;
 use criterion::{criterion_group, Criterion};
 use monad_consensus::{
     messages::{
@@ -16,18 +14,16 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::SignatureCollection,
+    signature::{SignatureBuilder, SignatureCollection},
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_state::{ConsensusEvent, MonadEvent};
-use monad_testutil::{
-    block::setup_block,
-    signing::{create_keys, get_key},
-};
+use monad_testutil::{block::setup_block, signing::get_key, validators::create_keys_w_validators};
 use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
+use monad_validator::validator_property::ValidatorSetPropertyType;
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
     PersistenceLogger,
@@ -64,10 +60,17 @@ impl MonadEventBencher {
 
 fn bench_proposal(c: &mut Criterion) {
     let txns = TransactionList(vec![0x23_u8; 32 * 10000]);
-    let keypairs = create_keys(1);
+    let (keypairs, _blskeypairs, validators, validators_prop) = create_keys_w_validators(1);
     let author_keypair = &keypairs[0];
 
-    let blk = setup_block(NodeId(author_keypair.pubkey()), 10, 9, txns, &keypairs);
+    let blk = setup_block(
+        NodeId(author_keypair.pubkey()),
+        10,
+        9,
+        txns,
+        &keypairs,
+        &validators_prop,
+    );
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
@@ -123,7 +126,8 @@ fn bench_vote(c: &mut Criterion) {
 }
 
 fn bench_timeout(c: &mut Criterion) {
-    let keypairs = create_keys(N_VALIDATORS as u32);
+    let (keypairs, _blskeypairs, _validators, validators_prop) =
+        create_keys_w_validators(N_VALIDATORS as u32);
     let author_keypair = &keypairs[0];
 
     let vi = VoteInfo {
@@ -141,10 +145,21 @@ fn bench_timeout(c: &mut Criterion) {
 
     let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-    let mut aggsig = MultiSig::new();
+    let mut builder = SignatureBuilder::new();
+
     for keypair in keypairs.iter() {
-        aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
+        let idx = validators_prop
+            .get_index(&NodeId(keypair.pubkey()))
+            .unwrap();
+
+        builder.add_signature(idx, keypair.sign(qcinfo_hash.as_ref()));
     }
+    let aggsig = MultiSig::new(
+        builder,
+        validators_prop.get_voting_list(),
+        qcinfo_hash.as_ref(),
+    )
+    .unwrap();
 
     let qc = QuorumCertificate::new(qcinfo, aggsig);
 
@@ -219,7 +234,7 @@ criterion_group!(
 );
 
 #[cfg(target_os = "linux")]
-criterion_main!(bench);
+criterion::criterion_main!(bench);
 
 #[cfg(not(target_os = "linux"))]
 fn main() {

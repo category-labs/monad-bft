@@ -17,7 +17,9 @@ use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{Hash, NodeId, Stake};
-use monad_validator::validator_set::ValidatorSetType;
+use monad_validator::{
+    validator_property::ValidatorSetPropertyType, validator_set::ValidatorSetType,
+};
 
 #[cfg(feature = "proto")]
 use crate::convert::message::UnverifiedConsensusMessage;
@@ -105,17 +107,21 @@ where
 {
     // A verified proposal is one which is well-formed and has valid
     // signatures for the present TC or QC
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<H: Hasher, VT: ValidatorSetType, VPT: ValidatorSetPropertyType>(
         self,
         validators: &VT,
+        validators_property: &VPT,
         sender: &PubKey,
     ) -> Result<Verified<S, ConsensusMessage<S, T>>, Error> {
         // FIXME this feels wrong... it feels like the enum variant should factor into the hash so
         //       signatures can't be reused across variant members
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {
-                let verified =
-                    Unverified::new(m, self.author_signature).verify::<H, _>(validators, sender)?;
+                let verified = Unverified::new(m, self.author_signature).verify::<H, _, _>(
+                    validators,
+                    validators_property,
+                    sender,
+                )?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -136,8 +142,11 @@ where
                 }
             }
             ConsensusMessage::Timeout(m) => {
-                let verified =
-                    Unverified::new(m, self.author_signature).verify::<H, _>(validators, sender)?;
+                let verified = Unverified::new(m, self.author_signature).verify::<H, _, _>(
+                    validators,
+                    validators_property,
+                    sender,
+                )?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -150,18 +159,19 @@ where
     }
 }
 
-impl<S, T> Unverified<S, ProposalMessage<S, T>>
+impl<S, SCT> Unverified<S, ProposalMessage<S, SCT>>
 where
     S: Signature,
-    T: SignatureCollection,
+    SCT: SignatureCollection,
 {
     // A verified proposal is one which is well-formed and has valid
     // signatures for the present TC or QC
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<H: Hasher, VT: ValidatorSetType, VPT: ValidatorSetPropertyType>(
         self,
         validators: &VT,
+        validators_property: &VPT,
         sender: &PubKey,
-    ) -> Result<Verified<S, ProposalMessage<S, T>>, Error> {
+    ) -> Result<Verified<S, ProposalMessage<S, SCT>>, Error> {
         self.well_formed_proposal()?;
         let msg = H::hash_object(&self.obj);
         let author = verify_author(
@@ -170,7 +180,12 @@ where
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<S, H, _, _>(validators, &self.obj.last_round_tc, &self.obj.block.qc)?;
+        verify_certificates::<S, H, _, _, _>(
+            validators,
+            validators_property,
+            &self.obj.last_round_tc,
+            &self.obj.block.qc,
+        )?;
 
         let result = Verified {
             author: NodeId(author),
@@ -215,9 +230,10 @@ where
     S: Signature,
     T: SignatureCollection,
 {
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<H: Hasher, VT: ValidatorSetType, VPT: ValidatorSetPropertyType>(
         self,
         validators: &VT,
+        validators_property: &VPT,
         sender: &PubKey,
     ) -> Result<Verified<S, TimeoutMessage<S, T>>, Error> {
         self.well_formed_timeout()?;
@@ -228,8 +244,9 @@ where
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<S, H, _, _>(
+        verify_certificates::<S, H, _, _, _>(
             validators,
+            validators_property,
             &self.obj.last_round_tc,
             &self.obj.tminfo.high_qc,
         )?;
@@ -250,22 +267,24 @@ where
     }
 }
 
-fn verify_certificates<S, H, V, VT>(
+fn verify_certificates<S, H, SCT, VT, VPT>(
     validators: &VT,
+    validators_property: &VPT,
     tc: &Option<TimeoutCertificate<S>>,
-    qc: &QuorumCertificate<V>,
+    qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
     S: Signature,
     H: Hasher,
-    V: SignatureCollection,
+    SCT: SignatureCollection,
     VT: ValidatorSetType,
+    VPT: ValidatorSetPropertyType,
 {
     if let Some(tc) = tc {
         verify_tc::<S, H, _>(validators, tc)?;
     }
 
-    verify_qc::<V, H, _>(validators, qc)?;
+    verify_qc::<SCT, H, _, _>(validators, validators_property, qc)?;
 
     Ok(())
 }
@@ -305,11 +324,16 @@ where
     Ok(())
 }
 
-fn verify_qc<V, H, VT>(validators: &VT, qc: &QuorumCertificate<V>) -> Result<(), Error>
+fn verify_qc<SCT, H, VT, VPT>(
+    validators: &VT,
+    validators_property: &VPT,
+    qc: &QuorumCertificate<SCT>,
+) -> Result<(), Error>
 where
-    V: SignatureCollection,
+    SCT: SignatureCollection,
     H: Hasher,
     VT: ValidatorSetType,
+    VPT: ValidatorSetPropertyType,
 {
     if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
         // TODO: collect author for evidence?
@@ -317,20 +341,10 @@ where
     }
 
     let qc_msg = H::hash_object(&qc.info.ledger_commit);
-    let pubkeys = qc
+    let node_ids = qc
         .signatures
-        .get_pubkeys(qc_msg.as_ref())
+        .verify(validators_property.get_voting_list(), qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
-
-    for p in pubkeys.iter() {
-        p.valid_pubkey(validators.get_members())?;
-    }
-
-    qc.signatures
-        .verify_signatures(qc_msg.as_ref())
-        .map_err(|_| Error::InvalidSignature)?;
-
-    let node_ids = pubkeys.iter().map(|pk| NodeId(*pk)).collect::<Vec<_>>();
 
     if !validators.has_super_majority_votes(node_ids.iter()) {
         return Err(Error::InsufficientStake);
@@ -406,15 +420,18 @@ mod test {
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
-        signature::SignatureCollection,
+        signature::{SignatureBuilder, SignatureCollection},
         timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
         validation::{Error, Hashable, Hasher, Sha256Hash},
         voting::VoteInfo,
     };
     use monad_crypto::secp256k1::SecpSignature;
-    use monad_testutil::signing::{create_keys, get_key};
+    use monad_testutil::signing::{create_keys, create_keys_bls, get_key, get_key_bls};
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+    use monad_validator::{
+        validator_property::{ValidatorSetProperty, ValidatorSetPropertyType},
+        validator_set::{ValidatorSet, ValidatorSetType},
+    };
     use test_case::test_case;
 
     use super::{verify_qc, verify_tc};
@@ -475,15 +492,20 @@ mod test {
         let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypair = get_key(6);
-        let vlist = vec![(NodeId(keypair.pubkey()), Stake(1))];
+        let blskeypair = get_key_bls(6);
+        let stake_list = vec![(NodeId(keypair.pubkey()), Stake(1))];
+        let prop_list = vec![(NodeId(keypair.pubkey()), blskeypair.pubkey())];
 
-        let vset = ValidatorSet::new(vlist).unwrap();
+        let vset = ValidatorSet::new(stake_list).unwrap();
+        let vsetprop = ValidatorSetProperty::new(prop_list).unwrap();
 
         let msg = Sha256Hash::hash_object(&lci);
         let s = keypair.sign(msg.as_ref());
 
-        let mut sigs = MultiSig::new();
-        sigs.add_signature(s);
+        let mut sig_builder = SignatureBuilder::new();
+        sig_builder.add_signature(vsetprop.get_index(&NodeId(keypair.pubkey())).unwrap(), s);
+
+        let sigs = MultiSig::new(sig_builder, vsetprop.get_voting_list(), msg.as_ref()).unwrap();
 
         let vi2 = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
@@ -500,7 +522,9 @@ mod test {
             sigs,
         );
 
-        assert!(verify_qc::<MultiSig<SecpSignature>, Sha256Hash, _>(&vset, &qc).is_err());
+        assert!(
+            verify_qc::<MultiSig<SecpSignature>, Sha256Hash, _, _>(&vset, &vsetprop, &qc).is_err()
+        );
     }
 
     #[test]
@@ -522,11 +546,21 @@ mod test {
 
         let vset = ValidatorSet::new(vlist).unwrap();
 
+        let blskeypairs = create_keys_bls(2);
+        let prop_list = keypairs
+            .iter()
+            .zip(blskeypairs.iter())
+            .map(|(kp, blskp)| (NodeId(kp.pubkey()), blskp.pubkey()))
+            .collect::<Vec<_>>();
+        let vprop = ValidatorSetProperty::new(prop_list).unwrap();
+
         let msg = Sha256Hash::hash_object(&lci);
         let s = keypairs[0].sign(msg.as_ref());
 
-        let mut sigs = MultiSig::new();
-        sigs.add_signature(s);
+        let mut sig_builder = SignatureBuilder::new();
+        sig_builder.add_signature(vprop.get_index(&NodeId(keypairs[0].pubkey())).unwrap(), s);
+
+        let sigs = MultiSig::new(sig_builder, vprop.get_voting_list(), msg.as_ref()).unwrap();
 
         let qc = QuorumCertificate::new(
             QcInfo {
@@ -537,7 +571,7 @@ mod test {
         );
 
         assert!(matches!(
-            verify_qc::<MultiSig<SecpSignature>, Sha256Hash, _>(&vset, &qc),
+            verify_qc::<MultiSig<SecpSignature>, Sha256Hash, _, _>(&vset, &vprop, &qc),
             Err(Error::InsufficientStake)
         ));
     }

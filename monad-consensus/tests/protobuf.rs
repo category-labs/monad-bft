@@ -15,27 +15,16 @@ mod test {
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
-        signature::SignatureCollection,
+        signature::{SignatureBuilder, SignatureCollection},
         timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
         validation::{Hasher, Sha256Hash},
         voting::VoteInfo,
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_testutil::{
-        block::setup_block,
-        signing::{create_keys, get_key},
-    };
-    use monad_types::{BlockId, Hash, NodeId, Round, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+    use monad_crypto::secp256k1::SecpSignature;
+    use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
+    use monad_types::{BlockId, Hash, NodeId, Round};
+    use monad_validator::validator_property::ValidatorSetPropertyType;
 
-    fn setup_validator_set(keypairs: &[KeyPair]) -> ValidatorSet {
-        let vlist = keypairs
-            .iter()
-            .map(|kp| (NodeId(kp.pubkey()), Stake(1)))
-            .collect::<Vec<_>>();
-
-        ValidatorSet::new(vlist).unwrap()
-    }
     // TODO: revisit to cleanup
     #[test]
     fn test_vote_message() {
@@ -54,9 +43,10 @@ mod test {
                 vote_info: vi,
                 ledger_commit_info: lci,
             });
-        let keypairs = vec![get_key(0)];
+
+        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(1);
+
         let author_keypair = &keypairs[0];
-        let validators = setup_validator_set(&keypairs);
 
         let verified_votemsg = Verified::new::<Sha256Hash>(votemsg, author_keypair);
 
@@ -64,7 +54,7 @@ mod test {
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
         let verified_rx_vote = rx_msg
-            .verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey())
+            .verify::<Sha256Hash, _, _>(&validators, &validators_prop, &author_keypair.pubkey())
             .unwrap();
 
         assert_eq!(verified_votemsg, verified_rx_vote);
@@ -72,8 +62,8 @@ mod test {
 
     #[test]
     fn test_timeout_message() {
-        let keypairs = create_keys(2);
-        let validators = setup_validator_set(&keypairs);
+        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(2);
+
         let author_keypair = &keypairs[0];
 
         let vi = VoteInfo {
@@ -91,12 +81,23 @@ mod test {
 
         let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-        let mut aggsig = MultiSig::new();
+        let mut builder = SignatureBuilder::new();
         for keypair in keypairs.iter() {
-            aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
+            let idx = validators_prop
+                .get_index(&NodeId(keypair.pubkey()))
+                .unwrap();
+            let sig = keypair.sign(qcinfo_hash.as_ref());
+            builder.add_signature(idx, sig);
         }
 
-        let qc = QuorumCertificate::new(qcinfo, aggsig);
+        let multisig = MultiSig::new(
+            builder,
+            validators_prop.get_voting_list(),
+            qcinfo_hash.as_ref(),
+        )
+        .unwrap();
+
+        let qc = QuorumCertificate::new(qcinfo, multisig);
 
         let tmo_info = TimeoutInfo {
             round: Round(3),
@@ -133,23 +134,27 @@ mod test {
         let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
         let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
-        let verified_rx_tmo_messaage =
-            rx_msg.verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey());
+        let verified_rx_tmo_messaage = rx_msg.verify::<Sha256Hash, _, _>(
+            &validators,
+            &validators_prop,
+            &author_keypair.pubkey(),
+        );
 
         assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
     }
 
     #[test]
     fn test_proposal_qc() {
-        let keypairs = create_keys(2);
+        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(2);
+
         let author_keypair = &keypairs[0];
-        let validators = setup_validator_set(&keypairs);
         let blk = setup_block(
             NodeId(author_keypair.pubkey()),
             233,
             232,
             TransactionList(vec![1, 2, 3, 4]),
             &keypairs,
+            &validators_prop,
         );
         let proposal: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
             ConsensusMessage::Proposal(ProposalMessage {
@@ -161,15 +166,19 @@ mod test {
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        let verified_rx_msg = rx_msg.verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey());
+        let verified_rx_msg = rx_msg.verify::<Sha256Hash, _, _>(
+            &validators,
+            &validators_prop,
+            &author_keypair.pubkey(),
+        );
 
         assert_eq!(verified_msg, verified_rx_msg.unwrap());
     }
 
     #[test]
     fn test_unverified_proposal_tc() {
-        let keypairs = create_keys(2);
-        let validators = setup_validator_set(&keypairs);
+        let (keypairs, _blskeys, validators, validators_prop) = create_keys_w_validators(2);
+
         let author_keypair = &keypairs[0];
         let blk = setup_block(
             NodeId(author_keypair.pubkey()),
@@ -177,6 +186,7 @@ mod test {
             231,
             TransactionList(vec![1, 2, 3, 4]),
             &keypairs,
+            &validators_prop,
         );
 
         let tc_round = Round(232);
@@ -211,7 +221,11 @@ mod test {
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
         let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-        let verified_rx_msg = rx_msg.verify::<Sha256Hash, _>(&validators, &author_keypair.pubkey());
+        let verified_rx_msg = rx_msg.verify::<Sha256Hash, _, _>(
+            &validators,
+            &validators_prop,
+            &author_keypair.pubkey(),
+        );
 
         assert_eq!(verified_msg, verified_rx_msg.unwrap());
     }

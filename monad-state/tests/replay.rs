@@ -12,7 +12,10 @@ mod test {
     };
     use monad_state::{MonadEvent, MonadState};
     use monad_testutil::swarm::{get_configs, node_ledger_verification};
-    use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+    use monad_validator::{
+        simple_round_robin::SimpleRoundRobin, validator_property::ValidatorSetProperty,
+        validator_set::ValidatorSet,
+    };
     use monad_wal::wal::{WALogger, WALoggerConfig};
     use tempfile::tempdir;
 
@@ -57,6 +60,7 @@ mod test {
                 SignatureType,
                 SignatureCollectionType,
                 ValidatorSet,
+                ValidatorSetProperty,
                 SimpleRoundRobin,
             >,
             _,
@@ -117,6 +121,7 @@ mod test {
                 SignatureType,
                 SignatureCollectionType,
                 ValidatorSet,
+                ValidatorSetProperty,
                 SimpleRoundRobin,
             >,
             _,

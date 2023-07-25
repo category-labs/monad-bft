@@ -1,6 +1,11 @@
 use monad_types::*;
 
-use crate::{ledger::*, signature::SignatureCollection, validation::Hasher, voting::*};
+use crate::{
+    ledger::*,
+    signature::{SignatureBuilder, SignatureCollection},
+    validation::Hasher,
+    voting::*,
+};
 
 pub const GENESIS_PRIME_QC_HASH: Hash = Hash([0xAA; 32]);
 
@@ -88,7 +93,7 @@ impl<T: SignatureCollection> QuorumCertificate<T> {
         };
         let lci = LedgerCommitInfo::new::<H>(None, &vote_info);
 
-        let sigs = T::new();
+        let sigs = T::new(SignatureBuilder::new(), &[], &[]).expect("genesis qc sigs");
         let sig_hash = sigs.get_hash();
 
         QuorumCertificate {

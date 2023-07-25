@@ -13,3 +13,6 @@ monad-crypto = { path = "../monad-crypto" }
 monad-types = { path = "../monad-types" }
 
 log = { workspace = true }
+
+[dev-dependencies]
+monad-testutil = { path = "../monad-testutil" }

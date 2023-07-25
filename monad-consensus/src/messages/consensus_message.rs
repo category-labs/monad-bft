@@ -31,7 +31,7 @@ impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
 impl<ST, SCT> Hashable for ConsensusMessage<ST, SCT>
 where
     ST: Signature,
-    SCT: SignatureCollection<SignatureType = ST>,
+    SCT: SignatureCollection,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -52,7 +52,7 @@ where
 impl<ST, SCT> ConsensusMessage<ST, SCT>
 where
     ST: Signature,
-    SCT: SignatureCollection<SignatureType = ST>,
+    SCT: SignatureCollection,
 {
     pub fn sign<H: Hasher>(self, keypair: &KeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {
         Verified::new::<H>(self, keypair)

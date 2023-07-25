@@ -22,6 +22,7 @@ use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
+    validator_property::{ValidatorSetProperty, ValidatorSetPropertyType},
     validator_set::{ValidatorSet, ValidatorSetType},
 };
 use monad_wal::{
@@ -31,7 +32,7 @@ use monad_wal::{
 use rand::{prelude::SliceRandom, SeedableRng};
 use rand_chacha::ChaChaRng;
 
-use crate::signing::{create_keys, get_genesis_config};
+use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
@@ -41,6 +42,7 @@ type MS = MonadState<
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
+    ValidatorSetProperty,
     SimpleRoundRobin,
 >;
 type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
@@ -128,9 +130,10 @@ pub fn get_configs<SCT: SignatureCollection>(
     num_nodes: u16,
     delta: Duration,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TransactionValidatorType>>) {
-    let keys = create_keys(num_nodes as u32);
+    let (keys, blskeys, validators, validators_prop) = create_keys_w_validators(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
+    let (genesis_block, genesis_sigs) =
+        get_genesis_config::<Sha256Hash, SCT>(keys.iter(), &validators_prop);
 
     let state_configs = keys
         .into_iter()
@@ -138,7 +141,11 @@ pub fn get_configs<SCT: SignatureCollection>(
         .map(|(key, pubkeys)| MonadConfig {
             transaction_validator: TransactionValidatorType {},
             key,
-            validators: pubkeys,
+            validators: pubkeys
+                .iter()
+                .cloned()
+                .zip(blskeys.iter().map(|k| k.pubkey()))
+                .collect(),
 
             delta,
             genesis_block: genesis_block.clone(),
@@ -155,14 +162,15 @@ pub fn node_ledger_verification<
     ST: Signature,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
     VT: ValidatorSetType,
+    VPT: ValidatorSetPropertyType,
     LT: LeaderElection,
     PL: PersistenceLogger,
 >(
     states: &BTreeMap<
         PeerId,
         (
-            MockExecutor<MonadState<CT, ST, SCT, VT, LT>>,
-            MonadState<CT, ST, SCT, VT, LT>,
+            MockExecutor<MonadState<CT, ST, SCT, VT, VPT, LT>>,
+            MonadState<CT, ST, SCT, VT, VPT, LT>,
             PL,
         ),
     >,

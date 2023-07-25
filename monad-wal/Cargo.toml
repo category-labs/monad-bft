@@ -22,6 +22,7 @@ monad-types = { path = "../monad-types" }
 
 criterion = { workspace = true }
 tempfile = { workspace = true }
+monad-validator = { path = "../monad-validator" }
 
 [[bench]]
 name = "raw_bench"

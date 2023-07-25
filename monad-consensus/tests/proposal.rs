@@ -7,9 +7,11 @@ use monad_consensus_types::{
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{PubKey, SecpSignature};
-use monad_testutil::signing::{get_key, node_id, MockSignatures, TestSigner};
+use monad_testutil::{
+    signing::{get_key, MockSignatures, TestSigner},
+    validators::create_keys_w_validators,
+};
 use monad_types::*;
-use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
 fn setup_block(
     author: NodeId,
@@ -38,61 +40,54 @@ fn setup_block(
 
 #[test]
 fn test_proposal_hash() {
-    let mut vlist = Vec::new();
-    let keypair = get_key(6);
+    let (keypairs, _blskeys, vset, vprop) = create_keys_w_validators(1);
+    let author = NodeId(keypairs[0].pubkey());
 
-    vlist.push((NodeId(keypair.pubkey()), Stake(1)));
-
-    let author = node_id();
     let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
         block: setup_block(
             author,
             234,
             233,
-            vlist
+            keypairs
                 .iter()
-                .map(|(node_id, _)| node_id.0)
+                .map(|kp| kp.pubkey())
                 .collect::<Vec<_>>()
-                .as_ref(),
+                .as_slice(),
         ),
         last_round_tc: None,
     };
-
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
+    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypairs[0]);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
-    assert!(sp.verify::<Sha256Hash, _>(&vset, &keypair.pubkey()).is_ok());
+    assert!(sp
+        .verify::<Sha256Hash, _, _>(&vset, &vprop, &keypairs[0].pubkey())
+        .is_ok());
 }
 
 #[test]
 fn test_proposal_missing_tc() {
-    let mut vlist = Vec::new();
-    let keypair = get_key(6);
+    let (keypairs, _blskeys, vset, vprop) = create_keys_w_validators(1);
+    let author = NodeId(keypairs[0].pubkey());
 
-    vlist.push((NodeId(keypair.pubkey()), Stake(0)));
-
-    let author = node_id();
     let proposal = ProposalMessage {
         block: setup_block(
             author,
             234,
             232,
-            vlist
+            keypairs
                 .iter()
-                .map(|(node_id, _)| node_id.0)
+                .map(|kp| kp.pubkey())
                 .collect::<Vec<_>>()
-                .as_ref(),
+                .as_slice(),
         ),
         last_round_tc: None,
     };
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
+    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypairs[0]);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &keypair.pubkey())
+        sp.verify::<Sha256Hash, _, _>(&vset, &vprop, &keypairs[0].pubkey())
             .unwrap_err(),
         Error::NotWellFormed
     );
@@ -100,33 +95,28 @@ fn test_proposal_missing_tc() {
 
 #[test]
 fn test_proposal_invalid_qc() {
-    let mut vlist = Vec::new();
+    let (keypairs, _blskeys, vset, vprop) = create_keys_w_validators(1);
+    let author = NodeId(keypairs[0].pubkey());
 
-    let keypair = get_key(6);
-
-    vlist.push((NodeId(keypair.pubkey()), Stake(0)));
-
-    let author = node_id();
     let proposal = ProposalMessage {
         block: setup_block(
             author,
             234,
             233,
-            vlist
+            keypairs
                 .iter()
-                .map(|(node_id, _)| node_id.0)
+                .map(|kp| kp.pubkey())
                 .collect::<Vec<_>>()
-                .as_ref(),
+                .as_slice(),
         ),
         last_round_tc: None,
     };
 
     let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &get_key(7));
+    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &get_key(100));
 
-    let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &keypair.pubkey())
+        sp.verify::<Sha256Hash, _, _>(&vset, &vprop, &keypairs[0].pubkey())
             .unwrap_err(),
         Error::InvalidAuthor
     );

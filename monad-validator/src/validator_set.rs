@@ -9,13 +9,13 @@ pub type Result<T> = std::result::Result<T, ValidatorSetError>;
 
 #[derive(Debug)]
 pub enum ValidatorSetError {
-    DuplicateValidator(String),
+    DuplicateValidator(NodeId),
 }
 
 impl fmt::Display for ValidatorSetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DuplicateValidator(s) => write!(f, "Duplicate validator entry: {}", s),
+            Self::DuplicateValidator(node_id) => write!(f, "Duplicate NodeId: {:?}", node_id),
         }
     }
 }
@@ -50,18 +50,16 @@ impl ValidatorSetType for ValidatorSet {
     fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self> {
         let mut vmap = HashMap::new();
         let mut vlist = Vec::new();
+
         for (node_id, stake) in validators.into_iter() {
-            let entry = vmap.entry(node_id).or_insert(stake);
-            if *entry != stake {
-                return Err(ValidatorSetError::DuplicateValidator(format!(
-                    "{:?}",
-                    node_id
-                )));
+            let old_stake = vmap.insert(node_id, stake);
+            if old_stake.is_some() {
+                return Err(ValidatorSetError::DuplicateValidator(node_id));
             }
             vlist.push(node_id);
         }
 
-        vlist.sort();
+        vlist.sort_by(|a, b| a.0.cmp(&b.0));
 
         let total_stake: Stake = vmap.values().copied().sum();
 
@@ -113,6 +111,7 @@ impl ValidatorSetType for ValidatorSet {
 #[cfg(test)]
 mod test {
     use monad_crypto::secp256k1::KeyPair;
+    use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 
     use super::ValidatorSet;
@@ -120,17 +119,16 @@ mod test {
 
     #[test]
     fn test_membership() {
-        let mut privkey: [u8; 32] = [100; 32];
-        let keypair1 = KeyPair::from_bytes(&mut privkey).unwrap();
+        let seed1 = 7_u64;
+        let seed2 = 8_u64;
+        let keypair1 = get_key(seed1);
 
         let v1 = (NodeId(keypair1.pubkey()), Stake(1));
         let v1_ = (NodeId(keypair1.pubkey()), Stake(2));
 
-        privkey = [101; 32];
-        let v2 = (
-            NodeId(KeyPair::from_bytes(&mut privkey).unwrap().pubkey()),
-            Stake(2),
-        );
+        let keypair2 = get_key(seed2);
+
+        let v2 = (NodeId(keypair2.pubkey()), Stake(2));
 
         let validators_duplicate = vec![v1, v1_];
         let _vs_err = ValidatorSet::new(validators_duplicate).unwrap_err();
@@ -146,40 +144,28 @@ mod test {
 
     #[test]
     fn test_super_maj() {
-        let mut pkey1: [u8; 32] = [100; 32];
-        let mut pkey2: [u8; 32] = [101; 32];
-        let v1 = (
-            NodeId(KeyPair::from_bytes(&mut pkey1).unwrap().pubkey()),
-            Stake(1),
-        );
-        let v2 = (
-            NodeId(KeyPair::from_bytes(&mut pkey2).unwrap().pubkey()),
-            Stake(3),
-        );
+        let keypairs = create_keys(3);
 
-        let mut pkey3: [u8; 32] = [102; 32];
-        let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
+        let v1 = (NodeId(keypairs[0].pubkey()), Stake(1));
+        let v2 = (NodeId(keypairs[1].pubkey()), Stake(3));
+
+        let pubkey3 = keypairs[2].pubkey();
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::new(validators).unwrap();
         assert!(vs.has_super_majority_votes(&vec![v2.0]));
         assert!(!vs.has_super_majority_votes(&vec![v1.0]));
         assert!(vs.has_super_majority_votes(&vec![v2.0, NodeId(pubkey3)]));
+        assert!(!vs.has_super_majority_votes(&vec![v1.0, NodeId(pubkey3)]));
         // Address(3) is a non-member
     }
 
     #[test]
     fn test_honest_vote() {
-        let mut pkey1: [u8; 32] = [100; 32];
-        let mut pkey2: [u8; 32] = [101; 32];
-        let v1 = (
-            NodeId(KeyPair::from_bytes(&mut pkey1).unwrap().pubkey()),
-            Stake(1),
-        );
-        let v2 = (
-            NodeId(KeyPair::from_bytes(&mut pkey2).unwrap().pubkey()),
-            Stake(2),
-        );
+        let keypairs = create_keys(2);
+
+        let v1 = (NodeId(keypairs[0].pubkey()), Stake(1));
+        let v2 = (NodeId(keypairs[1].pubkey()), Stake(2));
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::new(validators).unwrap();

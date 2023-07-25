@@ -8,12 +8,13 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    signature::SignatureCollection,
+    signature::{SignatureBuilder, SignatureCollection},
     transaction_validator::MockValidator,
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
 use monad_crypto::{
+    bls12_381::{BlsKeyPair, BlsPubKey},
     secp256k1::{KeyPair, PubKey, SecpSignature},
     Signature,
 };
@@ -25,7 +26,11 @@ use monad_executor::{
 };
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_property::{ValidatorSetProperty, ValidatorSetPropertyType},
+    validator_set::ValidatorSet,
+};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::{event, instrument::WithSubscriber, Level};
@@ -40,6 +45,7 @@ type MonadState = monad_state::MonadState<
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
+    ValidatorSetProperty,
     SimpleRoundRobin,
 >;
 type MonadConfig = <MonadState as State>::Config;
@@ -54,7 +60,7 @@ pub struct Config {
     pub libp2p_timeout: Duration,
     pub libp2p_keepalive: Duration,
 
-    pub genesis_peers: Vec<(Multiaddr, PubKey)>,
+    pub genesis_peers: Vec<(Multiaddr, PubKey, BlsPubKey)>,
     pub delta: Duration,
     pub genesis_block: Block<SignatureCollectionType>,
     pub genesis_vote_info: VoteInfo,
@@ -186,6 +192,20 @@ fn testnet(
         .map(|mut secret| KeyPair::libp2p_from_bytes(secret.as_mut_slice()).unwrap())
         .collect();
 
+    let blskeypairs: Vec<_> = secrets
+        .iter()
+        .cloned()
+        .map(|mut secret| BlsKeyPair::from_bytes(secret.as_mut_slice()).unwrap())
+        .collect();
+
+    let prop_list = keys
+        .iter()
+        .map(|(keypair, _libp2p_keypair)| NodeId(keypair.pubkey()))
+        .zip(blskeypairs.iter().map(|kp| kp.pubkey()))
+        .collect::<Vec<_>>();
+
+    let vprop = ValidatorSetProperty::new(prop_list).unwrap();
+
     let addresses = addresses
         .into_iter()
         .map(|(host, port)| format!("/ip4/{host}/udp/{port}/quic-v1").parse().unwrap())
@@ -195,6 +215,8 @@ fn testnet(
         .iter()
         .cloned()
         .zip(keys.iter().map(|(keypair, _)| keypair.pubkey()))
+        .zip(blskeypairs.into_iter().map(|kp| kp.pubkey()))
+        .map(|((a, b), c)| (a, b, c))
         .collect::<Vec<_>>();
 
     let genesis_block = {
@@ -212,13 +234,20 @@ fn testnet(
         let genesis_lci =
             LedgerCommitInfo::new::<HasherType>(None, &genesis_vote_info(genesis_block.get_id()));
         let msg = HasherType::hash_object(&genesis_lci);
-        let mut signatures = SignatureCollectionType::new();
-        for signature in keys
-            .iter()
-            .map(|(key, _)| SignatureType::sign(msg.as_ref(), key))
-        {
-            signatures.add_signature(signature)
+
+        let mut builder = SignatureBuilder::new();
+        for (key, _) in keys.iter() {
+            let idx = vprop.get_index(&NodeId(key.pubkey())).unwrap();
+            let sig = <SignatureCollectionType as SignatureCollection>::SignatureType::sign(
+                msg.as_ref(),
+                key,
+            );
+            builder.add_signature(idx, sig)
         }
+
+        let signatures =
+            SignatureCollectionType::new(builder, vprop.get_voting_list(), msg.as_ref()).unwrap();
+
         signatures
     };
 
@@ -228,7 +257,7 @@ fn testnet(
         .zip(
             peers
                 .iter()
-                .map(|(_, pubkey)| pubkey)
+                .map(|(_, pubkey, _)| pubkey)
                 .copied()
                 .collect::<Vec<_>>(),
         )
@@ -264,7 +293,7 @@ async fn run(
     )
     .await;
     let num_nodes = config.genesis_peers.len();
-    for (address, peer) in &config.genesis_peers {
+    for (address, peer, _blspk) in &config.genesis_peers {
         router.add_peer(&peer.into(), address.clone())
     }
 
@@ -284,7 +313,7 @@ async fn run(
         validators: config
             .genesis_peers
             .into_iter()
-            .map(|(_, peer)| peer)
+            .map(|(_, peer, blspk)| (peer, blspk))
             .collect(),
         key: keypair,
         delta: config.delta,

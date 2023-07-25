@@ -6,28 +6,31 @@ use monad_consensus_types::{
     block::{Block, TransactionList},
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::SignatureCollection,
+    signature::{SignatureBuilder, SignatureCollection},
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hashable, Hasher, Sha256Hash},
     voting::VoteInfo,
 };
 use monad_crypto::{secp256k1::KeyPair, Signature};
 use monad_types::{NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_validator::{
+    leader_election::LeaderElection, validator_property::ValidatorSetPropertyType,
+    validator_set::ValidatorSetType,
+};
 
-pub struct ProposalGen<S, T> {
+pub struct ProposalGen<ST, SCT> {
     round: Round,
-    qc: QuorumCertificate<T>,
-    high_qc: QuorumCertificate<T>,
-    last_tc: Option<TimeoutCertificate<S>>,
+    qc: QuorumCertificate<SCT>,
+    high_qc: QuorumCertificate<SCT>,
+    last_tc: Option<TimeoutCertificate<ST>>,
 }
 
-impl<S, T> ProposalGen<S, T>
+impl<ST, SCT> ProposalGen<ST, SCT>
 where
-    T: SignatureCollection<SignatureType = S>,
-    S: Signature,
+    ST: Signature,
+    SCT: SignatureCollection,
 {
-    pub fn new(genesis_qc: QuorumCertificate<T>) -> Self {
+    pub fn new(genesis_qc: QuorumCertificate<SCT>) -> Self {
         ProposalGen {
             round: Round(0),
             qc: genesis_qc.clone(),
@@ -36,13 +39,18 @@ where
         }
     }
 
-    pub fn next_proposal<VT: ValidatorSetType, LT: LeaderElection>(
+    pub fn next_proposal<
+        VT: ValidatorSetType,
+        VPT: ValidatorSetPropertyType,
+        LT: LeaderElection,
+    >(
         &mut self,
         keys: &Vec<KeyPair>,
         valset: &VT,
         election: &LT,
+        valset_prop: &VPT,
         payload: &TransactionList,
-    ) -> Verified<T::SignatureType, ProposalMessage<T::SignatureType, T>> {
+    ) -> Verified<ST, ProposalMessage<ST, SCT>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
             &self.high_qc
@@ -60,7 +68,7 @@ where
         let block = Block::new::<Sha256Hash>(NodeId(leader_key.pubkey()), self.round, payload, qc);
 
         self.high_qc = self.qc.clone();
-        self.qc = self.get_next_qc(keys, &block);
+        self.qc = self.get_next_qc(keys, &block, valset_prop);
 
         let proposal = ProposalMessage {
             block,
@@ -79,7 +87,7 @@ where
         &mut self,
         keys: &Vec<KeyPair>,
         valset: &VT,
-    ) -> Vec<Verified<T::SignatureType, TimeoutMessage<S, T>>> {
+    ) -> Vec<Verified<SCT::SignatureType, TimeoutMessage<ST, SCT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId(keypair.pubkey()))
@@ -88,7 +96,7 @@ where
             return Vec::new();
         }
 
-        let mut tc = TimeoutCertificate::<S> {
+        let mut tc = TimeoutCertificate::<ST> {
             round: self.round,
             high_qc_rounds: Vec::new(),
         };
@@ -105,7 +113,7 @@ where
         for key in keys {
             let high_qc_sig_tuple = HighQcRoundSigTuple {
                 high_qc_round,
-                author_signature: S::sign(msg_hash.as_ref(), key),
+                author_signature: ST::sign(msg_hash.as_ref(), key),
             };
             tc.high_qc_rounds.push(high_qc_sig_tuple);
             let tmo_msg = TimeoutMessage {
@@ -124,7 +132,12 @@ where
         tmo_msgs
     }
 
-    fn get_next_qc(&self, keys: &Vec<KeyPair>, block: &Block<T>) -> QuorumCertificate<T> {
+    fn get_next_qc<VPT: ValidatorSetPropertyType>(
+        &self,
+        keys: &Vec<KeyPair>,
+        block: &Block<SCT>,
+        valset_prop: &VPT,
+    ) -> QuorumCertificate<SCT> {
         let vi = VoteInfo {
             id: block.get_id(),
             round: block.round,
@@ -138,12 +151,16 @@ where
             ledger_commit: lci,
         };
 
-        let mut sigs = T::new();
         let msg = Sha256Hash::hash_object(&lci);
+
+        let mut builder = SignatureBuilder::new();
         for k in keys {
-            let s = T::SignatureType::sign(msg.as_ref(), k);
-            sigs.add_signature(s);
+            let idx = valset_prop.get_index(&NodeId(k.pubkey())).unwrap();
+            let s = SCT::SignatureType::sign(msg.as_ref(), k);
+            builder.add_signature(idx, s);
         }
+
+        let sigs = SCT::new(builder, valset_prop.get_voting_list(), msg.as_ref()).unwrap();
 
         QuorumCertificate::new(qcinfo, sigs)
     }
