@@ -344,16 +344,18 @@ where
                     ConsensusEvent::FetchedFullTxs(fetched_txs) => {
                         let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
 
-                        cmds.extend(
-                            self.consensus
-                                .handle_proposal_message_full::<HasherType, _, _>(
-                                    fetched_txs.author,
-                                    fetched_txs.p,
-                                    fetched_txs.txns,
-                                    &self.validator_set,
-                                    &self.leader_election,
-                                ),
-                        );
+                        if let Some(txns) = fetched_txs.txns {
+                            cmds.extend(
+                                self.consensus
+                                    .handle_proposal_message_full::<HasherType, _, _>(
+                                        fetched_txs.author,
+                                        fetched_txs.p,
+                                        txns,
+                                        &self.validator_set,
+                                        &self.leader_election,
+                                    ),
+                            );
+                        }
 
                         cmds
                     }

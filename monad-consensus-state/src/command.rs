@@ -28,7 +28,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     FetchTxsReset,
     FetchFullTxs(
         TransactionList,
-        Box<dyn (FnOnce(FullTransactionList) -> FetchedFullTxs<ST, SCT>) + Send + Sync>,
+        Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<ST, SCT>) + Send + Sync>,
     ),
     FetchFullTxsReset,
     LedgerCommit(Block<SCT>),
@@ -85,5 +85,5 @@ pub struct FetchedTxs<ST, SCT> {
 pub struct FetchedFullTxs<ST, SCT> {
     pub author: NodeId,
     pub p: ProposalMessage<ST, SCT>,
-    pub txns: FullTransactionList,
+    pub txns: Option<FullTransactionList>,
 }

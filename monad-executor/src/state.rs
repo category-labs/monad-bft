@@ -47,7 +47,7 @@ pub enum MempoolCommand<E> {
     FetchReset,
     FetchFullTxs(
         TransactionList,
-        Box<dyn (FnOnce(FullTransactionList) -> E) + Send + Sync>,
+        Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>,
     ),
     FetchFullReset,
 }

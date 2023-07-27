@@ -11,7 +11,7 @@ use crate::{Executor, MempoolCommand};
 
 pub struct MockMempool<E> {
     fetch_txs_state: Option<Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>>,
-    fetch_full_txs_state: Option<Box<dyn (FnOnce(FullTransactionList) -> E) + Send + Sync>>,
+    fetch_full_txs_state: Option<Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
 }
 
@@ -76,7 +76,7 @@ where
         }
 
         if let Some(cb) = this.fetch_full_txs_state.take() {
-            return Poll::Ready(Some(cb(FullTransactionList(Vec::new()))));
+            return Poll::Ready(Some(cb(Some(FullTransactionList(Vec::new())))));
         }
 
         self.waker = Some(cx.waker().clone());

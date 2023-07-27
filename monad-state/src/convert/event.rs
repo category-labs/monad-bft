@@ -43,7 +43,11 @@ impl<S: Signature> From<&ConsensusEvent<S>> for ProtoConsensusEvent {
                 proto_consensus_event::Event::FetchedFullTxs(ProtoFetchedFullTxs {
                     author: Some((&fetched_full.author).into()),
                     p: Some((&fetched_full.p).into()),
-                    full_txs: fetched_full.txns.0.clone(),
+                    full_txs: fetched_full
+                        .txns
+                        .as_ref()
+                        .map(|txns| txns.0.clone())
+                        .unwrap_or_default(),
                 })
             }
             TypeConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
@@ -126,7 +130,7 @@ impl<S: Signature> TryFrom<ProtoConsensusEvent> for ConsensusEvent<S> {
                             "ConsensusEvent::fetched_full_txs.p".to_owned(),
                         ))?
                         .try_into()?,
-                    txns: FullTransactionList(fetched_full_txs.full_txs),
+                    txns: Some(FullTransactionList(fetched_full_txs.full_txs)),
                 })
             }
             Some(proto_consensus_event::Event::LoadEpoch(epoch_event)) => {
