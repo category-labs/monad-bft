@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     mem,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -14,7 +14,7 @@ use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
 use monad_mempool_txpool::{Pool, PoolConfig};
 use monad_mempool_types::tx::{PriorityTx, PriorityTxBatch};
 use thiserror::Error;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{event, Level};
 
 const DEFAULT_TX_THRESHOLD: usize = 1000;
@@ -169,8 +169,8 @@ impl Controller {
         Ok(())
     }
 
-    pub fn create_proposal(&self) -> Vec<ethers::types::Bytes> {
-        self.pool.lock().unwrap().create_proposal()
+    pub async fn create_proposal(&self) -> Vec<ethers::types::Bytes> {
+        self.pool.lock().await.create_proposal()
     }
 
     fn listen_server(&self, mut tx_receiver: mpsc::Receiver<String>) -> impl Future<Output = ()> {
@@ -195,16 +195,17 @@ impl Controller {
                     continue;
                 }
 
-                if let Err(e) = pool.lock().unwrap().insert(priority_tx.clone()) {
+                if let Err(e) = pool.lock().await.insert(priority_tx.clone()) {
                     event!(Level::ERROR, "Error inserting tx into pool: {}", e);
                     continue;
                 }
 
                 let new_len = {
-                    let mut lock = pending_tx_batch.lock().unwrap();
+                    let mut lock = pending_tx_batch.lock().await;
                     lock.push(priority_tx);
                     lock.len()
                 };
+
                 if new_len >= tx_threshold {
                     if let Err(e) =
                         Self::broadcast_tx_batch(&pending_tx_batch, &messenger_sender).await
@@ -246,7 +247,8 @@ impl Controller {
                             tx_batch.numtx
                         );
 
-                        let mut pool_guard = pool.lock().unwrap();
+                        let mut pool_guard = pool.lock().await;
+
                         for priority_tx in tx_batch.txs {
                             if let Err(e) = checker.check_priority_tx(&priority_tx) {
                                 event!(Level::ERROR, "Rejecting tx: {}", e);
@@ -273,11 +275,12 @@ impl Controller {
     /// Creates a new PriorityTxBatch and broadcasts it to peers via the messenger.
     async fn broadcast_tx_batch(
         pending_tx_batch: &Arc<Mutex<Vec<PriorityTx>>>,
-        messenger_sender: &Sender<PriorityTxBatch>,
+        messenger_sender: &mpsc::Sender<PriorityTxBatch>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Add a guard here to prevent the lock from being held across await
         let batch: PriorityTxBatch = {
-            let mut pending_tx_batch = pending_tx_batch.lock().unwrap();
+            let mut pending_tx_batch = pending_tx_batch.lock().await;
+
             if pending_tx_batch.len() == 0 {
                 return Ok(());
             }

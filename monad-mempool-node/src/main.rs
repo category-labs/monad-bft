@@ -59,10 +59,10 @@ mod test {
         // Allow time for controllers to receive the messages
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let sender_proposal = sender_controller.create_proposal();
+        let sender_proposal = sender_controller.create_proposal().await;
 
         for controller in &controllers {
-            let proposal = controller.create_proposal();
+            let proposal = controller.create_proposal().await;
             assert_eq!(sender_proposal, proposal);
         }
     }
