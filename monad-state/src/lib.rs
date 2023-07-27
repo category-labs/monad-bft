@@ -436,11 +436,16 @@ where
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }
-                        ConsensusCommand::FetchFullTxs(cb) => cmds.push(Command::MempoolCommand(
-                            MempoolCommand::FetchFullTxs(Box::new(|txs| {
-                                Self::Event::ConsensusEvent(ConsensusEvent::FetchedFullTxs(cb(txs)))
-                            })),
-                        )),
+                        ConsensusCommand::FetchFullTxs(txs, cb) => {
+                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullTxs(
+                                txs,
+                                Box::new(|full_txs| {
+                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedFullTxs(cb(
+                                        full_txs,
+                                    )))
+                                }),
+                            )))
+                        }
                         ConsensusCommand::FetchFullTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullReset))
                         }

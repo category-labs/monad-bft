@@ -156,9 +156,10 @@ where
         author: NodeId,
         p: ProposalMessage<ST, SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        vec![ConsensusCommand::FetchFullTxs(Box::new(move |txns| {
-            FetchedFullTxs { author, p, txns }
-        }))]
+        vec![ConsensusCommand::FetchFullTxs(
+            p.block.payload.clone(),
+            Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+        )]
     }
 
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(

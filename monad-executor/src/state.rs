@@ -45,7 +45,10 @@ pub enum MempoolCommand<E> {
     // TODO create test to demonstrate faulty behavior if written improperly
     FetchTxs(Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>),
     FetchReset,
-    FetchFullTxs(Box<dyn (FnOnce(FullTransactionList) -> E) + Send + Sync>),
+    FetchFullTxs(
+        TransactionList,
+        Box<dyn (FnOnce(FullTransactionList) -> E) + Send + Sync>,
+    ),
     FetchFullReset,
 }
 

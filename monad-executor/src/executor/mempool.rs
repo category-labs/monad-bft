@@ -45,7 +45,7 @@ impl<E> Executor for MockMempool<E> {
                     self.fetch_txs_state = None;
                     wake = self.fetch_full_txs_state.is_some();
                 }
-                MempoolCommand::FetchFullTxs(cb) => {
+                MempoolCommand::FetchFullTxs(_, cb) => {
                     self.fetch_full_txs_state = Some(cb);
                     wake = true;
                 }

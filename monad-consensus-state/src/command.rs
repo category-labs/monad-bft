@@ -26,7 +26,10 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     ScheduleReset,
     FetchTxs(Box<dyn (FnOnce(TransactionList) -> FetchedTxs<ST, SCT>) + Send + Sync>),
     FetchTxsReset,
-    FetchFullTxs(Box<dyn (FnOnce(FullTransactionList) -> FetchedFullTxs<ST, SCT>) + Send + Sync>),
+    FetchFullTxs(
+        TransactionList,
+        Box<dyn (FnOnce(FullTransactionList) -> FetchedFullTxs<ST, SCT>) + Send + Sync>,
+    ),
     FetchFullTxsReset,
     LedgerCommit(Block<SCT>),
     RequestSync {
