@@ -123,9 +123,7 @@ impl Pool {
 
     /// Returns a Vec of transactions to be included in a block proposal.
     /// The highest priority transactions are returned, up to the block limit.
-    /// If include_full_txs is true, the full transactions are returned.
-    /// Otherwise, only the hashes are returned.
-    pub fn create_proposal(&mut self, include_full_txs: bool) -> Vec<Bytes> {
+    pub fn create_proposal(&mut self) -> Vec<Bytes> {
         let mut txs = Vec::new();
 
         while txs.len() < self.block_tx_limit && !self.pq.is_empty() {
@@ -145,13 +143,7 @@ impl Pool {
             self.pq.push(tx.clone());
         }
 
-        if include_full_txs {
-            txs.into_iter()
-                .map(|tx| self.map.get(&tx.hash).unwrap().clone())
-                .collect()
-        } else {
-            txs.into_iter().map(|tx| tx.hash).collect()
-        }
+        txs.into_iter().map(|tx| tx.hash).collect()
     }
 
     fn get_current_epoch() -> Duration {
@@ -218,25 +210,36 @@ mod test {
         // Create 2 batches of transactions + 1 extra tx, with the second batch having a higher priority
         let mut txs = create_priority_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
 
-        for tx in txs.iter_mut().take(TX_BATCH_SIZE * 2).skip(TX_BATCH_SIZE) {
-            tx.priority = -1;
+        for (index, tx) in txs.iter_mut().take(TX_BATCH_SIZE).enumerate() {
+            tx.priority = (TX_BATCH_SIZE + index) as i64;
         }
+
+        for (index, tx) in txs
+            .iter_mut()
+            .skip(TX_BATCH_SIZE)
+            .take(TX_BATCH_SIZE)
+            .enumerate()
+        {
+            tx.priority = index as i64;
+        }
+
+        txs.iter_mut().nth(TX_BATCH_SIZE * 2).unwrap().priority = (TX_BATCH_SIZE * 2) as i64;
 
         for tx in &txs {
             pool.insert(tx.clone()).unwrap();
         }
 
-        let proposal = pool.create_proposal(true);
+        let proposal = pool.create_proposal();
         let expected_proposal = txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]
             .iter()
-            .map(|tx| tx.rlpdata.clone().into())
+            .map(|tx| tx.hash.clone().into())
             .collect::<Vec<Bytes>>();
 
         assert_eq!(proposal.len(), TX_BATCH_SIZE);
         assert_eq!(proposal, expected_proposal);
-        pool.remove_txs(proposal);
+        pool.remove_tx_hashes(proposal);
 
-        let proposal2 = pool.create_proposal(false);
+        let proposal2 = pool.create_proposal();
         let expected_proposal2 = txs[0..TX_BATCH_SIZE]
             .iter()
             .map(|tx| tx.hash.clone().into())
@@ -247,12 +250,12 @@ mod test {
 
         // Simulate a failed proposal, doesn't get removed
 
-        let proposal3 = pool.create_proposal(false);
+        let proposal3 = pool.create_proposal();
         assert_eq!(proposal3.len(), TX_BATCH_SIZE);
         assert_eq!(proposal3, expected_proposal2);
         pool.remove_tx_hashes(proposal3);
 
-        let proposal3 = pool.create_proposal(false);
+        let proposal3 = pool.create_proposal();
         assert_eq!(proposal3.len(), 1);
         assert_eq!(
             proposal3[0],
@@ -260,7 +263,7 @@ mod test {
         );
         pool.remove_tx_hashes(proposal3);
 
-        let proposal4 = pool.create_proposal(false);
+        let proposal4 = pool.create_proposal();
         assert_eq!(proposal4.len(), 0);
     }
 }

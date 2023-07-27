@@ -40,11 +40,6 @@ pub struct ControllerConfig {
     tx_threshold: usize,
     // The maximum number of transactions that can be pending at a time.
     buffer_size: usize,
-    // Whether to make the mempool local.
-    // When the mempool is local, the controller will not broadcast transactions
-    // to peers, and will create proposals with full transactions instead of
-    // just the transaction hashes.
-    local_mempool: bool,
 }
 
 impl Default for ControllerConfig {
@@ -57,7 +52,6 @@ impl Default for ControllerConfig {
             wait_for_peers: 1,
             tx_threshold: DEFAULT_TX_THRESHOLD,
             buffer_size: DEFAULT_BUFFER_SIZE,
-            local_mempool: false,
         }
     }
 }
@@ -97,11 +91,6 @@ impl ControllerConfig {
         self.buffer_size = buffer_size;
         self
     }
-
-    pub fn with_local_mempool(mut self, local_mempool: bool) -> Self {
-        self.local_mempool = local_mempool;
-        self
-    }
 }
 
 pub struct Controller {
@@ -112,7 +101,6 @@ pub struct Controller {
     time_threshold: Duration,
     tx_threshold: usize,
     buffer_size: usize,
-    local_mempool: bool,
     pending_tx_batch: Arc<Mutex<Vec<PriorityTx>>>,
     tx_sender: Option<mpsc::Sender<String>>,
 }
@@ -131,7 +119,6 @@ impl Controller {
             time_threshold: config.time_threshold,
             tx_threshold: config.tx_threshold,
             buffer_size: config.buffer_size,
-            local_mempool: config.local_mempool,
             pending_tx_batch: Arc::new(Mutex::new(Vec::new())),
             tx_sender: None,
         }
@@ -158,37 +145,32 @@ impl Controller {
         // them to the mempool, and broadcast them to peers.
         tokio::spawn(self.listen_server(tx_receiver));
 
-        if !self.local_mempool {
-            // Spawn task to broadcast transaction batches every time_threshold seconds.
-            tokio::spawn({
-                let pending_tx_batch = self.pending_tx_batch.clone();
-                let messenger_sender = self.messenger.get_sender().unwrap();
+        // Spawn task to broadcast transaction batches every time_threshold seconds.
+        tokio::spawn({
+            let pending_tx_batch = self.pending_tx_batch.clone();
+            let messenger_sender = self.messenger.get_sender().unwrap();
 
-                async move {
-                    loop {
-                        interval.tick().await;
-                        if let Err(e) =
-                            Self::broadcast_tx_batch(&pending_tx_batch, &messenger_sender).await
-                        {
-                            event!(Level::ERROR, "Error broadcasting tx batch: {}", e);
-                        };
-                    }
+            async move {
+                loop {
+                    interval.tick().await;
+                    if let Err(e) =
+                        Self::broadcast_tx_batch(&pending_tx_batch, &messenger_sender).await
+                    {
+                        event!(Level::ERROR, "Error broadcasting tx batch: {}", e);
+                    };
                 }
-            });
+            }
+        });
 
-            // Spawn task to receive incoming transaction batches from the messenger.
-            // This task takes ownership of the messenger.
-            tokio::spawn(self.listen_messenger());
-        }
+        // Spawn task to receive incoming transaction batches from the messenger.
+        // This task takes ownership of the messenger.
+        tokio::spawn(self.listen_messenger());
 
         Ok(())
     }
 
     pub fn create_proposal(&self) -> Vec<ethers::types::Bytes> {
-        self.pool
-            .lock()
-            .unwrap()
-            .create_proposal(self.local_mempool)
+        self.pool.lock().unwrap().create_proposal()
     }
 
     fn listen_server(&self, mut tx_receiver: mpsc::Receiver<String>) -> impl Future<Output = ()> {
@@ -197,7 +179,6 @@ impl Controller {
         let pool = self.pool.clone();
         let pending_tx_batch = self.pending_tx_batch.clone();
         let tx_threshold = self.tx_threshold;
-        let local_mempool = self.local_mempool;
 
         async move {
             while let Some(tx_hex) = tx_receiver.recv().await {
@@ -224,7 +205,7 @@ impl Controller {
                     lock.push(priority_tx);
                     lock.len()
                 };
-                if !local_mempool && new_len >= tx_threshold {
+                if new_len >= tx_threshold {
                     if let Err(e) =
                         Self::broadcast_tx_batch(&pending_tx_batch, &messenger_sender).await
                     {
