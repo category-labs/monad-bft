@@ -146,6 +146,16 @@ impl Pool {
         txs.into_iter().map(|tx| tx.hash).collect()
     }
 
+    pub fn fetch_full_txs(&mut self, txs: Vec<Bytes>) -> Option<Vec<Bytes>> {
+        let mut full_txs = Vec::new();
+
+        for tx in txs {
+            full_txs.push(self.map.get(&tx)?.clone());
+        }
+
+        Some(full_txs)
+    }
+
     fn get_current_epoch() -> Duration {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
     }

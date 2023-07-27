@@ -7,7 +7,10 @@ use std::{
 
 use ethers::{
     types::{transaction::eip2718::TypedTransaction, H256},
-    utils::{hash_message, rlp::Rlp},
+    utils::{
+        hash_message,
+        rlp::{decode_list, encode_list, Rlp},
+    },
 };
 use monad_mempool_checker::{Checker, CheckerConfig};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
@@ -132,7 +135,7 @@ impl Controller {
     }
 
     /// Starts the controller module, including the messenger.
-    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(&mut self) -> Result<(), MessengerError> {
         let (tx_sender, tx_receiver) = mpsc::channel::<String>(self.buffer_size);
         self.tx_sender = Some(tx_sender);
 
@@ -169,8 +172,38 @@ impl Controller {
         Ok(())
     }
 
-    pub async fn create_proposal(&self) -> Vec<ethers::types::Bytes> {
-        self.pool.lock().await.create_proposal()
+    pub async fn create_proposal(&self) -> Vec<u8> {
+        let proposal = self.pool.lock().await.create_proposal();
+
+        encode_list::<Vec<u8>, _>(
+            proposal
+                .into_iter()
+                .map(|b| b.0.into())
+                .collect::<Vec<Vec<u8>>>()
+                .as_slice(),
+        )
+        .to_vec()
+    }
+
+    pub async fn fetch_full_txs(&self, txs: Vec<u8>) -> Option<Vec<u8>> {
+        let txs = decode_list::<Vec<u8>>(&txs);
+
+        let full_txs = self.pool.lock().await.fetch_full_txs(
+            txs.into_iter()
+                .map(ethers::types::Bytes::from)
+                .collect::<Vec<_>>(),
+        );
+
+        full_txs.map(|full_txs| {
+            encode_list::<Vec<u8>, _>(
+                full_txs
+                    .into_iter()
+                    .map(|b| b.0.into())
+                    .collect::<Vec<Vec<u8>>>()
+                    .as_slice(),
+            )
+            .to_vec()
+        })
     }
 
     fn listen_server(&self, mut tx_receiver: mpsc::Receiver<String>) -> impl Future<Output = ()> {

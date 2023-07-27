@@ -10,7 +10,7 @@ mod tests {
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::{
-        executor::{checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MockMempool},
+        executor::{checkpoint::MockCheckpoint, ledger::MockLedger, mock::MockMempool},
         Executor, State,
     };
     use monad_state::{MonadConfig, MonadState};

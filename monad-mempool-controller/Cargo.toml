@@ -11,6 +11,7 @@ monad-mempool-messenger = { path = "../monad-mempool-messenger" }
 monad-mempool-txpool = { path = "../monad-mempool-txpool" }
 monad-mempool-types = { path = "../monad-mempool-types" }
 
+bytes = { workspace = true }
 ethers = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
