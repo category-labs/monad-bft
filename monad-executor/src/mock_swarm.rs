@@ -187,7 +187,6 @@ where
 {
     states: BTreeMap<PeerId, (MockExecutor<S>, S, LGR)>,
     transformer: T,
-    enable_transformer: bool,
 }
 
 impl<S, T, LGR> Nodes<S, T, LGR>
@@ -221,7 +220,6 @@ where
         let mut nodes = Self {
             states,
             transformer,
-            enable_transformer: true,
         };
 
         for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
@@ -292,11 +290,7 @@ where
 
                         from_tick: tick,
                     };
-                    let transformed = if self.enable_transformer {
-                        self.transformer.transform(lm)
-                    } else {
-                        vec![(Duration::ZERO, lm)]
-                    };
+                    let transformed = self.transformer.transform(lm);
 
                     outbounds.extend(transformed.into_iter());
                 }
@@ -318,10 +312,6 @@ where
             let to_state = &mut self.states.get_mut(&to).unwrap().0;
             to_state.send_message(tick + delay, from, message, from_tick)
         }
-    }
-
-    pub fn set_transformer(&mut self, enable: bool) {
-        self.enable_transformer = enable;
     }
 
     pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S>, S, LGR)> {
