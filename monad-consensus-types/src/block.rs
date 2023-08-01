@@ -2,35 +2,17 @@ use monad_types::{BlockId, Hash as HashType, NodeId, Round};
 use zerocopy::AsBytes;
 
 use crate::{
+    payload::Payload,
     quorum_certificate::QuorumCertificate,
     signature::SignatureCollection,
     validation::{Hashable, Hasher},
 };
 
-#[derive(Clone, Default, PartialEq, Eq)]
-// TODO rename to TransactionHashList or something
-pub struct TransactionList(pub Vec<u8>);
-
-impl std::fmt::Debug for TransactionList {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TxnHashes").field(&self.0).finish()
-    }
-}
-
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct FullTransactionList(pub Vec<u8>);
-
-impl std::fmt::Debug for FullTransactionList {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Txns").field(&self.0).finish()
-    }
-}
-
 #[derive(Clone, PartialEq, Eq)]
 pub struct Block<T> {
     pub author: NodeId,
     pub round: Round,
-    pub payload: TransactionList,
+    pub payload: Payload,
     pub qc: QuorumCertificate<T>,
     id: BlockId,
 }
@@ -50,7 +32,7 @@ impl<T: SignatureCollection> Hashable for Block<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.author.0.bytes());
         state.update(self.round.as_bytes());
-        state.update(self.payload.0.as_bytes());
+        self.payload.hash(state);
         state.update(self.qc.info.vote.id.0.as_bytes());
         state.update(self.qc.get_hash().as_bytes());
     }
@@ -60,13 +42,13 @@ impl<T: SignatureCollection> Block<T> {
     pub fn new<H: Hasher>(
         author: NodeId,
         round: Round,
-        txns: &TransactionList,
+        payload: &Payload,
         qc: &QuorumCertificate<T>,
     ) -> Self {
         let mut b = Block {
             author,
             round,
-            payload: txns.clone(),
+            payload: payload.clone(),
             qc: qc.clone(),
             id: BlockId(HashType([0x00_u8; 32])),
         };

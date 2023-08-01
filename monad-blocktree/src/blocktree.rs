@@ -312,8 +312,9 @@ mod test {
     use std::collections::HashSet;
 
     use monad_consensus_types::{
-        block::{Block as ConsensusBlock, TransactionList},
+        block::Block as ConsensusBlock,
         ledger::LedgerCommitInfo,
+        payload::{ExecutionArtifacts, Payload, TransactionList},
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature::SignatureCollection,
         validation::Sha256Hash,
@@ -336,11 +337,14 @@ mod test {
 
     #[test]
     fn test_prune() {
-        let txlist = TransactionList(vec![]);
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+        };
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -365,7 +369,7 @@ mod test {
         let b1 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -385,7 +389,7 @@ mod test {
         let b2 = Block::new::<Sha256Hash>(
             node_id(),
             Round(2),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -405,7 +409,7 @@ mod test {
         let b3 = Block::new::<Sha256Hash>(
             node_id(),
             Round(3),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v3,
@@ -425,7 +429,7 @@ mod test {
         let b4 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v4,
@@ -445,7 +449,7 @@ mod test {
         let b5 = Block::new::<Sha256Hash>(
             node_id(),
             Round(5),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v5,
@@ -465,7 +469,7 @@ mod test {
         let b6 = Block::new::<Sha256Hash>(
             node_id(),
             Round(6),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v6,
@@ -485,7 +489,7 @@ mod test {
         let b7 = Block::new::<Sha256Hash>(
             node_id(),
             Round(7),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v7,
@@ -577,7 +581,7 @@ mod test {
         let b8 = Block::new::<Sha256Hash>(
             node_id(),
             Round(8),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v8,
@@ -593,11 +597,14 @@ mod test {
 
     #[test]
     fn test_add_parent_not_exist() {
-        let txlist = TransactionList(vec![]);
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+        };
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -622,7 +629,7 @@ mod test {
         let b1 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -642,7 +649,7 @@ mod test {
         let b2 = Block::new::<Sha256Hash>(
             node_id(),
             Round(2),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -681,7 +688,10 @@ mod test {
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &txlist,
+            &Payload {
+                txns: txlist,
+                header: ExecutionArtifacts::zero(),
+            },
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -706,7 +716,10 @@ mod test {
         let b1 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &TransactionList(vec![1]),
+            &Payload {
+                txns: TransactionList(vec![1]),
+                header: ExecutionArtifacts::zero(),
+            },
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -719,7 +732,10 @@ mod test {
         let b2 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &TransactionList(vec![2]),
+            &Payload {
+                txns: TransactionList(vec![2]),
+                header: ExecutionArtifacts::zero(),
+            },
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -739,7 +755,10 @@ mod test {
         let b3 = Block::new::<Sha256Hash>(
             node_id(),
             Round(2),
-            &TransactionList(vec![3]),
+            &Payload {
+                txns: TransactionList(vec![3]),
+                header: ExecutionArtifacts::zero(),
+            },
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -780,7 +799,10 @@ mod test {
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &txlist,
+            &Payload {
+                txns: txlist,
+                header: ExecutionArtifacts::zero(),
+            },
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -805,7 +827,10 @@ mod test {
         let b1 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &TransactionList(vec![1]),
+            &Payload {
+                txns: TransactionList(vec![1]),
+                header: ExecutionArtifacts::zero(),
+            },
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -832,10 +857,14 @@ mod test {
 
     #[test]
     fn paths_to_root() {
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+        };
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -860,7 +889,7 @@ mod test {
         let b1 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -880,7 +909,7 @@ mod test {
         let b2 = Block::new::<Sha256Hash>(
             node_id(),
             Round(2),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -893,7 +922,7 @@ mod test {
         let b3 = Block::new::<Sha256Hash>(
             node_id(),
             Round(3),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -906,7 +935,7 @@ mod test {
         let b4 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -956,11 +985,14 @@ mod test {
     fn unrooted_transition_to_rooted() {
         let mut blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
 
-        let txlist = TransactionList(vec![]);
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+        };
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -984,7 +1016,7 @@ mod test {
         let b4 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v4,
@@ -1004,7 +1036,7 @@ mod test {
         let b5 = Block::new::<Sha256Hash>(
             node_id(),
             Round(5),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v5,
@@ -1024,7 +1056,7 @@ mod test {
         let b6 = Block::new::<Sha256Hash>(
             node_id(),
             Round(6),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v6,
@@ -1059,11 +1091,14 @@ mod test {
     fn unrooted_many_potential_roots() {
         let mut blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
 
-        let txlist = TransactionList(vec![]);
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+        };
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -1088,7 +1123,7 @@ mod test {
         let b2 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v2,
@@ -1108,7 +1143,7 @@ mod test {
         let b3 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v3,
@@ -1128,7 +1163,7 @@ mod test {
         let b4 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v4,
@@ -1148,7 +1183,7 @@ mod test {
         let b5 = Block::new::<Sha256Hash>(
             node_id(),
             Round(5),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v5,
@@ -1168,7 +1203,7 @@ mod test {
         let b6 = Block::new::<Sha256Hash>(
             node_id(),
             Round(6),
-            &txlist,
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v6,
@@ -1210,10 +1245,14 @@ mod test {
 
     #[test]
     fn test_has_parent() {
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+        };
         let g = Block::new::<Sha256Hash>(
             node_id(),
             Round(0),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: VoteInfo {
@@ -1238,7 +1277,7 @@ mod test {
         let b1 = Block::new::<Sha256Hash>(
             node_id(),
             Round(1),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v1,
@@ -1258,7 +1297,7 @@ mod test {
         let b4 = Block::new::<Sha256Hash>(
             node_id(),
             Round(4),
-            &TransactionList(Vec::new()),
+            &payload,
             &QC::new(
                 QcInfo {
                     vote: v4,

@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 
-use crate::block::FullTransactionList;
+use crate::payload::FullTransactionList;
 
 pub trait TransactionValidator {
     fn validate(&self, txs: &FullTransactionList) -> bool;

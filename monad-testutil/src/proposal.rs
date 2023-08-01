@@ -3,8 +3,9 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::Block,
     ledger::LedgerCommitInfo,
+    payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
@@ -41,7 +42,8 @@ where
         keys: &Vec<KeyPair>,
         valset: &VT,
         election: &LT,
-        payload: &TransactionList,
+        txns: TransactionList,
+        execution_header: ExecutionArtifacts,
     ) -> Verified<T::SignatureType, ProposalMessage<T::SignatureType, T>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
@@ -57,7 +59,15 @@ where
             .find(|k| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
             .expect("key not in valset");
 
-        let block = Block::new::<Sha256Hash>(NodeId(leader_key.pubkey()), self.round, payload, qc);
+        let block = Block::new::<Sha256Hash>(
+            NodeId(leader_key.pubkey()),
+            self.round,
+            &Payload {
+                txns,
+                header: execution_header,
+            },
+            qc,
+        );
 
         self.high_qc = self.qc.clone();
         self.qc = self.get_next_qc(keys, &block);

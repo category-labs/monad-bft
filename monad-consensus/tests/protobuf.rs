@@ -11,9 +11,9 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::TransactionList,
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
+        payload::{ExecutionArtifacts, TransactionList},
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature::SignatureCollection,
         timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
@@ -149,6 +149,7 @@ mod test {
             233,
             232,
             TransactionList(vec![1, 2, 3, 4]),
+            ExecutionArtifacts::zero(),
             &keypairs,
         );
         let proposal: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
@@ -176,6 +177,7 @@ mod test {
             233,
             231,
             TransactionList(vec![1, 2, 3, 4]),
+            ExecutionArtifacts::zero(),
             &keypairs,
         );
 

@@ -12,8 +12,12 @@ use monad_consensus_state::{
     ConsensusProcess,
 };
 use monad_consensus_types::{
-    block::Block, quorum_certificate::QuorumCertificate, signature::SignatureCollection,
-    validation::Sha256Hash, voting::VoteInfo,
+    block::Block,
+    payload::{ExecutionArtifacts, Payload},
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    validation::Sha256Hash,
+    voting::VoteInfo,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -324,7 +328,10 @@ where
                             let b = Block::new::<HasherType>(
                                 fetched.node_id,
                                 fetched.round,
-                                &fetched.txns,
+                                &Payload {
+                                    txns: fetched.txns,
+                                    header: ExecutionArtifacts::zero(), // TODO this needs to be fetched
+                                },
                                 &fetched.high_qc,
                             );
 

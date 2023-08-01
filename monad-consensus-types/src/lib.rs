@@ -4,6 +4,7 @@ pub mod convert;
 pub mod block;
 pub mod ledger;
 pub mod multi_sig;
+pub mod payload;
 pub mod quorum_certificate;
 pub mod signature;
 pub mod timeout;

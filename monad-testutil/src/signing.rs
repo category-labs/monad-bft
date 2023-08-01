@@ -2,8 +2,9 @@ use std::marker::PhantomData;
 
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::Block,
     ledger::LedgerCommitInfo,
+    payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature::SignatureCollection,
     validation::Hasher,
@@ -59,7 +60,13 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let mut hasher = sha2::Sha256::new();
     hasher.update(b.author.0.bytes());
     hasher.update(b.round);
-    hasher.update(&b.payload.0);
+    hasher.update(&b.payload.txns.0);
+    hasher.update(b.payload.header.parent_hash);
+    hasher.update(b.payload.header.state_root);
+    hasher.update(b.payload.header.transactions_root);
+    hasher.update(b.payload.header.receipts_root);
+    hasher.update(b.payload.header.logs_bloom);
+    hasher.update(b.payload.header.gas_used);
     hasher.update(b.qc.info.vote.id.0);
     hasher.update(b.qc.signatures.get_hash());
 
@@ -91,7 +98,10 @@ pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
         // FIXME init from genesis config, don't use random key
         NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
         Round(0),
-        &genesis_txn,
+        &Payload {
+            txns: genesis_txn,
+            header: ExecutionArtifacts::zero(),
+        },
         &genesis_prime_qc,
     );
 

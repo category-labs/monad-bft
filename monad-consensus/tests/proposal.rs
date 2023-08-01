@@ -1,7 +1,8 @@
 use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::Block,
     ledger::LedgerCommitInfo,
+    payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::{Error, Hasher, Sha256Hash},
     voting::VoteInfo,
@@ -32,7 +33,15 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    Block::<MockSignatures>::new::<Sha256Hash>(author, block_round, &txns, &qc)
+    Block::<MockSignatures>::new::<Sha256Hash>(
+        author,
+        block_round,
+        &Payload {
+            txns,
+            header: ExecutionArtifacts::zero(),
+        },
+        &qc,
+    )
 }
 
 #[test]

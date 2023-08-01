@@ -4,9 +4,10 @@ use clap::Parser;
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::Block,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
+    payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature::SignatureCollection,
     transaction_validator::MockValidator,
@@ -201,11 +202,15 @@ fn testnet(
     let genesis_block = {
         let genesis_txn = TransactionList::default();
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
+        let genesis_execution_header = ExecutionArtifacts::zero();
         Block::new::<HasherType>(
             // FIXME init from genesis config, don't use random key
             NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
             Round(0),
-            &genesis_txn,
+            &Payload {
+                txns: genesis_txn,
+                header: genesis_execution_header,
+            },
             &genesis_prime_qc,
         )
     };

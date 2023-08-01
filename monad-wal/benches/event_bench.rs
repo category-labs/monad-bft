@@ -12,9 +12,9 @@ use monad_consensus::{
     validation::signing::Unverified,
 };
 use monad_consensus_types::{
-    block::TransactionList,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
+    payload::{ExecutionArtifacts, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
@@ -67,7 +67,14 @@ fn bench_proposal(c: &mut Criterion) {
     let keypairs = create_keys(1);
     let author_keypair = &keypairs[0];
 
-    let blk = setup_block(NodeId(author_keypair.pubkey()), 10, 9, txns, &keypairs);
+    let blk = setup_block(
+        NodeId(author_keypair.pubkey()),
+        10,
+        9,
+        txns,
+        ExecutionArtifacts::zero(),
+        &keypairs,
+    );
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,

@@ -5,7 +5,8 @@ use monad_consensus::{
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{
-    block::{Block, FullTransactionList, TransactionList},
+    block::Block,
+    payload::{FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
     signature::SignatureCollection,
     timeout::TimeoutCertificate,

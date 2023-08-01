@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use monad_consensus_types::block::{FullTransactionList, TransactionList};
+use monad_consensus_types::payload::{FullTransactionList, TransactionList};
 use monad_crypto::secp256k1::PubKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

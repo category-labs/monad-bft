@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use monad_consensus_types::block::{FullTransactionList, TransactionList};
+use monad_consensus_types::payload::{FullTransactionList, TransactionList};
 use monad_mempool_controller::{Controller, ControllerConfig};
 use monad_mempool_messenger::MessengerError;
 use thiserror::Error;

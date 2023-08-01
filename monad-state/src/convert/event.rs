@@ -1,7 +1,7 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus_types::{
-    block::{FullTransactionList, TransactionList},
     multi_sig::MultiSig,
+    payload::{FullTransactionList, TransactionList},
 };
 use monad_crypto::Signature;
 use monad_proto::{

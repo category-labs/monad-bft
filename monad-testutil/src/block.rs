@@ -1,7 +1,8 @@
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::Block,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
+    payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
     validation::{Hasher, Sha256Hash},
@@ -15,6 +16,7 @@ pub fn setup_block(
     block_round: u64,
     qc_round: u64,
     txns: TransactionList,
+    execution_header: ExecutionArtifacts,
     keypairs: &[KeyPair],
 ) -> Block<MultiSig<SecpSignature>> {
     let txns = txns;
@@ -41,5 +43,13 @@ pub fn setup_block(
 
     let qc = QuorumCertificate::<MultiSig<SecpSignature>>::new(qcinfo, aggsig);
 
-    Block::<MultiSig<SecpSignature>>::new::<Sha256Hash>(author, round, &txns, &qc)
+    Block::<MultiSig<SecpSignature>>::new::<Sha256Hash>(
+        author,
+        round,
+        &Payload {
+            txns,
+            header: execution_header,
+        },
+        &qc,
+    )
 }

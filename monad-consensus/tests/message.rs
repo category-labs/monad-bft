@@ -1,7 +1,8 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
-    block::{Block, TransactionList},
+    block::Block,
     ledger::LedgerCommitInfo,
+    payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
@@ -71,7 +72,15 @@ fn proposal_msg_hash() {
         MockSignatures::new(),
     );
 
-    let block = Block::<MockSignatures>::new::<Sha256Hash>(author, round, &txns, &qc);
+    let block = Block::<MockSignatures>::new::<Sha256Hash>(
+        author,
+        round,
+        &Payload {
+            txns,
+            header: ExecutionArtifacts::zero(),
+        },
+        &qc,
+    );
 
     let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
         block: block.clone(),

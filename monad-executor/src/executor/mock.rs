@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use monad_consensus_types::block::{FullTransactionList, TransactionList};
+use monad_consensus_types::payload::{FullTransactionList, TransactionList};
 
 use super::{checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger};
 use crate::{

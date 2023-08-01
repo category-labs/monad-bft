@@ -5,13 +5,27 @@ package monad_proto.block;
 import "basic.proto";
 import "quorum_certificate.proto";
 
+message ProtoExecutionArtifacts {
+  monad_proto.basic.ProtoHash parent_hash = 1;
+  monad_proto.basic.ProtoHash state_root = 2;
+  monad_proto.basic.ProtoHash transactions_root = 3;
+  monad_proto.basic.ProtoHash receipts_root = 4;
+  monad_proto.basic.ProtoBloom logs_bloom = 5;
+  monad_proto.basic.ProtoGas gas_used = 6;
+}
+
 message ProtoTransactionList {
   bytes data = 1;
+}
+
+message ProtoPayload {
+  ProtoTransactionList txns = 1;
+  ProtoExecutionArtifacts header = 2;
 }
 
 message ProtoBlockAggSig {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoRound round = 2;
-  ProtoTransactionList payload = 3;
+  ProtoPayload payload = 3;
   monad_proto.quorum_certificate.ProtoQuorumCertificateAggSig qc = 4;
 }
