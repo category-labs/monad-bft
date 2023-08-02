@@ -7,10 +7,11 @@ mod test {
     use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
     use monad_crypto::secp256k1::SecpSignature;
     use monad_executor::{
+        executor::mock::NoSerRouterScheduler,
         mock_swarm::{Nodes, XorLatencyTransformer},
         timed_event::TimedEvent,
     };
-    use monad_state::{MonadEvent, MonadState};
+    use monad_state::{MonadEvent, MonadMessage, MonadState};
     use monad_testutil::swarm::{get_configs, node_ledger_verification};
     use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
     use monad_wal::wal::{WALogger, WALoggerConfig};
@@ -59,6 +60,7 @@ mod test {
                 ValidatorSet,
                 SimpleRoundRobin,
             >,
+            NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
             _,
             WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         >::new(
@@ -119,6 +121,7 @@ mod test {
                 ValidatorSet,
                 SimpleRoundRobin,
             >,
+            NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
             _,
             WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         >::new(

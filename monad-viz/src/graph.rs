@@ -1,9 +1,9 @@
-use std::{fmt::Debug, time::Duration};
+use std::{cmp::Reverse, collections::HashMap, fmt::Debug, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
-    executor::mock::MockExecutor,
-    mock_swarm::{Nodes, Transformer},
+    executor::mock::{MockExecutor, RouterScheduler},
+    mock_swarm::{LinkMessage, Nodes, Transformer},
     timed_event::TimedEvent,
     Message, PeerId,
 };
@@ -53,10 +53,11 @@ where
     fn nodes(&self) -> Vec<(PubKey, S::Config)>;
 }
 
-pub trait SimulationConfig<S, T, LGR>
+pub trait SimulationConfig<S, RS, T, LGR>
 where
     S: monad_executor::State,
-    T: Transformer<S::Message>,
+    RS: RouterScheduler,
+    T: Transformer<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     fn max_tick(&self) -> Duration;
@@ -64,28 +65,31 @@ where
     fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config)>;
 }
 
-pub struct NodesSimulation<S, T, LGR, C>
+pub struct NodesSimulation<S, RS, T, LGR, C>
 where
     S: monad_executor::State,
-    T: Transformer<S::Message>,
+    RS: RouterScheduler,
+    T: Transformer<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, T, LGR>,
+    C: SimulationConfig<S, RS, T, LGR>,
 {
     config: C,
 
     // TODO move stuff below into separate struct
-    pub nodes: Nodes<S, T, LGR>,
+    pub nodes: Nodes<S, RS, T, LGR>,
     current_tick: Duration,
 }
 
-impl<S, T, LGR, C> NodesSimulation<S, T, LGR, C>
+impl<S, RS, T, LGR, C> NodesSimulation<S, RS, T, LGR, C>
 where
     S: monad_executor::State,
-    MockExecutor<S>: Unpin,
+    RS: RouterScheduler<M = S::Message>,
+    RS::Serialized: Eq,
+    MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
-    T: Transformer<S::Message> + Clone,
+    T: Transformer<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, T, LGR>,
+    C: SimulationConfig<S, RS, T, LGR>,
     S::Event: Serializable + Deserializable + Debug,
 {
     pub fn new(config: C) -> Self {
@@ -114,49 +118,58 @@ where
     }
 }
 
-impl<S, T, LGR, C> Graph for NodesSimulation<S, T, LGR, C>
+impl<S, RS, T, LGR, C> Graph for NodesSimulation<S, RS, T, LGR, C>
 where
     S: monad_executor::State,
-    MockExecutor<S>: Unpin,
+    RS: RouterScheduler<M = S::Message>,
+    RS::Serialized: Eq,
+    MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
-    T: Transformer<S::Message> + Clone,
+    T: Transformer<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, T, LGR>,
+    C: SimulationConfig<S, RS, T, LGR>,
     S::Event: Serializable + Deserializable + Debug,
 {
     type State = S;
-    type Message = S::Message;
+    type Message = RS::Serialized;
     type MessageId = <S::Message as Message>::Id;
     type Event = S::Event;
     type NodeId = PeerId;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, S, S::Message, S::Event>> {
-        let mut state =
-            self.nodes
-                .states()
-                .iter()
-                .map(|(peer_id, (executor, state, _))| NodeState {
-                    id: peer_id,
-                    state,
-                    pending_events: std::iter::empty()
-                        .chain(executor.pending_timer().iter().map(|timer_event| {
-                            NodeEvent::Timer {
-                                scheduled_time: timer_event.scheduled_tick,
-                                trip_time: timer_event.tick,
-                                event: &timer_event.event,
-                            }
-                        }))
-                        .chain(executor.pending_messages().iter().map(|message_event| {
-                            NodeEvent::Message {
-                                tx_time: message_event.tx_tick,
-                                rx_time: message_event.tick,
-                                tx_peer: &message_event.from,
-                                message: &message_event.t,
-                            }
-                        }))
-                        .collect(),
-                })
-                .collect::<Vec<_>>();
+    fn state(&self) -> Vec<NodeState<Self::NodeId, S, RS::Serialized, S::Event>> {
+        let mut pending_messages: HashMap<_, Vec<_>> = Default::default();
+        for Reverse((
+            rx_time,
+            LinkMessage {
+                from,
+                to: tx_peer,
+                message,
+                from_tick: tx_time,
+            },
+        )) in self.nodes.scheduled_messages()
+        {
+            pending_messages
+                .entry(from)
+                .or_default()
+                .push(NodeEvent::Message {
+                    tx_time: *tx_time,
+                    rx_time: *rx_time,
+                    tx_peer,
+                    message,
+                });
+        }
+        let mut state = self
+            .nodes
+            .states()
+            .iter()
+            .map(|(peer_id, (_executor, state, _))| NodeState {
+                id: peer_id,
+                state,
+                pending_events: std::iter::empty()
+                    .chain(pending_messages.remove(&peer_id).into_iter().flatten())
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
         state.sort_by_key(|node| node.id);
         state
     }

@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet},
     fmt::Debug,
     marker::PhantomData,
     time::Duration,
@@ -13,12 +14,13 @@ use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use tracing::info_span;
 
 use crate::{
-    executor::mock::MockExecutor, timed_event::TimedEvent, Executor, Message, PeerId, RouterTarget,
-    State,
+    executor::mock::{MockExecutor, MockExecutorEvent, RouterScheduler},
+    timed_event::TimedEvent,
+    Executor, PeerId, State,
 };
 
-#[derive(Clone)]
-pub struct LinkMessage<M: Message> {
+#[derive(Clone, PartialEq, Eq)]
+pub struct LinkMessage<M> {
     pub from: PeerId,
     pub to: PeerId,
     pub message: M,
@@ -27,7 +29,21 @@ pub struct LinkMessage<M: Message> {
     pub from_tick: Duration,
 }
 
-pub trait Transformer<M: Message> {
+impl<M: Eq> Ord for LinkMessage<M> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.from_tick, self.from, self.to).cmp(&(other.from_tick, other.from, other.to))
+    }
+}
+impl<M> PartialOrd for LinkMessage<M>
+where
+    Self: Ord,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub trait Transformer<M> {
     #[must_use]
     /// note that the output Duration should be a delay, not an absolute time
     // TODO smallvec? resulting Vec will almost always be len 1
@@ -44,7 +60,7 @@ pub trait Transformer<M: Message> {
 /// adds constant latency
 #[derive(Clone, Debug)]
 pub struct LatencyTransformer(pub Duration);
-impl<M: Message> Transformer<M> for LatencyTransformer {
+impl<M> Transformer<M> for LatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         vec![(self.0, message)]
     }
@@ -53,7 +69,7 @@ impl<M: Message> Transformer<M> for LatencyTransformer {
 /// adds constant latency (parametrizable cap) to each link determined by xor(peer_id_1, peer_id_2)
 #[derive(Clone, Debug)]
 pub struct XorLatencyTransformer(pub Duration);
-impl<M: Message> Transformer<M> for XorLatencyTransformer {
+impl<M> Transformer<M> for XorLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         let mut ck: u8 = 0;
         for b in message.from.0.bytes() {
@@ -87,7 +103,7 @@ impl RandLatencyTransformer {
     }
 }
 
-impl<M: Message> Transformer<M> for RandLatencyTransformer {
+impl<M> Transformer<M> for RandLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         vec![(self.next_latency(), message)]
     }
@@ -101,7 +117,7 @@ pub struct BlacklistTransformer<M> {
     // TODO once this transformer supports replay, can remove this
     _pd: PhantomData<M>,
 }
-impl<M: Message> Transformer<M> for BlacklistTransformer<M> {
+impl<M> Transformer<M> for BlacklistTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         let mut output = Vec::new();
         if !self.peers.contains(&message.from) && !self.peers.contains(&message.to) {
@@ -119,7 +135,7 @@ impl<M> Debug for BlacklistTransformer<M> {
     }
 }
 
-impl<M: Message> Transformer<M> for Vec<Box<dyn Transformer<M>>> {
+impl<M> Transformer<M> for Vec<Box<dyn Transformer<M>>> {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         self.iter_mut().fold(
             // accumulator is transformed set of messages before/after each layer
@@ -147,7 +163,7 @@ pub enum Layer<M> {
     Blacklist(BlacklistTransformer<M>),
 }
 
-impl<M: Message> Transformer<M> for Layer<M> {
+impl<M> Transformer<M> for Layer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         match self {
             Layer::Latency(t) => t.transform(message),
@@ -158,7 +174,7 @@ impl<M: Message> Transformer<M> for Layer<M> {
 }
 
 pub type LayerTransformer<M> = Vec<Layer<M>>;
-impl<M: Message> Transformer<M> for Vec<Layer<M>> {
+impl<M> Transformer<M> for Vec<Layer<M>> {
     fn transform(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         self.iter_mut().fold(
             // accumulator is transformed set of messages before/after each layer
@@ -179,23 +195,29 @@ impl<M: Message> Transformer<M> for Vec<Layer<M>> {
     }
 }
 
-pub struct Nodes<S, T, LGR>
+pub struct Nodes<S, RS, T, LGR>
 where
     S: State,
-    T: Transformer<S::Message>,
+    RS: RouterScheduler,
+    T: Transformer<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
-    states: BTreeMap<PeerId, (MockExecutor<S>, S, LGR)>,
+    states: BTreeMap<PeerId, (MockExecutor<S, RS>, S, LGR)>,
     transformer: T,
+    scheduled_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
 }
 
-impl<S, T, LGR> Nodes<S, T, LGR>
+impl<S, RS, T, LGR> Nodes<S, RS, T, LGR>
 where
     S: State,
-    T: Transformer<S::Message>,
+
+    RS: RouterScheduler<M = S::Message>,
+    RS::Serialized: Eq,
+
+    T: Transformer<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    MockExecutor<S>: Unpin,
+    MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
 {
     pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config)>, transformer: T) -> Self {
@@ -203,8 +225,10 @@ where
 
         let mut states = BTreeMap::new();
 
+        let all_peers: BTreeSet<_> = peers.iter().map(|(pubkey, _, _)| PeerId(*pubkey)).collect();
         for (pubkey, state_config, logger_config) in peers {
-            let mut executor: MockExecutor<S> = MockExecutor::default();
+            let mut executor: MockExecutor<S, RS> =
+                MockExecutor::new(RS::new(all_peers.clone(), PeerId(pubkey)));
             let (wal, replay_events) = LGR::new(logger_config).unwrap();
             let (mut state, mut init_commands) = S::init(state_config);
 
@@ -217,108 +241,120 @@ where
             states.insert(PeerId(pubkey), (executor, state, wal));
         }
 
-        let mut nodes = Self {
+        Self {
             states,
             transformer,
-        };
-
-        for peer_id in nodes.states.keys().cloned().collect::<Vec<_>>() {
-            nodes.simulate_peer(&peer_id, Duration::from_secs(0));
+            scheduled_messages: Default::default(),
         }
-
-        nodes
     }
 
     pub fn next_tick(&self) -> Option<Duration> {
-        self.states
-            .iter()
-            .filter_map(|(_, (executor, _, _))| {
-                let tick = executor.peek_event_tick()?;
-                Some(tick)
-            })
-            .min()
-    }
-
-    pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
-        if let Some((id, executor, state, wal, tick)) = self
+        let min_event = self
             .states
-            .iter_mut()
+            .iter()
             .filter_map(|(id, (executor, state, wal))| {
                 let tick = executor.peek_event_tick()?;
                 Some((id, executor, state, wal, tick))
             })
-            .min_by_key(|(_, _, _, _, tick)| *tick)
-        {
-            let id = *id;
-            let event = futures::executor::block_on(executor.next()).unwrap();
-            let timed_event = TimedEvent {
-                timestamp: tick,
-                event: event.clone(),
-            };
-            wal.push(&timed_event).unwrap(); // FIXME: propagate the error
-            let node_span = info_span!("node", id = ?id);
-            let _guard = node_span.enter();
-            let commands = state.update(event.clone());
-
-            executor.exec(commands);
-
-            self.simulate_peer(&id, tick);
-
-            Some((tick, id, event))
-        } else {
-            None
-        }
+            .min_by_key(|(_, _, _, _, tick)| *tick);
+        let maybe_min_event_tick = min_event
+            .as_ref()
+            .map(|(_, _, _, _, min_event_tick)| min_event_tick);
+        let maybe_min_scheduled_tick = self
+            .scheduled_messages
+            .peek()
+            .map(|Reverse((min_scheduled_tick, _))| min_scheduled_tick);
+        maybe_min_event_tick
+            .into_iter()
+            .chain(maybe_min_scheduled_tick.into_iter())
+            .min()
+            .copied()
     }
 
-    fn simulate_peer(&mut self, peer_id: &PeerId, tick: Duration) {
-        let peer_ids: Vec<_> = self.states().keys().copied().collect();
-        let outbounds = {
-            let mut outbounds: Vec<(Duration, LinkMessage<<S as State>::Message>)> = Vec::new();
-            let (executor, _, _) = self.states.get_mut(peer_id).unwrap();
-
-            while let Some((target, outbound_message)) = executor.receive_message() {
-                let message = outbound_message.into();
-                let tos = match target {
-                    RouterTarget::PointToPoint(to) => vec![to],
-                    RouterTarget::Broadcast => peer_ids.clone(),
-                };
-                for to in tos {
-                    let lm = LinkMessage {
-                        from: *peer_id,
-                        to,
-                        message: message.clone(),
-
-                        from_tick: tick,
-                    };
-                    let transformed = self.transformer.transform(lm);
-
-                    outbounds.extend(transformed.into_iter());
+    pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
+        loop {
+            let min_event = self
+                .states
+                .iter_mut()
+                .filter_map(|(id, (executor, state, wal))| {
+                    let tick = executor.peek_event_tick()?;
+                    Some((id, executor, state, wal, tick))
+                })
+                .min_by_key(|(_, _, _, _, tick)| *tick);
+            let maybe_min_event_tick = min_event
+                .as_ref()
+                .map(|(_, _, _, _, min_event_tick)| min_event_tick);
+            let maybe_min_scheduled_tick = self
+                .scheduled_messages
+                .peek()
+                .map(|Reverse((min_scheduled_tick, _))| min_scheduled_tick);
+            let poll_event = match (maybe_min_event_tick, maybe_min_scheduled_tick) {
+                (None, None) => break,
+                (None, Some(_)) => false,
+                (Some(_), None) => true,
+                (Some(min_event_tick), Some(min_scheduled_tick)) => {
+                    min_event_tick <= min_scheduled_tick
                 }
+            };
+
+            if poll_event {
+                let (id, executor, state, wal, tick) =
+                    min_event.expect("logic error, must be nonempty");
+                let id = *id;
+                let executor_event = futures::executor::block_on(executor.next()).unwrap();
+                match executor_event {
+                    MockExecutorEvent::Event(event) => {
+                        let timed_event = TimedEvent {
+                            timestamp: tick,
+                            event: event.clone(),
+                        };
+                        wal.push(&timed_event).unwrap(); // FIXME: propagate the error
+                        let node_span = info_span!("node", id = ?id);
+                        let _guard = node_span.enter();
+                        let commands = state.update(event.clone());
+
+                        executor.exec(commands);
+
+                        return Some((tick, id, event));
+                    }
+                    MockExecutorEvent::Send(to, serialized) => {
+                        let lm = LinkMessage {
+                            from: id,
+                            to,
+                            message: serialized,
+
+                            from_tick: tick,
+                        };
+                        let transformed = self.transformer.transform(lm);
+
+                        for (delay, msg) in transformed {
+                            self.scheduled_messages.push(Reverse((tick + delay, msg)));
+                        }
+                    }
+                }
+            } else {
+                let Reverse((scheduled_tick, message)) = self
+                    .scheduled_messages
+                    .pop()
+                    .expect("logic error, must be nonempty");
+                let (executor, _, _) = self.states.get_mut(&message.to).unwrap();
+                executor.send_message(scheduled_tick, message.from, message.message);
             }
-
-            outbounds
-        };
-
-        for (
-            delay,
-            LinkMessage {
-                from,
-                to,
-                message,
-                from_tick,
-            },
-        ) in outbounds
-        {
-            let to_state = &mut self.states.get_mut(&to).unwrap().0;
-            to_state.send_message(tick + delay, from, message, from_tick)
         }
+        None
     }
 
-    pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S>, S, LGR)> {
+    pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S, RS>, S, LGR)> {
         &self.states
     }
 
-    pub fn mut_states(&mut self) -> &mut BTreeMap<PeerId, (MockExecutor<S>, S, LGR)> {
+    pub fn mut_states(&mut self) -> &mut BTreeMap<PeerId, (MockExecutor<S, RS>, S, LGR)> {
         &mut self.states
+    }
+
+    pub fn scheduled_messages(
+        &self,
+    ) -> &BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>> {
+        &self.scheduled_messages
     }
 }

@@ -2,7 +2,7 @@ use std::{array::TryFromSliceError, fmt::Debug, time::Duration};
 
 use monad_types::{Deserializable, Serializable};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TimedEvent<M> {
     pub timestamp: Duration, // ticks Duration in milliseconds
     pub event: M,

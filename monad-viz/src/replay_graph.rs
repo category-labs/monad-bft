@@ -5,10 +5,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{
-    executor::mock::MockExecutor, replay_nodes::ReplayNodes, timed_event::TimedEvent, Message,
-    PeerId, State,
-};
+use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, Message, PeerId, State};
 use monad_state::MonadConfig;
 use monad_testutil::signing::{create_keys, get_genesis_config};
 use monad_types::{Deserializable, Serializable};
@@ -68,7 +65,6 @@ where
 impl<S, C> ReplayNodesSimulation<S, C>
 where
     S: monad_executor::State,
-    MockExecutor<S>: Unpin,
     S::Event: Serializable + Deserializable + Debug + Eq,
     C: ReplayConfig<S>,
 {
@@ -125,7 +121,6 @@ impl<S, C> Graph for ReplayNodesSimulation<S, C>
 where
     S: monad_executor::State,
     S::Event: Serializable + Deserializable + Eq + Debug,
-    MockExecutor<S>: Unpin,
     C: ReplayConfig<S>,
 {
     type State = S;
