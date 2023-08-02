@@ -11,7 +11,9 @@ pub mod convert;
 pub mod bls12_381;
 pub mod secp256k1;
 
-pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static {
+pub trait MessageSignature:
+    Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static
+{
     fn sign(msg: &[u8], keypair: &KeyPair) -> Self;
 
     fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error>;
@@ -20,6 +22,32 @@ pub trait Signature: Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 
 
     fn serialize(&self) -> Vec<u8>;
     fn deserialize(signature: &[u8]) -> Result<Self, Error>;
+}
+
+pub trait CertificateKeyPair: Sized + 'static {
+    type Error: std::error::Error;
+    type PubKeyType;
+
+    fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error>;
+    fn pubkey(&self) -> Self::PubKeyType;
+}
+
+pub trait CertificateSignature:
+    Copy + Clone + Eq + Hash + Send + Sync + std::fmt::Debug + 'static
+{
+    type KeyPairType: CertificateKeyPair;
+    type Error: std::error::Error;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self;
+
+    fn verify(
+        &self,
+        msg: &[u8],
+        pubkey: &<Self::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> Result<(), Self::Error>;
+
+    fn serialize(&self) -> Vec<u8>;
+    fn deserialize(signature: &[u8]) -> Result<Self, Self::Error>;
 }
 
 // This implementation won't sign or verify anything, but its still required to return a PubKey

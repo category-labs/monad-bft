@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use monad_crypto::CertificateKeyPair;
 use monad_types::*;
 use zerocopy::AsBytes;
 
@@ -9,6 +12,10 @@ pub struct VoteInfo {
     pub round: Round,
     pub parent_id: BlockId,
     pub parent_round: Round,
+}
+
+pub struct ValidatorMapping<VKT: CertificateKeyPair> {
+    map: BTreeMap<NodeId, VKT::PubKeyType>,
 }
 
 impl std::fmt::Debug for VoteInfo {

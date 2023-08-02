@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 
-use monad_crypto::{bls12_381::BlsPubKey, Signature};
+use monad_crypto::CertificateSignature;
 use monad_types::{Hash, NodeId};
+
+use crate::voting::ValidatorMapping;
 
 #[derive(Clone, Debug)]
 pub struct SignatureBuilder<SCT: SignatureCollection> {
@@ -35,15 +37,17 @@ impl<SCT: SignatureCollection> IntoIterator for SignatureBuilder<SCT> {
 
 pub trait SignatureCollection: Clone + Send + Sync + std::fmt::Debug + 'static {
     type SignatureError: std::error::Error + Send + Sync;
-    type SignatureType: Signature + Copy;
+    type SignatureType: CertificateSignature + Copy;
 
     /// the new() function verifies:
     ///   1. nodeId idx is in range
     ///   2. no conflicting signature
     ///   3. the signature collection built is valid
     fn new(
-        sigs: SignatureBuilder<Self>,
-        validator_list: &[(NodeId, BlsPubKey)],
+        sigs: Vec<(NodeId, Self::SignatureType)>,
+        validator_mapping: &ValidatorMapping<
+            <Self::SignatureType as CertificateSignature>::KeyPairType,
+        >,
         msg: &[u8],
     ) -> Result<Self, Self::SignatureError>;
 
@@ -52,7 +56,9 @@ pub trait SignatureCollection: Clone + Send + Sync + std::fmt::Debug + 'static {
 
     fn verify(
         &self,
-        validator_list: &[(NodeId, BlsPubKey)],
+        validator_mapping: &ValidatorMapping<
+            <Self::SignatureType as CertificateSignature>::KeyPairType,
+        >,
         msg: &[u8],
     ) -> Result<Vec<NodeId>, Self::SignatureError>;
 

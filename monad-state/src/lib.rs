@@ -1,4 +1,4 @@
-use std::{fmt::Debug, time::Duration};
+use std::{collections::BTreeMap, fmt::Debug, time::Duration};
 
 use message::MessageState;
 use monad_blocktree::blocktree::BlockTree;
@@ -12,13 +12,16 @@ use monad_consensus_state::{
     ConsensusProcess,
 };
 use monad_consensus_types::{
-    block::Block, quorum_certificate::QuorumCertificate, signature::SignatureCollection,
-    validation::Sha256Hash, voting::VoteInfo,
+    block::Block,
+    quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection,
+    validation::Sha256Hash,
+    voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::{
     bls12_381::BlsPubKey,
     secp256k1::{KeyPair, PubKey},
-    Signature,
+    CertificateKeyPair, CertificateSignature, MessageSignature,
 };
 use monad_executor::{
     Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand, RouterTarget, State,
@@ -38,16 +41,17 @@ mod message;
 
 type HasherType = Sha256Hash;
 
-pub struct MonadState<CT, ST, SCT, VT, VPT, LT>
+pub struct MonadState<CT, ST, SCT, VT, LT>
 where
-    ST: Signature,
+    ST: MessageSignature,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
     consensus: CT,
     validator_set: VT,
-    validator_set_property: VPT,
+
+    validator_mapping: ValidatorMapping<<SCT::SignatureType as CertificateSignature>::KeyPairType>,
     leader_election: LT,
 }
 
