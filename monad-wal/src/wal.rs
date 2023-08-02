@@ -33,12 +33,14 @@ impl<E> std::error::Error for WALError<E> where E: Error {}
 #[derive(Clone)]
 pub struct WALoggerConfig {
     pub file_path: PathBuf,
+    pub sync: bool,
 }
 
 #[derive(Debug)]
 pub struct WALogger<M: Serializable + Deserializable + Debug> {
     _marker: PhantomData<M>,
     file_handle: AppendOnlyFile,
+    sync: bool,
 }
 
 impl<M: Serializable + Deserializable + Debug> PersistenceLogger for WALogger<M> {
@@ -54,6 +56,7 @@ impl<M: Serializable + Deserializable + Debug> PersistenceLogger for WALogger<M>
         let mut logger = Self {
             _marker: PhantomData,
             file_handle: file,
+            sync: config.sync,
         };
         let mut msg_vec = Vec::new();
         // load msgs from file one at a time
@@ -95,7 +98,9 @@ where
 
         self.file_handle.write_all(&len_buf)?;
         self.file_handle.write_all(&msg_buf)?;
-        self.file_handle.sync_all()?;
+        if self.sync {
+            self.file_handle.sync_all()?;
+        }
         Ok(())
     }
 
@@ -104,7 +109,9 @@ where
         let mut buf = msg_buf.len().to_be_bytes().to_vec();
         buf.append(&mut msg_buf);
         self.file_handle.write_all(&buf)?;
-        self.file_handle.sync_all()?;
+        if self.sync {
+            self.file_handle.sync_all()?;
+        }
         Ok(())
     }
 

@@ -134,6 +134,7 @@ mod test {
         let log1_path = tmpdir.path().join("wal1");
         let logger1_config = WALoggerConfig {
             file_path: log1_path.clone(),
+            sync: false,
         };
 
         let (mut logger1, events1): (WALogger<TestEvent>, _) =
@@ -181,6 +182,7 @@ mod test {
         assert_eq!(log1_len, copied);
         let logger2_config = WALoggerConfig {
             file_path: log2_path.clone(),
+            sync: false,
         };
 
         let (mut logger2, events2) = WALogger::new(logger2_config).unwrap();
@@ -204,6 +206,7 @@ mod test {
         assert_eq!(log2_len, copied);
         let logger3_config = WALoggerConfig {
             file_path: log3_path,
+            sync: false,
         };
 
         let (_, events3) = WALogger::new(logger3_config).unwrap();

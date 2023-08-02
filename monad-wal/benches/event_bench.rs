@@ -48,7 +48,10 @@ impl MonadEventBencher {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let file_path = tmpdir.path().join("wal");
-        let config = WALoggerConfig { file_path };
+        let config = WALoggerConfig {
+            file_path,
+            sync: false,
+        };
         println!("size of event: {}", event.serialize().len());
         Self {
             event,

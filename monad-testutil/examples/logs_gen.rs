@@ -38,6 +38,7 @@ pub fn generate_log<T: Transformer<MM>>(
     let binding = pubkeys.clone();
     let file_path_vec = binding.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
+        sync: false,
     });
     let peers = pubkeys
         .into_iter()

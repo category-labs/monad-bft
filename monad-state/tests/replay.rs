@@ -42,6 +42,7 @@ mod test {
         for i in 0..num_nodes {
             logger_configs.push(WALoggerConfig {
                 file_path: tmpdir.path().join(format!("wal{}", i)),
+                sync: false,
             });
         }
 

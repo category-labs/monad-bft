@@ -117,6 +117,7 @@ impl Application for Viz {
             for (pk, _) in pubkeys.iter() {
                 let log_config = WALoggerConfig {
                     file_path: logdir.join(format!("{:?}.log", pk)),
+                    sync: false,
                 };
                 let (_, event_vec) = WALogger::<
                     TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>,
