@@ -1,16 +1,18 @@
 mod gossipsub;
 
-use gossipsub::GossipSub;
 use libp2p::identity::Keypair;
 use monad_mempool_types::tx::PriorityTxBatch;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::event;
+
+use crate::gossipsub::GOSSIP_SUB_DEFAULT_BUFFER_SIZE;
 
 #[derive(Error, Debug)]
 pub enum MessengerError {
     #[error("start() not yet called on Messenger")]
     NotStartedError,
+
     #[error("error starting gossipsub")]
     GossipSubStartError,
 }
@@ -42,53 +44,50 @@ impl MessengerConfig {
 }
 
 pub struct Messenger {
-    gossipsub: GossipSub<64>,
-    sender: Option<mpsc::Sender<PriorityTxBatch>>,
-    receiver: Option<mpsc::Receiver<PriorityTxBatch>>,
+    sender: mpsc::Sender<PriorityTxBatch>,
+    receiver: mpsc::Receiver<PriorityTxBatch>,
+
+    gossipsub_listen_handle: JoinHandle<()>,
 }
 
 impl Messenger {
-    pub fn new(config: &MessengerConfig) -> Self {
-        let gossipsub = GossipSub::new(config.local_key.clone(), config.port);
-
-        Self {
-            gossipsub,
-            sender: None,
-            receiver: None,
-        }
-    }
-
-    pub fn get_sender(&self) -> Result<mpsc::Sender<PriorityTxBatch>, MessengerError> {
-        self.sender
-            .as_ref()
-            .ok_or(MessengerError::NotStartedError)
-            .map(|s| s.clone())
-    }
-
-    pub async fn receive(&mut self) -> Result<Option<PriorityTxBatch>, MessengerError> {
-        let rx = self
-            .receiver
-            .as_mut()
-            .ok_or(MessengerError::NotStartedError)?;
-
-        Ok(rx.recv().await)
-    }
-
-    pub async fn start(&mut self, wait_for_peers: u8) -> Result<(), MessengerError> {
-        let (sender, receiver, mut connected_rx) = self
-            .gossipsub
-            .start::<PriorityTxBatch>()
+    pub async fn new(config: &MessengerConfig, wait_for_peers: u8) -> Result<Self, MessengerError> {
+        let (gossipsub_listen_handle, sender, receiver, mut connected_rx) =
+            gossipsub::start_gossipsub(
+                config.local_key.clone(),
+                config.port,
+                GOSSIP_SUB_DEFAULT_BUFFER_SIZE,
+            )
             .map_err(|_| MessengerError::GossipSubStartError)?;
-        self.sender = Some(sender);
-        self.receiver = Some(receiver);
 
         event! {tracing::Level::INFO, "Messenger started, waiting for {} peer(s)...", wait_for_peers};
+
         for _ in 0..wait_for_peers {
             connected_rx.recv().await;
         }
-        event! {tracing::Level::INFO, "Connected to {} peer(s)" , wait_for_peers};
 
-        Ok(())
+        event! {tracing::Level::INFO, "Messenger connected to {} peer(s)" , wait_for_peers};
+
+        Ok(Self {
+            sender,
+            receiver,
+
+            gossipsub_listen_handle,
+        })
+    }
+
+    pub fn get_sender(&self) -> mpsc::Sender<PriorityTxBatch> {
+        self.sender.clone()
+    }
+
+    pub async fn recv(&mut self) -> Option<PriorityTxBatch> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for Messenger {
+    fn drop(&mut self) {
+        self.gossipsub_listen_handle.abort();
     }
 }
 
@@ -103,13 +102,15 @@ mod test {
 
     #[tokio::test]
     async fn test_messenger() {
-        let mut head = Messenger::new(&MessengerConfig::default());
-        let mut receiver1 = Messenger::new(&MessengerConfig::default());
-        let mut receiver2 = Messenger::new(&MessengerConfig::default());
-
-        receiver1.start(0).await.unwrap();
-        receiver2.start(0).await.unwrap();
-        head.start(2).await.unwrap();
+        let mut receiver1 = Messenger::new(&MessengerConfig::default(), 0)
+            .await
+            .unwrap();
+        let mut receiver2 = Messenger::new(&MessengerConfig::default(), 0)
+            .await
+            .unwrap();
+        let head = Messenger::new(&MessengerConfig::default(), 2)
+            .await
+            .unwrap();
 
         let batches = (0..1)
             .map(|i| {
@@ -127,23 +128,21 @@ mod test {
             })
             .collect::<Vec<_>>();
 
-        let sender = head.get_sender().unwrap();
+        let sender = head.get_sender();
         for i in &batches {
             sender.send(i.clone()).await.unwrap();
         }
 
         for i in &batches {
             assert_eq!(
-                timeout(Duration::from_secs(TIMEOUT_SEC), receiver1.receive())
+                timeout(Duration::from_secs(TIMEOUT_SEC), receiver1.recv())
                     .await
-                    .unwrap()
                     .unwrap(),
                 Some(i.clone())
             );
             assert_eq!(
-                timeout(Duration::from_secs(TIMEOUT_SEC), receiver2.receive())
+                timeout(Duration::from_secs(TIMEOUT_SEC), receiver2.recv())
                     .await
-                    .unwrap()
                     .unwrap(),
                 Some(i.clone())
             );

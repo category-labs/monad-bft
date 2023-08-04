@@ -113,23 +113,20 @@ pub struct Controller {
 
 impl Controller {
     pub async fn new(config: &ControllerConfig) -> Result<Self, MessengerError> {
+        let messenger = Messenger::new(&config.messenger_config, config.wait_for_peers).await?;
+
         let checker = Checker::new(&config.checker_config);
-        let mut messenger = Messenger::new(&config.messenger_config);
         let pool = Arc::new(Mutex::new(Pool::new(&config.pool_config)));
+        let pending_tx_batch = Arc::new(Mutex::new(Vec::new()));
 
         let (tx_sender, tx_receiver) = mpsc::channel::<String>(config.buffer_size);
-
-        messenger.start(config.wait_for_peers).await?;
-        event! {Level::INFO, "Connected to at least 1 other peer, continuing..."}
-
-        let pending_tx_batch = Arc::new(Mutex::new(Vec::new()));
 
         // Spawn task to receive incoming transactions from the server, add them to the mempool, and broadcast them to peers.
         let listen_server_handle = tokio::spawn(Self::listen_server(
             config,
             tx_receiver,
             checker.clone(),
-            messenger.get_sender().unwrap(),
+            messenger.get_sender(),
             pool.clone(),
             pending_tx_batch.clone(),
         ));
@@ -138,7 +135,7 @@ impl Controller {
         let broadcast_handle = tokio::spawn(Self::listen_broadcast(
             config,
             pending_tx_batch,
-            messenger.get_sender().unwrap(),
+            messenger.get_sender(),
         ));
 
         // Spawn task to receive incoming transaction batches from the messenger, taking ownership of the messenger.
@@ -229,10 +226,10 @@ impl Controller {
 
     async fn listen_messenger(checker: Checker, mut messenger: Messenger, pool: Arc<Mutex<Pool>>) {
         loop {
-            let tx_batch = messenger.receive().await;
+            let tx_batch = messenger.recv().await;
 
             match tx_batch {
-                Ok(Some(tx_batch)) => {
+                Some(tx_batch) => {
                     let expected_batch_hash = Self::calculate_batch_hash(&tx_batch.txs);
 
                     if expected_batch_hash.as_bytes() != tx_batch.hash.as_slice() {
@@ -259,12 +256,8 @@ impl Controller {
                         }
                     }
                 }
-                Ok(None) => {
+                None => {
                     event!(Level::ERROR, "Received None from messenger channel");
-                    break;
-                }
-                Err(e) => {
-                    event!(Level::ERROR, "Error receiving from messenger: {}", e);
                     break;
                 }
             }
