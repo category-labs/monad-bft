@@ -4699,6 +4699,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "ethers",
+ "futures",
  "hex",
  "monad-mempool-checker",
  "monad-mempool-messenger",
@@ -4726,6 +4727,7 @@ name = "monad-mempool-node"
 version = "0.1.0"
 dependencies = [
  "ethers",
+ "futures",
  "hex",
  "monad-mempool-controller",
  "monad-mempool-server",

@@ -4,22 +4,28 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use monad_consensus_types::block::{FullTransactionList, TransactionList};
 use monad_mempool_controller::{Controller, ControllerConfig};
 use monad_mempool_messenger::MessengerError;
 use thiserror::Error;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc,
+    task::{JoinError, JoinHandle},
+};
 
 use crate::{Executor, MempoolCommand};
 
 #[derive(Error, Debug)]
 enum ControllerTaskError {
-    #[error("ChannelSendError({0})")]
-    ChannelSendError(#[from] mpsc::error::SendError<ControllerTaskResult>),
+    #[error(transparent)]
+    ChannelSend(#[from] mpsc::error::SendError<ControllerTaskResult>),
 
     #[error(transparent)]
-    MessengerError(#[from] MessengerError),
+    Messenger(#[from] MessengerError),
+
+    #[error(transparent)]
+    Join(#[from] JoinError),
 }
 
 enum ControllerTaskCommand {
@@ -41,20 +47,38 @@ pub struct MonadMempool<E> {
     fetch_full_txs_state: Option<Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>>,
 }
 
-impl<E> Default for MonadMempool<E> {
+impl<E> Default for MonadMempool<E>
+where
+    E: 'static,
+{
     fn default() -> Self {
         let (controller_task_tx, rx) = mpsc::channel(1);
         let (tx, controller_task_rx) = mpsc::channel(1);
 
-        let controller_task = tokio::spawn(async move {
-            let mut controller = Controller::new(&ControllerConfig::default());
+        let controller_task = tokio::spawn(Self::controller_task(tx, rx));
 
-            controller.start().await?;
+        Self {
+            controller_task,
+            controller_task_tx,
+            controller_task_rx,
 
-            let mut rx = rx;
-            let tx = tx;
+            fetch_txs_state: None,
+            fetch_full_txs_state: None,
+        }
+    }
+}
 
-            while let Some(task) = rx.recv().await {
+impl<E> MonadMempool<E> {
+    async fn controller_task(
+        tx: mpsc::Sender<ControllerTaskResult>,
+        mut rx: mpsc::Receiver<ControllerTaskCommand>,
+    ) -> Result<(), ControllerTaskError> {
+        let mut controller = Controller::new(&ControllerConfig::default()).await?;
+
+        tokio::select! {
+            task = rx.recv() => {
+                let Some(task) = task else { return Ok(()) };
+
                 match task {
                     ControllerTaskCommand::FetchTxs => {
                         let proposal = controller.create_proposal().await;
@@ -73,17 +97,16 @@ impl<E> Default for MonadMempool<E> {
                 }
             }
 
-            Ok(())
-        });
-
-        Self {
-            controller_task,
-            controller_task_tx,
-            controller_task_rx,
-
-            fetch_txs_state: None,
-            fetch_full_txs_state: None,
+            result = controller.next() => {
+                return if let Some(e) = result {
+                    Err(e.into())
+                } else {
+                    Ok(())
+                };
+            }
         }
+
+        Ok(())
     }
 }
 

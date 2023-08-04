@@ -13,6 +13,7 @@ monad-mempool-types = { path = "../monad-mempool-types" }
 
 bytes = { workspace = true }
 ethers = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

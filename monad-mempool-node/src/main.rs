@@ -13,9 +13,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let mut controller = Controller::new(&ControllerConfig::default());
-    controller.start().await.unwrap();
-    let sender = controller.get_sender().unwrap();
+    let mut controller = Controller::new(&ControllerConfig::default()).await.unwrap();
+    let sender = controller.get_sender();
 
     start(sender, args.get(1).unwrap().parse()?).await;
 
@@ -40,16 +39,18 @@ mod test {
     /// Starts NUM_CONTROLLER controllers, sends NUM_TX messages to one controller
     /// and checks that all controllers create the same proposal.
     async fn test_multi_controller() {
-        let mut controllers = (0..NUM_CONTROLLER)
-            .map(|_| Controller::new(&ControllerConfig::default().with_wait_for_peers(0)))
-            .collect::<Vec<_>>();
+        let mut controllers = vec![];
 
-        for controller in &mut controllers {
-            controller.start().await.unwrap();
+        for _ in 0..NUM_CONTROLLER {
+            controllers.push(
+                Controller::new(&ControllerConfig::default().with_wait_for_peers(0))
+                    .await
+                    .unwrap(),
+            );
         }
 
         let sender_controller = controllers.get_mut(0).unwrap();
-        let sender = sender_controller.get_sender().unwrap();
+        let sender = sender_controller.get_sender();
 
         let hex_txs = create_hex_txs(0, NUM_TX);
         for hex_tx in hex_txs {

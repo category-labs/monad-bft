@@ -16,5 +16,6 @@ tracing-subscriber = { workspace = true }
 monad-mempool-types = { path = "../monad-mempool-types" }
 
 ethers = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
 oorandom = { workspace = true }
