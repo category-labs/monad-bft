@@ -395,3 +395,28 @@ impl Stream for Controller {
         Poll::Pending
     }
 }
+
+#[cfg(all(test, tokio_unstable))]
+mod test {
+    use tokio::runtime::Handle;
+
+    use crate::{Controller, ControllerConfig};
+
+    #[tokio::test]
+    async fn test_tokio_thread_destruction() {
+        let metrics = Handle::current().metrics();
+
+        let start_tasks = metrics.active_tasks_count();
+
+        let controller = Controller::new(&ControllerConfig::default().with_wait_for_peers(0))
+            .await
+            .unwrap();
+        drop(controller);
+
+        tokio::task::yield_now().await;
+
+        let end_tasks = metrics.active_tasks_count();
+
+        assert_eq!(start_tasks, end_tasks);
+    }
+}
