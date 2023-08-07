@@ -4864,6 +4864,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "clap 4.3.17",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -4875,6 +4876,8 @@ dependencies = [
  "monad-wal",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "serde 1.0.173",
+ "serde_json",
  "sha2 0.10.7",
 ]
 
@@ -7097,6 +7100,7 @@ version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d03b412469450d4404fe8499a268edd7f8b79fecb074b0d812ad64ca21f4031b"
 dependencies = [
+ "indexmap 2.0.0",
  "itoa",
  "ryu",
  "serde 1.0.173",

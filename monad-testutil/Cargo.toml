@@ -22,3 +22,6 @@ monad-wal = {path = "../monad-wal" }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 sha2 = { workspace = true }
+clap = {version = "4.3.11", features= ["derive"] }
+serde = {version = "1.0.130", features= ["derive"] }
+serde_json = {version = "1.0.68", features= ["preserve_order"] }
