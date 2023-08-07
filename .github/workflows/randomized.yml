@@ -1,0 +1,22 @@
+name: Randomized Rust Test
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # run at 4 AM UTC
+env:
+  CARGO_TERM_COLOR: always
+  ALL_MESSAGES_DELAYED_ROUND: 40
+  NODES_WITH_RANDOM_LATENCY_ROUND: 40
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - run: rustup toolchain install nightly --profile minimal --component rustfmt
+    - uses: Swatinem/rust-cache@v2
+    - name: set rand env
+      run: echo "RANDOM_TEST_SEED=$((RANDOM))" >> $GITHUB_ENV
+    - name: Run all_message_delayed
+      run: cargo test all_messages_delayed_cron -- --nocapture 
+    - name: Run rand_lat
+      run: cargo test nodes_with_random_latency_cron -- --nocapture 
