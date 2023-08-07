@@ -11,6 +11,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
+    executor::mock::NoSerRouterScheduler,
     mock_swarm::{LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer},
     State,
 };
@@ -45,7 +46,9 @@ impl SimConfig {
     }
 }
 
-impl SimulationConfig<MS, LayerTransformer<MM>, PersistenceLoggerType> for SimConfig {
+impl SimulationConfig<MS, NoSerRouterScheduler<MM>, LayerTransformer<MM>, PersistenceLoggerType>
+    for SimConfig
+{
     fn nodes(
         &self,
     ) -> Vec<(

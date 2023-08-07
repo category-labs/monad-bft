@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let mut controller = Controller::new(&ControllerConfig::default()).await.unwrap();
+    let controller = Controller::new(&ControllerConfig::default()).await.unwrap();
     let sender = controller.get_sender();
 
     start(sender, args.get(1).unwrap().parse()?).await;

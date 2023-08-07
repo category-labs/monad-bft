@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashSet, VecDeque},
+    collections::{BTreeSet, HashSet, VecDeque},
     marker::Unpin,
     ops::DerefMut,
     pin::Pin,
@@ -17,7 +17,89 @@ use crate::{
     TimerCommand,
 };
 
-pub struct MockExecutor<S>
+pub enum RouterEvent<M, Serialized> {
+    Rx(PeerId, M),
+    Tx(PeerId, Serialized),
+}
+
+pub trait RouterScheduler {
+    type M;
+    type Serialized;
+
+    fn new(all_peers: BTreeSet<PeerId>, me: PeerId) -> Self;
+
+    fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized);
+    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM);
+
+    fn peek_tick(&self) -> Option<Duration>;
+    fn pop_event(&mut self) -> Option<RouterEvent<Self::M, Self::Serialized>>;
+}
+
+pub struct NoSerRouterScheduler<M> {
+    all_peers: BTreeSet<PeerId>,
+    events: VecDeque<(Duration, RouterEvent<M, M>)>,
+}
+
+impl<M> RouterScheduler for NoSerRouterScheduler<M>
+where
+    M: Clone,
+{
+    type M = M;
+    type Serialized = M;
+
+    fn new(all_peers: BTreeSet<PeerId>, _me: PeerId) -> Self {
+        Self {
+            all_peers,
+            events: Default::default(),
+        }
+    }
+
+    fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized) {
+        assert!(
+            time >= self
+                .events
+                .back()
+                .map(|(time, _)| *time)
+                .unwrap_or(Duration::ZERO)
+        );
+        self.events
+            .push_back((time, RouterEvent::Rx(from, message)))
+    }
+
+    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM) {
+        assert!(
+            time >= self
+                .events
+                .back()
+                .map(|(time, _)| *time)
+                .unwrap_or(Duration::ZERO)
+        );
+        match to {
+            RouterTarget::Broadcast => {
+                let message: Self::M = message.into();
+                self.events.extend(
+                    self.all_peers
+                        .iter()
+                        .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
+                );
+            }
+            RouterTarget::PointToPoint(to) => {
+                self.events
+                    .push_back((time, RouterEvent::Tx(to, message.into())));
+            }
+        }
+    }
+
+    fn peek_tick(&self) -> Option<Duration> {
+        self.events.front().map(|(tick, _)| *tick)
+    }
+
+    fn pop_event(&mut self) -> Option<RouterEvent<Self::M, Self::Serialized>> {
+        self.events.pop_front().map(|(_, event)| event)
+    }
+}
+
+pub struct MockExecutor<S, RS>
 where
     S: State,
 {
@@ -30,11 +112,7 @@ where
 
     timer: Option<TimerEvent<S::Event>>,
 
-    // caller push_backs inbound stuff here (via MockExecutor::send_*)
-    inbound_messages: BinaryHeap<SequencedPeerEvent<S::Message>>,
-
-    // caller pop_front outbounds from this (via MockExecutor::receive_*)
-    outbound_messages: VecDeque<(RouterTarget, S::OutboundMessage)>,
+    router: RS,
 }
 
 pub struct TimerEvent<E> {
@@ -76,38 +154,40 @@ impl<T> Ord for SequencedPeerEvent<T> {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum ExecutorEventType {
-    InboundMessage,
+    Router,
 
     Epoch,
     Timer,
     Mempool,
 }
 
-impl<S> MockExecutor<S>
+impl<S, RS> MockExecutor<S, RS>
 where
     S: State,
+    RS: RouterScheduler<M = S::Message>,
 {
+    pub fn new(router: RS) -> Self {
+        Self {
+            checkpoint: Default::default(),
+            ledger: Default::default(),
+            mempool: Default::default(),
+            epoch: Default::default(),
+
+            tick: Duration::default(),
+
+            timer: None,
+
+            router,
+        }
+    }
+
     pub fn tick(&self) -> Duration {
         self.tick
     }
-    pub fn send_message(
-        &mut self,
-        tick: Duration,
-        from: PeerId,
-        message: S::Message,
-        tx_tick: Duration,
-    ) {
+    pub fn send_message(&mut self, tick: Duration, from: PeerId, message: RS::Serialized) {
         assert!(tick >= self.tick);
-        self.inbound_messages.push(SequencedPeerEvent {
-            tick,
-            from,
-            t: message,
 
-            tx_tick,
-        });
-    }
-    pub fn receive_message(&mut self) -> Option<(RouterTarget, S::OutboundMessage)> {
-        self.outbound_messages.pop_front()
+        self.router.inbound(tick, from, message);
     }
 
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
@@ -119,11 +199,9 @@ where
                     .into_iter(),
             )
             .chain(
-                self.inbound_messages
-                    .peek()
-                    .map(|SequencedPeerEvent { tick, .. }| {
-                        (*tick, ExecutorEventType::InboundMessage)
-                    })
+                self.router
+                    .peek_tick()
+                    .map(|tick| (tick, ExecutorEventType::Router))
                     .into_iter(),
             )
             .chain(
@@ -144,41 +222,12 @@ where
     pub fn peek_event_tick(&self) -> Option<Duration> {
         self.peek_event().map(|(duration, _)| duration)
     }
-
-    pub fn pending_timer(&self) -> &Option<TimerEvent<S::Event>> {
-        &self.timer
-    }
-
-    pub fn pending_messages(&self) -> &BinaryHeap<SequencedPeerEvent<S::Message>> {
-        &self.inbound_messages
-    }
 }
 
-impl<S> Default for MockExecutor<S>
+impl<S, RS> Executor for MockExecutor<S, RS>
 where
     S: State,
-{
-    fn default() -> Self {
-        Self {
-            checkpoint: Default::default(),
-            ledger: Default::default(),
-            mempool: Default::default(),
-            epoch: Default::default(),
-
-            tick: Duration::default(),
-
-            timer: None,
-
-            inbound_messages: BinaryHeap::new(),
-
-            outbound_messages: VecDeque::new(),
-        }
-    }
-}
-
-impl<S> Executor for MockExecutor<S>
-where
-    S: State,
+    RS: RouterScheduler<M = S::Message>,
 {
     type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -222,42 +271,55 @@ where
             if to_unpublish.contains(&(target, id)) {
                 continue;
             }
-            self.outbound_messages.push_back((target, message));
+            self.router.outbound(self.tick, target, message);
         }
     }
 }
 
-impl<S> Stream for MockExecutor<S>
+pub enum MockExecutorEvent<E, Ser> {
+    Event(E),
+    Send(PeerId, Ser),
+}
+
+impl<S, RS> Stream for MockExecutor<S, RS>
 where
     S: State,
+    RS: RouterScheduler<M = S::Message>,
     S::Event: Unpin,
     Self: Unpin,
 {
-    type Item = S::Event;
+    type Item = MockExecutorEvent<S::Event, RS::Serialized>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
-
-        if let Poll::Ready(Some(event)) = this.mempool.poll_next_unpin(cx) {
-            return Poll::Ready(Some(event));
-        }
 
         if let Some((tick, event_type)) = this.peek_event() {
             this.tick = tick;
             let event = match event_type {
-                ExecutorEventType::InboundMessage => {
-                    let SequencedPeerEvent {
-                        from,
-                        t: message,
-                        tick: _,
+                ExecutorEventType::Router => {
+                    let router_event = this.router.pop_event().unwrap();
 
-                        tx_tick: _,
-                    } = this.inbound_messages.pop().unwrap();
-
-                    message.event(from)
+                    match router_event {
+                        RouterEvent::Rx(from, message) => {
+                            MockExecutorEvent::Event(message.event(from))
+                        }
+                        RouterEvent::Tx(to, ser) => MockExecutorEvent::Send(to, ser),
+                    }
                 }
-                ExecutorEventType::Epoch => return this.epoch.poll_next_unpin(cx),
-                ExecutorEventType::Timer => this.timer.take().unwrap().event,
-                ExecutorEventType::Mempool => return this.mempool.poll_next_unpin(cx),
+                ExecutorEventType::Epoch => {
+                    return this
+                        .epoch
+                        .poll_next_unpin(cx)
+                        .map(|opt| opt.map(MockExecutorEvent::Event))
+                }
+                ExecutorEventType::Timer => {
+                    MockExecutorEvent::Event(this.timer.take().unwrap().event)
+                }
+                ExecutorEventType::Mempool => {
+                    return this
+                        .mempool
+                        .poll_next_unpin(cx)
+                        .map(|opt| opt.map(MockExecutorEvent::Event))
+                }
             };
             return Poll::Ready(Some(event));
         }
@@ -266,7 +328,7 @@ where
     }
 }
 
-impl<S> MockExecutor<S>
+impl<S, RS> MockExecutor<S, RS>
 where
     S: State,
 {
@@ -654,7 +716,7 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq, Eq)]
     struct SimpleChainMessage {
         round: u64,
     }
@@ -698,11 +760,12 @@ mod tests {
             .zip(std::iter::repeat(MockWALoggerConfig {}))
             .map(|((a, b), c)| (a, b, c))
             .collect();
-        let mut nodes =
-            Nodes::<SimpleChainState, _, MockWALogger<TimedEvent<SimpleChainEvent>>>::new(
-                peers,
-                LatencyTransformer(Duration::from_millis(50)),
-            );
+        let mut nodes = Nodes::<
+            SimpleChainState,
+            NoSerRouterScheduler<SimpleChainMessage>,
+            _,
+            MockWALogger<TimedEvent<SimpleChainEvent>>,
+        >::new(peers, LatencyTransformer(Duration::from_millis(50)));
 
         while let Some((duration, id, event)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")

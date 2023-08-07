@@ -4,6 +4,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
 use monad_executor::{
+    executor::mock::NoSerRouterScheduler,
     mock_swarm::{Nodes, Transformer},
     timed_event::TimedEvent,
     State,
@@ -44,7 +45,7 @@ pub fn generate_log<T: Transformer<MM>>(
         .zip(file_path_vec)
         .map(|((a, b), c)| (a, b, c))
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, T, WALoggerType>::new(peers, transformer);
+    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, T, WALoggerType>::new(peers, transformer);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes

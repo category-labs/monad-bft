@@ -13,7 +13,7 @@ use monad_crypto::{
     NopSignature, Signature,
 };
 use monad_executor::{
-    executor::mock::MockExecutor,
+    executor::mock::{MockExecutor, NoSerRouterScheduler},
     mock_swarm::{LinkMessage, Nodes, Transformer},
     timed_event::TimedEvent,
     PeerId, State,
@@ -45,6 +45,7 @@ type MS = MonadState<
 >;
 type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
 type MM = <MS as State>::Message;
+type RS = NoSerRouterScheduler<MM>;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 
@@ -161,7 +162,10 @@ pub fn node_ledger_verification<
     states: &BTreeMap<
         PeerId,
         (
-            MockExecutor<MonadState<CT, ST, SCT, VT, LT>>,
+            MockExecutor<
+                MonadState<CT, ST, SCT, VT, LT>,
+                NoSerRouterScheduler<MonadMessage<ST, SCT>>,
+            >,
             MonadState<CT, ST, SCT, VT, LT>,
             PL,
         ),
@@ -203,7 +207,7 @@ pub fn run_nodes<T: Transformer<MM>>(
         .zip(std::iter::repeat(MockWALoggerConfig {}))
         .map(|((a, b), c)| (a, b, c))
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, T, PersistenceLoggerType>::new(peers, transformer);
+    let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(peers, transformer);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes
@@ -229,7 +233,7 @@ pub fn run_one_delayed_node<T: Transformer<MM>>(
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MC>,
 ) {
-    let mut nodes = Nodes::<MS, T, PersistenceLoggerType>::new(
+    let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(
         pubkeys
             .into_iter()
             .zip(state_configs)

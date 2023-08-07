@@ -27,11 +27,12 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
+    executor::mock::NoSerRouterScheduler,
     mock_swarm::{LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer},
     timed_event::TimedEvent,
     PeerId, State,
 };
-use monad_state::{MonadEvent, MonadState};
+use monad_state::{MonadEvent, MonadMessage, MonadState};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::MockWALogger,
@@ -60,7 +61,13 @@ type MS = MonadState<
 type MM = <MS as State>::Message;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
-type Sim = NodesSimulation<MS, LayerTransformer<MM>, PersistenceLoggerType, SimConfig>;
+type Sim = NodesSimulation<
+    MS,
+    NoSerRouterScheduler<MM>,
+    LayerTransformer<MM>,
+    PersistenceLoggerType,
+    SimConfig,
+>;
 type ReplaySim = ReplayNodesSimulation<MS, RepConfig>;
 
 #[derive(Parser, Default)]
@@ -171,6 +178,7 @@ impl Application for Viz {
                         ValidatorSet,
                         SimpleRoundRobin,
                     >,
+                    NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
                     _,
                     _,
                     _,
