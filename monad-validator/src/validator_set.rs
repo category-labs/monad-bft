@@ -208,9 +208,9 @@ mod test {
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::new(validators).unwrap();
-        assert!(vs.has_super_majority_votes(&vec![v2.0]));
-        assert!(!vs.has_super_majority_votes(&vec![v1.0]));
-        assert!(vs.has_super_majority_votes(&vec![v2.0, NodeId(pubkey3)]));
+        assert!(vs.has_super_majority_votes(&[v2.0]));
+        assert!(!vs.has_super_majority_votes(&[v1.0]));
+        assert!(vs.has_super_majority_votes(&[v2.0, NodeId(pubkey3)]));
         // Address(3) is a non-member
     }
 
@@ -229,7 +229,7 @@ mod test {
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::new(validators).unwrap();
-        assert!(!vs.has_honest_vote(&vec![v1.0]));
-        assert!(vs.has_honest_vote(&vec![v2.0]));
+        assert!(!vs.has_honest_vote(&[v1.0]));
+        assert!(vs.has_honest_vote(&[v2.0]));
     }
 }

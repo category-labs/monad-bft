@@ -233,7 +233,7 @@ mod test {
             tx.priority = index as i64;
         }
 
-        txs.iter_mut().nth(TX_BATCH_SIZE * 2).unwrap().priority = (TX_BATCH_SIZE * 2) as i64;
+        txs.get_mut(TX_BATCH_SIZE * 2).unwrap().priority = (TX_BATCH_SIZE * 2) as i64;
 
         for tx in &txs {
             pool.insert(tx.clone()).unwrap();

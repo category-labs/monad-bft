@@ -26,10 +26,12 @@ jobs:
           -D clippy::clone_on_copy
           -D clippy::redundant_clone
           -D clippy::iter_kv_map
+          -D clippy::iter_nth
           -D clippy::unnecessary_cast
           -D clippy::filter_next
           -D clippy::needless_lifetimes
           -D clippy::useless_conversion
+          -D clippy::useless_vec
           -D clippy::needless_question_mark
           -D clippy::bool_comparison
           -D unused_imports
