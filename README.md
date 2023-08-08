@@ -1,3 +1,5 @@
+![Nightly Tests][tests-badge]
+
 ```mermaid
 sequenceDiagram
 autonumber
@@ -20,3 +22,5 @@ autonumber
     Note over E: apply side effects
     end
 ```
+
+[tests-badge]: https://github.com/monad-crypto/monad-bft/actions/workflows/randomized.yml/badge.svg?branch=master
