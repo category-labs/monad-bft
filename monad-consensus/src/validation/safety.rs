@@ -4,7 +4,7 @@ use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::SignatureCollection,
+    signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     validation::Hasher,
     voting::VoteInfo,

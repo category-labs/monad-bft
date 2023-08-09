@@ -1,10 +1,12 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    signature::SignatureCollection,
+    certificate_signature::CertificateSignatureRecoverable,
+    message_signature::MessageSignature,
+    signature_collection::SignatureCollection,
     validation::{Hashable, Hasher},
 };
-use monad_crypto::{secp256k1::KeyPair, Signature};
+use monad_crypto::secp256k1::KeyPair;
 
 use crate::{
     messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -30,7 +32,7 @@ impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
 
 impl<ST, SCT> Hashable for ConsensusMessage<ST, SCT>
 where
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -51,7 +53,7 @@ where
 
 impl<ST, SCT> ConsensusMessage<ST, SCT>
 where
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     pub fn sign<H: Hasher>(self, keypair: &KeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {

@@ -1,6 +1,6 @@
 use monad_types::*;
 
-use crate::{ledger::*, signature::SignatureCollection, validation::Hasher, voting::*};
+use crate::{ledger::*, signature_collection::SignatureCollection, validation::Hasher, voting::*};
 
 pub const GENESIS_PRIME_QC_HASH: Hash = Hash([0xAA; 32]);
 
@@ -69,8 +69,8 @@ pub fn genesis_vote_info(genesis_block_id: BlockId) -> VoteInfo {
 }
 
 impl<T: SignatureCollection> QuorumCertificate<T> {
-    pub fn new(info: QcInfo, signatures: T) -> Self {
-        let hash = signatures.get_hash();
+    pub fn new<H: Hasher>(info: QcInfo, signatures: T) -> Self {
+        let hash = signatures.get_hash::<H>();
         QuorumCertificate {
             info,
             signatures,
@@ -88,8 +88,9 @@ impl<T: SignatureCollection> QuorumCertificate<T> {
         };
         let lci = LedgerCommitInfo::new::<H>(None, &vote_info);
 
-        let sigs = T::new();
-        let sig_hash = sigs.get_hash();
+        let sigs = T::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
+            .expect("genesis qc sigs");
+        let sig_hash = sigs.get_hash::<H>();
 
         QuorumCertificate {
             info: QcInfo {
@@ -108,7 +109,7 @@ impl<T: SignatureCollection> QuorumCertificate<T> {
         let vote_info = genesis_vote_info;
         let lci = LedgerCommitInfo::new::<H>(None, &vote_info);
 
-        let sig_hash = genesis_signatures.get_hash();
+        let sig_hash = genesis_signatures.get_hash::<H>();
 
         QuorumCertificate {
             info: QcInfo {

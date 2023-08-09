@@ -4,7 +4,7 @@ use zerocopy::AsBytes;
 use crate::{
     payload::Payload,
     quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection,
+    signature_collection::SignatureCollection,
     validation::{Hashable, Hasher},
 };
 

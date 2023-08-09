@@ -1,11 +1,11 @@
 use std::{collections::HashMap, time::Duration};
 
 use monad_consensus_types::{
+    message_signature::MessageSignature,
     quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection,
+    signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
 };
-use monad_crypto::Signature;
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -50,7 +50,7 @@ pub struct PacemakerTimerExpire;
 
 impl<S, T> Pacemaker<S, T>
 where
-    S: Signature,
+    S: MessageSignature,
     T: SignatureCollection,
 {
     pub fn new(

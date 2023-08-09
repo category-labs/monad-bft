@@ -4,17 +4,23 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    ledger::LedgerCommitInfo, multi_sig::MultiSig, quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection, validation::Sha256Hash, voting::VoteInfo,
+    ledger::LedgerCommitInfo,
+    multi_sig::MultiSig,
+    quorum_certificate::QuorumCertificate,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validation::Sha256Hash,
+    voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-use monad_testutil::signing::*;
-use monad_types::{BlockId, Hash, NodeId, Round, Stake};
+use monad_testutil::{signing::*, validators::create_keys_w_validators};
+use monad_types::{BlockId, Hash, Round};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 use test_case::test_case;
 
+type SignatureCollectionType = MultiSig<SecpSignature>;
+
 fn create_signed_vote_message(
-    keypair: &KeyPair,
+    keypair: &SignatureCollectionKeyPairType<SignatureCollectionType>,
     vote_round: Round,
 ) -> Unverified<SecpSignature, VoteMessage> {
     let vi = VoteInfo {
@@ -39,16 +45,11 @@ fn setup_ctx(
 ) -> (
     Vec<KeyPair>,
     ValidatorSet,
+    ValidatorMapping<SignatureCollectionKeyPairType<SignatureCollectionType>>,
     Vec<Verified<SecpSignature, VoteMessage>>,
 ) {
-    let keys = create_keys(num_nodes);
-
-    let mut nodes = Vec::new();
-    for i in 0..num_nodes {
-        nodes.push((NodeId(keys[i as usize].pubkey()), Stake(1)));
-    }
-
-    let valset = ValidatorSet::new(nodes).unwrap();
+    let (keys, _cert_keys, valset, vmap) =
+        create_keys_w_validators::<SignatureCollectionType>(num_nodes);
 
     let mut votes = Vec::new();
     for i in 0..num_nodes {
@@ -60,11 +61,11 @@ fn setup_ctx(
         votes.push(vm);
     }
 
-    (keys, valset, votes)
+    (keys, valset, vmap, votes)
 }
 
 fn verify_qcs(
-    qcs: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>>,
+    qcs: Vec<&Option<QuorumCertificate<SignatureCollectionType>>>,
     expected_qcs: u32,
     expected_sigs: u32,
 ) {
@@ -85,17 +86,22 @@ fn verify_qcs(
 #[test_case(4 ; "min nodes")]
 #[test_case(15 ; "multiple nodes")]
 fn test_votes(num_nodes: u32) {
-    let (_, valset, votes) = setup_ctx(num_nodes);
+    let (_, valset, vmap, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<MultiSig<SecpSignature>>::default();
+    let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
-        let qc =
-            voteset.process_vote::<_, Sha256Hash>(v.author(), v.author_signature(), v, &valset);
+        let qc = voteset.process_vote::<Sha256Hash, _>(
+            v.author(),
+            v.author_signature(),
+            v,
+            &valset,
+            &vmap,
+        );
         qcs.push(qc);
     }
-    let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
+    let valid_qc: Vec<&Option<QuorumCertificate<SignatureCollectionType>>> =
         qcs.iter().filter(|a| a.is_some()).collect();
 
     // number of expected signatures is 2/3 + 1 for num_nodes because all weights were equal
@@ -109,23 +115,28 @@ fn test_votes(num_nodes: u32) {
 #[test_case(8, 2 ; "multiple nodes 1 reset")]
 #[test_case(20, 5 ; "multiple nodes multiple resets")]
 fn test_reset(num_nodes: u32, num_rounds: u32) {
-    let (_, valset, votes) = setup_ctx(num_nodes);
+    let (_, valset, vmap, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<MultiSig<SecpSignature>>::default();
+    let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();
 
     for k in 0..num_rounds {
         for i in 0..num_nodes {
             let v = &votes[i as usize];
-            let qc =
-                voteset.process_vote::<_, Sha256Hash>(v.author(), v.author_signature(), v, &valset);
+            let qc = voteset.process_vote::<Sha256Hash, _>(
+                v.author(),
+                v.author_signature(),
+                v,
+                &valset,
+                &vmap,
+            );
             qcs.push(qc);
         }
 
         voteset.start_new_round(Round(k.into()) + Round(1));
     }
 
-    let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
+    let valid_qc: Vec<&Option<QuorumCertificate<SignatureCollectionType>>> =
         qcs.iter().filter(|a| a.is_some()).collect();
 
     let num_expected_sigs = 2 * num_nodes / 3 + 1;
@@ -136,21 +147,26 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 #[test_case(4 ; "min nodes")]
 #[test_case(15 ; "multiple nodes")]
 fn test_minority(num_nodes: u32) {
-    let (_, valset, votes) = setup_ctx(num_nodes);
+    let (_, valset, vmap, votes) = setup_ctx(num_nodes);
 
-    let mut voteset = VoteState::<MultiSig<SecpSignature>>::default();
+    let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();
 
     let majority = 2 * num_nodes / 3 + 1;
 
     for i in 0..majority - 1 {
         let v = &votes[i as usize];
-        let qc =
-            voteset.process_vote::<_, Sha256Hash>(v.author(), v.author_signature(), v, &valset);
+        let qc = voteset.process_vote::<Sha256Hash, _>(
+            v.author(),
+            v.author_signature(),
+            v,
+            &valset,
+            &vmap,
+        );
         qcs.push(qc);
     }
 
-    let valid_qc: Vec<&Option<QuorumCertificate<MultiSig<SecpSignature>>>> =
+    let valid_qc: Vec<&Option<QuorumCertificate<SignatureCollectionType>>> =
         qcs.iter().filter(|a| a.is_some()).collect();
 
     assert_eq!(valid_qc.len(), 0);

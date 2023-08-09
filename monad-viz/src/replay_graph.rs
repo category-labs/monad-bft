@@ -7,8 +7,8 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, Message, PeerId, State};
 use monad_state::MonadConfig;
-use monad_testutil::signing::{create_keys, get_genesis_config};
-use monad_types::{Deserializable, Serializable};
+use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
+use monad_types::{Deserializable, NodeId, Serializable};
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
@@ -24,10 +24,19 @@ pub struct RepConfig {
 
 impl ReplayConfig<MS> for RepConfig {
     fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
-        let keys = create_keys(self.num_nodes);
+        let (keys, cert_keys, _validators, validator_mapping) =
+            create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+
+        let voting_keys = keys
+            .iter()
+            .map(|k| NodeId(k.pubkey()))
+            .zip(cert_keys.iter())
+            .collect::<Vec<_>>();
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
+            voting_keys.iter(),
+            &validator_mapping,
+        );
 
         let state_configs = keys
             .into_iter()
@@ -36,7 +45,11 @@ impl ReplayConfig<MS> for RepConfig {
                 transaction_validator: MockValidator,
 
                 key,
-                validators: pubkeys,
+                validators: pubkeys
+                    .iter()
+                    .cloned()
+                    .zip(cert_keys.iter().map(|k| k.pubkey()))
+                    .collect(),
                 delta: self.delta,
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

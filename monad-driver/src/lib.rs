@@ -5,8 +5,10 @@ mod tests {
     use futures::StreamExt;
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
-        multi_sig::MultiSig, quorum_certificate::genesis_vote_info,
-        transaction_validator::MockValidator, validation::Sha256Hash,
+        certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
+        quorum_certificate::genesis_vote_info,
+        signature_collection::SignatureCollectionKeyPairType, transaction_validator::MockValidator,
+        validation::Sha256Hash, voting::ValidatorMapping,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_executor::{
@@ -15,6 +17,7 @@ mod tests {
     };
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
+    use monad_types::NodeId;
     use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
     use monad_wal::{
         mock::{MockWALogger, MockWALoggerConfig},
@@ -44,7 +47,10 @@ mod tests {
         let mut node_configs = (0..NUM_NODES)
             .map(|i| {
                 let mut k: [u8; 32] = [(i + 1) as u8; 32];
-                let (key, key_libp2p) = KeyPair::libp2p_from_bytes(&mut k).unwrap();
+                let (key, key_libp2p) =
+                    KeyPair::libp2p_from_bytes(k.clone().as_mut_slice()).expect("keypair creation");
+
+                let certificate_key = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(k.as_mut_slice()).expect("certificate keypair creation");
 
                 let executor = monad_executor::executor::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
@@ -55,14 +61,14 @@ mod tests {
                 };
 
                 let logger_config = MockWALoggerConfig {};
-                (key, executor, logger_config)
+                (key, certificate_key, executor, logger_config)
             })
             .collect::<Vec<_>>();
 
         // set up executors - dial each other
         for i in 0..NUM_NODES {
-            let (key, mut executor, logger_config) = node_configs.pop().unwrap();
-            for (_, executor_to_dial, _) in &mut node_configs {
+            let (key, cert_key, mut executor, logger_config) = node_configs.pop().unwrap();
+            for (_, _, executor_to_dial, _) in &mut node_configs {
                 let addresses = executor_to_dial
                     .router
                     .listeners()
@@ -76,29 +82,46 @@ mod tests {
                 }
             }
 
-            node_configs.push((key, executor, logger_config));
+            node_configs.push((key, cert_key, executor, logger_config));
             node_configs.swap(i as usize, NUM_NODES as usize - 1);
         }
 
         let pubkeys = node_configs
             .iter()
-            .map(|(key, _, _)| KeyPair::pubkey(key))
+            .map(|(key, _, _, _)| KeyPair::pubkey(key))
             .collect::<Vec<_>>();
+
+        let voting_keys = node_configs
+            .iter()
+            .map(|(key, cert_key, _, _)| (NodeId(key.pubkey()), cert_key))
+            .collect::<Vec<_>>();
+
+        let voting_identities = node_configs
+            .iter()
+            .map(|(key, cert_key, _, _)| (NodeId(key.pubkey()), cert_key.pubkey()));
+
+        let validator_mapping = ValidatorMapping::new(voting_identities);
+
+        let config_validators = node_configs
+            .iter()
+            .map(|(key, certkey, _, _)| (key.pubkey(), certkey.pubkey()))
+            .collect::<Vec<_>>();
+
         let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            node_configs.iter().map(|(key, _, _)| key),
+            voting_keys.iter(),
+            &validator_mapping,
         );
 
         let state_configs = node_configs
             .into_iter()
             .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|((key, exec, logger_config), pubkeys)| {
+            .map(|((key, _, exec, logger_config), _)| {
                 (
                     exec,
                     MonadConfig {
                         transaction_validator: TransactionValidatorType {},
                         key,
-                        validators: pubkeys,
-
+                        validators: config_validators.clone(),
                         delta: Duration::from_millis(2),
                         genesis_block: genesis_block.clone(),
                         genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

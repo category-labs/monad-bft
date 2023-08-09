@@ -13,16 +13,17 @@ use monad_consensus_state::{
 };
 use monad_consensus_types::{
     block::Block,
+    certificate_signature::CertificateSignatureRecoverable,
+    message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload},
     quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection,
+    signature_collection::{
+        SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
+    },
     validation::Sha256Hash,
-    voting::VoteInfo,
+    voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::{
-    secp256k1::{KeyPair, PubKey},
-    Signature,
-};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     CheckpointCommand, Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand,
     RouterTarget, State, TimerCommand,
@@ -43,7 +44,7 @@ type HasherType = Sha256Hash;
 
 pub struct MonadState<CT, ST, SCT, VT, LT>
 where
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
@@ -52,13 +53,14 @@ where
     epoch: Epoch,
     leader_election: LT,
     validator_set: VT,
+    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     upcoming_validator_set: Option<VT>,
 }
 
 impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
 where
     CT: ConsensusProcess<ST, SCT>,
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
 {
@@ -105,7 +107,7 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
 where
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     ConsensusEvent(ConsensusEvent<ST, SCT>),
@@ -161,7 +163,7 @@ impl monad_types::Serializable
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>);
 
 #[derive(RefCast)]
@@ -170,8 +172,8 @@ pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>
 pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_types::Serializable
-    for VerifiedMonadMessage<S, monad_consensus_types::multi_sig::MultiSig<S>>
+impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Serializable
+    for VerifiedMonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
 {
     fn serialize(&self) -> Vec<u8> {
         monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
@@ -179,8 +181,8 @@ impl<S: Signature> monad_types::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl<S: Signature> monad_types::Deserializable
-    for MonadMessage<S, monad_consensus_types::multi_sig::MultiSig<S>>
+impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable
+    for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -205,7 +207,7 @@ impl<ST, SCT> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
 
 impl<ST, SCT> Message for MonadMessage<ST, SCT>
 where
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
 {
     type Event = MonadEvent<ST, SCT>;
@@ -227,9 +229,9 @@ where
     }
 }
 
-pub struct MonadConfig<SCT, TV> {
+pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub transaction_validator: TV,
-    pub validators: Vec<PubKey>,
+    pub validators: Vec<(PubKey, SignatureCollectionPubKeyType<SCT>)>,
     pub key: KeyPair,
 
     pub delta: Duration,
@@ -241,7 +243,7 @@ pub struct MonadConfig<SCT, TV> {
 impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
 where
     CT: ConsensusProcess<ST, SCT>,
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
     LT: LeaderElection,
@@ -259,16 +261,22 @@ where
         Self,
         Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>,
     ) {
-        // create my keys and validator structs
         // FIXME stake should be configurable
-        let validator_list = config
+        let staking_list = config
+            .validators
+            .iter()
+            .map(|(pubkey, _)| (NodeId(*pubkey), Stake(1)))
+            .collect::<Vec<_>>();
+
+        let voting_identities = config
             .validators
             .into_iter()
-            .map(|pubkey| (NodeId(pubkey), Stake(1)))
+            .map(|(pubkey, certpubkey)| (NodeId(pubkey), certpubkey))
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set = VT::new(validator_list.clone()).expect("initial validator set init failed");
+        let val_set = VT::new(staking_list.clone()).expect("initial validator set init failed");
+        let val_mapping = ValidatorMapping::new(voting_identities.into_iter());
         let election = LT::new();
 
         let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
@@ -279,12 +287,13 @@ where
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             message_state: MessageState::new(
                 10,
-                validator_list
+                staking_list
                     .into_iter()
                     .map(|(NodeId(pubkey), _)| PeerId(pubkey))
                     .collect(),
             ),
             validator_set: val_set,
+            validator_mapping: val_mapping,
             upcoming_validator_set: None,
             leader_election: election,
             epoch: Epoch(0),
@@ -370,9 +379,11 @@ where
                         sender,
                         unverified_message,
                     } => {
-                        let verified_message = match unverified_message
-                            .verify::<HasherType, _>(&self.validator_set, &sender)
-                        {
+                        let verified_message = match unverified_message.verify::<HasherType, _>(
+                            &self.validator_set,
+                            &self.validator_mapping,
+                            &sender,
+                        ) {
                             Ok(m) => m,
                             Err(e) => todo!("{e:?}"),
                         };
@@ -387,6 +398,7 @@ where
                                     signature,
                                     msg,
                                     &self.validator_set,
+                                    &self.validator_mapping,
                                     &self.leader_election,
                                 )
                             }

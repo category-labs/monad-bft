@@ -1,7 +1,5 @@
 use std::fs::create_dir_all;
 
-#[cfg(target_os = "linux")]
-use criterion::criterion_main;
 use criterion::{criterion_group, Criterion};
 use monad_consensus::{
     messages::{
@@ -12,21 +10,19 @@ use monad_consensus::{
     validation::signing::Unverified,
 };
 use monad_consensus_types::{
+    certificate_signature::CertificateSignature,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::SignatureCollection,
+    signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_state::{ConsensusEvent, MonadEvent};
-use monad_testutil::{
-    block::setup_block,
-    signing::{create_keys, get_key},
-};
+use monad_testutil::{block::setup_block, signing::get_key, validators::create_keys_w_validators};
 use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
@@ -36,7 +32,9 @@ use tempfile::{tempdir, TempDir};
 
 const N_VALIDATORS: usize = 400;
 
-type BenchEvent = MonadEvent<SecpSignature, MultiSig<SecpSignature>>;
+type SignatureCollectionType = MultiSig<SecpSignature>;
+type BenchEvent = MonadEvent<SecpSignature, SignatureCollectionType>;
+
 struct MonadEventBencher {
     event: BenchEvent,
     logger: WALogger<BenchEvent>,
@@ -67,16 +65,18 @@ impl MonadEventBencher {
 
 fn bench_proposal(c: &mut Criterion) {
     let txns = TransactionList(vec![0x23_u8; 32 * 10000]);
-    let keypairs = create_keys(1);
+    let (keypairs, _certkeypairs, _validators, validator_mapping) =
+        create_keys_w_validators::<MultiSig<SecpSignature>>(1);
     let author_keypair = &keypairs[0];
 
     let blk = setup_block(
         NodeId(author_keypair.pubkey()),
-        10,
-        9,
+        Round(10),
+        Round(9),
         txns,
         ExecutionArtifacts::zero(),
         &keypairs,
+        &validator_mapping,
     );
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
@@ -133,7 +133,8 @@ fn bench_vote(c: &mut Criterion) {
 }
 
 fn bench_timeout(c: &mut Criterion) {
-    let keypairs = create_keys(N_VALIDATORS as u32);
+    let (keypairs, cert_keys, _validators, validator_mapping) =
+        create_keys_w_validators::<SignatureCollectionType>(N_VALIDATORS as u32);
     let author_keypair = &keypairs[0];
 
     let vi = VoteInfo {
@@ -151,12 +152,16 @@ fn bench_timeout(c: &mut Criterion) {
 
     let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-    let mut aggsig = MultiSig::new();
-    for keypair in keypairs.iter() {
-        aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
+    let mut sigs = Vec::new();
+    for (key, cert_key) in keypairs.iter().zip(cert_keys.iter()) {
+        let node_id = NodeId(key.pubkey());
+        let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), cert_key);
+        sigs.push((node_id, sig));
     }
+    let aggsig =
+        SignatureCollectionType::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new(qcinfo, aggsig);
+    let qc = QuorumCertificate::new::<Sha256Hash>(qcinfo, aggsig);
 
     let tmo_info = TimeoutInfo {
         round: Round(3),
@@ -229,7 +234,7 @@ criterion_group!(
 );
 
 #[cfg(target_os = "linux")]
-criterion_main!(bench);
+criterion::criterion_main!(bench);
 
 #[cfg(not(target_os = "linux"))]
 fn main() {

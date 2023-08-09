@@ -1,10 +1,9 @@
-use monad_crypto::{
-    convert::{proto_to_signature, signature_to_proto},
-    Signature,
-};
 use monad_proto::{error::ProtoError, proto::timeout::*};
 
+use super::signing::{message_signature_to_proto, proto_to_message_signature};
 use crate::{
+    certificate_signature::CertificateSignatureRecoverable,
+    message_signature::MessageSignature,
     multi_sig::MultiSig,
     timeout::{
         HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
@@ -38,16 +37,16 @@ impl TryFrom<ProtoHighQcRound> for HighQcRound {
     }
 }
 
-impl<S: Signature> From<&HighQcRoundSigTuple<S>> for ProtoHighQcRoundSigTuple {
+impl<S: MessageSignature> From<&HighQcRoundSigTuple<S>> for ProtoHighQcRoundSigTuple {
     fn from(value: &HighQcRoundSigTuple<S>) -> Self {
         Self {
             high_qc_round: Some((&value.high_qc_round).into()),
-            author_signature: Some(signature_to_proto(&value.author_signature)),
+            author_signature: Some(message_signature_to_proto(&value.author_signature)),
         }
     }
 }
 
-impl<S: Signature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> {
+impl<S: MessageSignature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoHighQcRoundSigTuple) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -57,7 +56,7 @@ impl<S: Signature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> 
                     "Unverified<HighQcRound>.obj".to_owned(),
                 ))?
                 .try_into()?,
-            author_signature: proto_to_signature(value.author_signature.ok_or(
+            author_signature: proto_to_message_signature(value.author_signature.ok_or(
                 Self::Error::MissingRequiredField(
                     "Unverified<HighQcRound>.author_signature".to_owned(),
                 ),
@@ -66,7 +65,7 @@ impl<S: Signature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> 
     }
 }
 
-impl<S: Signature> From<&TimeoutCertificate<S>> for ProtoTimeoutCertificate {
+impl<S: MessageSignature> From<&TimeoutCertificate<S>> for ProtoTimeoutCertificate {
     fn from(value: &TimeoutCertificate<S>) -> Self {
         Self {
             round: Some((&value.round).into()),
@@ -79,7 +78,7 @@ impl<S: Signature> From<&TimeoutCertificate<S>> for ProtoTimeoutCertificate {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<S> {
+impl<S: MessageSignature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutCertificate) -> Result<Self, Self::Error> {
@@ -99,7 +98,7 @@ impl<S: Signature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<S> {
     }
 }
 
-impl<S: Signature> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
+impl<S: CertificateSignatureRecoverable> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
     fn from(value: &TimeoutInfo<S>) -> Self {
         Self {
             round: Some((&value.round).into()),
@@ -108,7 +107,7 @@ impl<S: Signature> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo<S> {
+impl<S: CertificateSignatureRecoverable> TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutInfoAggSig) -> Result<Self, Self::Error> {

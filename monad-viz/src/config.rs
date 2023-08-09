@@ -16,7 +16,8 @@ use monad_executor::{
     State,
 };
 use monad_state::MonadConfig;
-use monad_testutil::signing::{create_keys, get_genesis_config};
+use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
+use monad_types::NodeId;
 use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
 use crate::{graph::SimulationConfig, PersistenceLoggerType, SignatureCollectionType, MM, MS};
@@ -56,10 +57,19 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, LayerTransformer<MM>, Persis
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
     )> {
-        let keys = create_keys(self.num_nodes);
+        let (keys, cert_keys, validators, validator_mapping) =
+            create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
+
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType>(keys.iter());
+        let voting_keys = keys
+            .iter()
+            .map(|k| NodeId(k.pubkey()))
+            .zip(cert_keys.iter())
+            .collect::<Vec<_>>();
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
+            voting_keys.iter(),
+            &validator_mapping,
+        );
 
         let state_configs = keys
             .into_iter()
@@ -67,7 +77,11 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, LayerTransformer<MM>, Persis
             .map(|(key, pubkeys)| MonadConfig {
                 transaction_validator: MockValidator,
                 key,
-                validators: pubkeys,
+                validators: pubkeys
+                    .iter()
+                    .cloned()
+                    .zip(cert_keys.iter().map(|k| k.pubkey()))
+                    .collect(),
 
                 delta: self.delta,
                 genesis_block: genesis_block.clone(),

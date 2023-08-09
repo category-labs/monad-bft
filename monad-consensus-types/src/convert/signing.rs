@@ -1,24 +1,24 @@
-use monad_crypto::{
-    convert::{proto_to_signature, signature_to_proto},
-    Signature,
-};
 use monad_proto::{error::ProtoError, proto::signing::*};
 
-use crate::multi_sig::MultiSig;
+use crate::{
+    certificate_signature::{CertificateSignature, CertificateSignatureRecoverable},
+    message_signature::MessageSignature,
+    multi_sig::MultiSig,
+};
 
-impl<S: Signature> From<&MultiSig<S>> for ProtoMultiSig {
+impl<S: CertificateSignatureRecoverable> From<&MultiSig<S>> for ProtoMultiSig {
     fn from(value: &MultiSig<S>) -> Self {
         Self {
             sigs: value
                 .sigs
                 .iter()
-                .map(|v| signature_to_proto(v))
+                .map(|v| certificate_signature_to_proto(v))
                 .collect::<Vec<_>>(),
         }
     }
 }
 
-impl<S: Signature> TryFrom<ProtoMultiSig> for MultiSig<S> {
+impl<S: CertificateSignatureRecoverable> TryFrom<ProtoMultiSig> for MultiSig<S> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoMultiSig) -> Result<Self, Self::Error> {
@@ -26,8 +26,34 @@ impl<S: Signature> TryFrom<ProtoMultiSig> for MultiSig<S> {
             sigs: value
                 .sigs
                 .into_iter()
-                .map(|v| proto_to_signature(v))
+                .map(|v| proto_to_certificate_signature(v))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
+}
+
+pub fn message_signature_to_proto(signature: &impl MessageSignature) -> ProtoSignature {
+    ProtoSignature {
+        sig: signature.serialize(),
+    }
+}
+
+pub fn proto_to_message_signature<S: MessageSignature>(
+    proto: ProtoSignature,
+) -> Result<S, ProtoError> {
+    S::deserialize(&proto.sig).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
+}
+
+pub(crate) fn certificate_signature_to_proto(
+    signature: &impl CertificateSignature,
+) -> ProtoSignature {
+    ProtoSignature {
+        sig: signature.serialize(),
+    }
+}
+
+pub(crate) fn proto_to_certificate_signature<S: CertificateSignature>(
+    proto: ProtoSignature,
+) -> Result<S, ProtoError> {
+    S::deserialize(&proto.sig).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
 }

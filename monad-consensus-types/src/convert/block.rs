@@ -1,4 +1,3 @@
-use monad_crypto::Signature;
 use monad_proto::{
     error::ProtoError,
     proto::{
@@ -9,6 +8,7 @@ use monad_proto::{
 
 use crate::{
     block::Block,
+    certificate_signature::CertificateSignatureRecoverable,
     multi_sig::MultiSig,
     payload::{Bloom, ExecutionArtifacts, Gas, Payload, TransactionList},
     validation::Sha256Hash,
@@ -29,7 +29,7 @@ impl TryFrom<ProtoTransactionList> for TransactionList {
     }
 }
 
-impl<S: Signature> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
+impl<S: CertificateSignatureRecoverable> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
     fn from(value: &Block<MultiSig<S>>) -> Self {
         Self {
             author: Some((&value.author).into()),
@@ -40,7 +40,7 @@ impl<S: Signature> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
     }
 }
 
-impl<S: Signature> TryFrom<ProtoBlockAggSig> for Block<MultiSig<S>> {
+impl<S: CertificateSignatureRecoverable> TryFrom<ProtoBlockAggSig> for Block<MultiSig<S>> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockAggSig) -> Result<Self, Self::Error> {

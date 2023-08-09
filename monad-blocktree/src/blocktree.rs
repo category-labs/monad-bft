@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt, result::Result as StdResult};
 
-use monad_consensus_types::{block::Block, signature::SignatureCollection};
+use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Round};
 use ptree::{builder::TreeBuilder, print_tree};
@@ -316,7 +316,6 @@ mod test {
         ledger::LedgerCommitInfo,
         payload::{ExecutionArtifacts, Payload, TransactionList},
         quorum_certificate::{QcInfo, QuorumCertificate},
-        signature::SignatureCollection,
         validation::Sha256Hash,
         voting::VoteInfo,
     };
@@ -328,6 +327,7 @@ mod test {
 
     type Block = ConsensusBlock<MockSignatures>;
     type QC = QuorumCertificate<MockSignatures>;
+    type HasherType = Sha256Hash;
 
     fn node_id() -> NodeId {
         let mut privkey: [u8; 32] = [127; 32];
@@ -345,7 +345,7 @@ mod test {
             node_id(),
             Round(0),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -355,7 +355,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -370,12 +370,12 @@ mod test {
             node_id(),
             Round(1),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -390,12 +390,12 @@ mod test {
             node_id(),
             Round(2),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -410,12 +410,12 @@ mod test {
             node_id(),
             Round(3),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v3,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -430,12 +430,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -450,12 +450,12 @@ mod test {
             node_id(),
             Round(5),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -470,12 +470,12 @@ mod test {
             node_id(),
             Round(6),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -490,12 +490,12 @@ mod test {
             node_id(),
             Round(7),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v7,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -582,12 +582,12 @@ mod test {
             node_id(),
             Round(8),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v8,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -605,7 +605,7 @@ mod test {
             node_id(),
             Round(0),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -615,7 +615,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -630,12 +630,12 @@ mod test {
             node_id(),
             Round(1),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -650,12 +650,12 @@ mod test {
             node_id(),
             Round(2),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -692,7 +692,7 @@ mod test {
                 txns: txlist,
                 header: ExecutionArtifacts::zero(),
             },
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -702,7 +702,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -720,12 +720,12 @@ mod test {
                 txns: TransactionList(vec![1]),
                 header: ExecutionArtifacts::zero(),
             },
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -736,12 +736,12 @@ mod test {
                 txns: TransactionList(vec![2]),
                 header: ExecutionArtifacts::zero(),
             },
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -759,12 +759,12 @@ mod test {
                 txns: TransactionList(vec![3]),
                 header: ExecutionArtifacts::zero(),
             },
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -803,7 +803,7 @@ mod test {
                 txns: txlist,
                 header: ExecutionArtifacts::zero(),
             },
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -813,7 +813,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -831,12 +831,12 @@ mod test {
                 txns: TransactionList(vec![1]),
                 header: ExecutionArtifacts::zero(),
             },
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -865,7 +865,7 @@ mod test {
             node_id(),
             Round(0),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -875,7 +875,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -890,12 +890,12 @@ mod test {
             node_id(),
             Round(1),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -910,12 +910,12 @@ mod test {
             node_id(),
             Round(2),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -923,12 +923,12 @@ mod test {
             node_id(),
             Round(3),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -936,12 +936,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -993,7 +993,7 @@ mod test {
             node_id(),
             Round(0),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -1003,7 +1003,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
         let v4 = VoteInfo {
@@ -1017,12 +1017,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1037,12 +1037,12 @@ mod test {
             node_id(),
             Round(5),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1057,12 +1057,12 @@ mod test {
             node_id(),
             Round(6),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1099,7 +1099,7 @@ mod test {
             node_id(),
             Round(0),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -1109,7 +1109,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1124,12 +1124,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v2,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1144,12 +1144,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v3,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1164,12 +1164,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1184,12 +1184,12 @@ mod test {
             node_id(),
             Round(5),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v5,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1204,12 +1204,12 @@ mod test {
             node_id(),
             Round(6),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v6,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1253,7 +1253,7 @@ mod test {
             node_id(),
             Round(0),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
@@ -1263,7 +1263,7 @@ mod test {
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1278,12 +1278,12 @@ mod test {
             node_id(),
             Round(1),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v1,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 
@@ -1298,12 +1298,12 @@ mod test {
             node_id(),
             Round(4),
             &payload,
-            &QC::new(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: v4,
                     ledger_commit: LedgerCommitInfo::default(),
                 },
-                MockSignatures::new(),
+                MockSignatures::with_pubkeys(&[]),
             ),
         );
 

@@ -1,7 +1,7 @@
 use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate, Rank},
-    signature::SignatureCollection,
+    validation::Sha256Hash,
     voting::VoteInfo,
 };
 use monad_testutil::signing::MockSignatures;
@@ -27,19 +27,19 @@ fn comparison() {
         parent_round: Round(0),
     };
 
-    let qc_1 = QuorumCertificate::<monad_testutil::signing::MockSignatures>::new(
+    let qc_1 = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
         QcInfo {
             vote: vi_1,
             ledger_commit: ci,
         },
-        MockSignatures::new(),
+        MockSignatures::with_pubkeys(&[]),
     );
-    let mut qc_2 = QuorumCertificate::<MockSignatures>::new(
+    let mut qc_2 = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
         QcInfo {
             vote: vi_2,
             ledger_commit: ci,
         },
-        MockSignatures::new(),
+        MockSignatures::with_pubkeys(&[]),
     );
 
     assert!(Rank(qc_1.info) < Rank(qc_2.info));

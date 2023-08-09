@@ -1,30 +1,31 @@
 use monad_consensus_types::{
     block::Block,
+    certificate_signature::CertificateSignature,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::SignatureCollection,
+    signature_collection::SignatureCollection,
     validation::{Hasher, Sha256Hash},
-    voting::VoteInfo,
+    voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_types::{BlockId, Hash, NodeId, Round};
 
 pub fn setup_block(
     author: NodeId,
-    block_round: u64,
-    qc_round: u64,
+    block_round: Round,
+    qc_round: Round,
     txns: TransactionList,
     execution_header: ExecutionArtifacts,
     keypairs: &[KeyPair],
+    validator_mapping: &ValidatorMapping<KeyPair>,
 ) -> Block<MultiSig<SecpSignature>> {
     let txns = txns;
-    let round = Round(block_round);
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
-        round: Round(qc_round),
+        round: qc_round,
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
     };
@@ -36,16 +37,21 @@ pub fn setup_block(
     };
     let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
-    let mut aggsig = MultiSig::new();
+    let mut sigs = Vec::new();
     for keypair in keypairs.iter() {
-        aggsig.add_signature(keypair.sign(qcinfo_hash.as_ref()));
+        sigs.push((
+            NodeId(keypair.pubkey()),
+            SecpSignature::sign(qcinfo_hash.as_ref(), keypair),
+        ));
     }
 
-    let qc = QuorumCertificate::<MultiSig<SecpSignature>>::new(qcinfo, aggsig);
+    let aggsig = MultiSig::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
+
+    let qc = QuorumCertificate::<MultiSig<SecpSignature>>::new::<Sha256Hash>(qcinfo, aggsig);
 
     Block::<MultiSig<SecpSignature>>::new::<Sha256Hash>(
         author,
-        round,
+        block_round,
         &Payload {
             txns,
             header: execution_header,

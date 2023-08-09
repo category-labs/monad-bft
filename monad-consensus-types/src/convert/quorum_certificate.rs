@@ -1,9 +1,10 @@
-use monad_crypto::Signature;
 use monad_proto::{error::ProtoError, proto::quorum_certificate::*};
 
 use crate::{
+    certificate_signature::CertificateSignatureRecoverable,
     multi_sig::MultiSig,
     quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC},
+    validation::Sha256Hash,
 };
 
 type QuorumCertificate<S> = ConsensusQC<MultiSig<S>>;
@@ -35,7 +36,9 @@ impl TryFrom<ProtoQcInfo> for QcInfo {
     }
 }
 
-impl<S: Signature> From<&QuorumCertificate<S>> for ProtoQuorumCertificateAggSig {
+impl<S: CertificateSignatureRecoverable> From<&QuorumCertificate<S>>
+    for ProtoQuorumCertificateAggSig
+{
     fn from(value: &QuorumCertificate<S>) -> Self {
         Self {
             info: Some((&value.info).into()),
@@ -44,11 +47,13 @@ impl<S: Signature> From<&QuorumCertificate<S>> for ProtoQuorumCertificateAggSig 
     }
 }
 
-impl<S: Signature> TryFrom<ProtoQuorumCertificateAggSig> for QuorumCertificate<S> {
+impl<S: CertificateSignatureRecoverable> TryFrom<ProtoQuorumCertificateAggSig>
+    for QuorumCertificate<S>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoQuorumCertificateAggSig) -> Result<Self, Self::Error> {
-        Ok(QuorumCertificate::new(
+        Ok(QuorumCertificate::new::<Sha256Hash>(
             value
                 .info
                 .ok_or(Self::Error::MissingRequiredField(

@@ -1,12 +1,12 @@
 use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
-    signature::SignatureCollection,
+    message_signature::MessageSignature,
+    signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     validation::{Hashable, Hasher},
     voting::VoteInfo,
 };
-use monad_crypto::Signature;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteMessage {
@@ -35,7 +35,7 @@ pub struct TimeoutMessage<S, T> {
     pub last_round_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<S: Signature, T: SignatureCollection> Hashable for TimeoutMessage<S, T> {
+impl<S: MessageSignature, T: SignatureCollection> Hashable for TimeoutMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.tminfo.round);
         state.update(self.tminfo.high_qc.info.vote.round);
@@ -48,7 +48,7 @@ pub struct ProposalMessage<S, T> {
     pub last_round_tc: Option<TimeoutCertificate<S>>,
 }
 
-impl<S: Signature, T: SignatureCollection> Hashable for ProposalMessage<S, T> {
+impl<S: MessageSignature, T: SignatureCollection> Hashable for ProposalMessage<S, T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.block.hash(state);
     }

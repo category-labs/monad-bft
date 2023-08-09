@@ -3,22 +3,33 @@ use std::marker::PhantomData;
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
     block::Block,
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    signature::SignatureCollection,
-    validation::{Hashable, Hasher},
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validation::{Hashable, Hasher, Sha256Hash},
+    voting::ValidatorMapping,
 };
-use monad_crypto::{
-    secp256k1::{Error, KeyPair, PubKey, SecpSignature},
-    Signature,
-};
+use monad_crypto::secp256k1::{Error as SecpError, KeyPair, PubKey, SecpSignature};
 use monad_types::{Hash, NodeId, Round};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures {
     pubkey: Vec<PubKey>,
 }
+
+#[derive(Debug)]
+struct MockSignatureError;
+
+impl std::fmt::Display for MockSignatureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for MockSignatureError {}
 
 impl MockSignatures {
     pub fn with_pubkeys(pubkeys: &[PubKey]) -> Self {
@@ -28,35 +39,45 @@ impl MockSignatures {
     }
 }
 
+impl Hashable for MockSignatures {
+    fn hash<H: Hasher>(&self, state: &mut H) {}
+}
+
 impl SignatureCollection for MockSignatures {
+    type SignatureError = SecpError;
     type SignatureType = SecpSignature;
 
-    fn new() -> Self {
-        MockSignatures { pubkey: Vec::new() }
+    fn new(
+        sigs: Vec<(NodeId, Self::SignatureType)>,
+        validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
+            <Self::SignatureType as monad_consensus_types::certificate_signature::CertificateSignature>::KeyPairType,
+        >,
+        msg: &[u8],
+    ) -> Result<Self, Self::SignatureError> {
+        Ok(Self { pubkey: Vec::new() })
     }
 
-    fn get_hash(&self) -> Hash {
+    fn get_hash<H: Hasher>(&self) -> Hash {
         Default::default()
     }
 
-    fn add_signature(&mut self, _s: SecpSignature) {}
-
-    fn verify_signatures(&self, _msg: &[u8]) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn get_pubkeys(&self, _msg: &[u8]) -> Result<Vec<PubKey>, Error> {
-        Ok(self.pubkey.clone())
+    fn verify(
+        &self,
+        validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
+            <Self::SignatureType as monad_consensus_types::certificate_signature::CertificateSignature>::KeyPairType,
+        >,
+        msg: &[u8],
+    ) -> Result<Vec<NodeId>, Self::SignatureError> {
+        Ok(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)).collect())
     }
 
     fn num_signatures(&self) -> usize {
-        0
+        self.pubkey.len()
     }
 }
 
-use sha2::{Digest, Sha256};
-
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
+    // FIXME: we should replace this with the Sha256Hash
     let mut hasher = sha2::Sha256::new();
     hasher.update(b.author.0.bytes());
     hasher.update(b.round);
@@ -68,7 +89,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.update(b.payload.header.logs_bloom);
     hasher.update(b.payload.header.gas_used);
     hasher.update(b.qc.info.vote.id.0);
-    hasher.update(b.qc.signatures.get_hash());
+    hasher.update(b.qc.signatures.get_hash::<Sha256Hash>());
 
     Hash(hasher.finalize().into())
 }
@@ -89,12 +110,28 @@ pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
     res
 }
 
-pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
-    keys: impl Iterator<Item = &'k KeyPair>,
-) -> (Block<T>, T) {
+pub fn create_certificate_keys<SCT: SignatureCollection>(
+    num_keys: u32,
+) -> Vec<SignatureCollectionKeyPairType<SCT>> {
+    let mut res = Vec::new();
+    for i in 0..num_keys {
+        let keypair = get_certificate_key::<SCT>(i.into());
+        res.push(keypair);
+    }
+    res
+}
+
+pub fn get_genesis_config<'k, H, SCT>(
+    keys: impl Iterator<Item = &'k (NodeId, &'k SignatureCollectionKeyPairType<SCT>)>,
+    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+) -> (Block<SCT>, SCT)
+where
+    H: Hasher,
+    SCT: SignatureCollection,
+{
     let genesis_txn = TransactionList::default();
-    let genesis_prime_qc = QuorumCertificate::<T>::genesis_prime_qc::<H>();
-    let genesis_block = Block::<T>::new::<H>(
+    let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc::<H>();
+    let genesis_block = Block::<SCT>::new::<H>(
         // FIXME init from genesis config, don't use random key
         NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
         Round(0),
@@ -106,14 +143,15 @@ pub fn get_genesis_config<'k, H: Hasher, T: SignatureCollection>(
     );
 
     let genesis_lci = LedgerCommitInfo::new::<H>(None, &genesis_vote_info(genesis_block.get_id()));
-
-    let mut sigs = T::new();
     let msg = H::hash_object(&genesis_lci);
-    for k in keys {
-        let s = T::SignatureType::sign(msg.as_ref(), k);
-        sigs.add_signature(s);
+
+    let mut sigs = Vec::new();
+    for (node_id, k) in keys {
+        let sig = SCT::SignatureType::sign(msg.as_ref(), k);
+        sigs.push((*node_id, sig))
     }
 
+    let sigs = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
     (genesis_block, sigs)
 }
 
@@ -138,4 +176,13 @@ pub fn get_key(seed: u64) -> KeyPair {
     hasher.update(seed.to_le_bytes());
     let mut hash = hasher.finalize();
     KeyPair::from_bytes(&mut hash).unwrap()
+}
+
+pub fn get_certificate_key<SCT: SignatureCollection>(
+    seed: u64,
+) -> SignatureCollectionKeyPairType<SCT> {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.to_le_bytes());
+    let mut hash = hasher.finalize();
+    <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash).unwrap()
 }

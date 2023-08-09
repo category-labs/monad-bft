@@ -1,7 +1,33 @@
+use std::collections::BTreeMap;
+
 use monad_types::*;
 use zerocopy::AsBytes;
 
-use crate::validation::{Hashable, Hasher};
+use crate::{
+    certificate_signature::CertificateKeyPair,
+    validation::{Hashable, Hasher},
+};
+
+pub struct ValidatorMapping<VKT: CertificateKeyPair> {
+    pub map: BTreeMap<NodeId, VKT::PubKeyType>,
+}
+
+impl<VKT: CertificateKeyPair> ValidatorMapping<VKT> {
+    pub fn new(iter: impl IntoIterator<Item = (NodeId, VKT::PubKeyType)>) -> Self {
+        Self {
+            map: iter.into_iter().collect(),
+        }
+    }
+}
+
+impl<VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<VKT> {
+    type Item = (NodeId, VKT::PubKeyType);
+    type IntoIter = std::collections::btree_map::IntoIter<NodeId, VKT::PubKeyType>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.into_iter()
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteInfo {

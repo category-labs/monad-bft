@@ -5,12 +5,17 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::{Error, Sha256Hash},
-    voting::VoteInfo,
+    voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{PubKey, SecpSignature};
-use monad_testutil::signing::{get_key, node_id, MockSignatures, TestSigner};
+use monad_testutil::{
+    signing::{get_key, MockSignatures, TestSigner},
+    validators::create_keys_w_validators,
+};
 use monad_types::*;
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+
+type SignatureCollectionType = MockSignatures;
 
 fn setup_block(
     author: NodeId,
@@ -25,7 +30,7 @@ fn setup_block(
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
     };
-    let qc = QuorumCertificate::<MockSignatures>::new(
+    let qc = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
         QcInfo {
             vote: vi,
             ledger_commit: LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi),
@@ -46,64 +51,59 @@ fn setup_block(
 
 #[test]
 fn test_proposal_hash() {
-    let mut vlist = Vec::new();
-    let keypair = get_key(6);
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let author = NodeId(keypairs[0].pubkey());
 
-    vlist.push((NodeId(keypair.pubkey()), Stake(1)));
-
-    let author = node_id();
     let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
         block: setup_block(
             author,
             Round(234),
             Round(233),
-            vlist
+            keypairs
                 .iter()
-                .map(|(node_id, _)| node_id.0)
+                .map(|kp| kp.pubkey())
                 .collect::<Vec<_>>()
-                .as_ref(),
+                .as_slice(),
         ),
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypairs[0]);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
-    assert!(sp.verify::<Sha256Hash, _>(&vset, &keypair.pubkey()).is_ok());
+    assert!(sp
+        .verify::<Sha256Hash, _>(&vset, &vmap, &keypairs[0].pubkey())
+        .is_ok());
 }
 
 #[test]
 fn test_proposal_missing_tc() {
-    let mut vlist = Vec::new();
-    let keypair = get_key(6);
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let author = NodeId(keypairs[0].pubkey());
 
-    vlist.push((NodeId(keypair.pubkey()), Stake(0)));
-
-    let author = node_id();
     let proposal = ProposalMessage {
         block: setup_block(
             author,
             Round(234),
             Round(232),
-            vlist
+            keypairs
                 .iter()
-                .map(|(node_id, _)| node_id.0)
+                .map(|kp| kp.pubkey())
                 .collect::<Vec<_>>()
-                .as_ref(),
+                .as_slice(),
         ),
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypairs[0]);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &keypair.pubkey())
+        sp.verify::<Sha256Hash, _>(&vset, &vmap, &keypairs[0].pubkey())
             .unwrap_err(),
         Error::NotWellFormed
     );
 }
 
+// TODO: refactor these test with create_keys_w_valdiator
 #[test]
 fn test_proposal_author_not_sender() {
     let mut vlist = Vec::new();
@@ -132,8 +132,12 @@ fn test_proposal_author_not_sender() {
     let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &author_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (NodeId(author_keypair.pubkey()), author_keypair.pubkey()),
+        (NodeId(sender_keypair.pubkey()), sender_keypair.pubkey()),
+    ]);
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &sender_keypair.pubkey())
+        sp.verify::<Sha256Hash, _>(&vset, &vmap, &sender_keypair.pubkey())
             .unwrap_err(),
         Error::AuthorNotSender
     );
@@ -161,8 +165,13 @@ fn test_proposal_invalid_author() {
     let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![(
+        NodeId(author_keypair.pubkey()),
+        author_keypair.pubkey(),
+    )]);
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &author.0).unwrap_err(),
+        sp.verify::<Sha256Hash, _>(&vset, &vmap, &author.0)
+            .unwrap_err(),
         Error::InvalidAuthor
     );
 }
@@ -190,8 +199,15 @@ fn test_proposal_invalid_qc() {
     let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &non_staked_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
+    let vmap = ValidatorMapping::new(vec![
+        (NodeId(staked_keypair.pubkey()), staked_keypair.pubkey()),
+        (
+            NodeId(non_staked_keypair.pubkey()),
+            non_staked_keypair.pubkey(),
+        ),
+    ]);
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &non_staked_keypair.pubkey())
+        sp.verify::<Sha256Hash, _>(&vset, &vmap, &non_staked_keypair.pubkey())
             .unwrap_err(),
         Error::InsufficientStake
     );

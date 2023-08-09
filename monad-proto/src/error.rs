@@ -5,7 +5,7 @@ pub enum ProtoError {
     WrongHashLen(String),
     MissingRequiredField(String),
     InvalidNodeId(String),
-    Secp256k1Error(String),
+    CryptoError(String),
     SignatureHashMismatch(String),
 }
 
@@ -16,7 +16,7 @@ impl fmt::Display for ProtoError {
             Self::WrongHashLen(s) => write!(f, "Wrong hash len: {}", s),
             Self::MissingRequiredField(s) => write!(f, "Missing required field: {}", s),
             Self::InvalidNodeId(s) => write!(f, "Invalid NodeId: {}", s),
-            Self::Secp256k1Error(err) => write!(f, "Crypto error: {}", err),
+            Self::CryptoError(err) => write!(f, "Crypto error: {}", err),
             Self::SignatureHashMismatch(s) => write!(f, "QC Signature hash mismatch: {}", s),
         }
     }

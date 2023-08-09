@@ -5,12 +5,17 @@ use std::{
 
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    multi_sig::MultiSig, quorum_certificate::genesis_vote_info, signature::SignatureCollection,
-    transaction_validator::MockValidator, validation::Sha256Hash,
+    certificate_signature::{CertificateKeyPair, CertificateSignatureRecoverable},
+    message_signature::MessageSignature,
+    multi_sig::MultiSig,
+    quorum_certificate::genesis_vote_info,
+    signature_collection::SignatureCollection,
+    transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
-    NopSignature, Signature,
+    NopSignature,
 };
 use monad_executor::{
     executor::mock::{MockExecutor, NoSerRouterScheduler},
@@ -19,6 +24,7 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
+use monad_types::NodeId;
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -31,7 +37,7 @@ use monad_wal::{
 use rand::{prelude::SliceRandom, SeedableRng};
 use rand_chacha::ChaChaRng;
 
-use crate::signing::{create_keys, get_genesis_config};
+use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
@@ -56,7 +62,7 @@ pub enum TransformerReplayOrder {
 }
 
 pub struct PartitionThenReplayTransformer<
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
 > {
     pub peers: HashSet<PeerId>,
@@ -66,8 +72,10 @@ pub struct PartitionThenReplayTransformer<
     pub order: TransformerReplayOrder,
 }
 
-impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>
-    PartitionThenReplayTransformer<ST, SCT>
+impl<ST, SCT> PartitionThenReplayTransformer<ST, SCT>
+where
+    ST: MessageSignature + CertificateSignatureRecoverable,
+    SCT: SignatureCollection<SignatureType = ST>,
 {
     pub fn new(peers: HashSet<PeerId>, cnt_limit: u32, order: TransformerReplayOrder) -> Self {
         PartitionThenReplayTransformer {
@@ -80,8 +88,10 @@ impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>>
     }
 }
 
-impl<ST: Signature, SCT: SignatureCollection<SignatureType = ST>> Transformer<MonadMessage<ST, SCT>>
-    for PartitionThenReplayTransformer<ST, SCT>
+impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for PartitionThenReplayTransformer<ST, SCT>
+where
+    ST: MessageSignature + CertificateSignatureRecoverable,
+    SCT: SignatureCollection<SignatureType = ST>,
 {
     fn transform(
         &mut self,
@@ -129,18 +139,27 @@ pub fn get_configs<SCT: SignatureCollection>(
     num_nodes: u16,
     delta: Duration,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TransactionValidatorType>>) {
-    let keys = create_keys(num_nodes as u32);
+    let (keys, cert_keys, _validators, validator_mapping) =
+        create_keys_w_validators::<SCT>(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT>(keys.iter());
+    let voting_keys = keys
+        .iter()
+        .map(|k| NodeId(k.pubkey()))
+        .zip(cert_keys.iter())
+        .collect::<Vec<_>>();
+
+    let (genesis_block, genesis_sigs) =
+        get_genesis_config::<Sha256Hash, SCT>(voting_keys.iter(), &validator_mapping);
 
     let state_configs = keys
         .into_iter()
-        .zip(std::iter::repeat(pubkeys.clone()))
-        .map(|(key, pubkeys)| MonadConfig {
+        .map(|key| MonadConfig {
             transaction_validator: TransactionValidatorType {},
             key,
-            validators: pubkeys,
-
+            validators: voting_keys
+                .iter()
+                .map(|(node_id, k)| (node_id.0, k.pubkey()))
+                .collect::<Vec<_>>(),
             delta,
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
@@ -153,7 +172,7 @@ pub fn get_configs<SCT: SignatureCollection>(
 
 pub fn node_ledger_verification<
     CT: ConsensusProcess<ST, SCT>,
-    ST: Signature,
+    ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
     VT: ValidatorSetType,
     LT: LeaderElection,

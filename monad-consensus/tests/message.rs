@@ -4,7 +4,6 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
@@ -20,7 +19,7 @@ use zerocopy::AsBytes;
 fn timeout_msg_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new(
+        high_qc: QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x00_u8; 32])),
@@ -30,7 +29,7 @@ fn timeout_msg_hash() {
                 },
                 ledger_commit: Default::default(),
             },
-            MockSignatures::new(),
+            MockSignatures::with_pubkeys(&[]),
         ),
     };
 
@@ -59,7 +58,7 @@ fn proposal_msg_hash() {
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
     let author = NodeId(keypair.pubkey());
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new(
+    let qc = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
         QcInfo {
             vote: VoteInfo {
                 id: BlockId(Hash([0x00_u8; 32])),
@@ -69,7 +68,7 @@ fn proposal_msg_hash() {
             },
             ledger_commit: LedgerCommitInfo::default(),
         },
-        MockSignatures::new(),
+        MockSignatures::with_pubkeys(&[]),
     );
 
     let block = Block::<MockSignatures>::new::<Sha256Hash>(

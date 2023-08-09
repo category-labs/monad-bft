@@ -6,12 +6,12 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
+    message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection,
+    signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
 };
-use monad_crypto::Signature;
 use monad_executor::RouterTarget;
 use monad_types::{BlockId, Epoch, NodeId, Round};
 
@@ -43,7 +43,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     // - to handle this command, we need to call message_state.set_round()
 }
 
-impl<S: Signature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
+impl<S: MessageSignature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
     for ConsensusCommand<S, SC>
 {
     fn from(cmd: PacemakerCommand<S, SC>) -> Self {

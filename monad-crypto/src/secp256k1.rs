@@ -2,8 +2,6 @@ use secp256k1::Secp256k1;
 use sha2::Digest;
 use zeroize::Zeroize;
 
-use crate::Signature;
-
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
 pub struct KeyPair(secp256k1::KeyPair);
@@ -18,6 +16,8 @@ impl std::fmt::Display for Error {
         write!(f, "{}", self.0)
     }
 }
+
+impl std::error::Error for Error {}
 
 impl std::fmt::Debug for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -218,28 +218,6 @@ impl From<&PubKey> for libp2p_identity::PeerId {
         let pubkey = libp2p_identity::PublicKey::Secp256k1(pubkey);
 
         pubkey.to_peer_id()
-    }
-}
-
-impl Signature for SecpSignature {
-    fn sign(msg: &[u8], keypair: &KeyPair) -> Self {
-        keypair.sign(msg)
-    }
-
-    fn verify(&self, msg: &[u8], pubkey: &PubKey) -> Result<(), Error> {
-        pubkey.verify(msg, self)
-    }
-
-    fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
-        self.recover_pubkey(msg)
-    }
-
-    fn serialize(&self) -> Vec<u8> {
-        self.serialize().to_vec()
-    }
-
-    fn deserialize(signature: &[u8]) -> Result<Self, Error> {
-        Self::deserialize(signature)
     }
 }
 
