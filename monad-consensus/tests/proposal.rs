@@ -4,7 +4,7 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    validation::{Error, Hasher, Sha256Hash},
+    validation::{Error, Sha256Hash},
     voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{PubKey, SecpSignature};
@@ -66,8 +66,7 @@ fn test_proposal_hash() {
         last_round_tc: None,
     };
 
-    let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     assert!(sp.verify::<Sha256Hash, _>(&vset, &keypair.pubkey()).is_ok());
@@ -95,8 +94,7 @@ fn test_proposal_missing_tc() {
         last_round_tc: None,
     };
 
-    let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(
@@ -131,8 +129,7 @@ fn test_proposal_author_not_sender() {
         last_round_tc: None,
     };
 
-    let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &author_keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &author_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(
@@ -161,8 +158,7 @@ fn test_proposal_invalid_author() {
         last_round_tc: None,
     };
 
-    let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &non_valdiator_keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(
@@ -191,8 +187,7 @@ fn test_proposal_invalid_qc() {
         last_round_tc: None,
     };
 
-    let msg = Sha256Hash::hash_object(&proposal);
-    let sp = TestSigner::sign_object(proposal, msg.as_ref(), &non_staked_keypair);
+    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &non_staked_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     assert_eq!(

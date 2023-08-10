@@ -4,12 +4,8 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    ledger::LedgerCommitInfo,
-    multi_sig::MultiSig,
-    quorum_certificate::QuorumCertificate,
-    signature::SignatureCollection,
-    validation::{Hasher, Sha256Hash},
-    voting::VoteInfo,
+    ledger::LedgerCommitInfo, multi_sig::MultiSig, quorum_certificate::QuorumCertificate,
+    signature::SignatureCollection, validation::Sha256Hash, voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
@@ -35,10 +31,7 @@ fn create_signed_vote_message(
         ledger_commit_info: lci,
     };
 
-    let msg = Sha256Hash::hash_object(&vm.ledger_commit_info);
-    let svm = TestSigner::sign_object(vm, msg.as_ref(), keypair);
-
-    svm
+    TestSigner::sign_object::<Sha256Hash, _>(vm, keypair)
 }
 
 fn setup_ctx(

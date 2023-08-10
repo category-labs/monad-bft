@@ -141,8 +141,8 @@ fn test_vote_message() {
 
     let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash;
 
-    let msg = Sha256Hash::hash_object(&vm.vote_info);
-    let svm = TestSigner::sign_object(vm, msg.as_ref(), &keypair);
+    let msg = Sha256Hash::hash_object(&vm);
+    let svm = TestSigner::sign_object::<Sha256Hash, _>(vm, &keypair);
 
     assert_eq!(
         svm.author_signature().recover_pubkey(msg.as_ref()).unwrap(),

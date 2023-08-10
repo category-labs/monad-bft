@@ -7,7 +7,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature::SignatureCollection,
-    validation::Hasher,
+    validation::{Hashable, Hasher},
 };
 use monad_crypto::{
     secp256k1::{Error, KeyPair, PubKey, SecpSignature},
@@ -122,8 +122,12 @@ pub struct TestSigner<S> {
 }
 
 impl TestSigner<SecpSignature> {
-    pub fn sign_object<T>(o: T, msg: &[u8], key: &KeyPair) -> Unverified<SecpSignature, T> {
-        let sig = key.sign(msg);
+    pub fn sign_object<H: Hasher, T: Hashable>(
+        o: T,
+        key: &KeyPair,
+    ) -> Unverified<SecpSignature, T> {
+        let msg = H::hash_object(&o);
+        let sig = key.sign(msg.as_ref());
 
         Unverified::new(o, sig)
     }
