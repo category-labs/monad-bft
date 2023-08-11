@@ -13,7 +13,12 @@ monad-mempool-types = { path = "../monad-mempool-types" }
 
 ethers = { workspace = true }
 futures = { workspace = true }
-hex = { workspace = true }
+prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+oorandom = { workspace = true }
+tempfile = { workspace = true }

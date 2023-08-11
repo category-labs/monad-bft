@@ -1,7 +1,7 @@
 mod gossipsub;
 
 use libp2p::identity::Keypair;
-use monad_mempool_types::tx::PriorityTxBatch;
+use monad_mempool_types::tx::EthTxBatch;
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::event;
@@ -15,6 +15,9 @@ pub enum MessengerError {
 
     #[error("error starting gossipsub")]
     GossipSubStartError,
+
+    #[error(transparent)]
+    IpcReceiverBindError(std::io::Error),
 }
 
 pub struct MessengerConfig {
@@ -44,8 +47,8 @@ impl MessengerConfig {
 }
 
 pub struct Messenger {
-    sender: mpsc::Sender<PriorityTxBatch>,
-    receiver: mpsc::Receiver<PriorityTxBatch>,
+    sender: mpsc::Sender<EthTxBatch>,
+    receiver: mpsc::Receiver<EthTxBatch>,
 
     gossipsub_listen_handle: JoinHandle<()>,
 }
@@ -76,11 +79,11 @@ impl Messenger {
         })
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<PriorityTxBatch> {
+    pub fn get_sender(&self) -> mpsc::Sender<EthTxBatch> {
         self.sender.clone()
     }
 
-    pub async fn recv(&mut self) -> Option<PriorityTxBatch> {
+    pub async fn recv(&mut self) -> Option<EthTxBatch> {
         self.receiver.recv().await
     }
 }
@@ -93,7 +96,7 @@ impl Drop for Messenger {
 
 #[cfg(test)]
 mod test {
-    use monad_mempool_types::tx::{PriorityTx, PriorityTxBatch};
+    use monad_mempool_types::tx::{EthTx, EthTxBatch};
     use tokio::time::{timeout, Duration};
 
     use super::{Messenger, MessengerConfig};
@@ -114,12 +117,11 @@ mod test {
 
         let batches = (0..1)
             .map(|i| {
-                let tx = PriorityTx {
+                let tx = EthTx {
                     hash: format!("hash{i}").as_bytes().to_vec(),
-                    priority: i as i64,
                     rlpdata: format!("rlpdata{i}").as_bytes().to_vec(),
                 };
-                PriorityTxBatch {
+                EthTxBatch {
                     hash: format!("batchhash{i}").as_bytes().to_vec(),
                     txs: vec![tx],
                     time: Some(std::time::SystemTime::now().into()),

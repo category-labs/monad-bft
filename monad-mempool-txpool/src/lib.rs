@@ -5,7 +5,7 @@ use std::{
 };
 
 use ethers::{types::Bytes, utils::keccak256};
-use monad_mempool_types::tx::PriorityTx;
+use monad_mempool_types::tx::EthTx;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,20 +15,20 @@ pub enum PoolError {
 }
 
 #[derive(PartialEq, Eq, Clone)]
-struct PriorityTxItem {
+struct EthTxItem {
     hash: Bytes,
     // Lower number is higher priority
     priority: i64,
     timestamp: Duration,
 }
 
-impl PartialOrd for PriorityTxItem {
+impl PartialOrd for EthTxItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for PriorityTxItem {
+impl Ord for EthTxItem {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Reverse ordering because BinaryHeap is a max heap
         (other.priority, other.timestamp).cmp(&(self.priority, self.timestamp))
@@ -60,7 +60,7 @@ impl PoolConfig {
 
 pub struct Pool {
     map: HashMap<Bytes, Bytes>,
-    pq: BinaryHeap<PriorityTxItem>,
+    pq: BinaryHeap<EthTxItem>,
     ttl_duration: Duration,
     block_tx_limit: usize,
 }
@@ -102,9 +102,13 @@ impl Pool {
         self.remove_tx_hashes(tx_hashes);
     }
 
-    /// Inserts a transaction into the pool.
+    /// Inserts a transaction into the pool with a given priority.
     /// Only validated transactions should be inserted.
-    pub fn insert(&mut self, mut tx: PriorityTx) -> Result<(), PoolError> {
+    pub(crate) fn insert_with_priority(
+        &mut self,
+        mut tx: EthTx,
+        priority: i64,
+    ) -> Result<(), PoolError> {
         let hash: Bytes = mem::take(&mut tx.hash).into();
 
         if self.map.contains_key(&hash) {
@@ -112,13 +116,27 @@ impl Pool {
         }
 
         self.map.insert(hash.clone(), tx.rlpdata.into());
-        self.pq.push(PriorityTxItem {
+
+        self.pq.push(EthTxItem {
             hash,
-            priority: tx.priority,
+            priority,
             timestamp: Pool::get_current_epoch(),
         });
 
         Ok(())
+    }
+
+    /// Inserts a transaction into the pool.
+    /// Only validated transactions should be inserted.
+    pub fn insert(&mut self, tx: EthTx) -> Result<(), PoolError> {
+        let priority = Self::determine_tx_priority(&tx.hash.clone().into());
+
+        self.insert_with_priority(tx, priority)
+    }
+
+    fn determine_tx_priority(_: &Bytes) -> i64 {
+        // TODOs
+        0
     }
 
     /// Returns a Vec of transactions to be included in a block proposal.
@@ -167,24 +185,24 @@ mod test {
         signers::LocalWallet,
         types::{transaction::eip2718::TypedTransaction, Address, Bytes, TransactionRequest},
     };
-    use monad_mempool_types::tx::PriorityTx;
+    use monad_mempool_types::tx::EthTx;
     use oorandom::Rand32;
 
     use super::{Pool, PoolConfig};
 
     const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
 
-    fn create_priority_txs(seed: u64, count: u16) -> Vec<PriorityTx> {
+    fn create_eth_txs(seed: u64, count: u16) -> Vec<EthTx> {
         let wallet = LOCAL_TEST_KEY.parse::<LocalWallet>().unwrap();
 
         create_txs(seed, count)
             .into_iter()
             .map(|tx| {
                 let signature = wallet.sign_transaction_sync(&tx).unwrap();
-                PriorityTx {
+
+                EthTx {
                     hash: tx.hash(&signature).as_bytes().to_vec(),
                     rlpdata: tx.rlp_signed(&signature).to_vec(),
-                    priority: 0,
                 }
             })
             .collect()
@@ -218,26 +236,27 @@ mod test {
         ));
 
         // Create 2 batches of transactions + 1 extra tx, with the second batch having a higher priority
-        let mut txs = create_priority_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
+        let mut txs = create_eth_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
 
-        for (index, tx) in txs.iter_mut().take(TX_BATCH_SIZE).enumerate() {
-            tx.priority = (TX_BATCH_SIZE + index) as i64;
+        for (index, tx) in txs.iter().take(TX_BATCH_SIZE).enumerate() {
+            pool.insert_with_priority(tx.clone(), (TX_BATCH_SIZE + index) as i64)
+                .unwrap();
         }
 
         for (index, tx) in txs
-            .iter_mut()
+            .iter()
             .skip(TX_BATCH_SIZE)
             .take(TX_BATCH_SIZE)
             .enumerate()
         {
-            tx.priority = index as i64;
+            pool.insert_with_priority(tx.clone(), index as i64).unwrap();
         }
 
-        txs.get_mut(TX_BATCH_SIZE * 2).unwrap().priority = (TX_BATCH_SIZE * 2) as i64;
-
-        for tx in &txs {
-            pool.insert(tx.clone()).unwrap();
-        }
+        pool.insert_with_priority(
+            txs.get_mut(TX_BATCH_SIZE * 2).unwrap().clone(),
+            (TX_BATCH_SIZE * 2) as i64,
+        )
+        .unwrap();
 
         let proposal = pool.create_proposal();
         let expected_proposal = txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]

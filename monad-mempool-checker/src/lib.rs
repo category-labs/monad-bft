@@ -8,7 +8,7 @@ use ethers::{
     },
     utils::rlp,
 };
-use monad_mempool_types::tx::PriorityTx;
+use monad_mempool_types::tx::EthTx;
 use thiserror::Error;
 use tracing::error;
 
@@ -84,23 +84,23 @@ impl Checker {
         }
     }
 
-    pub fn check_priority_tx(&self, priority_tx: &PriorityTx) -> Result<(), CheckerError> {
-        let rlp = rlp::Rlp::new(priority_tx.rlpdata.as_slice());
+    pub fn check_eth_tx(&self, eth_tx: &EthTx) -> Result<(), CheckerError> {
+        let rlp = rlp::Rlp::new(eth_tx.rlpdata.as_slice());
         // This also ensures that sender is valid by recovering it from the signature
-        let (tx, signature) =
+        let (typed_tx, signature) =
             TypedTransaction::decode_signed(&rlp).map_err(CheckerError::TransactionDecodeError)?;
 
         if !self.skip_check_tx {
-            if priority_tx.hash != tx.hash(&signature).as_bytes() {
+            if eth_tx.hash != typed_tx.hash(&signature).as_bytes() {
                 return Err(CheckerError::MismatchedHashError);
             }
-            self.check_tx(&tx)?;
+            self.check_typed_tx(&typed_tx)?;
         }
 
         Ok(())
     }
 
-    fn check_tx(&self, tx: &TypedTransaction) -> Result<(), CheckerError> {
+    fn check_typed_tx(&self, tx: &TypedTransaction) -> Result<(), CheckerError> {
         // Reject transactions with data over defined size to prevent DOS attacks
         if tx.rlp().len() > TX_MAX_SIZE {
             return Err(CheckerError::OversizedDataError);
@@ -189,28 +189,25 @@ mod test {
         types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest, U256},
         utils::keccak256,
     };
-    use monad_mempool_types::tx::PriorityTx;
+    use monad_mempool_types::tx::EthTx;
 
     use super::{Checker, CheckerConfig, CheckerError};
 
     const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
 
-    fn create_valid_priority_tx(gas: Option<U256>, data: Option<Vec<u8>>) -> PriorityTx {
-        let tx = create_valid_tx(gas, data);
+    fn create_valid_tx(gas: Option<U256>, data: Option<Vec<u8>>) -> EthTx {
+        let tx = create_typed_transaction(gas, data);
 
         let wallet = LOCAL_TEST_KEY.parse::<LocalWallet>().unwrap();
         let signature = wallet.sign_transaction_sync(&tx).unwrap();
 
-        let priority_tx = PriorityTx {
+        EthTx {
             hash: tx.hash(&signature).as_bytes().to_vec(),
             rlpdata: tx.rlp_signed(&signature).to_vec(),
-            priority: 0,
-        };
-
-        priority_tx
+        }
     }
 
-    fn create_valid_tx(gas: Option<U256>, data: Option<Vec<u8>>) -> TypedTransaction {
+    fn create_typed_transaction(gas: Option<U256>, data: Option<Vec<u8>>) -> TypedTransaction {
         TransactionRequest::new()
             .to("0xc582768697b4a6798f286a03A2A774c8743163BB"
                 .parse::<Address>()
@@ -228,82 +225,69 @@ mod test {
     fn checker() {
         let checker = Checker::new(&CheckerConfig::default());
 
-        // PriorityTx with invalid rlp
+        // EthTx with invalid rlp
         // Should throw TransactionDecodeError
-        let mut priority_tx_invalid_rlp = create_valid_priority_tx(None, None);
-        priority_tx_invalid_rlp.rlpdata = vec![0x01];
+        let mut tx_invalid_rlp = create_valid_tx(None, None);
+        tx_invalid_rlp.rlpdata = vec![0x01];
 
-        // PriorityTx with invalid hash
+        // EthTx with invalid hash
         // Should throw MismatchedHashError
-        let mut priority_tx_mismatched_hash = create_valid_priority_tx(None, None);
-        priority_tx_mismatched_hash.hash = vec![0x01];
+        let mut tx_mismatched_hash = create_valid_tx(None, None);
+        tx_mismatched_hash.hash = vec![0x01];
 
-        // PriorityTx with oversized tx
+        // EthTx with oversized tx
         // Should throw OversizedDataError
-        let priority_tx_oversized = create_valid_priority_tx(None, Some(vec![1; 256 * 1024]));
+        let tx_oversized = create_valid_tx(None, Some(vec![1; 256 * 1024]));
 
-        // PriorityTx with gas limit greater than block gas limit
+        // EthTx with gas limit greater than block gas limit
         // Should throw GasLimitError
-        let priority_tx_gas_limit = create_valid_priority_tx(Some(100000000.into()), None);
+        let tx_gas_limit = create_valid_tx(Some(100000000.into()), None);
 
-        // PriorityTx with gas limit less than intrinsic gas
+        // EthTx with gas limit less than intrinsic gas
         // Should throw GasTooLowError
-        let priority_tx_gas_too_low = create_valid_priority_tx(Some(0.into()), None);
+        let tx_gas_too_low = create_valid_tx(Some(0.into()), None);
 
-        // PriorityTx with an invalid signature
+        // EthTx with an invalid signature
         // Should throw TransactionDecodeError
         let wallet = LOCAL_TEST_KEY.parse::<LocalWallet>().unwrap();
-        let tx_invalid_sender = create_valid_tx(None, None);
+        let tx_invalid_sender = create_typed_transaction(None, None);
         let signature = wallet.sign_transaction_sync(&tx_invalid_sender).unwrap();
         let mut rlp_signed = tx_invalid_sender.rlp_signed(&signature).to_vec();
         // Since the signature for a signed rlp is appended to the end of the tx rlp, we modify a sequence
         // of bytes at the end of the rlp to invalidate the signature.
         rlp_signed.splice(rlp_signed.len() - 40..rlp_signed.len() - 20, [0x2; 20]);
-        let priority_tx_invalid_sender = PriorityTx {
+        let tx_invalid_sender = EthTx {
             hash: keccak256(&rlp_signed).into(),
-            priority: 0,
             rlpdata: rlp_signed,
         };
 
-        let priority_tx_valid = create_valid_priority_tx(None, None);
+        let tx_valid = create_valid_tx(None, None);
 
         assert!(matches!(
-            checker
-                .check_priority_tx(&priority_tx_invalid_rlp)
-                .unwrap_err(),
+            checker.check_eth_tx(&tx_invalid_rlp).unwrap_err(),
             CheckerError::TransactionDecodeError(_)
         ));
         assert!(matches!(
-            checker
-                .check_priority_tx(&priority_tx_mismatched_hash)
-                .unwrap_err(),
+            checker.check_eth_tx(&tx_mismatched_hash).unwrap_err(),
             CheckerError::MismatchedHashError
         ));
         assert!(matches!(
-            checker
-                .check_priority_tx(&priority_tx_oversized)
-                .unwrap_err(),
+            checker.check_eth_tx(&tx_oversized).unwrap_err(),
             CheckerError::OversizedDataError
         ));
         assert!(matches!(
-            checker
-                .check_priority_tx(&priority_tx_gas_limit)
-                .unwrap_err(),
+            checker.check_eth_tx(&tx_gas_limit).unwrap_err(),
             CheckerError::GasLimitError
         ));
         assert!(matches!(
-            checker
-                .check_priority_tx(&priority_tx_gas_too_low)
-                .unwrap_err(),
+            checker.check_eth_tx(&tx_gas_too_low).unwrap_err(),
             CheckerError::GasTooLowError
         ));
         assert!(matches!(
-            checker
-                .check_priority_tx(&priority_tx_invalid_sender)
-                .unwrap_err(),
+            checker.check_eth_tx(&tx_invalid_sender).unwrap_err(),
             CheckerError::TransactionDecodeError(_)
         ));
 
-        assert!(checker.check_priority_tx(&priority_tx_valid).is_ok());
+        assert!(checker.check_eth_tx(&tx_valid).is_ok());
     }
 }

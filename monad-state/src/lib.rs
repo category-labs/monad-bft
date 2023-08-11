@@ -280,7 +280,7 @@ where
 
         // create the initial validator set
         let val_set = VT::new(staking_list.clone()).expect("initial validator set init failed");
-        let val_mapping = ValidatorMapping::new(voting_identities.into_iter());
+        let val_mapping = ValidatorMapping::new(voting_identities);
         let election = LT::new();
 
         let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(

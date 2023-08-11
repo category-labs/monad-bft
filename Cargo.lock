@@ -552,11 +552,7 @@ dependencies = [
  "pin-project-lite 0.2.10",
  "rustversion",
  "serde 1.0.175",
- "serde_json",
- "serde_path_to_error",
- "serde_urlencoded",
  "sync_wrapper",
- "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -4711,13 +4707,16 @@ version = "0.1.0"
 dependencies = [
  "ethers",
  "futures",
- "hex",
  "monad-mempool-checker",
  "monad-mempool-messenger",
  "monad-mempool-txpool",
  "monad-mempool-types",
+ "oorandom",
+ "prost",
+ "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -4729,30 +4728,6 @@ dependencies = [
  "monad-mempool-types",
  "prost",
  "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "monad-mempool-node"
-version = "0.1.0"
-dependencies = [
- "ethers",
- "hex",
- "monad-mempool-controller",
- "monad-mempool-server",
- "oorandom",
- "tokio",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "monad-mempool-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "serde 1.0.175",
- "serde_json",
  "tokio",
  "tracing",
 ]
@@ -7105,16 +7080,6 @@ checksum = "d03b412469450d4404fe8499a268edd7f8b79fecb074b0d812ad64ca21f4031b"
 dependencies = [
  "itoa",
  "ryu",
- "serde 1.0.175",
-]
-
-[[package]]
-name = "serde_path_to_error"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4beec8bce849d58d06238cb50db2e1c417cfeafa4c63f692b15c82b7c80f8335"
-dependencies = [
- "itoa",
  "serde 1.0.175",
 ]
 

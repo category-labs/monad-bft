@@ -204,7 +204,7 @@ fn testnet(
         })
         .collect::<Vec<_>>();
 
-    let val_mapping = ValidatorMapping::new(voting_identities.into_iter());
+    let val_mapping = ValidatorMapping::new(voting_identities);
 
     let addresses = addresses
         .into_iter()

@@ -63,7 +63,7 @@ impl MessageSignature for NopSignature {
         self.id
             .to_le_bytes()
             .into_iter()
-            .chain(self.pubkey.bytes().into_iter())
+            .chain(self.pubkey.bytes())
             .collect()
     }
 

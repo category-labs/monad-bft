@@ -2,29 +2,39 @@ use std::{
     future::Future,
     mem,
     ops::DerefMut,
+    path::PathBuf,
     sync::Arc,
     task::Poll,
     time::{Duration, SystemTime},
 };
 
 use ethers::{
-    types::{transaction::eip2718::TypedTransaction, H256},
+    types::H256,
     utils::{
         hash_message,
-        rlp::{decode_list, encode_list, Rlp},
+        rlp::{decode_list, encode_list},
     },
 };
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, StreamExt};
+use ipc::MempoolTxIpcReceiver;
 use monad_mempool_checker::{Checker, CheckerConfig};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
 use monad_mempool_txpool::{Pool, PoolConfig};
-use monad_mempool_types::tx::{PriorityTx, PriorityTxBatch};
+use monad_mempool_types::tx::{EthTx, EthTxBatch};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, Mutex},
     task::{JoinError, JoinHandle},
 };
 use tracing::{event, Level};
+
+mod ipc;
+pub use ipc::MempoolTxIpcSender;
+
+#[cfg(target_os = "linux")]
+pub const DEFAULT_MEMPOOL_BIND_PATH: &str = "/run/monad_mempool.sock";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_MEMPOOL_BIND_PATH: &str = "/var/run/monad_mempool.sock";
 
 const DEFAULT_TX_THRESHOLD: usize = 1000;
 const DEFAULT_TIME_THRESHOLD_S: u64 = 1;
@@ -42,6 +52,7 @@ pub struct ControllerConfig {
     checker_config: CheckerConfig,
     messenger_config: MessengerConfig,
     pool_config: PoolConfig,
+    mempool_ipc_path: PathBuf,
     wait_for_peers: u8,
     // The interval at which the controller will create a new batch.
     time_threshold: Duration,
@@ -57,6 +68,7 @@ impl Default for ControllerConfig {
             checker_config: CheckerConfig::default(),
             messenger_config: MessengerConfig::default(),
             pool_config: PoolConfig::default(),
+            mempool_ipc_path: DEFAULT_MEMPOOL_BIND_PATH.into(),
             time_threshold: Duration::from_secs(DEFAULT_TIME_THRESHOLD_S),
             wait_for_peers: 1,
             tx_threshold: DEFAULT_TX_THRESHOLD,
@@ -78,6 +90,11 @@ impl ControllerConfig {
 
     pub fn with_pool_config(mut self, pool_config: PoolConfig) -> Self {
         self.pool_config = pool_config;
+        self
+    }
+
+    pub fn with_mempool_ipc_path(mut self, mempool_ipc_path: PathBuf) -> Self {
+        self.mempool_ipc_path = mempool_ipc_path;
         self
     }
 
@@ -104,11 +121,10 @@ impl ControllerConfig {
 
 pub struct Controller {
     pool: Arc<Mutex<Pool>>,
-    tx_sender: mpsc::Sender<String>,
 
     broadcast_handle: JoinHandle<()>,
+    listen_ipc_handle: JoinHandle<()>,
     listen_messenger_handle: JoinHandle<()>,
-    listen_server_handle: JoinHandle<()>,
 }
 
 impl Controller {
@@ -119,23 +135,25 @@ impl Controller {
         let pool = Arc::new(Mutex::new(Pool::new(&config.pool_config)));
         let pending_tx_batch = Arc::new(Mutex::new(Vec::new()));
 
-        let (tx_sender, tx_receiver) = mpsc::channel::<String>(config.buffer_size);
+        // Spawn task to broadcast transaction batches every time_threshold seconds.
+        let broadcast_handle = tokio::spawn(Self::listen_broadcast(
+            config,
+            pending_tx_batch.clone(),
+            messenger.get_sender(),
+        ));
 
-        // Spawn task to receive incoming transactions from the server, add them to the mempool, and broadcast them to peers.
-        let listen_server_handle = tokio::spawn(Self::listen_server(
+        let tx_receiver = MempoolTxIpcReceiver::new(config.mempool_ipc_path.as_path())
+            .await
+            .map_err(MessengerError::IpcReceiverBindError)?;
+
+        // Spawn task to receive incoming transactions over ipc (from rpc server), add them to the mempool, and broadcast them to peers.
+        let listen_ipc_handle = tokio::spawn(Self::listen_ipc(
             config,
             tx_receiver,
             checker.clone(),
             messenger.get_sender(),
             pool.clone(),
-            pending_tx_batch.clone(),
-        ));
-
-        // Spawn task to broadcast transaction batches every time_threshold seconds.
-        let broadcast_handle = tokio::spawn(Self::listen_broadcast(
-            config,
             pending_tx_batch,
-            messenger.get_sender(),
         ));
 
         // Spawn task to receive incoming transaction batches from the messenger, taking ownership of the messenger.
@@ -144,47 +162,38 @@ impl Controller {
 
         Ok(Self {
             pool,
-            tx_sender,
 
             broadcast_handle,
+            listen_ipc_handle,
             listen_messenger_handle,
-            listen_server_handle,
         })
     }
 
-    fn listen_server(
+    fn listen_ipc(
         config: &ControllerConfig,
-        mut tx_receiver: mpsc::Receiver<String>,
+        mut tx_receiver: MempoolTxIpcReceiver,
         checker: Checker,
-        messenger_sender: mpsc::Sender<PriorityTxBatch>,
+        messenger_sender: mpsc::Sender<EthTxBatch>,
         pool: Arc<Mutex<Pool>>,
-        pending_tx_batch: Arc<Mutex<Vec<PriorityTx>>>,
+        pending_tx_batch: Arc<Mutex<Vec<EthTx>>>,
     ) -> impl Future<Output = ()> {
         let tx_threshold = config.tx_threshold;
 
         async move {
-            while let Some(tx_hex) = tx_receiver.recv().await {
-                let priority_tx = match Self::decode_priority_tx(&tx_hex) {
-                    Ok(tx) => tx,
-                    Err(e) => {
-                        event!(Level::ERROR, "Error decoding tx: {}", e);
-                        continue;
-                    }
-                };
-
-                if let Err(e) = checker.check_priority_tx(&priority_tx) {
+            while let Some(Ok(eth_tx)) = tx_receiver.next().await {
+                if let Err(e) = checker.check_eth_tx(&eth_tx) {
                     event!(Level::ERROR, "Rejecting tx: {}", e);
                     continue;
                 }
 
-                if let Err(e) = pool.lock().await.insert(priority_tx.clone()) {
+                if let Err(e) = pool.lock().await.insert(eth_tx.clone()) {
                     event!(Level::ERROR, "Error inserting tx into pool: {}", e);
                     continue;
                 }
 
                 let new_len = {
                     let mut lock = pending_tx_batch.lock().await;
-                    lock.push(priority_tx);
+                    lock.push(eth_tx);
                     lock.len()
                 };
 
@@ -207,8 +216,8 @@ impl Controller {
 
     fn listen_broadcast(
         config: &ControllerConfig,
-        pending_tx_batch: Arc<Mutex<Vec<PriorityTx>>>,
-        messenger_sender: mpsc::Sender<PriorityTxBatch>,
+        pending_tx_batch: Arc<Mutex<Vec<EthTx>>>,
+        messenger_sender: mpsc::Sender<EthTxBatch>,
     ) -> impl Future<Output = ()> {
         let mut interval = tokio::time::interval(config.time_threshold);
 
@@ -245,13 +254,13 @@ impl Controller {
 
                     let mut pool_guard = pool.lock().await;
 
-                    for priority_tx in tx_batch.txs {
-                        if let Err(e) = checker.check_priority_tx(&priority_tx) {
+                    for eth_tx in tx_batch.txs {
+                        if let Err(e) = checker.check_eth_tx(&eth_tx) {
                             event!(Level::ERROR, "Rejecting tx: {}", e);
                             continue;
                         }
 
-                        if let Err(e) = pool_guard.insert(priority_tx) {
+                        if let Err(e) = pool_guard.insert(eth_tx) {
                             event!(Level::ERROR, "Could not insert tx into pool: {}", e);
                         }
                     }
@@ -264,13 +273,13 @@ impl Controller {
         }
     }
 
-    /// Creates a new PriorityTxBatch and broadcasts it to peers via the messenger.
+    /// Creates a new EthTxBatch and broadcasts it to peers via the messenger.
     async fn broadcast_tx_batch(
-        pending_tx_batch: &Arc<Mutex<Vec<PriorityTx>>>,
-        messenger_sender: &mpsc::Sender<PriorityTxBatch>,
+        pending_tx_batch: &Arc<Mutex<Vec<EthTx>>>,
+        messenger_sender: &mpsc::Sender<EthTxBatch>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Add a guard here to prevent the lock from being held across await
-        let batch: PriorityTxBatch = {
+        let batch: EthTxBatch = {
             let mut pending_tx_batch = pending_tx_batch.lock().await;
 
             if pending_tx_batch.is_empty() {
@@ -279,7 +288,7 @@ impl Controller {
 
             let batch_hash = Self::calculate_batch_hash(&pending_tx_batch);
 
-            PriorityTxBatch {
+            EthTxBatch {
                 hash: batch_hash.as_bytes().into(),
                 numtx: pending_tx_batch.len().try_into()?,
                 txs: mem::take(&mut pending_tx_batch),
@@ -328,46 +337,18 @@ impl Controller {
         })
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<String> {
-        self.tx_sender.clone()
-    }
-
-    fn calculate_batch_hash(txs: &[PriorityTx]) -> H256 {
+    fn calculate_batch_hash(txs: &[EthTx]) -> H256 {
         let tx_hashes: Vec<u8> = txs.iter().flat_map(|tx| tx.hash.clone()).collect();
 
         hash_message(tx_hashes)
-    }
-
-    /// Decodes a hex-encoded transaction into a PriorityTx.
-    fn decode_priority_tx(tx_hex: &String) -> Result<PriorityTx, Box<dyn std::error::Error>> {
-        let tx_bytes: Vec<u8> = hex::decode(tx_hex)?;
-
-        let rlp = Rlp::new(&tx_bytes);
-
-        let (tx, sig) = TypedTransaction::decode_signed(&rlp)?;
-
-        event!(Level::INFO, ?tx, ?sig, "Decoded transaction");
-
-        let hash = tx.hash(&sig).as_bytes().to_vec();
-
-        Ok(PriorityTx {
-            hash,
-            priority: Self::determine_priority(&tx),
-            rlpdata: tx_bytes,
-        })
-    }
-
-    fn determine_priority(_: &TypedTransaction) -> i64 {
-        // TODO: Implement priority calculation
-        0
     }
 }
 
 impl Drop for Controller {
     fn drop(&mut self) {
         self.broadcast_handle.abort();
+        self.listen_ipc_handle.abort();
         self.listen_messenger_handle.abort();
-        self.listen_server_handle.abort();
     }
 }
 
@@ -384,15 +365,117 @@ impl Stream for Controller {
             return Poll::Ready(result.err());
         }
 
+        if let Poll::Ready(result) = this.listen_ipc_handle.poll_unpin(cx) {
+            return Poll::Ready(result.err());
+        }
+
         if let Poll::Ready(result) = this.listen_messenger_handle.poll_unpin(cx) {
             return Poll::Ready(result.err());
         }
 
-        if let Poll::Ready(result) = this.listen_server_handle.poll_unpin(cx) {
-            return Poll::Ready(result.err());
+        Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{path::PathBuf, time::Duration};
+
+    use ethers::{
+        signers::LocalWallet,
+        types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest},
+    };
+    use futures::SinkExt;
+    use monad_mempool_types::tx::EthTx;
+    use oorandom::Rand32;
+    use tempfile::NamedTempFile;
+
+    use crate::{Controller, ControllerConfig, MempoolTxIpcSender};
+
+    const NUM_CONTROLLER: u16 = 4;
+    const NUM_TX: u16 = 10;
+
+    #[tokio::test(flavor = "multi_thread")]
+    /// Starts NUM_CONTROLLER controllers, sends NUM_TX messages to one controller
+    /// and checks that all controllers create the same proposal.
+    async fn test_multi_controller() {
+        let mut controllers: Vec<(Controller, PathBuf)> = vec![];
+
+        for _ in 0..NUM_CONTROLLER {
+            let mempool_ipc_tempfile = NamedTempFile::new().unwrap();
+
+            let mempool_ipc_temppath = mempool_ipc_tempfile.path().to_path_buf();
+
+            mempool_ipc_tempfile.close().unwrap();
+
+            controllers.push((
+                Controller::new(
+                    &ControllerConfig::default()
+                        .with_wait_for_peers(0)
+                        .with_mempool_ipc_path(mempool_ipc_temppath.clone()),
+                )
+                .await
+                .unwrap(),
+                mempool_ipc_temppath,
+            ));
         }
 
-        Poll::Pending
+        let (sender_controller, sender_mempool_ipc_file) = controllers.get_mut(0).unwrap();
+        let mut sender = MempoolTxIpcSender::new(sender_mempool_ipc_file)
+            .await
+            .unwrap();
+
+        let hex_txs = create_eth_txs(0, NUM_TX);
+        for hex_tx in hex_txs {
+            sender.send(hex_tx).await.unwrap();
+        }
+
+        // Allow time for controllers to receive the messages
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let sender_proposal = sender_controller.create_proposal().await;
+
+        for (controller, _) in &controllers {
+            let proposal = controller.create_proposal().await;
+            assert_eq!(sender_proposal, proposal);
+        }
+    }
+
+    const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
+
+    fn create_eth_txs(seed: u64, count: u16) -> Vec<EthTx> {
+        let wallet = LOCAL_TEST_KEY.parse::<LocalWallet>().unwrap();
+
+        create_txs(seed, count)
+            .into_iter()
+            .map(|tx| {
+                let signature = wallet.sign_transaction_sync(&tx).unwrap();
+
+                EthTx {
+                    hash: tx.hash(&signature).as_bytes().to_vec(),
+                    // priority: 0,
+                    rlpdata: tx.rlp_signed(&signature).to_vec(),
+                }
+            })
+            .collect()
+    }
+
+    fn create_txs(seed: u64, count: u16) -> Vec<TypedTransaction> {
+        let mut rng = Rand32::new(seed);
+
+        (0..count)
+            .map(|_| {
+                TransactionRequest::new()
+                    .to("0xc582768697b4a6798f286a03A2A774c8743163BB"
+                        .parse::<Address>()
+                        .unwrap())
+                    .gas(21337)
+                    .gas_price(42)
+                    .value(rng.rand_u32())
+                    .nonce(0)
+                    .into()
+            })
+            .collect()
     }
 }
 
@@ -408,9 +491,22 @@ mod test {
 
         let start_tasks = metrics.active_tasks_count();
 
-        let controller = Controller::new(&ControllerConfig::default().with_wait_for_peers(0))
-            .await
-            .unwrap();
+        let mempool_ipc_tempfile = NamedTempFile::new().unwrap();
+
+        let mempool_ipc_temppath = mempool_ipc_tempfile.path().to_path_buf();
+
+        mempool_ipc_tempfile.close().unwrap();
+
+        let controller = Controller::new(
+            &ControllerConfig::default()
+                .with_wait_for_peers(0)
+                .with_mempool_ipc_path(mempool_ipc_temppath.into()),
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(start_tasks, metrics.active_tasks_count());
+
         drop(controller);
 
         tokio::task::yield_now().await;
