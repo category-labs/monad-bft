@@ -218,7 +218,7 @@ mod test {
             .gas(gas.unwrap_or(21337.into()))
             .gas_price(42)
             .value(31415)
-            .data(data.unwrap_or(vec![]))
+            .data(data.unwrap_or_default())
             .nonce(1)
             .chain_id(15446)
             .into()

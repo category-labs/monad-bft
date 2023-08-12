@@ -94,7 +94,7 @@ fn proposal_msg_hash() {
 
 #[test]
 fn max_high_qc() {
-    let high_qc_rounds = vec![
+    let high_qc_rounds = [
         HighQcRound { qc_round: Round(1) },
         HighQcRound { qc_round: Round(3) },
         HighQcRound { qc_round: Round(1) },

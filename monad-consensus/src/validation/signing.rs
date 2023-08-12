@@ -523,7 +523,7 @@ mod test {
 
         let vset = ValidatorSet::new(vlist).unwrap();
 
-        let high_qc_rounds = vec![
+        let high_qc_rounds = [
             HighQcRound { qc_round: Round(1) },
             HighQcRound { qc_round: Round(2) },
             HighQcRound { qc_round: Round(3) },
@@ -657,7 +657,7 @@ mod test {
 
         let round = Round(5);
 
-        let high_qc_rounds = vec![
+        let high_qc_rounds = [
             HighQcRound { qc_round: Round(1) },
             HighQcRound { qc_round: Round(2) },
         ]

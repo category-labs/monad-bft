@@ -9,7 +9,6 @@ bench = false
 
 [dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
-monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
@@ -25,4 +24,3 @@ iced_native = { version = "0.10" }
 iced_lazy = { version = "0.6" }
 clap = {version = "4.3.11", features= ["derive"] }
 
-futures = { workspace = true }

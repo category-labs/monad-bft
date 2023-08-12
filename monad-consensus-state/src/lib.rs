@@ -388,12 +388,7 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
-        cmds.extend(
-            self.pacemaker
-                .advance_round_qc(qc)
-                .map(Into::into)
-                .into_iter(),
-        );
+        cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
         cmds
     }
 

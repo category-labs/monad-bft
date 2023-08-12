@@ -3,7 +3,7 @@ name = "monad-driver"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[dev-dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
@@ -12,17 +12,12 @@ monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-executor = { path = "../monad-executor", features = ["tokio"] }
 monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
 monad-state = { path = "../monad-state", features = ["proto"] }
-monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
-
-futures = { workspace = true }
-libp2p = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros"] }
-
-[dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
-monad-types = {  path = "../monad-types" }
+monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
+futures = { workspace = true }
+libp2p = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }

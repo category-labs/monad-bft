@@ -52,8 +52,6 @@ pub fn setup_block(
     keypairs: &[KeyPair],
     validator_mapping: &ValidatorMapping<KeyPair>,
 ) -> Block<MultiSig<SecpSignature>> {
-    let txns = txns;
-
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: qc_round,

@@ -256,7 +256,7 @@ fn testnet(
 
     addresses
         .into_iter()
-        .zip(secrets.into_iter())
+        .zip(secrets)
         .zip(
             peers
                 .iter()

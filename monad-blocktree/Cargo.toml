@@ -9,7 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }

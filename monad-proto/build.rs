@@ -1,6 +1,3 @@
-extern crate prost_build;
-extern crate protobuf_src;
-
 fn main() {
     std::env::set_var("PROTOC", protobuf_src::protoc());
     prost_build::Config::new()

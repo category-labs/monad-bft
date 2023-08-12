@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 monad-mempool-types = { path = "../monad-mempool-types" }
 
-bytes = { workspace = true }
 ethers = { workspace = true }
 thiserror = { workspace = true }
 

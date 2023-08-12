@@ -141,7 +141,7 @@ impl<T> Eq for SequencedPeerEvent<T> {}
 impl<T> PartialOrd for SequencedPeerEvent<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         // reverse ordering - because we want smaller events to be higher priority!
-        other.tick.partial_cmp(&self.tick)
+        Some(other.tick.cmp(&self.tick))
     }
 }
 
@@ -195,26 +195,22 @@ where
             .chain(
                 self.mempool
                     .ready()
-                    .then_some((self.tick, ExecutorEventType::Mempool))
-                    .into_iter(),
+                    .then_some((self.tick, ExecutorEventType::Mempool)),
             )
             .chain(
                 self.router
                     .peek_tick()
-                    .map(|tick| (tick, ExecutorEventType::Router))
-                    .into_iter(),
+                    .map(|tick| (tick, ExecutorEventType::Router)),
             )
             .chain(
                 self.timer
                     .as_ref()
-                    .map(|TimerEvent { tick, .. }| (*tick, ExecutorEventType::Timer))
-                    .into_iter(),
+                    .map(|TimerEvent { tick, .. }| (*tick, ExecutorEventType::Timer)),
             )
             .chain(
                 self.epoch
                     .ready()
-                    .then_some((self.tick, ExecutorEventType::Epoch))
-                    .into_iter(),
+                    .then_some((self.tick, ExecutorEventType::Epoch)),
             )
             .min()
     }

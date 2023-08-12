@@ -9,8 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus = { path = "../monad-consensus" }
-monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-executor = { path = "../monad-executor" }
 monad-types = { path = "../monad-types" }
@@ -18,8 +16,6 @@ monad-types = { path = "../monad-types" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 libp2p = { workspace = true, features = ["macros", "mplex", "noise", "plaintext", "identify", "request-response", "secp256k1"] }
-tracing = { workspace = true }
 
 [features]
 tokio = ["libp2p/quic", "libp2p/tokio"]
-

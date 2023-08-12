@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
-monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }

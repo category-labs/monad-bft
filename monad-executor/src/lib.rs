@@ -22,7 +22,7 @@ async fn run<S: State>(
     let (mut state, mut init_commands) = S::init(config);
     for event in init_events {
         let cmds = state.update(event);
-        init_commands.extend(cmds.into_iter());
+        init_commands.extend(cmds);
     }
     executor.exec(init_commands);
 

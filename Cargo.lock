@@ -4573,7 +4573,6 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
- "monad-crypto",
  "monad-executor",
  "monad-types",
  "monad-validator",
@@ -4583,7 +4582,6 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
- "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
@@ -4711,7 +4709,6 @@ dependencies = [
 name = "monad-mempool-controller"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "ethers",
  "futures",
  "hex",
@@ -4741,11 +4738,9 @@ name = "monad-mempool-node"
 version = "0.1.0"
 dependencies = [
  "ethers",
- "futures",
  "hex",
  "monad-mempool-controller",
  "monad-mempool-server",
- "monad-mempool-types",
  "oorandom",
  "tokio",
  "tracing-subscriber",
@@ -4766,7 +4761,6 @@ dependencies = [
 name = "monad-mempool-txpool"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "ethers",
  "monad-mempool-types",
  "oorandom",
@@ -4791,7 +4785,6 @@ dependencies = [
  "env_logger",
  "futures-util",
  "monad-block-sync",
- "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -4818,12 +4811,9 @@ dependencies = [
  "async-trait",
  "futures",
  "libp2p",
- "monad-consensus",
- "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
  "monad-types",
- "tracing",
 ]
 
 [[package]]
@@ -4841,7 +4831,6 @@ version = "0.1.0"
 dependencies = [
  "inventory",
  "monad-executor",
- "monad-state",
  "monad-testutil",
  "simple-xml-builder",
 ]
@@ -4929,12 +4918,10 @@ name = "monad-viz"
 version = "0.1.0"
 dependencies = [
  "clap 4.3.19",
- "futures",
  "iced",
  "iced_lazy",
  "iced_native",
  "monad-block-sync",
- "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",

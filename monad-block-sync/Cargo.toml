@@ -9,7 +9,6 @@ edition = "2021"
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }

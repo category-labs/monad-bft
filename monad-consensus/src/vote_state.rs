@@ -56,7 +56,7 @@ where
 
         let vote_idx = H::hash_object(&v.ledger_commit_info);
 
-        let round_pending_votes = self.pending_votes.entry(round).or_insert(HashMap::new());
+        let round_pending_votes = self.pending_votes.entry(round).or_default();
         let pending_entry = round_pending_votes
             .entry(vote_idx)
             .or_insert((Vec::new(), HashSet::new()));

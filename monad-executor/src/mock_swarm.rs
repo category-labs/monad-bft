@@ -266,7 +266,7 @@ where
             .map(|Reverse((min_scheduled_tick, _))| min_scheduled_tick);
         maybe_min_event_tick
             .into_iter()
-            .chain(maybe_min_scheduled_tick.into_iter())
+            .chain(maybe_min_scheduled_tick)
             .min()
             .copied()
     }
