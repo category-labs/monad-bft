@@ -38,8 +38,7 @@ where
     pub fn process_vote<H: Hasher, VT: ValidatorSetType>(
         &mut self,
         author: &NodeId,
-        signature: &SCT::SignatureType,
-        v: &VoteMessage,
+        v: &VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     ) -> Option<QuorumCertificate<SCT>> {
@@ -61,7 +60,7 @@ where
             .entry(vote_idx)
             .or_insert((Vec::new(), HashSet::new()));
 
-        pending_entry.0.push((*author, *signature));
+        pending_entry.0.push((*author, v.sig));
         pending_entry.1.insert(*author);
 
         if validators.has_super_majority_votes(&pending_entry.1) {

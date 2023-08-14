@@ -395,7 +395,6 @@ where
                             ConsensusMessage::Vote(msg) => {
                                 self.consensus.handle_vote_message::<HasherType, _, _>(
                                     author,
-                                    signature,
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,

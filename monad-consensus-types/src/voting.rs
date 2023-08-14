@@ -5,6 +5,7 @@ use zerocopy::AsBytes;
 
 use crate::{
     certificate_signature::CertificateKeyPair,
+    ledger::LedgerCommitInfo,
     validation::{Hashable, Hasher},
 };
 
@@ -27,6 +28,12 @@ impl<VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<VKT> {
     fn into_iter(self) -> Self::IntoIter {
         self.map.into_iter()
     }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Vote {
+    pub vote_info: VoteInfo,
+    pub ledger_commit_info: LedgerCommitInfo,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]

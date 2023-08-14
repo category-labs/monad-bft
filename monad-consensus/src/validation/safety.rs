@@ -7,7 +7,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     validation::Hasher,
-    voting::VoteInfo,
+    voting::{Vote, VoteInfo},
 };
 use monad_types::*;
 
@@ -90,7 +90,7 @@ impl Safety {
         &mut self,
         block: &Block<T>,
         last_tc: &Option<TimeoutCertificate<S>>,
-    ) -> Option<VoteMessage> {
+    ) -> Option<Vote> {
         let qc_round = block.qc.info.vote.round;
         if self.safe_to_vote(block.round, qc_round, last_tc) {
             self.update_highest_qc_round(qc_round);
@@ -111,7 +111,7 @@ impl Safety {
 
             let ledger_commit_info = LedgerCommitInfo::new::<H>(commit_hash, &vote_info);
 
-            return Some(VoteMessage {
+            return Some(Vote {
                 vote_info,
                 ledger_commit_info,
             });

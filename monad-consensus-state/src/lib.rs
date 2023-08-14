@@ -12,6 +12,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
+    certificate_signature::CertificateSignature,
     message_signature::MessageSignature,
     payload::FullTransactionList,
     quorum_certificate::{QuorumCertificate, Rank},
@@ -45,6 +46,7 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV> {
 
     // TODO deprecate
     keypair: KeyPair,
+    cert_keypair: SignatureCollectionKeyPairType<SCT>,
 }
 pub trait ConsensusProcess<ST, SCT>
 where
@@ -60,6 +62,7 @@ where
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
         keypair: KeyPair,
+        cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self;
 
     fn get_pubkey(&self) -> PubKey;
@@ -91,8 +94,7 @@ where
     fn handle_vote_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
-        signature: SCT::SignatureType,
-        v: VoteMessage,
+        v: VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
@@ -129,6 +131,7 @@ where
 
         // TODO deprecate
         keypair: KeyPair,
+        cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
@@ -141,6 +144,7 @@ where
             transaction_validator,
 
             keypair,
+            cert_keypair,
         }
     }
 
@@ -206,15 +210,25 @@ where
             return cmds;
         }
 
-        let vote_msg = self
+        let vote = self
             .safety
             .make_vote::<ST, SCT, H>(&p.block, &p.last_round_tc);
 
-        if let Some(v) = vote_msg {
+        if let Some(v) = vote {
+            let vote_hash = H::hash_object(&v);
+            let vote_sig = <SCT::SignatureType as CertificateSignature>::sign(
+                vote_hash.as_ref(),
+                &self.cert_keypair,
+            );
+            let vote_msg = VoteMessage {
+                vote: v,
+                sig: vote_sig,
+            };
+
             let next_leader = election.get_leader(round + Round(1), validators.get_list());
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
-                message: ConsensusMessage::Vote(v),
+                message: ConsensusMessage::Vote(vote_msg),
             };
             cmds.push(send_cmd);
         }
@@ -225,8 +239,7 @@ where
     fn handle_vote_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
-        signature: SCT::SignatureType,
-        v: VoteMessage,
+        v: VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
@@ -235,13 +248,9 @@ where
             return Default::default();
         }
 
-        let qc: Option<QuorumCertificate<SCT>> = self.vote_state.process_vote::<H, _>(
-            &author,
-            &signature,
-            &v,
-            validators,
-            validator_mapping,
-        );
+        let qc: Option<QuorumCertificate<SCT>> =
+            self.vote_state
+                .process_vote::<H, _>(&author, &v, validators, validator_mapping);
 
         let mut cmds = Vec::new();
         if let Some(qc) = qc {

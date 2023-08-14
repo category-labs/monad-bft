@@ -5,13 +5,13 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     validation::{Hashable, Hasher},
-    voting::VoteInfo,
+    voting::{Vote, VoteInfo},
 };
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-pub struct VoteMessage {
-    pub vote_info: VoteInfo,
-    pub ledger_commit_info: LedgerCommitInfo,
+pub struct VoteMessage<SCT: SignatureCollection> {
+    pub vote: Vote,
+    pub sig: SCT::SignatureType,
 }
 
 impl std::fmt::Debug for VoteMessage {

@@ -16,7 +16,7 @@ use crate::{
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusMessage<ST, SCT> {
     Proposal(ProposalMessage<ST, SCT>),
-    Vote(VoteMessage),
+    Vote(VoteMessage<SCT>),
     Timeout(TimeoutMessage<ST, SCT>),
 }
 
