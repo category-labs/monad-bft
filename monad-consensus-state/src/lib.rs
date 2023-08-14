@@ -4,7 +4,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{BlockSyncMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
     validation::safety::Safety,
@@ -105,6 +105,11 @@ where
         tm: TimeoutMessage<ST, SCT>,
         validators: &VT,
         election: &LT,
+    ) -> Vec<ConsensusCommand<ST, SCT>>;
+
+    fn handle_block_sync_message(
+        &mut self,
+        b: BlockSyncMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
 
     fn get_current_round(&self) -> Round;
@@ -306,6 +311,13 @@ where
         }
 
         cmds
+    }
+
+    fn handle_block_sync_message(
+        &mut self,
+        b: BlockSyncMessage<SCT>,
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        Vec::new()
     }
 
     fn get_pubkey(&self) -> PubKey {
@@ -1333,7 +1345,7 @@ mod test {
         assert_eq!(second_state.high_qc.info.vote, votes[0].vote_info);
 
         // use the correct proposal gen to make next proposal and send it to second_state
-        // this should cause it to emit the RequestSync command because the the QC parent
+        // this should cause it to emit the RequestBlockSync Message because the the QC parent
         // points to a different proposal (second_state has the malicious proposal in its blocktree)
         let cp2 = correct_proposal_gen.next_proposal(
             &keys,
@@ -1355,8 +1367,8 @@ mod test {
             matches!(
                 c,
                 ConsensusCommand::RequestSync {
-                    blockid: BlockId(_),
-                }
+                    blockid: BlockId(_)
+                },
             )
         });
         assert!(res.is_some());
@@ -1372,9 +1384,10 @@ mod test {
         let res = cmds1.into_iter().find(|c| {
             matches!(
                 c,
-                ConsensusCommand::RequestSync {
-                    blockid: BlockId(_),
-                }
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
+                    message: ConsensusMessage::RequestBlockSync(_),
+                },
             )
         });
         assert!(res.is_none());

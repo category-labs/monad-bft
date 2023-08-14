@@ -2,15 +2,25 @@ syntax = "proto3";
 
 package monad_proto.message;
 
+import "basic.proto";
 import "block.proto";
 import "ledger.proto";
 import "signing.proto";
 import "timeout.proto";
 import "voting.proto";
 
+
 message ProtoVoteMessage {
   monad_proto.voting.ProtoVoteInfo vote_info = 1;
   monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit_info = 2;
+}
+
+message ProtoRequestBlockSyncMessage {
+  monad_proto.basic.ProtoBlockId block_id = 1;
+}
+
+message ProtoBlockSyncMessage {
+  monad_proto.block.ProtoBlockAggSig block = 1;
 }
 
 message ProtoTimeoutMessage {
@@ -28,6 +38,9 @@ message ProtoUnverifiedConsensusMessage {
     ProtoProposalMessageAggSig proposal = 1;
     ProtoTimeoutMessage timeout = 2;
     ProtoVoteMessage vote = 3;
+    ProtoRequestBlockSyncMessage request_block_sync = 4;
+    ProtoBlockSyncMessage block_sync = 5;
+
   }
-  monad_proto.signing.ProtoSignature author_signature = 4;
+  monad_proto.signing.ProtoSignature author_signature = 6;
 }

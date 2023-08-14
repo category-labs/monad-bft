@@ -12,8 +12,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            ProposalMessage as ConsensusTypePropMsg, TimeoutMessage as ConsensusTypeTmoMsg,
-            VoteMessage,
+            BlockSyncMessage, ProposalMessage as ConsensusTypePropMsg, RequestBlockSyncMessage,
+            TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
         },
     },
     validation::signing::{Unverified, Verified},
@@ -113,6 +113,55 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> TryFrom<ProtoPro
     }
 }
 
+impl From<&RequestBlockSyncMessage> for ProtoRequestBlockSyncMessage {
+    fn from(value: &RequestBlockSyncMessage) -> Self {
+        ProtoRequestBlockSyncMessage {
+            block_id: Some((&value.block_id).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoRequestBlockSyncMessage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block_id: value
+                .block_id
+                .ok_or(Self::Error::MissingRequiredField(
+                    "RequestBlockSyncMessage.block_id".to_owned(),
+                ))?
+                .try_into()?,
+        })
+    }
+}
+
+impl<CS: CertificateSignatureRecoverable> From<&BlockSyncMessage<MultiSig<CS>>>
+    for ProtoBlockSyncMessage
+{
+    fn from(value: &BlockSyncMessage<MultiSig<CS>>) -> Self {
+        ProtoBlockSyncMessage {
+            block: Some((&value.block).into()),
+        }
+    }
+}
+
+impl<CS: CertificateSignatureRecoverable> TryFrom<ProtoBlockSyncMessage>
+    for BlockSyncMessage<MultiSig<CS>>
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block: value
+                .block
+                .ok_or(Self::Error::MissingRequiredField(
+                    "BlockSyncMessage.block_id".to_owned(),
+                ))?
+                .try_into()?,
+        })
+    }
+}
 impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
     From<&VerifiedConsensusMessage<MS, CS>> for ProtoUnverifiedConsensusMessage
 {
@@ -126,6 +175,12 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
             }
             ConsensusMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
+            }
+            ConsensusMessage::RequestBlockSync(msg) => {
+                proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg.into())
+            }
+            ConsensusMessage::BlockSync(msg) => {
+                proto_unverified_consensus_message::OneofMessage::BlockSync(msg.into())
             }
         };
         Self {
@@ -150,6 +205,12 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
             }
             Some(proto_unverified_consensus_message::OneofMessage::Vote(msg)) => {
                 ConsensusMessage::Vote(msg.try_into()?)
+            }
+            Some(proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg)) => {
+                ConsensusMessage::RequestBlockSync(msg.try_into()?)
+            }
+            Some(proto_unverified_consensus_message::OneofMessage::BlockSync(msg)) => {
+                ConsensusMessage::BlockSync(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "Unverified<ConsensusMessage>.oneofmessage".to_owned(),

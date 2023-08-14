@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
@@ -22,6 +23,7 @@ type MS = MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
+    BlockSyncState,
 >;
 type MM = <MS as State>::Message;
 

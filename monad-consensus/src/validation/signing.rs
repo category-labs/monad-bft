@@ -24,7 +24,9 @@ use crate::convert::message::UnverifiedConsensusMessage;
 use crate::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{
+            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+        },
     },
     validation::message::well_formed,
 };
@@ -153,6 +155,28 @@ where
                     ),
                 }
             }
+            ConsensusMessage::RequestBlockSync(m) => {
+                let verified = Unverified::new(m, self.author_signature)
+                    .verify::<H>(validators.get_members(), sender)?;
+                Verified {
+                    author: verified.author,
+                    message: Unverified::new(
+                        ConsensusMessage::RequestBlockSync(verified.message.obj),
+                        verified.message.author_signature,
+                    ),
+                }
+            }
+            ConsensusMessage::BlockSync(m) => {
+                let verified = Unverified::new(m, self.author_signature)
+                    .verify::<H>(validators.get_members(), sender)?;
+                Verified {
+                    author: verified.author,
+                    message: Unverified::new(
+                        ConsensusMessage::BlockSync(verified.message.obj),
+                        verified.message.author_signature,
+                    ),
+                }
+            }
         })
     }
 }
@@ -262,6 +286,48 @@ where
             self.obj.tminfo.high_qc.info.vote.round,
             &self.obj.last_round_tc,
         )
+    }
+}
+
+impl<S: MessageSignature> Unverified<S, RequestBlockSyncMessage> {
+    pub fn verify<H: Hasher>(
+        self,
+        validators: &HashMap<NodeId, Stake>,
+        sender: &PubKey,
+    ) -> Result<Verified<S, RequestBlockSyncMessage>, Error> {
+        let msg = H::hash_object(&self.obj);
+
+        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
+
+        let result = Verified {
+            author: NodeId(author),
+            message: self,
+        };
+
+        Ok(result)
+    }
+}
+
+impl<S, T> Unverified<S, BlockSyncMessage<T>>
+where
+    S: MessageSignature,
+    T: SignatureCollection,
+{
+    pub fn verify<H: Hasher>(
+        self,
+        validators: &HashMap<NodeId, Stake>,
+        sender: &PubKey,
+    ) -> Result<Verified<S, BlockSyncMessage<T>>, Error> {
+        let msg = H::hash_object(&self.obj);
+
+        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
+
+        let result = Verified {
+            author: NodeId(author),
+            message: self,
+        };
+
+        Ok(result)
     }
 }
 
@@ -384,6 +450,12 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
             }
             ConsensusMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
+            }
+            ConsensusMessage::RequestBlockSync(msg) => {
+                proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg.into())
+            }
+            ConsensusMessage::BlockSync(msg) => {
+                proto_unverified_consensus_message::OneofMessage::BlockSync(msg.into())
             }
         };
         Self {

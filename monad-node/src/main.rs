@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use futures_util::{FutureExt, StreamExt};
+use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block,
@@ -43,6 +44,7 @@ type MonadState = monad_state::MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
+    BlockSyncState,
 >;
 type MonadConfig = <MonadState as State>::Config;
 

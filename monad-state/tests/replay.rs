@@ -3,6 +3,7 @@
 mod test {
     use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
+    use monad_block_sync::BlockSyncState;
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
     use monad_crypto::secp256k1::SecpSignature;
@@ -60,6 +61,7 @@ mod test {
                 SignatureCollectionType,
                 ValidatorSet,
                 SimpleRoundRobin,
+                BlockSyncState,
             >,
             NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
             _,
@@ -121,6 +123,7 @@ mod test {
                 SignatureCollectionType,
                 ValidatorSet,
                 SimpleRoundRobin,
+                BlockSyncState,
             >,
             NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
             _,

@@ -38,6 +38,10 @@ message ProtoFetchedFullTxs {
   bytes full_txs = 3;
 }
 
+message ProtoFetchedBlock {
+  monad_proto.block.ProtoBlockAggSig block = 1;
+}
+
 message ProtoAdvanceEpochEvent {
   monad_proto.validator_set.ProtoValidatorSetData validator_set = 1;
 }
@@ -56,6 +60,7 @@ message ProtoConsensusEvent {
     ProtoFetchedFullTxs fetched_full_txs = 4;
     ProtoAdvanceEpochEvent advance_epoch = 5;
     ProtoLoadEpochEvent load_epoch = 6;
+    ProtoFetchedBlock fetched_block = 7;
   }
 }
 

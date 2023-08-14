@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use monad_block_sync::{BlockSyncProcess, BlockSyncState};
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
     certificate_signature::{CertificateKeyPair, CertificateSignatureRecoverable},
@@ -48,6 +49,7 @@ type MS = MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
+    BlockSyncState,
 >;
 type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
 type MM = <MS as State>::Message;
@@ -176,16 +178,17 @@ pub fn node_ledger_verification<
     SCT: SignatureCollection<SignatureType = ST> + PartialEq,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    BST: BlockSyncProcess<ST, SCT, VT>,
     PL: PersistenceLogger,
 >(
     states: &BTreeMap<
         PeerId,
         (
             MockExecutor<
-                MonadState<CT, ST, SCT, VT, LT>,
+                MonadState<CT, ST, SCT, VT, LT, BST>,
                 NoSerRouterScheduler<MonadMessage<ST, SCT>>,
             >,
-            MonadState<CT, ST, SCT, VT, LT>,
+            MonadState<CT, ST, SCT, VT, LT, BST>,
             PL,
         ),
     >,

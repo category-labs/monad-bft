@@ -3,6 +3,7 @@ mod tests {
     use std::{fs::create_dir_all, time::Duration};
 
     use futures::StreamExt;
+    use monad_block_sync::BlockSyncState;
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
         certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
@@ -34,6 +35,7 @@ mod tests {
         SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        BlockSyncState,
     >;
     type PersistenceLoggerType = MockWALogger<<S as State>::Event>;
 

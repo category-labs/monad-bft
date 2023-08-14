@@ -7,6 +7,8 @@ use monad_consensus_types::{
     validation::{Hashable, Hasher},
     voting::VoteInfo,
 };
+use monad_types::BlockId;
+use zerocopy::AsBytes;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteMessage {
@@ -49,6 +51,28 @@ pub struct ProposalMessage<S, T> {
 }
 
 impl<S: MessageSignature, T: SignatureCollection> Hashable for ProposalMessage<S, T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.block.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestBlockSyncMessage {
+    pub block_id: BlockId,
+}
+
+impl Hashable for RequestBlockSyncMessage {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.update(self.block_id.0.as_bytes());
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockSyncMessage<T> {
+    pub block: Block<T>,
+}
+
+impl<T: SignatureCollection> Hashable for BlockSyncMessage<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.block.hash(state);
     }

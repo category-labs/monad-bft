@@ -2,6 +2,7 @@ use std::hash::Hash;
 
 use monad_consensus_types::payload::{FullTransactionList, TransactionList};
 use monad_crypto::secp256k1::PubKey;
+use monad_types::BlockId;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
@@ -52,8 +53,9 @@ pub enum MempoolCommand<E> {
     FetchFullReset,
 }
 
-pub enum LedgerCommand<B> {
+pub enum LedgerCommand<B, E> {
     LedgerCommit(B),
+    LedgerFetch(BlockId, Box<dyn (FnOnce(Option<B>) -> E) + Send + Sync>),
 }
 
 pub enum CheckpointCommand<C> {
@@ -73,7 +75,7 @@ where
     TimerCommand(TimerCommand<M::Event>),
 
     MempoolCommand(MempoolCommand<M::Event>),
-    LedgerCommand(LedgerCommand<B>),
+    LedgerCommand(LedgerCommand<B, M::Event>),
     CheckpointCommand(CheckpointCommand<C>),
 }
 
@@ -87,7 +89,7 @@ where
         Vec<RouterCommand<M, OM>>,
         Vec<TimerCommand<M::Event>>,
         Vec<MempoolCommand<M::Event>>,
-        Vec<LedgerCommand<B>>,
+        Vec<LedgerCommand<B, M::Event>>,
         Vec<CheckpointCommand<C>>,
     ) {
         let mut router_cmds = Vec::new();

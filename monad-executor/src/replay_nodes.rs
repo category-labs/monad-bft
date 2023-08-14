@@ -115,6 +115,7 @@ where
                             .mut_blockchain();
                         block.push(b);
                     }
+                    LedgerCommand::LedgerFetch(b_id, cb) => {}
                 },
                 Command::RouterCommand(cmd) => match cmd {
                     RouterCommand::Publish { target, message } => {

@@ -4567,6 +4567,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-block-sync"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus",
+ "monad-consensus-state",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-types",
+ "monad-validator",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -4648,6 +4661,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "libp2p",
+ "monad-block-sync",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -4776,6 +4790,7 @@ dependencies = [
  "clap 4.3.19",
  "env_logger",
  "futures-util",
+ "monad-block-sync",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -4837,6 +4852,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "itertools",
+ "monad-block-sync",
  "monad-blocktree",
  "monad-consensus",
  "monad-consensus-state",
@@ -4864,6 +4880,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "monad-block-sync",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -4916,6 +4933,7 @@ dependencies = [
  "iced",
  "iced_lazy",
  "iced_native",
+ "monad-block-sync",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",

@@ -1,6 +1,7 @@
 use std::{fmt::Debug, time::Duration};
 
 use message::MessageState;
+use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
@@ -8,7 +9,7 @@ use monad_consensus::{
     validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand, FetchedFullTxs, FetchedTxs},
+    command::{Checkpoint, ConsensusCommand, FetchedBlock, FetchedFullTxs, FetchedTxs},
     ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -42,7 +43,7 @@ mod message;
 
 type HasherType = Sha256Hash;
 
-pub struct MonadState<CT, ST, SCT, VT, LT>
+pub struct MonadState<CT, ST, SCT, VT, LT, BST>
 where
     ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
@@ -55,14 +56,16 @@ where
     validator_set: VT,
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     upcoming_validator_set: Option<VT>,
+    block_sync: BST,
 }
 
-impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
+impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
 where
     CT: ConsensusProcess<ST, SCT>,
     ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
+    BST: BlockSyncProcess<ST, SCT, VT>,
 {
     pub fn pubkey(&self) -> PubKey {
         self.consensus.get_pubkey()
@@ -240,13 +243,14 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub genesis_signatures: SCT,
 }
 
-impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
+impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
 where
     CT: ConsensusProcess<ST, SCT>,
     ST: MessageSignature + CertificateSignatureRecoverable,
     SCT: SignatureCollection<SignatureType = ST>,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    BST: BlockSyncProcess<ST, SCT, VT>,
 {
     type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
     type Event = MonadEvent<ST, SCT>;
@@ -284,7 +288,7 @@ where
             config.genesis_signatures,
         );
 
-        let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
+        let mut monad_state: MonadState<CT, ST, SCT, VT, LT, BST> = Self {
             message_state: MessageState::new(
                 10,
                 staking_list
@@ -305,6 +309,7 @@ where
                 config.delta,
                 config.key,
             ),
+            block_sync: BST::new(),
         };
 
         let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
@@ -375,6 +380,11 @@ where
 
                         cmds
                     }
+                    ConsensusEvent::FetchedBlock(fetched_b) => {
+                        let cmds = vec![];
+                        // next commit adds next step
+                        cmds
+                    }
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
@@ -411,6 +421,17 @@ where
                                     &self.leader_election,
                                 )
                             }
+                            ConsensusMessage::RequestBlockSync(msg) => {
+                                self.block_sync.handle_request_block_sync_message(
+                                    author,
+                                    signature,
+                                    msg,
+                                    &self.validator_set,
+                                )
+                            }
+                            ConsensusMessage::BlockSync(msg) => {
+                                self.consensus.handle_block_sync_message(msg)
+                            }
                         }
                     }
                     ConsensusEvent::LoadEpoch(epoch, current_val_set, next_val_set) => {
@@ -423,19 +444,23 @@ where
                     }
                 };
 
+                let mut prepare_router_message =
+                    |target: RouterTarget, message: ConsensusMessage<ST, SCT>| {
+                        let message = VerifiedMonadMessage(
+                            message.sign::<HasherType>(self.consensus.get_keypair()),
+                        );
+                        let publish_action = self.message_state.send(target, message);
+                        Command::RouterCommand(RouterCommand::Publish {
+                            target: publish_action.target,
+                            message: publish_action.message,
+                        })
+                    };
+
                 let mut cmds = Vec::new();
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Publish { target, message } => {
-                            let message = VerifiedMonadMessage(
-                                message.sign::<HasherType>(self.consensus.get_keypair()),
-                            );
-                            let publish_action = self.message_state.send(target, message);
-                            let id = Self::Message::from(publish_action.message.clone()).id();
-                            cmds.push(Command::RouterCommand(RouterCommand::Publish {
-                                target: publish_action.target,
-                                message: publish_action.message,
-                            }))
+                            cmds.push(prepare_router_message(target, message));
                         }
                         ConsensusCommand::Schedule {
                             duration,
@@ -470,14 +495,27 @@ where
                         ConsensusCommand::FetchFullTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullReset))
                         }
-                        ConsensusCommand::RequestSync { blockid: _ } => {
-                            // TODO: respond with the Proposal matching the blockID.
-                            //       right now, all 'missed' proposals are actually in-flight
-                            //       so we don't need to implement this yet for things to work
+
+                        ConsensusCommand::RequestSync { blockid } => {
+                            let (target, message) = self
+                                .block_sync
+                                .request_block_sync(blockid, &self.validator_set);
+                            cmds.push(prepare_router_message(target, message));
                         }
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))
                         }
+                        ConsensusCommand::LedgerFetch(b_id, cb) => {
+                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetch(
+                                b_id,
+                                Box::new(|block: Option<Block<_>>| {
+                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedBlock(cb(
+                                        block,
+                                    )))
+                                }),
+                            )))
+                        }
+
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
                         ),
@@ -498,6 +536,7 @@ pub enum ConsensusEvent<ST, SCT> {
     Timeout(PacemakerTimerExpire),
     FetchedTxs(FetchedTxs<ST, SCT>),
     FetchedFullTxs(FetchedFullTxs<ST, SCT>),
+    FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),
     AdvanceEpoch(Option<ValidatorData>),
 }
@@ -520,6 +559,10 @@ impl<S: Debug, SC: Debug> Debug for ConsensusEvent<S, SC> {
                 .field("author", &p.author)
                 .field("proposal", &p.p)
                 .field("txns", &p.txns)
+                .finish(),
+            ConsensusEvent::FetchedBlock(b) => f
+                .debug_struct("FetchedBlock")
+                .field("block", &b.block)
                 .finish(),
             ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
             ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),

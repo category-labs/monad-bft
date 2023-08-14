@@ -104,7 +104,7 @@ where
     S: State,
 {
     mempool: MockMempool<S::Event>,
-    ledger: MockLedger<S::Block>,
+    ledger: MockLedger<S::Block, S::Event>,
     checkpoint: MockCheckpoint<S::Checkpoint>,
     epoch: MockEpoch<S::Event>,
 
@@ -332,7 +332,7 @@ impl<S, RS> MockExecutor<S, RS>
 where
     S: State,
 {
-    pub fn ledger(&self) -> &MockLedger<S::Block> {
+    pub fn ledger(&self) -> &MockLedger<S::Block, S::Event> {
         &self.ledger
     }
 }

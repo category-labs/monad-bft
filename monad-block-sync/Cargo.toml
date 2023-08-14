@@ -1,0 +1,15 @@
+[package]
+name = "monad-block-sync"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+monad-consensus = { path = "../monad-consensus" }
+monad-consensus-state = { path = "../monad-consensus-state" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-executor = { path = "../monad-executor" }
+monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }

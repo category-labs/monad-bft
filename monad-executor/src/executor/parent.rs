@@ -26,7 +26,7 @@ where
     TE: Executor<Command = TimerCommand<M::Event>>,
 
     CE: Executor<Command = CheckpointCommand<C>>,
-    LE: Executor<Command = LedgerCommand<B>>,
+    LE: Executor<Command = LedgerCommand<B, M::Event>>,
     ME: Executor<Command = MempoolCommand<M::Event>>,
 
     M: Message,

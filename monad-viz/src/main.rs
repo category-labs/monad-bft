@@ -21,6 +21,7 @@ use iced::{
     },
     Application, Color, Command, Event, Length, Settings, Theme, Vector,
 };
+use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block, multi_sig::MultiSig, transaction_validator::MockValidator,
@@ -57,6 +58,7 @@ type MS = MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
+    BlockSyncState,
 >;
 type MM = <MS as State>::Message;
 type PersistenceLoggerType =
@@ -145,6 +147,7 @@ impl Application for Viz {
                         SignatureCollectionType,
                         ValidatorSet,
                         SimpleRoundRobin,
+                        BlockSyncState,
                     >,
                     _,
                 >::new(config, replay_events)
@@ -178,6 +181,7 @@ impl Application for Viz {
                         SignatureCollectionType,
                         ValidatorSet,
                         SimpleRoundRobin,
+                        BlockSyncState,
                     >,
                     NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
                     _,

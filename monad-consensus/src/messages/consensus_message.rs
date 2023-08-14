@@ -9,7 +9,9 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::KeyPair;
 
 use crate::{
-    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    messages::message::{
+        BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+    },
     validation::signing::Verified,
 };
 
@@ -18,6 +20,8 @@ pub enum ConsensusMessage<ST, SCT> {
     Proposal(ProposalMessage<ST, SCT>),
     Vote(VoteMessage),
     Timeout(TimeoutMessage<ST, SCT>),
+    RequestBlockSync(RequestBlockSyncMessage),
+    BlockSync(BlockSyncMessage<SCT>),
 }
 
 impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
@@ -26,6 +30,8 @@ impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
             ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
             ConsensusMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
             ConsensusMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
+            ConsensusMessage::RequestBlockSync(s) => f.debug_tuple("").field(&s).finish(),
+            ConsensusMessage::BlockSync(s) => f.debug_tuple("").field(&s).finish(),
         }
     }
 }
@@ -47,6 +53,8 @@ where
             // TimeoutMsg doesn't have a protocol sig
             ConsensusMessage::Vote(m) => m.hash(state),
             ConsensusMessage::Timeout(m) => m.hash(state),
+            ConsensusMessage::RequestBlockSync(m) => m.hash(state),
+            ConsensusMessage::BlockSync(m) => m.hash(state),
         }
     }
 }

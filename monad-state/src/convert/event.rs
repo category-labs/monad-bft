@@ -1,4 +1,5 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
+use monad_consensus_state::command::FetchedBlock;
 use monad_consensus_types::{
     certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
@@ -51,6 +52,11 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent
                         .as_ref()
                         .map(|txns| txns.0.clone())
                         .unwrap_or_default(),
+                })
+            }
+            TypeConsensusEvent::FetchedBlock(fetched_block) => {
+                proto_consensus_event::Event::FetchedBlock(ProtoFetchedBlock {
+                    block: fetched_block.block.as_ref().map(|b| b.into()),
                 })
             }
             TypeConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
@@ -136,6 +142,18 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> TryFrom<ProtoConsens
                         ))?
                         .try_into()?,
                     txns: Some(FullTransactionList(fetched_full_txs.full_txs)),
+                })
+            }
+            Some(proto_consensus_event::Event::FetchedBlock(fetched_block)) => {
+                ConsensusEvent::FetchedBlock(FetchedBlock {
+                    block: Some(
+                        fetched_block
+                            .block
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_block.block".to_owned(),
+                            ))?
+                            .try_into()?,
+                    ),
                 })
             }
             Some(proto_consensus_event::Event::LoadEpoch(epoch_event)) => {
