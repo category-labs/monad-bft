@@ -3,8 +3,7 @@ use monad_consensus::messages::{
 };
 use monad_consensus_state::command::ConsensusCommand;
 use monad_consensus_types::{
-    certificate_signature::CertificateSignatureRecoverable,
-    signature_collection::SignatureCollection,
+    message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
 use monad_executor::{PeerId, RouterTarget};
 use monad_types::{BlockId, NodeId};
@@ -14,7 +13,7 @@ pub struct BlockSyncState {}
 
 pub trait BlockSyncProcess<ST, SCT, VT>
 where
-    ST: CertificateSignatureRecoverable,
+    ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
@@ -29,7 +28,6 @@ where
     fn handle_request_block_sync_message(
         &mut self,
         author: NodeId,
-        signature: SCT::SignatureType,
         s: RequestBlockSyncMessage,
         validators: &VT,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
@@ -37,7 +35,7 @@ where
 
 impl<ST, SCT, VT> BlockSyncProcess<ST, SCT, VT> for BlockSyncState
 where
-    ST: CertificateSignatureRecoverable,
+    ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
@@ -58,7 +56,6 @@ where
     fn handle_request_block_sync_message(
         &mut self,
         author: NodeId,
-        signature: SCT::SignatureType,
         s: RequestBlockSyncMessage,
         validators: &VT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {

@@ -424,7 +424,6 @@ where
                             ConsensusMessage::RequestBlockSync(msg) => {
                                 self.block_sync.handle_request_block_sync_message(
                                     author,
-                                    signature,
                                     msg,
                                     &self.validator_set,
                                 )
