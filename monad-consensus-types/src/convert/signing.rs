@@ -44,15 +44,13 @@ pub fn proto_to_message_signature<S: MessageSignature>(
     S::deserialize(&proto.sig).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
 }
 
-pub(crate) fn certificate_signature_to_proto(
-    signature: &impl CertificateSignature,
-) -> ProtoSignature {
+pub fn certificate_signature_to_proto(signature: &impl CertificateSignature) -> ProtoSignature {
     ProtoSignature {
         sig: signature.serialize(),
     }
 }
 
-pub(crate) fn proto_to_certificate_signature<S: CertificateSignature>(
+pub fn proto_to_certificate_signature<S: CertificateSignature>(
     proto: ProtoSignature,
 ) -> Result<S, ProtoError> {
     S::deserialize(&proto.sig).map_err(|e| ProtoError::CryptoError(format!("{}", e)))

@@ -9,7 +9,7 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation::Sha256Hash,
-    voting::{ValidatorMapping, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::{signing::*, validators::create_keys_w_validators};
@@ -20,9 +20,10 @@ use test_case::test_case;
 type SignatureCollectionType = MultiSig<SecpSignature>;
 
 fn create_signed_vote_message(
-    keypair: &SignatureCollectionKeyPairType<SignatureCollectionType>,
+    key: &KeyPair,
+    certkey: &SignatureCollectionKeyPairType<SignatureCollectionType>,
     vote_round: Round,
-) -> Unverified<SecpSignature, VoteMessage> {
+) -> Unverified<SecpSignature, VoteMessage<SignatureCollectionType>> {
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: vote_round,
@@ -32,12 +33,14 @@ fn create_signed_vote_message(
 
     let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi);
 
-    let vm = VoteMessage {
+    let v = Vote {
         vote_info: vi,
         ledger_commit_info: lci,
     };
 
-    TestSigner::sign_object::<Sha256Hash, _>(vm, keypair)
+    let vm = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, certkey);
+
+    TestSigner::sign_object::<Sha256Hash, _>(vm, key)
 }
 
 fn setup_ctx(
@@ -46,14 +49,14 @@ fn setup_ctx(
     Vec<KeyPair>,
     ValidatorSet,
     ValidatorMapping<SignatureCollectionKeyPairType<SignatureCollectionType>>,
-    Vec<Verified<SecpSignature, VoteMessage>>,
+    Vec<Verified<SecpSignature, VoteMessage<SignatureCollectionType>>>,
 ) {
-    let (keys, _cert_keys, valset, vmap) =
+    let (keys, cert_keys, valset, vmap) =
         create_keys_w_validators::<SignatureCollectionType>(num_nodes);
 
     let mut votes = Vec::new();
     for i in 0..num_nodes {
-        let svm = create_signed_vote_message(&keys[i as usize], Round(0));
+        let svm = create_signed_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(0));
         let vm = svm
             .verify::<Sha256Hash>(valset.get_members(), &keys[i as usize].pubkey())
             .unwrap();
@@ -92,13 +95,7 @@ fn test_votes(num_nodes: u32) {
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
-        let qc = voteset.process_vote::<Sha256Hash, _>(
-            v.author(),
-            v.author_signature(),
-            v,
-            &valset,
-            &vmap,
-        );
+        let qc = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
         qcs.push(qc);
     }
     let valid_qc: Vec<&Option<QuorumCertificate<SignatureCollectionType>>> =
@@ -123,13 +120,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
     for k in 0..num_rounds {
         for i in 0..num_nodes {
             let v = &votes[i as usize];
-            let qc = voteset.process_vote::<Sha256Hash, _>(
-                v.author(),
-                v.author_signature(),
-                v,
-                &valset,
-                &vmap,
-            );
+            let qc = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
             qcs.push(qc);
         }
 
@@ -156,13 +147,7 @@ fn test_minority(num_nodes: u32) {
 
     for i in 0..majority - 1 {
         let v = &votes[i as usize];
-        let qc = voteset.process_vote::<Sha256Hash, _>(
-            v.author(),
-            v.author_signature(),
-            v,
-            &valset,
-            &vmap,
-        );
+        let qc = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
         qcs.push(qc);
     }
 

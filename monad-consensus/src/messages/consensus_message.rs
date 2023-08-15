@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
     signature_collection::SignatureCollection,
     validation::{Hashable, Hasher},
@@ -16,15 +15,15 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusMessage<ST, SCT> {
+pub enum ConsensusMessage<ST, SCT: SignatureCollection> {
     Proposal(ProposalMessage<ST, SCT>),
-    Vote(VoteMessage),
+    Vote(VoteMessage<SCT>),
     Timeout(TimeoutMessage<ST, SCT>),
     RequestBlockSync(RequestBlockSyncMessage),
     BlockSync(BlockSyncMessage<SCT>),
 }
 
-impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
+impl<ST: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusMessage<ST, SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
@@ -38,14 +37,13 @@ impl<ST: Debug, SCT: Debug> Debug for ConsensusMessage<ST, SCT> {
 
 impl<ST, SCT> Hashable for ConsensusMessage<ST, SCT>
 where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             ConsensusMessage::Proposal(m) => m.hash(state),
             // FIXME:
-            // implemented Hashable for VoteMsg, which only hash the ledger commit info
             // it can be confusing as we are hashing only part of the message
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct
@@ -61,8 +59,8 @@ where
 
 impl<ST, SCT> ConsensusMessage<ST, SCT>
 where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     pub fn sign<H: Hasher>(self, keypair: &KeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {
         Verified::new::<H>(self, keypair)

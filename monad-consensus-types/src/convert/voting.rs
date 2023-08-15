@@ -1,7 +1,7 @@
 use monad_proto::{error::ProtoError, proto::voting::*};
 use monad_types::Round;
 
-use crate::voting::VoteInfo;
+use crate::voting::{Vote, VoteInfo};
 
 impl From<&VoteInfo> for ProtoVoteInfo {
     fn from(vi: &VoteInfo) -> Self {
@@ -29,6 +29,36 @@ impl TryFrom<ProtoVoteInfo> for VoteInfo {
                 ))?
                 .try_into()?,
             parent_round: Round(proto_vi.parent_round),
+        })
+    }
+}
+
+impl From<&Vote> for ProtoVote {
+    fn from(value: &Vote) -> Self {
+        ProtoVote {
+            vote_info: Some((&value.vote_info).into()),
+            ledger_commit_info: Some((&value.ledger_commit_info).into()),
+        }
+    }
+}
+
+impl TryFrom<ProtoVote> for Vote {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoVote) -> Result<Self, Self::Error> {
+        Ok(Self {
+            vote_info: value
+                .vote_info
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Vote.vote_info".to_owned(),
+                ))?
+                .try_into()?,
+            ledger_commit_info: value
+                .ledger_commit_info
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Vote.ledger_commit_info".to_owned(),
+                ))?
+                .try_into()?,
         })
     }
 }

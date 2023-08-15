@@ -285,8 +285,12 @@ async fn run(
     mut wg_rx: tokio::sync::broadcast::Receiver<()>,
     mut config: Config,
 ) {
+    // FIXME: not sure about the crypto implications of generating
+    //        2 keypairs on different curves using the same secret/randomness
     let (keypair, libp2p_keypair) =
-        KeyPair::libp2p_from_bytes(config.secret_key.as_mut_slice()).expect("invalid key");
+        KeyPair::libp2p_from_bytes(config.secret_key.clone().as_mut_slice()).expect("invalid key");
+
+    let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(config.secret_key.as_mut_slice()).expect("invalid cert key");
 
     let mut router = monad_p2p::Service::with_tokio_executor(
         libp2p_keypair.into(),
@@ -320,6 +324,7 @@ async fn run(
             .map(|(_, peer, cert_ident)| (peer, cert_ident))
             .collect(),
         key: keypair,
+        certkey: certkeypair,
         delta: config.delta,
         genesis_block: config.genesis_block,
         genesis_vote_info: config.genesis_vote_info,

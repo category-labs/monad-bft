@@ -4630,6 +4630,7 @@ dependencies = [
  "monad-types",
  "prost",
  "sha2 0.10.7",
+ "test-case",
  "zerocopy",
 ]
 

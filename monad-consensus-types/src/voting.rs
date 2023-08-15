@@ -5,6 +5,7 @@ use zerocopy::AsBytes;
 
 use crate::{
     certificate_signature::CertificateKeyPair,
+    ledger::LedgerCommitInfo,
     validation::{Hashable, Hasher},
 };
 
@@ -26,6 +27,27 @@ impl<VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<VKT> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.into_iter()
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Vote {
+    pub vote_info: VoteInfo,
+    pub ledger_commit_info: LedgerCommitInfo,
+}
+
+impl std::fmt::Debug for Vote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vote")
+            .field("vote_info", &self.vote_info)
+            .field("ledger_commit_info", &self.ledger_commit_info)
+            .finish()
+    }
+}
+
+impl Hashable for Vote {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ledger_commit_info.hash(state)
     }
 }
 
@@ -61,19 +83,14 @@ impl Hashable for VoteInfo {
 mod test {
     use monad_types::{BlockId, Hash, Round};
     use sha2::Digest;
+    use test_case::test_case;
 
     use super::VoteInfo;
-    use crate::validation::{Hasher, Sha256Hash};
-
-    pub fn hash_vote(v: &VoteInfo) -> Hash {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(v.id.0);
-        hasher.update(v.round);
-        hasher.update(v.parent_id.0);
-        hasher.update(v.parent_round);
-
-        Hash(hasher.finalize().into())
-    }
+    use crate::{
+        ledger::LedgerCommitInfo,
+        validation::{Hasher, Sha256Hash},
+        voting::Vote,
+    };
 
     #[test]
     fn voteinfo_hash() {
@@ -84,8 +101,48 @@ mod test {
             parent_round: Round(0),
         };
 
-        let h1 = Sha256Hash::hash_object(&vi);
-        let h2 = hash_vote(&vi);
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(vi.id.0);
+        hasher.update(vi.round);
+        hasher.update(vi.parent_id.0);
+        hasher.update(vi.parent_round);
+
+        let h1 = Hash(hasher.finalize_reset().into());
+        let h2 = Sha256Hash::hash_object(&vi);
+
+        assert_eq!(h1, h2);
+    }
+
+    #[test_case(None ; "None commit_state")]
+    #[test_case(Some(Default::default()) ; "Some commit_state")]
+    fn vote_hash(cs: Option<Hash>) {
+        let vi = VoteInfo {
+            id: BlockId(Hash([0x00_u8; 32])),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let vi_hash = Sha256Hash::hash_object(&vi);
+
+        let lci = LedgerCommitInfo {
+            commit_state_hash: cs,
+            vote_info_hash: vi_hash,
+        };
+
+        let v = Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        };
+
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(vi_hash);
+        if let Some(cs) = cs {
+            hasher.update(cs);
+        }
+
+        let h1: Hash = Hash(hasher.finalize_reset().into());
+        let h2 = Sha256Hash::hash_object(&v);
 
         assert_eq!(h1, h2);
     }

@@ -38,30 +38,30 @@ where
     pub fn process_vote<H: Hasher, VT: ValidatorSetType>(
         &mut self,
         author: &NodeId,
-        signature: &SCT::SignatureType,
-        v: &VoteMessage,
+        vote_msg: &VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     ) -> Option<QuorumCertificate<SCT>> {
-        let round = v.vote_info.round;
+        let vote = vote_msg.vote;
+        let round = vote_msg.vote.vote_info.round;
 
         if self.qc_created.contains(&round) {
             return None;
         }
 
-        if H::hash_object(&v.vote_info) != v.ledger_commit_info.vote_info_hash {
+        if H::hash_object(&vote.vote_info) != vote.ledger_commit_info.vote_info_hash {
             // TODO: collect author for evidence?
             return None;
         }
 
-        let vote_idx = H::hash_object(&v.ledger_commit_info);
+        let vote_idx = H::hash_object(&vote);
 
         let round_pending_votes = self.pending_votes.entry(round).or_default();
         let pending_entry = round_pending_votes
             .entry(vote_idx)
             .or_insert((Vec::new(), HashSet::new()));
 
-        pending_entry.0.push((*author, *signature));
+        pending_entry.0.push((*author, vote_msg.sig));
         pending_entry.1.insert(*author);
 
         if validators.has_super_majority_votes(&pending_entry.1) {
@@ -74,8 +74,8 @@ where
             .expect("failed to create a signature collection"); // FIXME: collect slashing evidence
             let qc = QuorumCertificate::<SCT>::new::<H>(
                 QcInfo {
-                    vote: v.vote_info,
-                    ledger_commit: v.ledger_commit_info,
+                    vote: vote.vote_info,
+                    ledger_commit: vote.ledger_commit_info,
                 },
                 signature_collection,
             );
@@ -97,8 +97,9 @@ mod test {
     use monad_consensus_types::{
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         validation::Sha256Hash,
-        voting::{ValidatorMapping, VoteInfo},
+        voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
     use monad_testutil::{
@@ -111,12 +112,14 @@ mod test {
     use super::VoteState;
     use crate::{messages::message::VoteMessage, validation::signing::Verified};
 
+    type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
 
-    fn create_signed_vote_message(
+    fn create_signed_vote_message<SCT: SignatureCollection>(
         keypair: &KeyPair,
+        certkeypair: &SignatureCollectionKeyPairType<SCT>,
         vote_round: Round,
-    ) -> Verified<SecpSignature, VoteMessage> {
+    ) -> Verified<SecpSignature, VoteMessage<SCT>> {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
             round: vote_round,
@@ -126,10 +129,12 @@ mod test {
 
         let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi);
 
-        let vm = VoteMessage {
+        let v = Vote {
             vote_info: vi,
             ledger_commit_info: lci,
         };
+
+        let vm = VoteMessage::new::<Sha256Hash>(v, certkeypair);
 
         Verified::new::<Sha256Hash>(vm, keypair)
     }
@@ -142,29 +147,23 @@ mod test {
 
         // add one vote for rounds 0-3
         for i in 0..4 {
-            let svm = create_signed_vote_message(&cert_keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<Sha256Hash, _>(
-                svm.author(),
-                svm.author_signature(),
-                &svm,
-                &valset,
-                &val_map,
+            let svm = create_signed_vote_message::<SignatureCollectionType>(
+                &keys[0],
+                &cert_keys[0],
+                Round(i.try_into().unwrap()),
             );
+            let _qc =
+                votestate.process_vote::<Sha256Hash, _>(svm.author(), &*svm, &valset, &val_map);
         }
 
         assert_eq!(votestate.pending_votes.len(), 4);
 
         // add supermajority number of votes for round 4, expecting older rounds to be
         // removed
-        for key in keys.iter().take(4) {
-            let svm = create_signed_vote_message(key, Round(4));
-            let _qc = votestate.process_vote::<Sha256Hash, _>(
-                svm.author(),
-                svm.author_signature(),
-                &svm,
-                &valset,
-                &val_map,
-            );
+        for (key, certkey) in keys.iter().zip(cert_keys.iter()).take(4) {
+            let svm = create_signed_vote_message::<SignatureCollectionType>(key, certkey, Round(4));
+            let _qc =
+                votestate.process_vote::<Sha256Hash, _>(svm.author(), &*svm, &valset, &val_map);
         }
         votestate.start_new_round(Round(5));
 
@@ -174,45 +173,29 @@ mod test {
     #[test]
     fn handle_future_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (_keys, cert_keys, valset, vmap) =
+        let (keys, cert_keys, valset, vmap) =
             create_keys_w_validators::<SignatureCollectionType>(4);
 
         // add one vote for rounds 0-3 and 5-8
         for i in 0..4 {
-            let svm = create_signed_vote_message(&cert_keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<Sha256Hash, _>(
-                svm.author(),
-                svm.author_signature(),
-                &svm,
-                &valset,
-                &vmap,
-            );
+            let svm =
+                create_signed_vote_message(&keys[0], &cert_keys[0], Round(i.try_into().unwrap()));
+            let _qc = votestate.process_vote::<Sha256Hash, _>(svm.author(), &*svm, &valset, &vmap);
         }
 
         for i in 5..9 {
-            let svm = create_signed_vote_message(&cert_keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<Sha256Hash, _>(
-                svm.author(),
-                svm.author_signature(),
-                &svm,
-                &valset,
-                &vmap,
-            );
+            let svm =
+                create_signed_vote_message(&keys[0], &cert_keys[0], Round(i.try_into().unwrap()));
+            let _qc = votestate.process_vote::<Sha256Hash, _>(svm.author(), &*svm, &valset, &vmap);
         }
 
         assert_eq!(votestate.pending_votes.len(), 8);
 
         // add supermajority number of votes for round 4, expecting older rounds to be
         // removed
-        for key in cert_keys.iter().take(4) {
-            let svm = create_signed_vote_message(key, Round(4));
-            let _qc = votestate.process_vote::<Sha256Hash, _>(
-                svm.author(),
-                svm.author_signature(),
-                &svm,
-                &valset,
-                &vmap,
-            );
+        for (key, certkey) in keys.iter().zip(cert_keys.iter().take(4)) {
+            let svm = create_signed_vote_message::<SignatureCollectionType>(key, certkey, Round(4));
+            let _qc = votestate.process_vote::<Sha256Hash, _>(svm.author(), &*svm, &valset, &vmap);
         }
         votestate.start_new_round(Round(5));
 
@@ -224,10 +207,10 @@ mod test {
         let mut vote_state = VoteState::<SignatureCollectionType>::default();
         let keypair = get_key(6);
         let cert_key = get_certificate_key::<SignatureCollectionType>(6);
-        let val = (NodeId(keypair.pubkey()), Stake(1), cert_key);
+        let node_id = NodeId(keypair.pubkey());
 
-        let vset = ValidatorSet::new(vec![(val.0, val.1)]).unwrap();
-        let vmap = ValidatorMapping::new(vec![(val.0, val.2.pubkey())]);
+        let vset = ValidatorSet::new(vec![(node_id, Stake(1))]).unwrap();
+        let vmap = ValidatorMapping::new(vec![(node_id, cert_key.pubkey())]);
 
         let mut vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
@@ -236,20 +219,17 @@ mod test {
             parent_round: Round(0),
         };
 
-        let vm = VoteMessage {
+        let v = Vote {
             vote_info: vi,
             ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi),
         };
-        let svm = Verified::new::<Sha256Hash>(vm, &keypair);
+
+        let vm = VoteMessage::new::<Sha256Hash>(v, &cert_key);
+
+        let svm = Verified::<SignatureType, _>::new::<Sha256Hash>(vm, &keypair);
 
         // add a valid vote message
-        let _ = vote_state.process_vote::<Sha256Hash, _>(
-            svm.author(),
-            svm.author_signature(),
-            &svm,
-            &vset,
-            &vmap,
-        );
+        let _ = vote_state.process_vote::<Sha256Hash, _>(svm.author(), &*svm, &vset, &vmap);
         assert_eq!(vote_state.pending_votes.len(), 1);
 
         // pretend a qc was not created so we can add more votes without reseting the vote state
@@ -270,18 +250,19 @@ mod test {
             parent_round: Round(0),
         };
 
-        let invalid_vm = VoteMessage {
+        let invalid_vote = Vote {
             vote_info: vi,
             ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(
                 Some(Hash([0xae_u8; 32])),
                 &vi2,
             ),
         };
-        let invalid_svm = Verified::new::<Sha256Hash>(invalid_vm, &keypair);
+        let invalid_vm = VoteMessage::new::<Sha256Hash>(invalid_vote, &cert_key);
+
+        let invalid_svm = Verified::<SignatureType, _>::new::<Sha256Hash>(invalid_vm, &keypair);
         let _ = vote_state.process_vote::<Sha256Hash, _>(
             invalid_svm.author(),
-            invalid_svm.author_signature(),
-            &invalid_svm,
+            &*invalid_svm,
             &vset,
             &vmap,
         );
@@ -293,15 +274,15 @@ mod test {
     #[test]
     fn duplicate_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (_, certkeys, valset, vmap) = create_keys_w_validators::<SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<SignatureCollectionType>(4);
 
         // create a vote for round 0 from one node, but add it supermajority number of times
         // this should not result in QC creation
-        let svm = create_signed_vote_message(&certkeys[0], Round(0));
-        let (author, sig, msg) = svm.destructure();
+        let svm = create_signed_vote_message(&keys[0], &certkeys[0], Round(0));
+        let (author, _sig, msg) = svm.destructure();
 
         for _ in 0..4 {
-            let qc = votestate.process_vote::<Sha256Hash, _>(&author, &sig, &msg, &valset, &vmap);
+            let qc = votestate.process_vote::<Sha256Hash, _>(&author, &msg, &valset, &vmap);
             assert!(qc.is_none());
         }
     }

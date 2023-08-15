@@ -4,7 +4,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, BlockType},
-    certificate_signature::{CertificateSignature, CertificateSignatureRecoverable},
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload, TransactionList},
@@ -27,9 +27,8 @@ pub struct ProposalGen<ST, SCT> {
 
 impl<ST, SCT> ProposalGen<ST, SCT>
 where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    ST: CertificateSignature<KeyPairType = KeyPair>,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     pub fn new(genesis_qc: QuorumCertificate<SCT>) -> Self {
         ProposalGen {
@@ -42,7 +41,8 @@ where
 
     pub fn next_proposal<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
-        keys: &Vec<KeyPair>,
+        keys: &[KeyPair],
+        certkeys: &[SignatureCollectionKeyPairType<SCT>],
         valset: &VT,
         election: &LT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -74,7 +74,7 @@ where
         );
 
         self.high_qc = self.qc.clone();
-        self.qc = self.get_next_qc(keys, &block, validator_mapping);
+        self.qc = self.get_next_qc(certkeys, &block, validator_mapping);
 
         let proposal = ProposalMessage {
             block,
@@ -91,9 +91,9 @@ where
     // before adding the state's key to keys
     pub fn next_tc<VT: ValidatorSetType>(
         &mut self,
-        keys: &Vec<KeyPair>,
+        keys: &[KeyPair],
         valset: &VT,
-    ) -> Vec<Verified<SCT::SignatureType, TimeoutMessage<ST, SCT>>> {
+    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId(keypair.pubkey()))
@@ -129,7 +129,7 @@ where
                 },
                 last_round_tc: self.last_tc.clone(),
             };
-            tmo_msgs.push(Verified::new::<Sha256Hash>(tmo_msg, key));
+            tmo_msgs.push(Verified::<ST, _>::new::<Sha256Hash>(tmo_msg, key));
         }
 
         // entering new round through tc
@@ -140,7 +140,7 @@ where
 
     fn get_next_qc(
         &self,
-        keys: &Vec<KeyPair>,
+        certkeys: &[SignatureCollectionKeyPairType<SCT>],
         block: &Block<SCT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     ) -> QuorumCertificate<SCT> {
@@ -150,7 +150,7 @@ where
             parent_id: block.qc.info.vote.id,
             parent_round: block.qc.info.vote.round,
         };
-        let commit = Some(block.get_id().0);
+        let commit = Some(block.get_id().0); // FIXME: is this hash correct?
         let lci = LedgerCommitInfo::new::<Sha256Hash>(commit, &vi);
         let qcinfo = QcInfo {
             vote: vi,
@@ -160,11 +160,14 @@ where
         let msg = Sha256Hash::hash_object(&lci);
 
         let mut sigs = Vec::new();
-        for k in keys {
-            sigs.push((
-                NodeId(k.pubkey()),
-                <SCT::SignatureType as CertificateSignature>::sign(msg.as_ref(), k),
-            ));
+        for ck in certkeys {
+            let sig = <SCT::SignatureType as CertificateSignature>::sign(msg.as_ref(), ck);
+
+            for (node_id, pubkey) in validator_mapping.map.iter() {
+                if *pubkey == ck.pubkey() {
+                    sigs.push((*node_id, sig));
+                }
+            }
         }
 
         let sigcol = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();

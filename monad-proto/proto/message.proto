@@ -11,8 +11,8 @@ import "voting.proto";
 
 
 message ProtoVoteMessage {
-  monad_proto.voting.ProtoVoteInfo vote_info = 1;
-  monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit_info = 2;
+  monad_proto.voting.ProtoVote vote = 1;
+  monad_proto.signing.ProtoSignature sig = 2;
 }
 
 message ProtoRequestBlockSyncMessage {

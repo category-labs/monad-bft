@@ -18,11 +18,15 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
-    voting::VoteInfo,
+    voting::{Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_state::{ConsensusEvent, MonadEvent};
-use monad_testutil::{block::setup_block, signing::get_key, validators::create_keys_w_validators};
+use monad_testutil::{
+    block::setup_block,
+    signing::{get_certificate_key, get_key},
+    validators::create_keys_w_validators,
+};
 use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
@@ -98,6 +102,7 @@ fn bench_proposal(c: &mut Criterion) {
 
 fn bench_vote(c: &mut Criterion) {
     let keypair: KeyPair = get_key(1);
+    let certkey = get_certificate_key::<SignatureCollectionType>(2);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: Round(1),
@@ -108,13 +113,18 @@ fn bench_vote(c: &mut Criterion) {
         commit_state_hash: None,
         vote_info_hash: Hash([42_u8; 32]),
     };
-    let vote = ConsensusMessage::Vote(VoteMessage {
+
+    let v = Vote {
         vote_info: vi,
         ledger_commit_info: lci,
-    });
+    };
+
+    let vm = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkey);
+
+    let vote = ConsensusMessage::Vote(vm);
 
     let vote_hash = Sha256Hash::hash_object(&vote);
-    let unverified_message = Unverified::new(vote, keypair.sign(vote_hash.as_ref()));
+    let unverified_message = Unverified::new(vote, <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),

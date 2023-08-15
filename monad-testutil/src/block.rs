@@ -1,15 +1,13 @@
 use monad_consensus_types::{
     block::{Block, BlockType},
-    certificate_signature::CertificateSignature,
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
-    multi_sig::MultiSig,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature_collection::SignatureCollection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation::{Hasher, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_types::{BlockId, Hash, NodeId, Round};
 
 // test utility if you only wish for simple block
@@ -43,15 +41,15 @@ impl std::fmt::Debug for MockBlock {
     }
 }
 
-pub fn setup_block(
+pub fn setup_block<SCT: SignatureCollection>(
     author: NodeId,
     block_round: Round,
     qc_round: Round,
     txns: TransactionList,
     execution_header: ExecutionArtifacts,
-    keypairs: &[KeyPair],
-    validator_mapping: &ValidatorMapping<KeyPair>,
-) -> Block<MultiSig<SecpSignature>> {
+    certkeys: &[SignatureCollectionKeyPairType<SCT>],
+    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+) -> Block<SCT> {
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: qc_round,
@@ -67,18 +65,21 @@ pub fn setup_block(
     let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
 
     let mut sigs = Vec::new();
-    for keypair in keypairs.iter() {
-        sigs.push((
-            NodeId(keypair.pubkey()),
-            SecpSignature::sign(qcinfo_hash.as_ref(), keypair),
-        ));
+    for certkey in certkeys.iter() {
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), certkey);
+
+        for (node_id, pubkey) in validator_mapping.map.iter() {
+            if *pubkey == certkey.pubkey() {
+                sigs.push((*node_id, sig));
+            }
+        }
     }
 
-    let aggsig = MultiSig::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
+    let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::<MultiSig<SecpSignature>>::new::<Sha256Hash>(qcinfo, aggsig);
+    let qc = QuorumCertificate::<SCT>::new::<Sha256Hash>(qcinfo, sig_col);
 
-    Block::<MultiSig<SecpSignature>>::new::<Sha256Hash>(
+    Block::<SCT>::new::<Sha256Hash>(
         author,
         block_round,
         &Payload {

@@ -40,16 +40,16 @@ impl ReplayConfig<MS> for RepConfig {
 
         let state_configs = keys
             .into_iter()
-            .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|(key, pubkeys)| MonadConfig {
+            .zip(cert_keys.into_iter())
+            .map(|(key, certkey)| MonadConfig {
                 transaction_validator: MockValidator,
-
                 key,
-                validators: pubkeys
+                certkey,
+                validators: validator_mapping
+                    .map
                     .iter()
-                    .cloned()
-                    .zip(cert_keys.iter().map(|k| k.pubkey()))
-                    .collect(),
+                    .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
+                    .collect::<Vec<_>>(),
                 delta: self.delta,
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

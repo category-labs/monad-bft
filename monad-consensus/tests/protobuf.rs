@@ -19,7 +19,7 @@ mod test {
         signature_collection::SignatureCollection,
         timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
         validation::{Hasher, Sha256Hash},
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
@@ -29,6 +29,8 @@ mod test {
     // TODO: revisit to cleanup
     #[test]
     fn test_vote_message() {
+        let (keypairs, certkeys, validators, validator_mapping) =
+            create_keys_w_validators::<SignatureCollectionType>(1);
         let vi = VoteInfo {
             id: BlockId(Hash([42_u8; 32])),
             round: Round(1),
@@ -39,14 +41,14 @@ mod test {
             commit_state_hash: None,
             vote_info_hash: Hash([42_u8; 32]),
         };
-        let votemsg: ConsensusMessage<SecpSignature, SignatureCollectionType> =
-            ConsensusMessage::Vote(VoteMessage {
-                vote_info: vi,
-                ledger_commit_info: lci,
-            });
 
-        let (keypairs, _blskeys, validators, validator_mapping) =
-            create_keys_w_validators::<SignatureCollectionType>(1);
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        };
+
+        let votemsg: ConsensusMessage<SecpSignature, SignatureCollectionType> =
+            ConsensusMessage::Vote(VoteMessage::new::<Sha256Hash>(vote, &certkeys[0]));
 
         let author_keypair = &keypairs[0];
 
@@ -177,7 +179,7 @@ mod test {
             create_keys_w_validators::<SignatureCollectionType>(2);
 
         let author_keypair = &keypairs[0];
-        let blk = setup_block(
+        let blk = setup_block::<SignatureCollectionType>(
             NodeId(author_keypair.pubkey()),
             Round(233),
             Round(231),

@@ -1,33 +1,55 @@
 use monad_consensus_types::{
     block::Block,
-    ledger::LedgerCommitInfo,
+    certificate_signature::CertificateSignature,
     message_signature::MessageSignature,
-    signature_collection::SignatureCollection,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{TimeoutCertificate, TimeoutInfo},
     validation::{Hashable, Hasher},
-    voting::VoteInfo,
+    voting::Vote,
 };
 use monad_types::BlockId;
 use zerocopy::AsBytes;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct VoteMessage {
-    pub vote_info: VoteInfo,
-    pub ledger_commit_info: LedgerCommitInfo,
+#[derive(PartialEq, Eq)]
+pub struct VoteMessage<SCT: SignatureCollection> {
+    pub vote: Vote,
+    pub sig: SCT::SignatureType,
 }
 
-impl std::fmt::Debug for VoteMessage {
+impl<SCT: SignatureCollection> Clone for VoteMessage<SCT> {
+    fn clone(&self) -> Self {
+        Self {
+            vote: self.vote,
+            sig: self.sig,
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> Copy for VoteMessage<SCT> {}
+
+impl<SCT: SignatureCollection> std::fmt::Debug for VoteMessage<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoteMessage")
-            .field("info", &self.vote_info)
-            .field("lc", &self.ledger_commit_info)
+            .field("vote", &self.vote)
+            .field("sig", &self.sig)
             .finish()
     }
 }
 
-impl Hashable for VoteMessage {
+impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ledger_commit_info.hash(state)
+        self.vote.hash(state);
+        self.sig.hash(state);
+    }
+}
+
+impl<SCT: SignatureCollection> VoteMessage<SCT> {
+    pub fn new<H: Hasher>(vote: Vote, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+        let vote_hash = H::hash_object(&vote);
+
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), key);
+
+        Self { vote, sig }
     }
 }
 

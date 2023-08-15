@@ -40,7 +40,7 @@ impl MockSignatures {
 }
 
 impl Hashable for MockSignatures {
-    fn hash<H: Hasher>(&self, state: &mut H) {}
+    fn hash<H: Hasher>(&self, _state: &mut H) {}
 }
 
 impl SignatureCollection for MockSignatures {
@@ -48,11 +48,11 @@ impl SignatureCollection for MockSignatures {
     type SignatureType = SecpSignature;
 
     fn new(
-        sigs: Vec<(NodeId, Self::SignatureType)>,
-        validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
+        _sigs: Vec<(NodeId, Self::SignatureType)>,
+        _validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
             <Self::SignatureType as monad_consensus_types::certificate_signature::CertificateSignature>::KeyPairType,
         >,
-        msg: &[u8],
+        _msg: &[u8],
     ) -> Result<Self, Self::SignatureError> {
         Ok(Self { pubkey: Vec::new() })
     }
@@ -63,10 +63,10 @@ impl SignatureCollection for MockSignatures {
 
     fn verify(
         &self,
-        validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
+        _validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
             <Self::SignatureType as monad_consensus_types::certificate_signature::CertificateSignature>::KeyPairType,
         >,
-        msg: &[u8],
+        _msg: &[u8],
     ) -> Result<Vec<NodeId>, Self::SignatureError> {
         Ok(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)).collect())
     }
@@ -115,7 +115,9 @@ pub fn create_certificate_keys<SCT: SignatureCollection>(
 ) -> Vec<SignatureCollectionKeyPairType<SCT>> {
     let mut res = Vec::new();
     for i in 0..num_keys {
-        let keypair = get_certificate_key::<SCT>(i.into());
+        // (i+1) makes sure that the MessageKeyPair != CertificateKeyPair
+        // so we don't accidentally mis-sign stuff without test noticing
+        let keypair = get_certificate_key::<SCT>(i as u64 + 1);
         res.push(keypair);
     }
     res

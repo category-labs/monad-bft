@@ -9,20 +9,22 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     validation::{Hasher, Sha256Hash},
-    voting::VoteInfo,
+    voting::{Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_state::{
     convert::interface::{deserialize_event, serialize_event},
     ConsensusEvent, MonadEvent,
 };
-use monad_testutil::signing::get_key;
+use monad_testutil::signing::{get_certificate_key, get_key};
 use monad_types::{BlockId, Hash, Round};
+
+type SignatureCollectionType = MultiSig<SecpSignature>;
 
 #[test]
 fn test_consensus_timeout_event() {
     let event = MonadEvent::ConsensusEvent(
-        ConsensusEvent::<SecpSignature, MultiSig<SecpSignature>>::Timeout(PacemakerTimerExpire {}),
+        ConsensusEvent::<SecpSignature, SignatureCollectionType>::Timeout(PacemakerTimerExpire {}),
     );
 
     let buf = serialize_event(&event);
@@ -34,6 +36,7 @@ fn test_consensus_timeout_event() {
 #[test]
 fn test_consensus_message_event() {
     let keypair: KeyPair = get_key(0);
+    let certkeypair = get_certificate_key::<SignatureCollectionType>(7);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: Round(1),
@@ -44,11 +47,13 @@ fn test_consensus_message_event() {
         commit_state_hash: None,
         vote_info_hash: Hash([42_u8; 32]),
     };
-    let votemsg: ConsensusMessage<SecpSignature, MultiSig<SecpSignature>> =
-        ConsensusMessage::Vote(VoteMessage {
-            vote_info: vi,
-            ledger_commit_info: lci,
-        });
+    let vote = Vote {
+        vote_info: vi,
+        ledger_commit_info: lci,
+    };
+
+    let votemsg: ConsensusMessage<SecpSignature, SignatureCollectionType> =
+        ConsensusMessage::Vote(VoteMessage::new::<Sha256Hash>(vote, &certkeypair));
     let votemsg_hash = Sha256Hash::hash_object(&votemsg);
     let sig = keypair.sign(votemsg_hash.as_ref());
 

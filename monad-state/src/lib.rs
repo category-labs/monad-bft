@@ -45,8 +45,8 @@ type HasherType = Sha256Hash;
 
 pub struct MonadState<CT, ST, SCT, VT, LT, BST>
 where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
 
@@ -62,8 +62,8 @@ where
 impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
 where
     CT: ConsensusProcess<ST, SCT>,
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
     VT: ValidatorSetType,
     BST: BlockSyncProcess<ST, SCT, VT>,
 {
@@ -110,8 +110,8 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
 where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
@@ -167,12 +167,14 @@ impl monad_types::Serializable
 }
 
 #[derive(Debug, Clone)]
-pub struct VerifiedMonadMessage<ST, SCT>(Verified<ST, ConsensusMessage<ST, SCT>>);
+pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
+    Verified<ST, ConsensusMessage<ST, SCT>>,
+);
 
 #[derive(RefCast)]
 #[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadMessage<ST, SCT>(Unverified<ST, ConsensusMessage<ST, SCT>>);
+pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
 impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Serializable
@@ -196,13 +198,13 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Des
     }
 }
 
-impl<ST, SCT> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
+impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         MonadMessage(value.0.into())
     }
 }
 
-impl<ST, SCT> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
+impl<ST, SCT: SignatureCollection> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
     fn as_ref(&self) -> &MonadMessage<ST, SCT> {
         MonadMessage::ref_cast(self.0.as_ref())
     }
@@ -210,8 +212,8 @@ impl<ST, SCT> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
 
 impl<ST, SCT> Message for MonadMessage<ST, SCT>
 where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     type Event = MonadEvent<ST, SCT>;
     type Id = ST;
@@ -236,6 +238,7 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub transaction_validator: TV,
     pub validators: Vec<(PubKey, SignatureCollectionPubKeyType<SCT>)>,
     pub key: KeyPair,
+    pub certkey: SignatureCollectionKeyPairType<SCT>,
 
     pub delta: Duration,
     pub genesis_block: Block<SCT>,
@@ -246,8 +249,8 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
 impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
 where
     CT: ConsensusProcess<ST, SCT>,
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
     BST: BlockSyncProcess<ST, SCT, VT>,
@@ -308,6 +311,7 @@ where
                 genesis_qc,
                 config.delta,
                 config.key,
+                config.certkey,
             ),
             block_sync: BST::new(),
         };
@@ -405,7 +409,6 @@ where
                             ConsensusMessage::Vote(msg) => {
                                 self.consensus.handle_vote_message::<HasherType, _, _>(
                                     author,
-                                    signature,
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
@@ -527,7 +530,7 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusEvent<ST, SCT> {
+pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
         sender: PubKey,
         unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
@@ -540,7 +543,7 @@ pub enum ConsensusEvent<ST, SCT> {
     AdvanceEpoch(Option<ValidatorData>),
 }
 
-impl<S: Debug, SC: Debug> Debug for ConsensusEvent<S, SC> {
+impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusEvent::Message {

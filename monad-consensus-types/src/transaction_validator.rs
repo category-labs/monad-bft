@@ -19,7 +19,7 @@ impl TransactionValidator for MockValidator {
 pub struct EthereumValidator;
 
 impl TransactionValidator for EthereumValidator {
-    fn validate(&self, txs: &FullTransactionList) -> bool {
+    fn validate(&self, _txs: &FullTransactionList) -> bool {
         unimplemented!()
     }
 }

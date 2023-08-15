@@ -68,8 +68,8 @@ pub fn genesis_vote_info(genesis_block_id: BlockId) -> VoteInfo {
     }
 }
 
-impl<T: SignatureCollection> QuorumCertificate<T> {
-    pub fn new<H: Hasher>(info: QcInfo, signatures: T) -> Self {
+impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
+    pub fn new<H: Hasher>(info: QcInfo, signatures: SCT) -> Self {
         let hash = signatures.get_hash::<H>();
         QuorumCertificate {
             info,
@@ -88,7 +88,7 @@ impl<T: SignatureCollection> QuorumCertificate<T> {
         };
         let lci = LedgerCommitInfo::new::<H>(None, &vote_info);
 
-        let sigs = T::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
+        let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])
             .expect("genesis qc sigs");
         let sig_hash = sigs.get_hash::<H>();
 
@@ -105,7 +105,7 @@ impl<T: SignatureCollection> QuorumCertificate<T> {
     // This is the QC that will be used in the block of the first proposal
     // and will be the initial qc_high for all nodes
     // All initial genesis nodes will have to create signatures for the genesis lci
-    pub fn genesis_qc<H: Hasher>(genesis_vote_info: VoteInfo, genesis_signatures: T) -> Self {
+    pub fn genesis_qc<H: Hasher>(genesis_vote_info: VoteInfo, genesis_signatures: SCT) -> Self {
         let vote_info = genesis_vote_info;
         let lci = LedgerCommitInfo::new::<H>(None, &vote_info);
 

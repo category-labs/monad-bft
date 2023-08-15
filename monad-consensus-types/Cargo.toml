@@ -15,4 +15,12 @@ sha2 = { workspace = true }
 zerocopy = { workspace = true }
 
 [features]
-proto = ["dep:monad-proto", "dep:prost", "monad-crypto/proto", "monad-types/proto"]
+proto = [
+    "dep:monad-proto",
+    "dep:prost",
+    "monad-crypto/proto",
+    "monad-types/proto",
+]
+
+[dev-dependencies]
+test-case = { workspace = true }

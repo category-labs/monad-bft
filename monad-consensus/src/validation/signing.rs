@@ -226,15 +226,15 @@ where
     }
 }
 
-impl<S: MessageSignature> Unverified<S, VoteMessage> {
+impl<S: MessageSignature, SCT: SignatureCollection> Unverified<S, VoteMessage<SCT>> {
     // A verified vote message has a valid signature
     // Return type must keep the signature with the message as it is used later by the protocol
     pub fn verify<H: Hasher>(
         self,
         validators: &HashMap<NodeId, Stake>,
         sender: &PubKey,
-    ) -> Result<Verified<S, VoteMessage>, Error> {
-        let msg = H::hash_object(&self.obj.ledger_commit_info);
+    ) -> Result<Verified<S, VoteMessage<SCT>>, Error> {
+        let msg = H::hash_object(&self.obj);
 
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
 

@@ -117,12 +117,13 @@ mod tests {
         let state_configs = node_configs
             .into_iter()
             .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|((key, _, exec, logger_config), _)| {
+            .map(|((key, certkey, exec, logger_config), _)| {
                 (
                     exec,
                     MonadConfig {
                         transaction_validator: TransactionValidatorType {},
                         key,
+                        certkey,
                         validators: config_validators.clone(),
                         delta: Duration::from_millis(2),
                         genesis_block: genesis_block.clone(),

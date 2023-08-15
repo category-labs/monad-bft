@@ -1,19 +1,23 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
     block::Block,
+    certificate_signature::CertificateKeyPair,
     ledger::LedgerCommitInfo,
+    multi_sig::MultiSig,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
-    voting::VoteInfo,
+    voting::{Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_testutil::signing::*;
 use monad_types::*;
 use sha2::Digest;
 use test_case::test_case;
-use zerocopy::AsBytes;
+
+type SignatureCollectionType = MultiSig<SecpSignature>;
 
 #[test]
 fn timeout_msg_hash() {
@@ -125,7 +129,7 @@ fn test_vote_message() {
         vote_info_hash: Default::default(),
     };
 
-    let vm = VoteMessage {
+    let v = Vote {
         vote_info: VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
@@ -136,9 +140,12 @@ fn test_vote_message() {
     };
 
     let mut privkey: [u8; 32] = [127; 32];
-    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+    let keypair = KeyPair::from_bytes(&mut privkey.clone()).unwrap();
+    let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
 
-    let expected_vote_info_hash = vm.ledger_commit_info.vote_info_hash;
+    let vm = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkeypair);
+
+    let expected_vote_info_hash = vm.vote.ledger_commit_info.vote_info_hash;
 
     let msg = Sha256Hash::hash_object(&vm);
     let svm = TestSigner::sign_object::<Sha256Hash, _>(vm, &keypair);
@@ -158,29 +165,45 @@ fn test_vote_message() {
 #[test_case(None ; "None commit_state")]
 #[test_case(Some(Default::default()) ; "Some commit_state")]
 fn vote_msg_hash(cs: Option<Hash>) {
+    let vi = VoteInfo {
+        id: BlockId(Hash([0x00_u8; 32])),
+        round: Round(0),
+        parent_id: BlockId(Hash([0x00_u8; 32])),
+        parent_round: Round(0),
+    };
+    let vi_hash = Sha256Hash::hash_object(&vi);
+
     let lci = LedgerCommitInfo {
         commit_state_hash: cs,
-        vote_info_hash: Default::default(),
+        vote_info_hash: vi_hash,
     };
 
-    let vm = VoteMessage {
-        vote_info: VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-        },
+    let v = Vote {
+        vote_info: vi,
         ledger_commit_info: lci,
     };
 
+    let certkey = get_certificate_key::<SignatureCollectionType>(7);
+    let vm = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkey);
+
     let mut hasher = sha2::Sha256::new();
-    hasher.update(vm.vote_info.id.0.as_bytes());
-    hasher.update(vm.vote_info.round.as_bytes());
-    hasher.update(vm.vote_info.parent_id.0.as_bytes());
-    hasher.update(vm.vote_info.parent_round.as_bytes());
+    hasher.update(vi_hash);
+    if let Some(cs) = cs {
+        hasher.update(cs);
+    }
+    unsafe {
+        let sig_bytes = std::mem::transmute::<
+            <SignatureCollectionType as SignatureCollection>::SignatureType,
+            [u8; std::mem::size_of::<
+                <SignatureCollectionType as SignatureCollection>::SignatureType,
+            >()],
+        >(vm.sig);
+        hasher.update(sig_bytes);
+    }
+
     let h1: Hash = Hash(hasher.finalize_reset().into());
 
-    let h2 = Sha256Hash::hash_object(&vm.vote_info);
+    let h2 = Sha256Hash::hash_object(&vm);
 
     assert_eq!(h1, h2);
 }

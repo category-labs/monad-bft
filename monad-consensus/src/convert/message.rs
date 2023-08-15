@@ -2,7 +2,10 @@ use std::ops::Deref;
 
 use monad_consensus_types::{
     certificate_signature::CertificateSignatureRecoverable,
-    convert::signing::{message_signature_to_proto, proto_to_message_signature},
+    convert::signing::{
+        certificate_signature_to_proto, message_signature_to_proto, proto_to_certificate_signature,
+        proto_to_message_signature,
+    },
     message_signature::MessageSignature,
     multi_sig::MultiSig,
 };
@@ -13,7 +16,7 @@ use crate::{
         consensus_message::ConsensusMessage,
         message::{
             BlockSyncMessage, ProposalMessage as ConsensusTypePropMsg, RequestBlockSyncMessage,
-            TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage,
+            TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage as ConsensusTypeVoteMsg,
         },
     },
     validation::signing::{Unverified, Verified},
@@ -21,36 +24,35 @@ use crate::{
 
 type TimeoutMessage<MS, CS> = ConsensusTypeTmoMsg<MS, MultiSig<CS>>;
 type ProposalMessage<MS, CS> = ConsensusTypePropMsg<MS, MultiSig<CS>>;
+type VoteMessage<CS> = ConsensusTypeVoteMsg<MultiSig<CS>>;
+
 pub(crate) type VerifiedConsensusMessage<MS, CS> = Verified<MS, ConsensusMessage<MS, MultiSig<CS>>>;
 pub(crate) type UnverifiedConsensusMessage<MS, CS> =
     Unverified<MS, ConsensusMessage<MS, MultiSig<CS>>>;
 
-impl From<&VoteMessage> for ProtoVoteMessage {
-    fn from(value: &VoteMessage) -> Self {
+impl<CS: CertificateSignatureRecoverable> From<&VoteMessage<CS>> for ProtoVoteMessage {
+    fn from(value: &VoteMessage<CS>) -> Self {
         ProtoVoteMessage {
-            vote_info: Some((&value.vote_info).into()),
-            ledger_commit_info: Some((&value.ledger_commit_info).into()),
+            vote: Some((&value.vote).into()),
+            sig: Some(certificate_signature_to_proto(&value.sig)),
         }
     }
 }
 
-impl TryFrom<ProtoVoteMessage> for VoteMessage {
+impl<CS: CertificateSignatureRecoverable> TryFrom<ProtoVoteMessage> for VoteMessage<CS> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoVoteMessage) -> Result<Self, Self::Error> {
         Ok(Self {
-            vote_info: value
-                .vote_info
-                .ok_or(Self::Error::MissingRequiredField(
-                    "VoteMessage.vote_info".to_owned(),
-                ))?
+            vote: value
+                .vote
+                .ok_or(ProtoError::MissingRequiredField("VoteMsg.vote".to_owned()))?
                 .try_into()?,
-            ledger_commit_info: value
-                .ledger_commit_info
-                .ok_or(Self::Error::MissingRequiredField(
-                    "VoteMessage.ledger_commit_info".to_owned(),
-                ))?
-                .try_into()?,
+            sig: proto_to_certificate_signature(
+                value
+                    .sig
+                    .ok_or(ProtoError::MissingRequiredField("VoteMsg.sig".to_owned()))?,
+            )?,
         })
     }
 }

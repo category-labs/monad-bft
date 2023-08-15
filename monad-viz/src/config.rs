@@ -59,7 +59,7 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
     )> {
-        let (keys, cert_keys, validators, validator_mapping) =
+        let (keys, cert_keys, _validators, validator_mapping) =
             create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
 
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -75,15 +75,16 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
 
         let state_configs = keys
             .into_iter()
-            .zip(std::iter::repeat(pubkeys.clone()))
-            .map(|(key, pubkeys)| MonadConfig {
+            .zip(cert_keys.into_iter())
+            .map(|(key, certkey)| MonadConfig {
                 transaction_validator: MockValidator,
                 key,
-                validators: pubkeys
+                certkey,
+                validators: validator_mapping
+                    .map
                     .iter()
-                    .cloned()
-                    .zip(cert_keys.iter().map(|k| k.pubkey()))
-                    .collect(),
+                    .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
+                    .collect::<Vec<_>>(),
 
                 delta: self.delta,
                 genesis_block: genesis_block.clone(),

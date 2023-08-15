@@ -3,14 +3,9 @@ use std::{collections::BTreeMap, time::Duration};
 use monad_block_sync::{BlockSyncProcess, BlockSyncState};
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    block::BlockType,
-    certificate_signature::{CertificateKeyPair, CertificateSignatureRecoverable},
-    message_signature::MessageSignature,
-    multi_sig::MultiSig,
-    quorum_certificate::genesis_vote_info,
-    signature_collection::SignatureCollection,
-    transaction_validator::MockValidator,
-    validation::Sha256Hash,
+    block::BlockType, message_signature::MessageSignature, multi_sig::MultiSig,
+    quorum_certificate::genesis_vote_info, signature_collection::SignatureCollection,
+    transaction_validator::MockValidator, validation::Sha256Hash,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -72,12 +67,15 @@ pub fn get_configs<SCT: SignatureCollection>(
 
     let state_configs = keys
         .into_iter()
-        .map(|key| MonadConfig {
+        .zip(cert_keys.into_iter())
+        .map(|(key, certkey)| MonadConfig {
             transaction_validator: TransactionValidatorType {},
             key,
-            validators: voting_keys
+            certkey,
+            validators: validator_mapping
+                .map
                 .iter()
-                .map(|(node_id, k)| (node_id.0, k.pubkey()))
+                .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
                 .collect::<Vec<_>>(),
             delta,
             genesis_block: genesis_block.clone(),
@@ -91,8 +89,8 @@ pub fn get_configs<SCT: SignatureCollection>(
 
 pub fn node_ledger_verification<
     CT: ConsensusProcess<ST, SCT>,
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST> + PartialEq,
+    ST: MessageSignature,
+    SCT: SignatureCollection + PartialEq,
     VT: ValidatorSetType,
     LT: LeaderElection,
     BST: BlockSyncProcess<ST, SCT, VT>,
