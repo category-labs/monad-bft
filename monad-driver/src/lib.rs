@@ -6,7 +6,7 @@ mod tests {
     use monad_block_sync::BlockSyncState;
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
-        certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
+        block::BlockType, certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
         quorum_certificate::genesis_vote_info,
         signature_collection::SignatureCollectionKeyPairType, transaction_validator::MockValidator,
         validation::Sha256Hash, voting::ValidatorMapping,

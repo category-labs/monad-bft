@@ -8,6 +8,11 @@ use crate::{
     validation::{Hashable, Hasher},
 };
 
+pub trait BlockType: Clone {
+    fn get_id(&self) -> BlockId;
+    fn get_parent_id(&self) -> BlockId;
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Block<T> {
     pub author: NodeId,
@@ -56,12 +61,14 @@ impl<T: SignatureCollection> Block<T> {
         b.id = BlockId(H::hash_object(&b));
         b
     }
+}
 
-    pub fn get_id(&self) -> BlockId {
+impl<T: SignatureCollection> BlockType for Block<T> {
+    fn get_id(&self) -> BlockId {
         self.id
     }
 
-    pub fn get_parent_id(&self) -> BlockId {
+    fn get_parent_id(&self) -> BlockId {
         self.qc.info.vote.id
     }
 }

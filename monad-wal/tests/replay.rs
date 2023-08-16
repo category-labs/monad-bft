@@ -3,6 +3,7 @@ mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
     use monad_executor::{Message, State};
+    use monad_testutil::block::MockBlock;
     use monad_types::{Deserializable, Serializable};
     use monad_wal::{
         wal::{WALogger, WALoggerConfig},
@@ -73,7 +74,7 @@ mod test {
         type Event = TestEvent;
         type OutboundMessage = MockMessage;
         type Message = MockMessage;
-        type Block = ();
+        type Block = MockBlock;
         type Checkpoint = ();
 
         fn init(

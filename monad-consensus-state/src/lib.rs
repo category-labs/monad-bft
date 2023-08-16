@@ -11,7 +11,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     message_signature::MessageSignature,
     payload::FullTransactionList,
     quorum_certificate::{QuorumCertificate, Rank},
@@ -433,6 +433,7 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
+        block::BlockType,
         certificate_signature::CertificateSignatureRecoverable,
         ledger::LedgerCommitInfo,
         message_signature::MessageSignature,

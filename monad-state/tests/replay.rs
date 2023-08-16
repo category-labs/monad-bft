@@ -5,7 +5,9 @@ mod test {
 
     use monad_block_sync::BlockSyncState;
     use monad_consensus_state::ConsensusState;
-    use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+    use monad_consensus_types::{
+        block::BlockType, multi_sig::MultiSig, transaction_validator::MockValidator,
+    };
     use monad_crypto::secp256k1::SecpSignature;
     use monad_executor::{
         executor::mock::NoSerRouterScheduler,

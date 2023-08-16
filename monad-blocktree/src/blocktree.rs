@@ -1,6 +1,9 @@
 use std::{collections::HashMap, fmt, result::Result as StdResult};
 
-use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    block::{Block, BlockType},
+    signature_collection::SignatureCollection,
+};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Round};
 use ptree::{builder::TreeBuilder, print_tree};
@@ -312,7 +315,7 @@ mod test {
     use std::collections::HashSet;
 
     use monad_consensus_types::{
-        block::Block as ConsensusBlock,
+        block::{Block as ConsensusBlock, BlockType},
         ledger::LedgerCommitInfo,
         payload::{ExecutionArtifacts, Payload, TransactionList},
         quorum_certificate::{QcInfo, QuorumCertificate},

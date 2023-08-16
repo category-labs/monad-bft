@@ -477,7 +477,10 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
     use monad_crypto::secp256k1::KeyPair;
-    use monad_testutil::signing::{create_keys, node_id};
+    use monad_testutil::{
+        block::MockBlock,
+        signing::{create_keys, node_id},
+    };
     use monad_types::{Deserializable, Serializable};
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -652,7 +655,7 @@ mod tests {
         type Event = SimpleChainEvent;
         type OutboundMessage = SimpleChainMessage;
         type Message = SimpleChainMessage;
-        type Block = ();
+        type Block = MockBlock;
         type Checkpoint = ();
 
         fn init(

@@ -6,7 +6,7 @@ use iced::{
 };
 use iced_lazy::Component;
 use monad_consensus_types::{
-    quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
+    block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};

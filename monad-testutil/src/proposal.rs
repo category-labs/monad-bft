@@ -3,7 +3,7 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     certificate_signature::{CertificateSignature, CertificateSignatureRecoverable},
     ledger::LedgerCommitInfo,
     message_signature::MessageSignature,

@@ -1,5 +1,5 @@
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     certificate_signature::CertificateSignature,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
@@ -11,6 +11,37 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_types::{BlockId, Hash, NodeId, Round};
+
+// test utility if you only wish for simple block
+#[derive(Clone, PartialEq, Eq)]
+pub struct MockBlock {
+    pub block_id: BlockId,
+    pub parent_block_id: BlockId,
+}
+
+impl Default for MockBlock {
+    fn default() -> Self {
+        MockBlock {
+            block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+            parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+        }
+    }
+}
+
+impl BlockType for MockBlock {
+    fn get_id(&self) -> monad_types::BlockId {
+        self.block_id
+    }
+    fn get_parent_id(&self) -> monad_types::BlockId {
+        self.parent_block_id
+    }
+}
+
+impl std::fmt::Debug for MockBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockBlock").finish()
+    }
+}
 
 pub fn setup_block(
     author: NodeId,

@@ -1,7 +1,7 @@
 use std::cmp;
 
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,

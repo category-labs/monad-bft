@@ -6,6 +6,7 @@ use std::{
 use monad_block_sync::{BlockSyncProcess, BlockSyncState};
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
+    block::BlockType,
     certificate_signature::{CertificateKeyPair, CertificateSignatureRecoverable},
     message_signature::MessageSignature,
     multi_sig::MultiSig,

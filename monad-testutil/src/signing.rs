@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, TransactionList},

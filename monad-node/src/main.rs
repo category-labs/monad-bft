@@ -5,7 +5,7 @@ use futures_util::{FutureExt, StreamExt};
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,

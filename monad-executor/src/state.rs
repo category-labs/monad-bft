@@ -1,6 +1,9 @@
 use std::hash::Hash;
 
-use monad_consensus_types::payload::{FullTransactionList, TransactionList};
+use monad_consensus_types::{
+    block::BlockType,
+    payload::{FullTransactionList, TransactionList},
+};
 use monad_crypto::secp256k1::PubKey;
 use monad_types::BlockId;
 
@@ -121,7 +124,7 @@ pub trait State: Sized {
     type Event: Clone;
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
     type Message: Message<Event = Self::Event>;
-    type Block;
+    type Block: BlockType;
     type Checkpoint;
 
     fn init(
