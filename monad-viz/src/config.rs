@@ -12,7 +12,9 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
-    mock_swarm::{LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer},
+    transformer::{
+        LatencyTransformer, Pipeline, Transformer, TransformerPipeline, XorLatencyTransformer,
+    },
     State,
 };
 use monad_state::MonadConfig;
@@ -27,7 +29,7 @@ pub struct SimConfig {
     pub num_nodes: u32,
     pub delta: Duration,
     pub max_tick: Duration,
-    pub transformer: LayerTransformer<MM>,
+    pub pipeline: TransformerPipeline<MM>,
 }
 
 impl SimConfig {
@@ -47,7 +49,7 @@ impl SimConfig {
     }
 }
 
-impl SimulationConfig<MS, NoSerRouterScheduler<MM>, LayerTransformer<MM>, PersistenceLoggerType>
+impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, PersistenceLoggerType>
     for SimConfig
 {
     fn nodes(
@@ -102,8 +104,8 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, LayerTransformer<MM>, Persis
         self.max_tick
     }
 
-    fn transformer(&self) -> &LayerTransformer<MM> {
-        &self.transformer
+    fn pipeline(&self) -> &TransformerPipeline<MM> {
+        &self.pipeline
     }
 }
 
@@ -163,11 +165,29 @@ where
                 },
             ));
 
-        for (idx, layer) in self.config.transformer.iter().enumerate() {
+        for idx in 0..self.config.pipeline.len() {
+            let layer = &self.config.pipeline[idx];
             let element = match layer {
-                Layer::Latency(LatencyTransformer(latency)) => Column::new()
+                Transformer::Latency(LatencyTransformer(latency)) => Column::new()
                     .push(Text::new(format!(
-                        "({}) Latency Layer: {}ms",
+                        "({}) Latency Transformer: {}ms",
+                        idx,
+                        latency.as_millis()
+                    )))
+                    .push(Slider::new(
+                        0..=1_000,
+                        latency.as_millis() as u32,
+                        move |l_ms: u32| {
+                            let mut config = self.config.clone();
+                            config.pipeline[idx] = Transformer::Latency(LatencyTransformer(
+                                Duration::from_millis(l_ms.into()),
+                            ));
+                            config
+                        },
+                    )),
+                Transformer::XorLatency(XorLatencyTransformer(latency)) => Column::new()
+                    .push(Text::new(format!(
+                        "({}) XorLatency Transformer: {}ms",
                         idx,
                         latency.as_millis()
                     )))
@@ -176,30 +196,13 @@ where
                         latency.as_millis() as u32,
                         move |l_ms| {
                             let mut config = self.config.clone();
-                            config.transformer[idx] = Layer::Latency(LatencyTransformer(
+                            config.pipeline[idx] = Transformer::XorLatency(XorLatencyTransformer(
                                 Duration::from_millis(l_ms.into()),
                             ));
                             config
                         },
                     )),
-                Layer::XorLatency(XorLatencyTransformer(latency)) => Column::new()
-                    .push(Text::new(format!(
-                        "({}) XorLatency Layer: {}ms",
-                        idx,
-                        latency.as_millis()
-                    )))
-                    .push(Slider::new(
-                        0..=1_000,
-                        latency.as_millis() as u32,
-                        move |l_ms| {
-                            let mut config = self.config.clone();
-                            config.transformer[idx] = Layer::XorLatency(XorLatencyTransformer(
-                                Duration::from_millis(l_ms.into()),
-                            ));
-                            config
-                        },
-                    )),
-                Layer::Blacklist(_) => todo!(),
+                _ => todo!(),
             };
             col = col.push(element);
         }

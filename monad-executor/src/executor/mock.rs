@@ -482,9 +482,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        mock_swarm::{LatencyTransformer, Nodes},
+        mock_swarm::Nodes,
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
-        Message,
+        transformer::{LatencyTransformer, Transformer, TransformerPipeline},
+        xfmr_pipe, Message,
     };
 
     #[test]
@@ -764,7 +765,12 @@ mod tests {
             NoSerRouterScheduler<SimpleChainMessage>,
             _,
             MockWALogger<TimedEvent<SimpleChainEvent>>,
-        >::new(peers, LatencyTransformer(Duration::from_millis(50)));
+        >::new(
+            peers,
+            xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+                Duration::from_millis(50),
+            ))),
+        );
 
         while let Some((duration, id, event)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")

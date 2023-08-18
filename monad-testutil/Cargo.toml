@@ -20,6 +20,4 @@ monad-types = {path = "../monad-types" }
 monad-validator = {path = "../monad-validator" }
 monad-wal = {path = "../monad-wal" }
 
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 sha2 = { workspace = true }

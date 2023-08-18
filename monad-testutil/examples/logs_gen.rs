@@ -6,9 +6,10 @@ use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockVali
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
-    mock_swarm::{Nodes, Transformer},
+    mock_swarm::Nodes,
     timed_event::TimedEvent,
-    State,
+    transformer::{Pipeline, Transformer, TransformerPipeline},
+    xfmr_pipe, State,
 };
 use monad_state::{MonadEvent, MonadState};
 use monad_testutil::swarm::get_configs;
@@ -27,7 +28,7 @@ type MS = MonadState<
 >;
 type MM = <MS as State>::Message;
 
-pub fn generate_log<T: Transformer<MM>>(
+pub fn generate_log<T: Pipeline<MM>>(
     num_nodes: u16,
     num_blocks: usize,
     delta: Duration,
@@ -68,12 +69,14 @@ pub fn generate_log<T: Transformer<MM>>(
 }
 
 fn main() {
-    use monad_executor::mock_swarm::LatencyTransformer;
+    use monad_executor::transformer::LatencyTransformer;
     generate_log(
         4,
         10,
         Duration::from_millis(101),
-        LatencyTransformer(Duration::from_millis(100)),
+        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(100),
+        ))),
     );
     println!("Logs Generated!");
 }

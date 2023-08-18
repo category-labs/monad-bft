@@ -3,8 +3,9 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Debug, time::Duration};
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
     executor::mock::{MockExecutor, RouterScheduler},
-    mock_swarm::{LinkMessage, Nodes, Transformer},
+    mock_swarm::{LinkMessage, Nodes},
     timed_event::TimedEvent,
+    transformer::Pipeline,
     Message, PeerId,
 };
 use monad_types::{Deserializable, Serializable};
@@ -57,11 +58,11 @@ pub trait SimulationConfig<S, RS, T, LGR>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
-    T: Transformer<RS::Serialized>,
+    T: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     fn max_tick(&self) -> Duration;
-    fn transformer(&self) -> &T;
+    fn pipeline(&self) -> &T;
     fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config)>;
 }
 
@@ -69,7 +70,7 @@ pub struct NodesSimulation<S, RS, T, LGR, C>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
-    T: Transformer<RS::Serialized>,
+    T: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
 {
@@ -87,14 +88,14 @@ where
     RS::Serialized: Eq,
     MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
-    T: Transformer<RS::Serialized> + Clone,
+    T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
     S::Event: Serializable + Deserializable + Debug,
 {
     pub fn new(config: C) -> Self {
         Self {
-            nodes: Nodes::new(config.nodes(), config.transformer().clone()),
+            nodes: Nodes::new(config.nodes(), config.pipeline().clone()),
             current_tick: Duration::ZERO,
 
             config,
@@ -113,7 +114,7 @@ where
     }
 
     fn reset(&mut self) {
-        self.nodes = Nodes::new(self.config.nodes(), self.config.transformer().clone());
+        self.nodes = Nodes::new(self.config.nodes(), self.config.pipeline().clone());
         self.current_tick = self.min_tick();
     }
 }
@@ -125,7 +126,7 @@ where
     RS::Serialized: Eq,
     MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
-    T: Transformer<RS::Serialized> + Clone,
+    T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
     S::Event: Serializable + Deserializable + Debug,

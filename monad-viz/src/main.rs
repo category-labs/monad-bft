@@ -31,9 +31,9 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
-    mock_swarm::{LatencyTransformer, Layer, LayerTransformer, XorLatencyTransformer},
     timed_event::TimedEvent,
-    PeerId, State,
+    transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
+    xfmr_pipe, PeerId, State,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
@@ -68,7 +68,7 @@ type PersistenceLoggerType =
 type Sim = NodesSimulation<
     MS,
     NoSerRouterScheduler<MM>,
-    LayerTransformer<MM>,
+    TransformerPipeline<MM>,
     PersistenceLoggerType,
     SimConfig,
 >;
@@ -166,10 +166,10 @@ impl Application for Viz {
                 num_nodes: 4,
                 delta: Duration::from_millis(101),
                 max_tick: Duration::from_secs_f32(4.0),
-                transformer: vec![
-                    Layer::Latency(LatencyTransformer(Duration::from_millis(100))),
-                    Layer::XorLatency(XorLatencyTransformer(Duration::from_millis(20))),
-                ],
+                pipeline: xfmr_pipe!(
+                    Transformer::Latency(LatencyTransformer(Duration::from_millis(100))),
+                    Transformer::XorLatency(XorLatencyTransformer(Duration::from_millis(20)))
+                ),
             };
             let simulation = {
                 NodesSimulation::<

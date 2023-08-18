@@ -10,8 +10,10 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
-    mock_swarm::{Nodes, XorLatencyTransformer},
+    mock_swarm::Nodes,
     timed_event::TimedEvent,
+    transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
+    xfmr_pipe,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
@@ -29,8 +31,6 @@ fn test_replay() {
 }
 
 pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_block_after: usize) {
-    use monad_executor::mock_swarm::LatencyTransformer;
-
     let (pubkeys, state_configs) = get_configs(num_nodes, Duration::from_millis(101));
 
     // create the log file path
@@ -65,7 +65,9 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
     >::new(
         peers,
-        XorLatencyTransformer(Duration::from_millis(u8::MAX as u64)),
+        xfmr_pipe!(Transformer::XorLatency(XorLatencyTransformer(
+            Duration::from_millis(u8::MAX as u64)
+        ))),
     );
 
     while let Some((_, _, _)) = nodes.step() {
@@ -125,7 +127,12 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
-    >::new(peers_clone, LatencyTransformer(Duration::from_millis(1)));
+    >::new(
+        peers_clone,
+        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(1)
+        ))),
+    );
 
     let node_ledger_recovered = nodes_recovered
         .states()

@@ -1,5 +1,9 @@
 use std::env;
 
+use monad_executor::{
+    transformer::{Transformer, TransformerPipeline},
+    xfmr_pipe,
+};
 use monad_testutil::swarm::run_nodes;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -41,12 +45,14 @@ fn nodes_with_random_latency_cron() {
 fn nodes_with_random_latency(seed: u64) {
     use std::time::Duration;
 
-    use monad_executor::mock_swarm::RandLatencyTransformer;
+    use monad_executor::transformer::RandLatencyTransformer;
 
     run_nodes(
         4,
         2048,
         Duration::from_millis(250),
-        RandLatencyTransformer::new(seed, 330),
+        xfmr_pipe!(Transformer::RandLatency(RandLatencyTransformer::new(
+            seed, 330
+        ))),
     );
 }

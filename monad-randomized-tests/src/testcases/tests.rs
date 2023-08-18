@@ -1,13 +1,13 @@
 use std::{collections::HashSet, time::Duration};
 
 use monad_executor::{
-    mock_swarm::{LatencyTransformer, RandLatencyTransformer, Transformer},
-    PeerId,
+    transformer::{
+        LatencyTransformer, PartitionTransformer, RandLatencyTransformer, ReplayTransformer,
+        Transformer, TransformerPipeline, TransformerReplayOrder,
+    },
+    xfmr_pipe, PeerId,
 };
-use monad_testutil::swarm::{
-    get_configs, run_nodes, run_one_delayed_node, PartitionThenReplayTransformer,
-    TransformerReplayOrder,
-};
+use monad_testutil::swarm::{get_configs, run_nodes, run_one_delayed_node};
 
 use crate::RandomizedTest;
 
@@ -16,7 +16,9 @@ fn random_latency_test(seed: u64) {
         4,
         2048,
         Duration::from_millis(250),
-        RandLatencyTransformer::new(seed, 330),
+        xfmr_pipe!(Transformer::RandLatency(RandLatencyTransformer::new(
+            seed, 330,
+        ))),
     );
 }
 
@@ -35,15 +37,14 @@ fn delayed_message_test(seed: u64) {
     println!("delayed node ID: {:?}", first_node);
 
     run_one_delayed_node(
-        vec![
-            LatencyTransformer(Duration::from_millis(1)).boxed(),
-            PartitionThenReplayTransformer::new(
-                filter_peers,
+        xfmr_pipe!(
+            Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            Transformer::Partition(PartitionTransformer(filter_peers)),
+            Transformer::Replay(ReplayTransformer::new(
                 200,
                 TransformerReplayOrder::Random(seed),
-            )
-            .boxed(),
-        ],
+            ))
+        ),
         pubkeys,
         state_configs,
     );

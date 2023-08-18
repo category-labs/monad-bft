@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_executor::mock_swarm::LatencyTransformer;
+use monad_executor::{
+    transformer::{LatencyTransformer, Transformer, TransformerPipeline},
+    xfmr_pipe,
+};
 use monad_testutil::swarm::run_nodes;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -16,6 +19,8 @@ fn two_nodes() {
         2,
         1024,
         Duration::from_millis(2),
-        LatencyTransformer(Duration::from_millis(1)),
+        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(1)
+        ))),
     );
 }

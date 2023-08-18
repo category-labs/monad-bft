@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use monad_block_sync::{BlockSyncProcess, BlockSyncState};
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
@@ -21,8 +18,9 @@ use monad_crypto::{
 };
 use monad_executor::{
     executor::mock::{MockExecutor, NoSerRouterScheduler},
-    mock_swarm::{LinkMessage, Nodes, Transformer},
+    mock_swarm::Nodes,
     timed_event::TimedEvent,
+    transformer::Pipeline,
     PeerId, State,
 };
 use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
@@ -36,8 +34,6 @@ use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
     PersistenceLogger,
 };
-use rand::{prelude::SliceRandom, SeedableRng};
-use rand_chacha::ChaChaRng;
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -57,86 +53,6 @@ type MM = <MS as State>::Message;
 type RS = NoSerRouterScheduler<MM>;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
-
-pub enum TransformerReplayOrder {
-    Forward,
-    Reverse,
-    Random(u64),
-}
-
-pub struct PartitionThenReplayTransformer<
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
-> {
-    pub peers: HashSet<PeerId>,
-    pub filtered_msgs: Vec<LinkMessage<MonadMessage<ST, SCT>>>,
-    pub cnt: u32,
-    pub cnt_limit: u32,
-    pub order: TransformerReplayOrder,
-}
-
-impl<ST, SCT> PartitionThenReplayTransformer<ST, SCT>
-where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
-{
-    pub fn new(peers: HashSet<PeerId>, cnt_limit: u32, order: TransformerReplayOrder) -> Self {
-        PartitionThenReplayTransformer {
-            peers,
-            filtered_msgs: Vec::new(),
-            cnt: 0,
-            cnt_limit,
-            order,
-        }
-    }
-}
-
-impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for PartitionThenReplayTransformer<ST, SCT>
-where
-    ST: MessageSignature + CertificateSignatureRecoverable,
-    SCT: SignatureCollection<SignatureType = ST>,
-{
-    fn transform(
-        &mut self,
-        message: LinkMessage<MonadMessage<ST, SCT>>,
-    ) -> Vec<(Duration, LinkMessage<MonadMessage<ST, SCT>>)> {
-        if self.cnt > self.cnt_limit {
-            return vec![(Duration::ZERO, message)];
-        }
-
-        self.cnt += 1;
-        let mut output = Vec::new();
-        if !self.peers.contains(&message.from) && !self.peers.contains(&message.to) {
-            output.push((Duration::ZERO, message))
-        } else {
-            self.filtered_msgs.push(message);
-        }
-
-        if self.cnt > self.cnt_limit {
-            let msgs = match self.order {
-                TransformerReplayOrder::Forward => {
-                    self.filtered_msgs.clone().into_iter().collect::<Vec<_>>()
-                }
-                TransformerReplayOrder::Reverse => self
-                    .filtered_msgs
-                    .clone()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>(),
-                TransformerReplayOrder::Random(seed) => {
-                    let mut gen = ChaChaRng::seed_from_u64(seed);
-                    let mut s = self.filtered_msgs.clone().into_iter().collect::<Vec<_>>();
-                    s.shuffle(&mut gen);
-                    s
-                }
-            };
-
-            output.extend(std::iter::repeat(Duration::ZERO).zip(msgs));
-        }
-
-        output
-    }
-}
 
 pub fn get_configs<SCT: SignatureCollection>(
     num_nodes: u16,
@@ -217,12 +133,7 @@ pub fn node_ledger_verification<
     }
 }
 
-pub fn run_nodes<T: Transformer<MM>>(
-    num_nodes: u16,
-    num_blocks: usize,
-    delta: Duration,
-    transformer: T,
-) {
+pub fn run_nodes<T: Pipeline<MM>>(num_nodes: u16, num_blocks: usize, delta: Duration, pipeline: T) {
     let (pubkeys, state_configs) = get_configs(num_nodes, delta);
     let peers = pubkeys
         .into_iter()
@@ -230,7 +141,7 @@ pub fn run_nodes<T: Transformer<MM>>(
         .zip(std::iter::repeat(MockWALoggerConfig {}))
         .map(|((a, b), c)| (a, b, c))
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(peers, transformer);
+    let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(peers, pipeline);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes
@@ -251,8 +162,8 @@ pub fn run_nodes<T: Transformer<MM>>(
     node_ledger_verification(nodes.states());
 }
 
-pub fn run_one_delayed_node<T: Transformer<MM>>(
-    transformer: T,
+pub fn run_one_delayed_node<T: Pipeline<MM>>(
+    pipeline: T,
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MC>,
 ) {
@@ -263,7 +174,7 @@ pub fn run_one_delayed_node<T: Transformer<MM>>(
             .zip(std::iter::repeat(MockWALoggerConfig {}))
             .map(|((a, b), c)| (a, b, c))
             .collect(),
-        transformer,
+        pipeline,
     );
 
     let mut cnt = 0;

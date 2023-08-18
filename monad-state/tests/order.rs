@@ -1,12 +1,13 @@
 use std::{collections::HashSet, env, time::Duration};
 
 use monad_executor::{
-    mock_swarm::{LatencyTransformer, Transformer},
-    PeerId,
+    transformer::{
+        LatencyTransformer, PartitionTransformer, ReplayTransformer, Transformer,
+        TransformerPipeline, TransformerReplayOrder,
+    },
+    xfmr_pipe, PeerId,
 };
-use monad_testutil::swarm::{
-    get_configs, run_one_delayed_node, PartitionThenReplayTransformer, TransformerReplayOrder,
-};
+use monad_testutil::swarm::{get_configs, run_one_delayed_node};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
 
@@ -53,10 +54,11 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     println!("delayed node ID: {:?}", first_node);
 
     run_one_delayed_node(
-        vec![
-            LatencyTransformer(Duration::from_millis(1)).boxed(),
-            PartitionThenReplayTransformer::new(filter_peers, 200, direction).boxed(),
-        ],
+        xfmr_pipe!(
+            Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            Transformer::Partition(PartitionTransformer(filter_peers)),
+            Transformer::Replay(ReplayTransformer::new(50, direction))
+        ),
         pubkeys,
         state_configs,
     );
