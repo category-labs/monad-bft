@@ -7,7 +7,7 @@ use monad_executor::{
     },
     xfmr_pipe, PeerId,
 };
-use monad_testutil::swarm::{get_configs, run_nodes, run_one_delayed_node};
+use monad_testutil::swarm::{get_configs, run_nodes, run_nodes_until_step};
 
 use crate::RandomizedTest;
 
@@ -36,7 +36,7 @@ fn delayed_message_test(seed: u64) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_one_delayed_node(
+    run_nodes_until_step(
         xfmr_pipe!(
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             Transformer::Partition(PartitionTransformer(filter_peers)),
@@ -47,6 +47,7 @@ fn delayed_message_test(seed: u64) {
         ),
         pubkeys,
         state_configs,
+        400,
     );
 }
 

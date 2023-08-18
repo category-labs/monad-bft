@@ -7,7 +7,7 @@ use monad_executor::{
     },
     xfmr_pipe, PeerId,
 };
-use monad_testutil::swarm::{get_configs, run_one_delayed_node};
+use monad_testutil::swarm::{get_configs, run_nodes_until_step};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
 
@@ -53,7 +53,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_one_delayed_node(
+    run_nodes_until_step(
         xfmr_pipe!(
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             Transformer::Partition(PartitionTransformer(filter_peers)),
@@ -61,5 +61,6 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         ),
         pubkeys,
         state_configs,
+        400,
     );
 }

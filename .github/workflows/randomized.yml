@@ -17,4 +17,4 @@ jobs:
     - name: set rand env
       run: echo "RANDOM_TEST_SEED=$((RANDOM))" >> $GITHUB_ENV
     - name: Run all ignored test
-      run:  cargo test -- --ignored  --nocapture
+      run:  cargo test cron -- --ignored  --nocapture

@@ -108,6 +108,9 @@ pub fn node_ledger_verification<
         ),
     >,
 ) {
+    for (k, v) in states {
+        println!("{:?}, {}", k, v.0.ledger().get_blocks().len());
+    }
     let num_b = states
         .values()
         .map(|v| v.0.ledger().get_blocks().len())
@@ -160,10 +163,11 @@ pub fn run_nodes<T: Pipeline<MM>>(num_nodes: u16, num_blocks: usize, delta: Dura
     node_ledger_verification(nodes.states());
 }
 
-pub fn run_one_delayed_node<T: Pipeline<MM>>(
+pub fn run_nodes_until_step<T: Pipeline<MM>>(
     pipeline: T,
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MC>,
+    step: i32,
 ) {
     let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(
         pubkeys
@@ -178,7 +182,7 @@ pub fn run_one_delayed_node<T: Pipeline<MM>>(
     let mut cnt = 0;
     while let Some((_duration, _id, _event)) = nodes.step() {
         cnt += 1;
-        if cnt > 400 {
+        if cnt > step {
             break;
         }
     }

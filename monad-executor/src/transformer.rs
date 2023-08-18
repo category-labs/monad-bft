@@ -128,9 +128,10 @@ impl Debug for PartitionTransformer {
             .finish()
     }
 }
+
 #[derive(Clone, Debug)]
 
-pub struct DropTransformer {}
+pub struct DropTransformer();
 
 impl<M> Transform<M> for DropTransformer {
     fn transform(&mut self, _: LinkMessage<M>) -> TransformerStream<M> {
@@ -142,7 +143,17 @@ impl<M> Transform<M> for DropTransformer {
 pub struct PeriodicTranformer {
     pub start: u32,    // when period start
     pub duration: u32, // how long does it last
-    pub cnt: u32,      // monotonically inreasing counter
+    cnt: u32,          // monotonically inreasing counter
+}
+
+impl PeriodicTranformer {
+    pub fn new(start: u32, duration: u32) -> Self {
+        PeriodicTranformer {
+            start,
+            duration,
+            cnt: 0,
+        }
+    }
 }
 
 impl<M> Transform<M> for PeriodicTranformer {
@@ -193,7 +204,7 @@ impl<M> Debug for ReplayTransformer<M> {
 impl<M> Transform<M> for ReplayTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         if self.cnt > self.cnt_limit {
-            return TransformerStream::new(vec![], vec![]);
+            return TransformerStream::new(vec![(Duration::ZERO, message)], vec![]);
         }
 
         self.cnt += 1;
@@ -248,7 +259,7 @@ impl<M> Transform<M> for Transformer<M> {
 }
 
 /**
- * pipeline consist of a of transformer that goes through all the output
+ * pipeline consist of transformers that goes through all the output
  * you can also use multiple pipelines to filter target for unique needs
  * */
 pub trait Pipeline<M> {
@@ -324,5 +335,266 @@ impl<M> Pipeline<M> for TransformerPipeline<M> {
 
     fn is_empty(&self) -> bool {
         self.transformers.len() == 0
+    }
+}
+#[cfg(test)]
+
+mod test {
+    use std::{collections::HashSet, time::Duration};
+
+    use monad_testutil::signing::create_keys;
+
+    use super::{LatencyTransformer, Pipeline, Transform, Transformer, TransformerPipeline};
+    use crate::{
+        mock_swarm::LinkMessage,
+        transformer::{
+            DropTransformer, PartitionTransformer, PeriodicTranformer, RandLatencyTransformer,
+            ReplayTransformer, TransformerStream, XorLatencyTransformer,
+        },
+        PeerId,
+    };
+
+    fn get_mock_message() -> LinkMessage<String> {
+        let keys = create_keys(2);
+        LinkMessage {
+            from: PeerId(keys[0].pubkey()),
+            to: PeerId(keys[1].pubkey()),
+            message: "Dummy Message".to_string(),
+            from_tick: Duration::from_millis(10),
+        }
+    }
+
+    #[test]
+    fn test_latency_transformer() {
+        let mut t = LatencyTransformer(Duration::from_secs(1));
+        let m = get_mock_message();
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m.clone());
+
+        assert_eq!(r.len(), 1);
+        assert_eq!(c.len(), 0);
+        assert!(r[0].0 == Duration::from_secs(1));
+        assert!(r[0].1 == m);
+    }
+
+    #[test]
+    fn test_xorlatency_transformer() {
+        let mut t = XorLatencyTransformer(Duration::from_secs(1));
+        let m = get_mock_message();
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m.clone());
+
+        assert_eq!(r.len(), 1);
+        assert_eq!(c.len(), 0);
+        // instead of verifying the random algorithm's correctness,
+        // verifying the message is not touched
+        // and feed through the right channel is more useful
+        assert!(r[0].1 == m);
+    }
+
+    #[test]
+    fn test_randlatency_transformer() {
+        let mut t = RandLatencyTransformer::new(1, 30);
+        let m = get_mock_message();
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m.clone());
+
+        assert_eq!(r.len(), 1);
+        assert_eq!(c.len(), 0);
+        assert!(r[0].0 >= Duration::from_millis(1));
+        assert!(r[0].0 <= Duration::from_millis(30));
+        assert!(r[0].1 == m);
+    }
+
+    #[test]
+    fn test_partition_transformer() {
+        let keys = create_keys(2);
+        let mut peers = HashSet::new();
+        peers.insert(PeerId(keys[0].pubkey()));
+        let mut t = PartitionTransformer(peers.clone());
+        let m = get_mock_message();
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m.clone());
+
+        assert_eq!(r.len(), 1);
+        assert_eq!(c.len(), 0);
+        assert!(r[0].0 == Duration::ZERO);
+        assert!(r[0].1 == m);
+
+        let peers = HashSet::new();
+        let mut t = PartitionTransformer(peers);
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m.clone());
+
+        assert_eq!(r.len(), 0);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].0 == Duration::ZERO);
+        assert!(c[0].1 == m);
+    }
+
+    #[test]
+    fn test_drop_transformer() {
+        let keys = create_keys(2);
+        let mut peers = HashSet::new();
+        peers.insert(PeerId(keys[0].pubkey()));
+        let mut t = DropTransformer();
+        let m = get_mock_message();
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m);
+
+        assert_eq!(r.len(), 0);
+        assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn test_periodic_transformer() {
+        let keys = create_keys(2);
+        let mut peers = HashSet::new();
+        peers.insert(PeerId(keys[0].pubkey()));
+        let mut t = PeriodicTranformer::new(3, 5);
+        let m = get_mock_message();
+        for _ in 0..2 {
+            let TransformerStream {
+                remain_messages: r,
+                complete_messages: c,
+            } = t.transform(m.clone());
+
+            assert_eq!(r.len(), 0);
+            assert_eq!(c.len(), 1);
+            assert!(c[0].1 == m);
+        }
+
+        for _ in 0..5 {
+            let TransformerStream {
+                remain_messages: r,
+                complete_messages: c,
+            } = t.transform(m.clone());
+
+            assert_eq!(r.len(), 1);
+            assert_eq!(c.len(), 0);
+            assert!(r[0].1 == m);
+        }
+        for _ in 0..1000 {
+            let TransformerStream {
+                remain_messages: r,
+                complete_messages: c,
+            } = t.transform(m.clone());
+
+            assert_eq!(r.len(), 0);
+            assert_eq!(c.len(), 1);
+            assert!(c[0].1 == m);
+        }
+    }
+
+    #[test]
+    fn test_replay_transformer() {
+        let keys = create_keys(2);
+        let mut peers = HashSet::new();
+        peers.insert(PeerId(keys[0].pubkey()));
+        // we are mostly interested in the burst behaviur of replay
+        let mut t = ReplayTransformer::new(5, crate::transformer::TransformerReplayOrder::Forward);
+        let m = get_mock_message();
+        for _ in 0..5 {
+            let TransformerStream {
+                remain_messages: r,
+                complete_messages: c,
+            } = t.transform(m.clone());
+            assert_eq!(r.len(), 0);
+            assert_eq!(c.len(), 0);
+        }
+
+        let TransformerStream {
+            remain_messages: r,
+            complete_messages: c,
+        } = t.transform(m.clone());
+        assert_eq!(r.len(), 6);
+        assert_eq!(c.len(), 0);
+
+        for _ in 0..1000 {
+            let TransformerStream {
+                remain_messages: r,
+                complete_messages: c,
+            } = t.transform(m.clone());
+            assert_eq!(r.len(), 1);
+            assert_eq!(c.len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_pipeline_basic_flow() {
+        let mut pipe = xfmr_pipe![Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(30)
+        ))];
+
+        let mock_message = get_mock_message();
+        // try to feed some message through, only some basic latency should be added to everything
+        let result = pipe.process(mock_message.clone());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, Duration::from_millis(30));
+        assert!(result[0].1 == mock_message);
+    }
+
+    #[test]
+    fn test_pipeline_complex_flow() {
+        let keys = create_keys(5);
+        let mut peers = HashSet::new();
+        peers.insert(PeerId(keys[0].pubkey()));
+
+        let mut pipe = xfmr_pipe![
+            Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
+            Transformer::Partition(PartitionTransformer(peers)),
+            Transformer::Periodic(PeriodicTranformer::new(3, 5)),
+            Transformer::Latency(LatencyTransformer(Duration::from_millis(30)))
+        ];
+        for _ in 0..1000 {
+            let mut mock_message = get_mock_message();
+            mock_message.from = PeerId(keys[3].pubkey());
+            let result = pipe.process(mock_message.clone());
+            assert_eq!(result.len(), 1);
+            // since its not part of the id, it doesn't get selected and filter
+            assert_eq!(result[0].0, Duration::from_millis(30));
+            assert!(result[0].1 == mock_message);
+        }
+        // not the previous message never made it to periodic, thus it doesn't get trigger the cnt
+
+        // first 2 message should not trigger extra mili
+        for _ in 0..2 {
+            let mock_message = get_mock_message();
+            let result = pipe.process(mock_message.clone());
+            assert_eq!(result.len(), 1);
+            // since its part of the id, it get selected and filter, thus 30 extra mili
+            assert_eq!(result[0].0, Duration::from_millis(30));
+            assert!(result[0].1 == mock_message);
+        }
+        // follow by 5 message that get extra delay
+        for _ in 0..5 {
+            let mock_message = get_mock_message();
+            let result = pipe.process(mock_message.clone());
+            assert_eq!(result.len(), 1);
+            // since its part of the id, it get selected and filter, thus 30 extra mili
+            assert_eq!(result[0].0, Duration::from_millis(60));
+            assert!(result[0].1 == mock_message);
+        }
+        // and then you nver get extra mili
+        for _ in 0..1000 {
+            let mock_message = get_mock_message();
+            let result = pipe.process(mock_message.clone());
+            assert_eq!(result.len(), 1);
+            // since its part of the id, it get selected and filter, thus 30 extra mili
+            assert_eq!(result[0].0, Duration::from_millis(30));
+            assert!(result[0].1 == mock_message);
+        }
     }
 }
