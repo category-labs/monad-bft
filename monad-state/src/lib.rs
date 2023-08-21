@@ -116,7 +116,7 @@ where
     ConsensusEvent(ConsensusEvent<ST, SCT>),
 }
 
-impl monad_types::Deserializable
+impl monad_types::Deserializable<[u8]>
     for MonadEvent<
         monad_crypto::NopSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
@@ -129,7 +129,7 @@ impl monad_types::Deserializable
     }
 }
 
-impl monad_types::Serializable
+impl monad_types::Serializable<Vec<u8>>
     for MonadEvent<
         monad_crypto::NopSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
@@ -141,7 +141,7 @@ impl monad_types::Serializable
 }
 
 #[cfg(feature = "proto")]
-impl monad_types::Deserializable
+impl monad_types::Deserializable<[u8]>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
@@ -155,7 +155,7 @@ impl monad_types::Deserializable
 }
 
 #[cfg(feature = "proto")]
-impl monad_types::Serializable
+impl monad_types::Serializable<Vec<u8>>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
@@ -177,7 +177,7 @@ pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
 pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Serializable
+impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Serializable<Vec<u8>>
     for VerifiedMonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
 {
     fn serialize(&self) -> Vec<u8> {
@@ -186,7 +186,7 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Ser
 }
 
 #[cfg(feature = "proto")]
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable
+impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable<[u8]>
     for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
 {
     type ReadError = monad_proto::error::ProtoError;

@@ -15,13 +15,13 @@ mod test {
         data: i32,
     }
 
-    impl Serializable for TestEvent {
+    impl Serializable<Vec<u8>> for TestEvent {
         fn serialize(&self) -> Vec<u8> {
             self.data.to_be_bytes().to_vec()
         }
     }
 
-    impl Deserializable for TestEvent {
+    impl Deserializable<[u8]> for TestEvent {
         type ReadError = TryFromSliceError;
 
         fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {

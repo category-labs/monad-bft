@@ -8,7 +8,7 @@ pub struct TimedEvent<M> {
     pub event: M,
 }
 
-impl<M: Serializable> Serializable for TimedEvent<M> {
+impl<M: Serializable<Vec<u8>>> Serializable<Vec<u8>> for TimedEvent<M> {
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.timestamp.as_secs_f64().to_be_bytes());
@@ -17,7 +17,7 @@ impl<M: Serializable> Serializable for TimedEvent<M> {
     }
 }
 
-impl<M: Deserializable> Deserializable for TimedEvent<M> {
+impl<M: Deserializable<[u8]>> Deserializable<[u8]> for TimedEvent<M> {
     type ReadError = TryFromSliceError;
     fn deserialize(buf: &[u8]) -> Result<Self, Self::ReadError> {
         let (timestamp, buf) = buf.split_at(std::mem::size_of::<f64>());

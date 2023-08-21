@@ -50,9 +50,9 @@ where
     }
 }
 
-impl<M, OM> Serializable for WrappedMessage<M, OM>
+impl<M, OM> Serializable<Vec<u8>> for WrappedMessage<M, OM>
 where
-    OM: Serializable,
+    OM: Serializable<Vec<u8>>,
 {
     fn serialize(&self) -> Vec<u8> {
         match self {
@@ -61,9 +61,9 @@ where
         }
     }
 }
-impl<M, OM> Deserializable for WrappedMessage<M, OM>
+impl<M, OM> Deserializable<[u8]> for WrappedMessage<M, OM>
 where
-    M: Deserializable,
+    M: Deserializable<[u8]>,
 {
     type ReadError = M::ReadError;
 
@@ -77,9 +77,9 @@ type LengthEncoding = u32;
 #[async_trait]
 impl<M, OM> Codec for ReliableMessageCodec<M, OM>
 where
-    M: Deserializable + Send + Sync,
-    <M as Deserializable>::ReadError: 'static,
-    OM: Serializable + Send + Sync,
+    M: Deserializable<[u8]> + Send + Sync,
+    <M as Deserializable<[u8]>>::ReadError: 'static,
+    OM: Serializable<Vec<u8>> + Send + Sync,
 {
     type Protocol = String;
     // TODO can we avoid Arc?

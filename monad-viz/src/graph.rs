@@ -91,7 +91,7 @@ where
     T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
-    S::Event: Serializable + Deserializable + Debug,
+    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -129,7 +129,7 @@ where
     T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
-    S::Event: Serializable + Deserializable + Debug,
+    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug,
 {
     type State = S;
     type Message = RS::Serialized;

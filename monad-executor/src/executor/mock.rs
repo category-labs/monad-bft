@@ -623,13 +623,13 @@ mod tests {
         Vote { peer: PeerId, round: u64 },
     }
 
-    impl Serializable for SimpleChainEvent {
+    impl Serializable<Vec<u8>> for SimpleChainEvent {
         fn serialize(&self) -> Vec<u8> {
             unreachable!("not used")
         }
     }
 
-    impl Deserializable for SimpleChainEvent {
+    impl Deserializable<[u8]> for SimpleChainEvent {
         type ReadError = ReadError;
         fn deserialize(_buf: &[u8]) -> Result<Self, Self::ReadError> {
             unreachable!("not used")

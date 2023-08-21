@@ -34,13 +34,13 @@ impl std::fmt::Display for ReadError {
 
 impl Error for ReadError {}
 
-impl Serializable for Datablob {
+impl Serializable<Vec<u8>> for Datablob {
     fn serialize(&self) -> Vec<u8> {
         self.data.clone()
     }
 }
 
-impl Deserializable for Datablob {
+impl Deserializable<[u8]> for Datablob {
     type ReadError = ReadError;
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {

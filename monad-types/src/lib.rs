@@ -144,12 +144,12 @@ impl std::iter::Sum for Stake {
     }
 }
 
-pub trait Serializable {
-    fn serialize(&self) -> Vec<u8>;
+pub trait Serializable<S> {
+    fn serialize(&self) -> S;
 }
 
-pub trait Deserializable: Sized {
+pub trait Deserializable<S: ?Sized>: Sized {
     type ReadError: Error + Send + Sync;
 
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError>;
+    fn deserialize(message: &S) -> Result<Self, Self::ReadError>;
 }

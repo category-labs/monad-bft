@@ -78,7 +78,7 @@ where
 impl<S, C> ReplayNodesSimulation<S, C>
 where
     S: monad_executor::State,
-    S::Event: Serializable + Deserializable + Debug + Eq,
+    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug + Eq,
     C: ReplayConfig<S>,
 {
     pub fn new(config: C, replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>) -> Self {
@@ -133,7 +133,7 @@ where
 impl<S, C> Graph for ReplayNodesSimulation<S, C>
 where
     S: monad_executor::State,
-    S::Event: Serializable + Deserializable + Eq + Debug,
+    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Eq + Debug,
     C: ReplayConfig<S>,
 {
     type State = S;

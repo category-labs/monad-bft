@@ -37,15 +37,15 @@ pub struct WALoggerConfig {
 }
 
 #[derive(Debug)]
-pub struct WALogger<M: Serializable + Deserializable + Debug> {
+pub struct WALogger<M> {
     _marker: PhantomData<M>,
     file_handle: AppendOnlyFile,
     sync: bool,
 }
 
-impl<M: Serializable + Deserializable + Debug> PersistenceLogger for WALogger<M> {
+impl<M: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug> PersistenceLogger for WALogger<M> {
     type Event = M;
-    type Error = WALError<<M as Deserializable>::ReadError>;
+    type Error = WALError<<M as Deserializable<[u8]>>::ReadError>;
     type Config = WALoggerConfig;
 
     // this definition of the new function means that we can only have one type of message in this WAL
@@ -87,7 +87,7 @@ impl<M: Serializable + Deserializable + Debug> PersistenceLogger for WALogger<M>
 
 impl<M> WALogger<M>
 where
-    M: Serializable + Deserializable + Debug,
+    M: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug,
 {
     pub fn push_two_write(
         &mut self,

@@ -20,9 +20,9 @@ pub type Multiaddr = libp2p::Multiaddr;
 
 pub struct Service<M, OM>
 where
-    M: Message + Deserializable + Send + Sync + 'static,
-    <M as Deserializable>::ReadError: 'static,
-    OM: Serializable + Send + Sync + 'static,
+    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
+    <M as Deserializable<[u8]>>::ReadError: 'static,
+    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
 {
     swarm: libp2p::Swarm<Behavior<M, OM>>,
 
@@ -37,9 +37,9 @@ where
 
 impl<M, OM> Service<M, OM>
 where
-    M: Message + Deserializable + Send + Sync + 'static,
-    <M as Deserializable>::ReadError: 'static,
-    OM: Serializable + Send + Sync + 'static,
+    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
+    <M as Deserializable<[u8]>>::ReadError: 'static,
+    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M>,
 {
@@ -181,9 +181,9 @@ where
 
 impl<M, OM> Executor for Service<M, OM>
 where
-    M: Message + Deserializable + Send + Sync + 'static,
-    <M as Deserializable>::ReadError: 'static,
-    OM: Serializable + Send + Sync + 'static,
+    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
+    <M as Deserializable<[u8]>>::ReadError: 'static,
+    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M> + Clone,
 {
@@ -217,9 +217,9 @@ where
 
 impl<M, OM> Stream for Service<M, OM>
 where
-    M: Message + Deserializable + Send + Sync + 'static,
-    <M as Deserializable>::ReadError: 'static,
-    OM: AsRef<M> + Serializable + Send + Sync + 'static,
+    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
+    <M as Deserializable<[u8]>>::ReadError: 'static,
+    OM: AsRef<M> + Serializable<Vec<u8>> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M>,
     Self: Unpin,
@@ -337,13 +337,13 @@ mod tests {
             Self::Event::Message(from, self)
         }
     }
-    impl Serializable for TestMessage {
+    impl Serializable<Vec<u8>> for TestMessage {
         fn serialize(&self) -> Vec<u8> {
             self.0.to_le_bytes().to_vec()
         }
     }
 
-    impl Deserializable for TestMessage {
+    impl Deserializable<[u8]> for TestMessage {
         type ReadError = TryFromSliceError;
 
         fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
