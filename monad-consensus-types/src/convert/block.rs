@@ -166,6 +166,7 @@ impl From<&Payload> for ProtoPayload {
         ProtoPayload {
             txns: Some((&(value.txns)).into()),
             header: Some((&(value.header)).into()),
+            seq_num: value.seq_num,
         }
     }
 }
@@ -184,6 +185,7 @@ impl TryFrom<ProtoPayload> for Payload {
                     "Payload.header".to_owned(),
                 ))?
                 .try_into()?,
+            seq_num: value.seq_num,
         })
     }
 }

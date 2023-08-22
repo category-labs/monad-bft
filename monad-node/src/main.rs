@@ -64,6 +64,7 @@ pub struct Config {
         SignatureCollectionPubKeyType<SignatureCollectionType>,
     )>,
     pub delta: Duration,
+    pub state_root_delay: u64,
     pub genesis_block: Block<SignatureCollectionType>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SignatureCollectionType,
@@ -135,6 +136,7 @@ async fn main() {
             Duration::from_secs(10),
             Duration::from_secs(1),
             Duration::from_secs(60),
+            0,
         )
         .map(|config| {
             let maybe_provider = args.otel_endpoint.as_ref().map(|endpoint| {
@@ -183,6 +185,7 @@ fn testnet(
     simulation_length: Duration,
     delta: Duration,
     keepalive: Duration,
+    state_root_delay: u64,
 ) -> impl Iterator<Item = Config> {
     let secrets = std::iter::repeat_with(rand::random::<[u8; 32]>)
         .map(Box::new)
@@ -230,6 +233,7 @@ fn testnet(
             &Payload {
                 txns: genesis_txn,
                 header: genesis_execution_header,
+                seq_num: 0,
             },
             &genesis_prime_qc,
         )
@@ -273,6 +277,7 @@ fn testnet(
             libp2p_keepalive: keepalive,
             genesis_peers: peers.clone(),
             delta,
+            state_root_delay,
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
             genesis_signatures: genesis_signatures.clone(),
@@ -326,6 +331,7 @@ async fn run(
         key: keypair,
         certkey: certkeypair,
         delta: config.delta,
+        state_root_delay: config.state_root_delay,
         genesis_block: config.genesis_block,
         genesis_vote_info: config.genesis_vote_info,
         genesis_signatures: config.genesis_signatures,

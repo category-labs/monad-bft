@@ -14,6 +14,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{Error as SecpError, KeyPair, PubKey, SecpSignature};
 use monad_types::{Hash, NodeId, Round};
 use sha2::{Digest, Sha256};
+use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug)]
 pub struct MockSignatures {
@@ -88,6 +89,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.update(b.payload.header.receipts_root);
     hasher.update(b.payload.header.logs_bloom);
     hasher.update(b.payload.header.gas_used);
+    hasher.update(b.payload.seq_num.as_bytes());
     hasher.update(b.qc.info.vote.id.0);
     hasher.update(b.qc.signatures.get_hash::<Sha256Hash>());
 
@@ -140,6 +142,7 @@ where
         &Payload {
             txns: genesis_txn,
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         },
         &genesis_prime_qc,
     );

@@ -41,6 +41,7 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
                     tx_hashes: fetched.txns.0.clone(),
+                    seq_num: fetched.seq_num,
                 })
             }
             TypeConsensusEvent::FetchedFullTxs(fetched_full) => {
@@ -114,6 +115,7 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> TryFrom<ProtoConsens
                             "ConsensusEvent::fetched_txs.round".to_owned(),
                         ))?
                         .try_into()?,
+                    seq_num: fetched_txs.seq_num,
                     high_qc: fetched_txs
                         .high_qc
                         .ok_or(ProtoError::MissingRequiredField(

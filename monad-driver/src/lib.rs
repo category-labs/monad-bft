@@ -126,6 +126,7 @@ mod tests {
                         certkey,
                         validators: config_validators.clone(),
                         delta: Duration::from_millis(2),
+                        state_root_delay: 0,
                         genesis_block: genesis_block.clone(),
                         genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                         genesis_signatures: genesis_sigs.clone(),

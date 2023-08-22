@@ -85,6 +85,7 @@ pub fn setup_block<SCT: SignatureCollection>(
         &Payload {
             txns,
             header: execution_header,
+            seq_num: 0,
         },
         &qc,
     )

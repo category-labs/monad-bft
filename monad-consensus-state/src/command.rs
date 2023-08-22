@@ -80,6 +80,7 @@ pub struct FetchedTxs<ST, SCT> {
     // they're included here just to be extra safe
     pub node_id: NodeId,
     pub round: Round,
+    pub seq_num: u64,
     pub high_qc: QuorumCertificate<SCT>,
     pub last_round_tc: Option<TimeoutCertificate<ST>>,
 

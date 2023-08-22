@@ -33,6 +33,7 @@ fn block_hash_id() {
         &Payload {
             txns,
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         },
         &qc,
     );

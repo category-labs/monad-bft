@@ -87,6 +87,7 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
                     .collect::<Vec<_>>(),
 
                 delta: self.delta,
+                state_root_delay: 0,
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                 genesis_signatures: genesis_sigs.clone(),

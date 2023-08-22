@@ -241,6 +241,7 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub certkey: SignatureCollectionKeyPairType<SCT>,
 
     pub delta: Duration,
+    pub state_root_delay: u64,
     pub genesis_block: Block<SCT>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SCT,
@@ -310,6 +311,7 @@ where
                 config.genesis_block,
                 genesis_qc,
                 config.delta,
+                config.state_root_delay,
                 config.key,
                 config.certkey,
             ),
@@ -349,6 +351,7 @@ where
                                 &Payload {
                                     txns: fetched.txns,
                                     header: ExecutionArtifacts::zero(), // TODO this needs to be fetched
+                                    seq_num: fetched.seq_num,
                                 },
                                 &fetched.high_qc,
                             );

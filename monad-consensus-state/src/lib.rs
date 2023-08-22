@@ -13,7 +13,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     message_signature::MessageSignature,
-    payload::FullTransactionList,
+    payload::{FullTransactionList, StateRoot},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
@@ -35,6 +35,8 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV> {
     pending_block_tree: BlockTree<SCT>,
     vote_state: VoteState<SCT>,
     high_qc: QuorumCertificate<SCT>,
+    seq_num: u64,
+    state_root: StateRoot,
 
     pacemaker: Pacemaker<ST, SCT>,
     safety: Safety,
@@ -60,6 +62,7 @@ where
         genesis_block: Block<SCT>,
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
+        state_root_delay: u64,
         keypair: KeyPair,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self;
@@ -132,6 +135,7 @@ where
         genesis_block: Block<SCT>,
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
+        state_root_delay: u64,
 
         // TODO deprecate
         keypair: KeyPair,
@@ -141,6 +145,8 @@ where
             pending_block_tree: BlockTree::new(genesis_block),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
+            seq_num: 0,
+            state_root: StateRoot::new(state_root_delay),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
@@ -180,6 +186,10 @@ where
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
+
+        // TODO:
+        // check state root hash here
+        // something like validate(p.block.payload.header, self.state_root[p.block.payload.seq_num])
 
         if !self.transaction_validator.validate(&txns) {
             return cmds;
@@ -368,6 +378,9 @@ where
                 .prune(&qc.info.vote.parent_id)
                 .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
 
+            self.seq_num += blocks_to_commit.len() as u64;
+            self.state_root.remove_old_roots(self.seq_num);
+
             if !blocks_to_commit.is_empty() {
                 cmds.extend(
                     blocks_to_commit
@@ -404,11 +417,13 @@ where
         let node_id = self.nodeid;
         let round = self.pacemaker.get_current_round();
         let high_qc = self.high_qc.clone();
+        let seq_num = self.seq_num;
 
         vec![ConsensusCommand::FetchTxs(Box::new(move |txns| {
             FetchedTxs {
                 node_id,
                 round,
+                seq_num,
                 high_qc,
                 last_round_tc,
                 txns,
@@ -501,6 +516,7 @@ mod test {
                     genesis_block.clone(),
                     genesis_qc.clone(),
                     Duration::from_secs(1),
+                    0,
                     std::mem::replace(&mut dupkeys[i], default_key),
                     std::mem::replace(&mut dupcertkeys[i], default_cert_key),
                 )
@@ -1090,6 +1106,7 @@ mod test {
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(lc.is_none());
+        assert_eq!(state.seq_num, 0);
 
         let p2_votes = p2_cmds
             .into_iter()
@@ -1132,6 +1149,7 @@ mod test {
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(lc.is_some());
+        assert_eq!(state.seq_num, 1);
     }
 
     #[test]

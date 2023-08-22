@@ -20,6 +20,7 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 
 pub struct ProposalGen<ST, SCT> {
     round: Round,
+    seq_num: u64,
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
     last_tc: Option<TimeoutCertificate<ST>>,
@@ -33,6 +34,7 @@ where
     pub fn new(genesis_qc: QuorumCertificate<SCT>) -> Self {
         ProposalGen {
             round: Round(0),
+            seq_num: 0,
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
             last_tc: None,
@@ -69,6 +71,7 @@ where
             &Payload {
                 txns,
                 header: execution_header,
+                seq_num: self.seq_num,
             },
             qc,
         );
@@ -81,6 +84,7 @@ where
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;
+        self.seq_num += 1;
 
         Verified::new::<Sha256Hash>(proposal, leader_key)
     }

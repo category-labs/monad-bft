@@ -343,6 +343,7 @@ mod test {
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         };
         let g = Block::new::<Sha256Hash>(
             node_id(),
@@ -603,6 +604,7 @@ mod test {
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         };
         let g = Block::new::<Sha256Hash>(
             node_id(),
@@ -694,6 +696,7 @@ mod test {
             &Payload {
                 txns: txlist,
                 header: ExecutionArtifacts::zero(),
+                seq_num: 0,
             },
             &QC::new::<HasherType>(
                 QcInfo {
@@ -722,6 +725,7 @@ mod test {
             &Payload {
                 txns: TransactionList(vec![1]),
                 header: ExecutionArtifacts::zero(),
+                seq_num: 0,
             },
             &QC::new::<HasherType>(
                 QcInfo {
@@ -738,6 +742,7 @@ mod test {
             &Payload {
                 txns: TransactionList(vec![2]),
                 header: ExecutionArtifacts::zero(),
+                seq_num: 0,
             },
             &QC::new::<HasherType>(
                 QcInfo {
@@ -761,6 +766,7 @@ mod test {
             &Payload {
                 txns: TransactionList(vec![3]),
                 header: ExecutionArtifacts::zero(),
+                seq_num: 0,
             },
             &QC::new::<HasherType>(
                 QcInfo {
@@ -805,6 +811,7 @@ mod test {
             &Payload {
                 txns: txlist,
                 header: ExecutionArtifacts::zero(),
+                seq_num: 0,
             },
             &QC::new::<HasherType>(
                 QcInfo {
@@ -833,6 +840,7 @@ mod test {
             &Payload {
                 txns: TransactionList(vec![1]),
                 header: ExecutionArtifacts::zero(),
+                seq_num: 0,
             },
             &QC::new::<HasherType>(
                 QcInfo {
@@ -863,6 +871,7 @@ mod test {
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         };
         let g = Block::new::<Sha256Hash>(
             node_id(),
@@ -991,6 +1000,7 @@ mod test {
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         };
         let g = Block::new::<Sha256Hash>(
             node_id(),
@@ -1097,6 +1107,7 @@ mod test {
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         };
         let g = Block::new::<Sha256Hash>(
             node_id(),
@@ -1251,6 +1262,7 @@ mod test {
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         };
         let g = Block::new::<Sha256Hash>(
             node_id(),

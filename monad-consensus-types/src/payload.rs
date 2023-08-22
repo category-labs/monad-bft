@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use monad_types::Hash;
 use zerocopy::AsBytes;
 
@@ -87,11 +89,36 @@ impl std::fmt::Debug for FullTransactionList {
 pub struct Payload {
     pub txns: TransactionList,
     pub header: ExecutionArtifacts,
+    pub seq_num: u64,
 }
 
 impl Hashable for Payload {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.update(self.txns.0.as_bytes());
         self.header.hash(state);
+        state.update(self.seq_num.as_bytes());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StateRoot {
+    // Map executed block seq_num to root hash
+    pub root_hashes: BTreeMap<u64, Hash>,
+    // Delay gap between root hash to use for current block
+    // validation
+    pub delay: u64,
+}
+
+impl StateRoot {
+    pub fn new(delay: u64) -> Self {
+        StateRoot {
+            root_hashes: BTreeMap::new(),
+            delay,
+        }
+    }
+
+    pub fn remove_old_roots(&mut self, latest_seq_num: u64) {
+        self.root_hashes
+            .retain(|k, _| *k >= (latest_seq_num - self.delay));
     }
 }

@@ -81,6 +81,7 @@ fn proposal_msg_hash() {
         &Payload {
             txns,
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         },
         &qc,
     );

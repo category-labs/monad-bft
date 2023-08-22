@@ -21,6 +21,7 @@ message ProtoTransactionList {
 message ProtoPayload {
   ProtoTransactionList txns = 1;
   ProtoExecutionArtifacts header = 2;
+  uint64 seq_num = 3;
 }
 
 message ProtoBlockAggSig {

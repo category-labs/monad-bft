@@ -30,6 +30,7 @@ message ProtoFetchedTxs {
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 4;
 
   bytes tx_hashes = 5;
+  uint64 seq_num = 6;
 }
 
 message ProtoFetchedFullTxs {

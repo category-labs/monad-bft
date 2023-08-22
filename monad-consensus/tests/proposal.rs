@@ -44,6 +44,7 @@ fn setup_block(
         &Payload {
             txns,
             header: ExecutionArtifacts::zero(),
+            seq_num: 0,
         },
         &qc,
     )
