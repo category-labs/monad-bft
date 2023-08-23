@@ -33,8 +33,14 @@ where
 {
     type Command = Command<M, OM, B, C>;
     fn exec(&mut self, commands: Vec<Command<M, OM, B, C>>) {
-        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds, checkpoint_cmds) =
-            Command::split_commands(commands);
+        let (
+            router_cmds,
+            timer_cmds,
+            mempool_cmds,
+            ledger_cmds,
+            checkpoint_cmds,
+            _state_root_hash_cmds,
+        ) = Command::split_commands(commands);
         self.router.exec(router_cmds);
         self.timer.exec(timer_cmds);
         self.mempool.exec(mempool_cmds);

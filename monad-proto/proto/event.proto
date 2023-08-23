@@ -31,6 +31,7 @@ message ProtoFetchedTxs {
 
   bytes tx_hashes = 5;
   uint64 seq_num = 6;
+  monad_proto.basic.ProtoHash state_root_hash = 7;
 }
 
 message ProtoFetchedFullTxs {
@@ -54,6 +55,11 @@ message ProtoLoadEpochEvent {
   monad_proto.validator_set.ProtoValidatorSetData upcoming_validator_set = 3;
 }
 
+message ProtoStateUpdateEvent {
+  uint64 seq_num = 1;
+  monad_proto.basic.ProtoHash state_root_hash = 2;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
@@ -63,6 +69,7 @@ message ProtoConsensusEvent {
     ProtoAdvanceEpochEvent advance_epoch = 5;
     ProtoLoadEpochEvent load_epoch = 6;
     ProtoFetchedBlock fetched_block = 7;
+    ProtoStateUpdateEvent state_update = 8;
   }
 }
 

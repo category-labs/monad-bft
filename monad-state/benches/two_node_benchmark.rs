@@ -3,7 +3,9 @@ use std::time::Duration;
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_consensus_types::{
+    multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
+};
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
@@ -25,7 +27,7 @@ criterion_main!(benches);
 fn two_nodes() {
     run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,

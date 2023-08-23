@@ -33,6 +33,9 @@ impl BlockType for MockBlock {
     fn get_parent_id(&self) -> monad_types::BlockId {
         self.parent_block_id
     }
+    fn get_seq_num(&self) -> u64 {
+        0
+    }
 }
 
 impl std::fmt::Debug for MockBlock {

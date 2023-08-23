@@ -2,7 +2,9 @@ use std::{path::PathBuf, time::Duration};
 
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_consensus_types::{
+    multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
+};
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
@@ -19,7 +21,7 @@ use monad_wal::wal::{WALogger, WALoggerConfig};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type MS = MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, MockValidator>,
+    ConsensusState<SignatureType, SignatureCollectionType, MockValidator, NopStateRoot>,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,

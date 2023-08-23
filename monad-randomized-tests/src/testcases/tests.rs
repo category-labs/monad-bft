@@ -2,7 +2,9 @@ use std::{collections::HashSet, time::Duration};
 
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_consensus_types::{
+    multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
+};
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
@@ -22,7 +24,7 @@ use crate::RandomizedTest;
 fn random_latency_test(seed: u64) {
     run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,
@@ -69,7 +71,7 @@ fn delayed_message_test(seed: u64) {
 
     run_nodes_until::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,

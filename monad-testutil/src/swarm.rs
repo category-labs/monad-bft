@@ -48,7 +48,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
                 .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
                 .collect::<Vec<_>>(),
             delta,
-            state_root_delay: 0,
+            state_root_delay: 4,
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
             genesis_signatures: genesis_sigs.clone(),

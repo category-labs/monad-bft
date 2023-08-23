@@ -9,7 +9,8 @@ use futures_util::{FutureExt, StreamExt};
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    multi_sig::MultiSig, transaction_validator::MockValidator, validation::Sha256Hash,
+    multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
@@ -44,8 +45,14 @@ type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
+type StateRootValidatorType = NopStateRoot;
 type MonadState = monad_state::MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    ConsensusState<
+        SignatureType,
+        SignatureCollectionType,
+        TransactionValidatorType,
+        StateRootValidatorType,
+    >,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,

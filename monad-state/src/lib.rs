@@ -30,9 +30,9 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     CheckpointCommand, Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand,
-    RouterTarget, State, TimerCommand,
+    RouterTarget, State, StateRootHashCommand, TimerCommand,
 };
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, Hash, NodeId, Stake};
 use monad_validator::{
     leader_election::LeaderElection,
     validator_set::{ValidatorData, ValidatorSetType},
@@ -389,12 +389,14 @@ where
 
                         // make sure we're still in same round
                         if fetched.round == self.consensus.get_current_round() {
+                            let mut header = ExecutionArtifacts::zero();
+                            header.state_root = fetched.state_root_hash;
                             let b = Block::new::<HasherType>(
                                 fetched.node_id,
                                 fetched.round,
                                 &Payload {
                                     txns: fetched.txns,
-                                    header: ExecutionArtifacts::zero(), // TODO this needs to be fetched
+                                    header,
                                     seq_num: fetched.seq_num,
                                 },
                                 &fetched.high_qc,
@@ -493,6 +495,10 @@ where
                         self.advance_epoch(valset);
                         Vec::new()
                     }
+                    ConsensusEvent::StateUpdate((seq_num, root_hash)) => {
+                        self.consensus.handle_state_update(seq_num, root_hash);
+                        Vec::new()
+                    }
                 };
 
                 let mut prepare_router_message =
@@ -569,13 +575,19 @@ where
                                 }),
                             )))
                         }
-
                         ConsensusCommand::LedgerFetchReset => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetchReset))
                         }
-
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
+                        ),
+                        ConsensusCommand::StateRootHash(block) => cmds.push(
+                            Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(
+                                block,
+                                Box::new(|s, h| {
+                                    Self::Event::ConsensusEvent(ConsensusEvent::StateUpdate((s, h)))
+                                }),
+                            )),
                         ),
                     }
                 }
@@ -597,6 +609,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),
     AdvanceEpoch(Option<ValidatorData>),
+    StateUpdate((u64, Hash)),
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -624,6 +637,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .finish(),
             ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
             ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
+            ConsensusEvent::StateUpdate(e) => e.fmt(f),
         }
     }
 }

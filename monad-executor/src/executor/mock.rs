@@ -12,7 +12,10 @@ use futures::{Stream, StreamExt};
 use monad_consensus_types::payload::{FullTransactionList, TransactionList};
 use monad_types::{Deserializable, Serializable};
 
-use super::{checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger};
+use super::{
+    checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
+    state_root_hash::MockStateRootHash,
+};
 use crate::{
     state::PeerId, Command, Executor, MempoolCommand, Message, RouterCommand, RouterTarget, State,
     TimerCommand,
@@ -130,7 +133,7 @@ where
     ledger: MockLedger<S::Block, S::Event>,
     checkpoint: MockCheckpoint<S::Checkpoint>,
     epoch: MockEpoch<S::Event>,
-
+    state_root_hash: MockStateRootHash<S::Block, S::Event>,
     tick: Duration,
 
     timer: Option<TimerEvent<S::Event>>,
@@ -182,6 +185,7 @@ enum ExecutorEventType {
     Epoch,
     Timer,
     Mempool,
+    StateRootHash,
 }
 
 impl<S, RS, ME> MockExecutor<S, RS, ME>
@@ -196,6 +200,7 @@ where
             ledger: Default::default(),
             mempool: Default::default(),
             epoch: Default::default(),
+            state_root_hash: Default::default(),
 
             tick: Duration::default(),
 
@@ -241,6 +246,11 @@ where
                     .ready()
                     .then_some((self.tick, ExecutorEventType::Ledger)),
             )
+            .chain(
+                self.state_root_hash
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::StateRootHash)),
+            )
             .min()
     }
 
@@ -262,8 +272,14 @@ where
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
 
-        let (router_cmds, timer_cmds, mempool_cmds, ledger_cmds, checkpoint_cmds) =
-            Self::Command::split_commands(commands);
+        let (
+            router_cmds,
+            timer_cmds,
+            mempool_cmds,
+            ledger_cmds,
+            checkpoint_cmds,
+            state_root_hash_cmds,
+        ) = Self::Command::split_commands(commands);
         for command in router_cmds {
             match command {
                 RouterCommand::Publish { target, message } => {
@@ -293,6 +309,7 @@ where
         self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
+        self.state_root_hash.exec(state_root_hash_cmds);
 
         for (target, message) in to_publish {
             let id = message.as_ref().id();
@@ -357,6 +374,10 @@ where
                 }
                 ExecutorEventType::Ledger => {
                     return futures::executor::block_on(self.ledger.next())
+                        .map(MockExecutorEvent::Event)
+                }
+                ExecutorEventType::StateRootHash => {
+                    return futures::executor::block_on(self.state_root_hash.next())
                         .map(MockExecutorEvent::Event)
                 }
             };

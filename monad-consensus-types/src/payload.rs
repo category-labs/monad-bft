@@ -100,6 +100,22 @@ impl Hashable for Payload {
     }
 }
 
+pub trait StateRootValidator {
+    fn new(delay: u64) -> Self;
+    fn add_state_root(&mut self, seq_num: u64, root_hash: Hash);
+    fn get_next_state_root(&self, seq_num: u64) -> Option<Hash>;
+    fn remove_old_roots(&mut self, latest_seq_num: u64);
+    fn validate(&self, seq_num: u64, block_state_root_hash: Hash) -> StateRootResult;
+}
+
+#[derive(Debug, PartialEq)]
+pub enum StateRootResult {
+    Success,
+    Mismatch,
+    OutOfRange,
+    Missing,
+}
+
 #[derive(Debug, Clone)]
 pub struct StateRoot {
     // Map executed block seq_num to root hash
@@ -109,16 +125,131 @@ pub struct StateRoot {
     pub delay: u64,
 }
 
-impl StateRoot {
-    pub fn new(delay: u64) -> Self {
+impl StateRootValidator for StateRoot {
+    fn new(delay: u64) -> Self {
         StateRoot {
-            root_hashes: BTreeMap::new(),
+            root_hashes: BTreeMap::from([(0, Hash([0; 32]))]),
             delay,
         }
     }
 
-    pub fn remove_old_roots(&mut self, latest_seq_num: u64) {
+    fn add_state_root(&mut self, seq_num: u64, root_hash: Hash) {
+        self.root_hashes.insert(seq_num, root_hash);
+    }
+
+    fn get_next_state_root(&self, seq_num: u64) -> Option<Hash> {
+        if self.delay > seq_num {
+            return Some(Hash([0; 32]));
+        }
+
+        self.root_hashes.get(&(seq_num - self.delay)).copied()
+    }
+
+    fn remove_old_roots(&mut self, latest_seq_num: u64) {
+        if self.delay > latest_seq_num {
+            return;
+        }
         self.root_hashes
             .retain(|k, _| *k >= (latest_seq_num - self.delay));
+    }
+
+    fn validate(&self, seq_num: u64, block_state_root_hash: Hash) -> StateRootResult {
+        // FIXME:
+        // for the first N blocks, there are no state roots so we need to decide
+        // how to validate them -- right now, assuming anything with hash=0x0 is
+        // fine
+        if self.delay > seq_num {
+            // TODO: Magic Value Hash to keep network moving?
+            if Hash([0; 32]) == block_state_root_hash {
+                return StateRootResult::Success;
+            } else {
+                return StateRootResult::Mismatch;
+            }
+        }
+
+        let target_seq_num = seq_num - self.delay;
+        let root_hash = self.root_hashes.get(&target_seq_num);
+        match root_hash {
+            None => match self.root_hashes.keys().max() {
+                None => StateRootResult::OutOfRange,
+                Some(max) => {
+                    if target_seq_num > *max {
+                        StateRootResult::OutOfRange
+                    } else {
+                        StateRootResult::Missing
+                    }
+                }
+            },
+            Some(r) => {
+                if block_state_root_hash == *r {
+                    StateRootResult::Success
+                } else {
+                    StateRootResult::Mismatch
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NopStateRoot {}
+
+impl StateRootValidator for NopStateRoot {
+    fn new(_delay: u64) -> Self {
+        Self {}
+    }
+
+    fn add_state_root(&mut self, _seq_num: u64, _root_hash: Hash) {}
+
+    fn get_next_state_root(&self, _seq_num: u64) -> Option<Hash> {
+        Some(Hash([0; 32]))
+    }
+
+    fn validate(&self, _seq_num: u64, _block_state_root_hash: Hash) -> StateRootResult {
+        StateRootResult::Success
+    }
+
+    fn remove_old_roots(&mut self, _latest_seq_num: u64) {}
+}
+
+#[cfg(test)]
+mod test {
+    use monad_types::Hash;
+
+    use super::{StateRoot, StateRootValidator};
+    use crate::payload::StateRootResult;
+
+    #[test]
+    fn state_root_impl_test() {
+        let mut state_root = StateRoot::new(0);
+
+        for i in 1..10 {
+            state_root.add_state_root(i, Hash([i as u8; 32]));
+        }
+        for i in 1..10 {
+            assert_eq!(
+                state_root.validate(i, Hash([i as u8; 32])),
+                StateRootResult::Success
+            );
+        }
+
+        state_root.remove_old_roots(10);
+        assert_eq!(state_root.root_hashes.len(), 0);
+
+        assert_eq!(
+            state_root.validate(10, Hash([0x0a_u8; 32])),
+            StateRootResult::OutOfRange
+        );
+
+        state_root.add_state_root(10, Hash([0x01_u8; 32]));
+        assert_eq!(
+            state_root.validate(10, Hash([0x0a_u8; 32])),
+            StateRootResult::Mismatch
+        );
+
+        assert_eq!(
+            state_root.validate(5, Hash([0x0a_u8; 32])),
+            StateRootResult::Missing
+        );
     }
 }

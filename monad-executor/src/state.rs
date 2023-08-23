@@ -5,7 +5,7 @@ use monad_consensus_types::{
     payload::{FullTransactionList, TransactionList},
 };
 use monad_crypto::secp256k1::PubKey;
-use monad_types::BlockId;
+use monad_types::{BlockId, Hash as ConsensusHash};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
@@ -66,6 +66,10 @@ pub enum CheckpointCommand<C> {
     Save(C),
 }
 
+pub enum StateRootHashCommand<B, E> {
+    LedgerCommit(B, Box<dyn (FnOnce(u64, ConsensusHash) -> E) + Send + Sync>),
+}
+
 pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
@@ -81,6 +85,7 @@ where
     MempoolCommand(MempoolCommand<M::Event>),
     LedgerCommand(LedgerCommand<B, M::Event>),
     CheckpointCommand(CheckpointCommand<C>),
+    StateRootHashCommand(StateRootHashCommand<B, M::Event>),
 }
 
 impl<M, OM, B, C> Command<M, OM, B, C>
@@ -95,12 +100,14 @@ where
         Vec<MempoolCommand<M::Event>>,
         Vec<LedgerCommand<B, M::Event>>,
         Vec<CheckpointCommand<C>>,
+        Vec<StateRootHashCommand<B, M::Event>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
         let mut mempool_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
+        let mut state_root_hash_cmds = Vec::new();
         for command in commands {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
@@ -108,6 +115,7 @@ where
                 Command::MempoolCommand(cmd) => mempool_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
+                Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
             }
         }
         (
@@ -116,6 +124,7 @@ where
             mempool_cmds,
             ledger_cmds,
             checkpoint_cmds,
+            state_root_hash_cmds,
         )
     }
 }

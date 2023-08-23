@@ -13,7 +13,7 @@ use monad_consensus_types::{
     timeout::TimeoutCertificate,
 };
 use monad_executor::RouterTarget;
-use monad_types::{BlockId, Epoch, NodeId, Round};
+use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
 
 pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     Publish {
@@ -47,6 +47,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     /// Checkpoints periodically can upload/backup the ledger and garbage clean
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
+    StateRootHash(Block<SCT>),
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
@@ -85,6 +86,7 @@ pub struct FetchedTxs<ST, SCT> {
     pub node_id: NodeId,
     pub round: Round,
     pub seq_num: u64,
+    pub state_root_hash: Hash,
     pub high_qc: QuorumCertificate<SCT>,
     pub last_round_tc: Option<TimeoutCertificate<ST>>,
 

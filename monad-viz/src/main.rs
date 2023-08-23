@@ -26,6 +26,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{Block, BlockType},
     multi_sig::MultiSig,
+    payload::NopStateRoot,
     transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
@@ -47,6 +48,7 @@ use replay_graph::{RepConfig, ReplayNodesSimulation};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
+type StateRootValidatorType = NopStateRoot;
 type NS<'a> = NodeState<
     'a,
     PeerId,
@@ -55,7 +57,12 @@ type NS<'a> = NodeState<
     MonadEvent<SignatureType, SignatureCollectionType>,
 >;
 type MS = MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    ConsensusState<
+        SignatureType,
+        SignatureCollectionType,
+        TransactionValidatorType,
+        StateRootValidatorType,
+    >,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
@@ -148,6 +155,7 @@ impl Application for Viz {
                             SignatureType,
                             SignatureCollectionType,
                             TransactionValidatorType,
+                            StateRootValidatorType,
                         >,
                         SignatureType,
                         SignatureCollectionType,
@@ -182,6 +190,7 @@ impl Application for Viz {
                             SignatureType,
                             SignatureCollectionType,
                             TransactionValidatorType,
+                            StateRootValidatorType,
                         >,
                         SignatureType,
                         SignatureCollectionType,

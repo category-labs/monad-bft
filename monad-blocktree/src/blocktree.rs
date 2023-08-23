@@ -333,6 +333,10 @@ impl<T: SignatureCollection> BlockTree<T> {
         }
     }
 
+    pub fn get_seq_num(&self, block_id: BlockId) -> Option<u64> {
+        self.tree.get(&block_id).map(|b| b.block.payload.seq_num)
+    }
+
     pub fn tree(&self) -> &HashMap<BlockId, BlockTreeBlock<T>> {
         &self.tree
     }

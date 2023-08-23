@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{bls::BlsSignatureCollection, transaction_validator::MockValidator};
+use monad_consensus_types::{
+    bls::BlsSignatureCollection, payload::StateRoot, transaction_validator::MockValidator,
+};
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
@@ -23,7 +25,7 @@ fn two_nodes_bls() {
 
     run_nodes::<
         MonadState<
-            ConsensusState<SignatureType, SignatureCollectionType, MockValidator>,
+            ConsensusState<SignatureType, SignatureCollectionType, MockValidator, StateRoot>,
             SignatureType,
             SignatureCollectionType,
             ValidatorSet,

@@ -7,7 +7,7 @@ mod tests {
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
         block::BlockType, certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
-        quorum_certificate::genesis_vote_info,
+        payload::NopStateRoot, quorum_certificate::genesis_vote_info,
         signature_collection::SignatureCollectionKeyPairType, transaction_validator::MockValidator,
         validation::Sha256Hash, voting::ValidatorMapping,
     };
@@ -29,8 +29,14 @@ mod tests {
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
     type TransactionValidatorType = MockValidator;
+    type StateRootValidatorType = NopStateRoot;
     type S = MonadState<
-        ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+        ConsensusState<
+            SignatureType,
+            SignatureCollectionType,
+            TransactionValidatorType,
+            StateRootValidatorType,
+        >,
         SignatureType,
         SignatureCollectionType,
         ValidatorSet,

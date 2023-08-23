@@ -13,7 +13,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, StateRoot},
+    payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
@@ -23,7 +23,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{PeerId, RouterTarget};
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
@@ -31,12 +31,11 @@ use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 pub mod command;
 pub mod wrapper;
 
-pub struct ConsensusState<ST, SCT: SignatureCollection, TV> {
+pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
     pending_block_tree: BlockTree<SCT>,
     vote_state: VoteState<SCT>,
     high_qc: QuorumCertificate<SCT>,
-    seq_num: u64,
-    state_root: StateRoot,
+    state_root_validator: SVT,
 
     pacemaker: Pacemaker<ST, SCT>,
     safety: Safety,
@@ -117,6 +116,8 @@ where
         b: BlockSyncMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
 
+    fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash);
+
     fn get_current_round(&self) -> Round;
 
     fn get_keypair(&self) -> &KeyPair;
@@ -124,11 +125,12 @@ where
     fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT>;
 }
 
-impl<ST, SCT, TVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT>
+impl<ST, SCT, TVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT, SVT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
+    SVT: StateRootValidator,
 {
     type TransactionValidatorType = TVT;
 
@@ -148,8 +150,7 @@ where
             pending_block_tree: BlockTree::new(genesis_block),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
-            seq_num: 0,
-            state_root: StateRoot::new(state_root_delay),
+            state_root_validator: SVT::new(state_root_delay),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
@@ -174,10 +175,33 @@ where
         author: NodeId,
         p: ProposalMessage<ST, SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        vec![ConsensusCommand::FetchFullTxs(
-            p.block.payload.txns.clone(),
-            Box::new(move |txns| FetchedFullTxs { author, p, txns }),
-        )]
+        // NULL blocks are not required to have state root hashes
+        if p.block.payload.txns.0.is_empty() {
+            return vec![ConsensusCommand::FetchFullTxs(
+                TransactionList::default(),
+                Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+            )];
+        }
+
+        match self
+            .state_root_validator
+            .validate(p.block.payload.seq_num, p.block.payload.header.state_root)
+        {
+            // TODO execution lagging too far behind should be a trigger for something
+            // to try and catch up faster. For now, just wait
+            StateRootResult::OutOfRange => {
+                vec![]
+            }
+            // Don't vote and locally timeout if the proposed state root does not match
+            // or if state root is missing
+            StateRootResult::Missing | StateRootResult::Mismatch => {
+                vec![]
+            }
+            StateRootResult::Success => vec![ConsensusCommand::FetchFullTxs(
+                p.block.payload.txns.clone(),
+                Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+            )],
+        }
     }
 
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
@@ -189,10 +213,6 @@ where
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
-
-        // TODO:
-        // check state root hash here
-        // something like validate(p.block.payload.header, self.state_root[p.block.payload.seq_num])
 
         if !self.transaction_validator.validate(&txns) {
             return cmds;
@@ -358,6 +378,10 @@ where
         ConsensusCommand::RequestSync { blockid }
     }
 
+    fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash) {
+        self.state_root_validator.add_state_root(seq_num, root_hash)
+    }
+
     fn get_pubkey(&self) -> PubKey {
         self.nodeid.0
     }
@@ -379,11 +403,12 @@ where
     }
 }
 
-impl<ST, SCT, TVT> ConsensusState<ST, SCT, TVT>
+impl<ST, SCT, TVT, SVT> ConsensusState<ST, SCT, TVT, SVT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
+    SVT: StateRootValidator,
 {
     // If the qc has a commit_state_hash, commit the parent block and prune the
     // block tree
@@ -406,10 +431,17 @@ where
                 .prune(&qc.info.vote.parent_id)
                 .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
 
-            self.seq_num += blocks_to_commit.len() as u64;
-            self.state_root.remove_old_roots(self.seq_num);
+            if let Some(b) = blocks_to_commit.last() {
+                self.state_root_validator
+                    .remove_old_roots(b.payload.seq_num);
+            }
 
             if !blocks_to_commit.is_empty() {
+                cmds.extend(
+                    blocks_to_commit
+                        .iter()
+                        .map(|b| ConsensusCommand::StateRootHash(b.clone())),
+                );
                 cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(blocks_to_commit));
             }
         }
@@ -441,20 +473,49 @@ where
         let node_id = self.nodeid;
         let round = self.pacemaker.get_current_round();
         let high_qc = self.high_qc.clone();
-        let seq_num = self.seq_num;
 
-        vec![ConsensusCommand::FetchTxs(
-            // FIXME get from config
-            10000,
-            Box::new(move |txns| FetchedTxs {
-                node_id,
-                round,
-                seq_num,
-                high_qc,
-                last_round_tc,
-                txns,
-            }),
-        )]
+        let parent_bid = high_qc.info.vote.id;
+        let seq_num = self.pending_block_tree.get_seq_num(parent_bid);
+
+        match seq_num {
+            Some(s) => {
+                let seq_num = s + 1;
+                match self.state_root_validator.get_next_state_root(seq_num) {
+                    Some(h) => {
+                        vec![ConsensusCommand::FetchTxs(
+                            // FIXME get from config
+                            10000,
+                            Box::new(move |txns| FetchedTxs {
+                                node_id,
+                                round,
+                                seq_num,
+                                state_root_hash: h,
+                                high_qc,
+                                last_round_tc,
+                                txns,
+                            }),
+                        )]
+                    }
+                    None => {
+                        // Don't have the necessary state root hash ready so propose
+                        // a NULL block
+                        vec![ConsensusCommand::FetchTxs(
+                            0,
+                            Box::new(move |_txns| FetchedTxs {
+                                node_id,
+                                round,
+                                seq_num,
+                                state_root_hash: Hash([0; 32]),
+                                high_qc,
+                                last_round_tc,
+                                txns: TransactionList::default(),
+                            }),
+                        )]
+                    }
+                }
+            }
+            None => vec![],
+        }
     }
 }
 
@@ -474,7 +535,10 @@ mod test {
         ledger::LedgerCommitInfo,
         message_signature::MessageSignature,
         multi_sig::MultiSig,
-        payload::{ExecutionArtifacts, FullTransactionList, TransactionList},
+        payload::{
+            ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
+            TransactionList,
+        },
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::TimeoutInfo,
@@ -499,15 +563,16 @@ mod test {
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
+    type StateRootValidatorType = NopStateRoot;
 
-    fn setup<ST: MessageSignature, SCT: SignatureCollection>(
+    fn setup<ST: MessageSignature, SCT: SignatureCollection, SVT: StateRootValidator>(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
         Vec<SignatureCollectionKeyPairType<SCT>>,
         ValidatorSet,
         ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        Vec<ConsensusState<ST, SCT, MockValidator>>,
+        Vec<ConsensusState<ST, SCT, MockValidator, SVT>>,
     ) {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
 
@@ -536,7 +601,7 @@ mod test {
                         [127; 32],
                     )
                     .unwrap();
-                ConsensusState::<ST, SCT, _>::new(
+                ConsensusState::<ST, SCT, _, SVT>::new(
                     MockValidator,
                     k.pubkey(),
                     genesis_block.clone(),
@@ -556,7 +621,7 @@ mod test {
     #[test]
     fn lock_qc_high() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, SignatureCollectionType>(4);
+            setup::<NopSignature, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
@@ -615,7 +680,7 @@ mod test {
     #[test]
     fn timeout_stops_voting() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -662,7 +727,7 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -762,7 +827,7 @@ mod test {
     #[test]
     fn old_qc_in_timeout_message() {
         let (keys, cerkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -821,7 +886,7 @@ mod test {
     #[test]
     fn duplicate_proposals() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -877,7 +942,7 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1067,7 +1132,7 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1132,7 +1197,6 @@ mod test {
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(lc.is_none());
-        assert_eq!(state.seq_num, 0);
 
         let p2_votes = p2_cmds
             .into_iter()
@@ -1175,14 +1239,13 @@ mod test {
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(lc.is_some());
-        assert_eq!(state.seq_num, 1);
     }
 
     #[test]
     fn test_commit_rule_non_consecutive() {
         use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1309,7 +1372,7 @@ mod test {
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();

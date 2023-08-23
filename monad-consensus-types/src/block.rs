@@ -11,6 +11,7 @@ use crate::{
 pub trait BlockType: Clone + PartialEq + Eq {
     fn get_id(&self) -> BlockId;
     fn get_parent_id(&self) -> BlockId;
+    fn get_seq_num(&self) -> u64;
 }
 
 #[derive(Clone)]
@@ -77,5 +78,9 @@ impl<T: SignatureCollection> BlockType for Block<T> {
 
     fn get_parent_id(&self) -> BlockId {
         self.qc.info.vote.id
+    }
+
+    fn get_seq_num(&self) -> u64 {
+        self.payload.seq_num
     }
 }

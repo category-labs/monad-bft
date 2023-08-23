@@ -36,6 +36,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
 
                     tx_hashes: fetched.txns.0.clone(),
                     seq_num: fetched.seq_num,
+                    state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
             }
             ConsensusEvent::FetchedFullTxs(fetched_full) => {
@@ -65,6 +66,12 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
             ConsensusEvent::AdvanceEpoch(validator_set) => {
                 proto_consensus_event::Event::AdvanceEpoch(ProtoAdvanceEpochEvent {
                     validator_set: validator_set.as_ref().map(|x| x.into()),
+                })
+            }
+            ConsensusEvent::StateUpdate((seq_num, hash)) => {
+                proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
+                    seq_num: *seq_num,
+                    state_root_hash: Some(hash.into()),
                 })
             }
         };
@@ -111,6 +118,12 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                         ))?
                         .try_into()?,
                     seq_num: fetched_txs.seq_num,
+                    state_root_hash: fetched_txs
+                        .state_root_hash
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_txs.state_root_hash".to_owned(),
+                        ))?
+                        .try_into()?,
                     high_qc: fetched_txs
                         .high_qc
                         .ok_or(ProtoError::MissingRequiredField(
@@ -188,6 +201,15 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                         ConsensusEvent::AdvanceEpoch(Some(a))
                     }
                 }
+            }
+            Some(proto_consensus_event::Event::StateUpdate(event)) => {
+                let h = event
+                    .state_root_hash
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::StateUpdate::state_root_hash".to_owned(),
+                    ))?
+                    .try_into()?;
+                ConsensusEvent::StateUpdate((event.seq_num, h))
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),
