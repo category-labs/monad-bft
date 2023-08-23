@@ -5,7 +5,8 @@ use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::BlockType, multi_sig::MultiSig, transaction_validator::MockValidator,
+    block::BlockType, multi_sig::MultiSig, payload::NopStateRoot,
+    transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
@@ -24,6 +25,7 @@ use tempfile::tempdir;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
+type StateRootValidatorType = NopStateRoot;
 
 #[test]
 fn test_replay() {
@@ -53,7 +55,12 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
 
     let mut nodes = Nodes::<
         MonadState<
-            ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+            ConsensusState<
+                SignatureType,
+                SignatureCollectionType,
+                TransactionValidatorType,
+                StateRootValidatorType,
+            >,
             SignatureType,
             SignatureCollectionType,
             ValidatorSet,
@@ -117,7 +124,12 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
 
     let mut nodes_recovered = Nodes::<
         MonadState<
-            ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+            ConsensusState<
+                SignatureType,
+                SignatureCollectionType,
+                TransactionValidatorType,
+                StateRootValidatorType,
+            >,
             SignatureType,
             SignatureCollectionType,
             ValidatorSet,

@@ -4,18 +4,20 @@ use monad_consensus_types::{
 
 use crate::ConsensusState;
 
-struct ConsensusStateWrapper<S: MessageSignature, SC: SignatureCollection, TV> {
-    consensus_state: ConsensusState<S, SC, TV>,
+struct ConsensusStateWrapper<S: MessageSignature, SC: SignatureCollection, TV, SV> {
+    consensus_state: ConsensusState<S, SC, TV, SV>,
 }
 
-impl<S: MessageSignature, SC: SignatureCollection, TV> Drop for ConsensusStateWrapper<S, SC, TV> {
+impl<S: MessageSignature, SC: SignatureCollection, TV, SV> Drop
+    for ConsensusStateWrapper<S, SC, TV, SV>
+{
     fn drop(&mut self) {
         eprintln!("{:?}", self);
     }
 }
 
-impl<S: MessageSignature, SC: SignatureCollection, TV> std::fmt::Debug
-    for ConsensusStateWrapper<S, SC, TV>
+impl<S: MessageSignature, SC: SignatureCollection, TV, SV> std::fmt::Debug
+    for ConsensusStateWrapper<S, SC, TV, SV>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")

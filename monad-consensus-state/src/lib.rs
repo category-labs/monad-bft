@@ -13,7 +13,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, StateRoot},
+    payload::{FullTransactionList, StateRootResult, StateRootValidator},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
@@ -31,12 +31,12 @@ use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 pub mod command;
 pub mod wrapper;
 
-pub struct ConsensusState<ST, SCT: SignatureCollection, TV> {
+pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
     pending_block_tree: BlockTree<SCT>,
     vote_state: VoteState<SCT>,
     high_qc: QuorumCertificate<SCT>,
     seq_num: u64,
-    state_root: StateRoot,
+    state_root: SVT,
 
     pacemaker: Pacemaker<ST, SCT>,
     safety: Safety,
@@ -121,11 +121,12 @@ where
     fn get_keypair(&self) -> &KeyPair;
 }
 
-impl<ST, SCT, TVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT>
+impl<ST, SCT, TVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT, SVT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
+    SVT: StateRootValidator,
 {
     type TransactionValidatorType = TVT;
 
@@ -146,7 +147,7 @@ where
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             seq_num: 0,
-            state_root: StateRoot::new(state_root_delay),
+            state_root: SVT::new(state_root_delay),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
@@ -171,10 +172,25 @@ where
         author: NodeId,
         p: ProposalMessage<ST, SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        vec![ConsensusCommand::FetchFullTxs(
-            p.block.payload.txns.clone(),
-            Box::new(move |txns| FetchedFullTxs { author, p, txns }),
-        )]
+        match self
+            .state_root
+            .validate(p.block.payload.seq_num, p.block.payload.header.state_root)
+        {
+            // TODO execution lagging too far behind should be a trigger for something
+            // to try and catch up faster. For now, just wait
+            StateRootResult::OutOfRange => {
+                vec![]
+            }
+            // Don't vote and locally timeout if the proposed state root does not match
+            // or if state root is missing
+            StateRootResult::Missing | StateRootResult::Mismatch => {
+                vec![]
+            }
+            StateRootResult::Success => vec![ConsensusCommand::FetchFullTxs(
+                p.block.payload.txns.clone(),
+                Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+            )],
+        }
     }
 
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
@@ -186,10 +202,6 @@ where
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
-
-        // TODO:
-        // check state root hash here
-        // something like validate(p.block.payload.header, self.state_root[p.block.payload.seq_num])
 
         if !self.transaction_validator.validate(&txns) {
             return cmds;
@@ -351,11 +363,12 @@ where
     }
 }
 
-impl<ST, SCT, TVT> ConsensusState<ST, SCT, TVT>
+impl<ST, SCT, TVT, SVT> ConsensusState<ST, SCT, TVT, SVT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
+    SVT: StateRootValidator,
 {
     // If the qc has a commit_state_hash, commit the parent block and prune the
     // block tree
@@ -448,7 +461,10 @@ mod test {
         ledger::LedgerCommitInfo,
         message_signature::MessageSignature,
         multi_sig::MultiSig,
-        payload::{ExecutionArtifacts, FullTransactionList, TransactionList},
+        payload::{
+            ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
+            TransactionList,
+        },
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::TimeoutInfo,
@@ -473,15 +489,16 @@ mod test {
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
+    type StateRootValidatorType = NopStateRoot;
 
-    fn setup<ST: MessageSignature, SCT: SignatureCollection>(
+    fn setup<ST: MessageSignature, SCT: SignatureCollection, SVT: StateRootValidator>(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
         Vec<SignatureCollectionKeyPairType<SCT>>,
         ValidatorSet,
         ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        Vec<ConsensusState<ST, SCT, MockValidator>>,
+        Vec<ConsensusState<ST, SCT, MockValidator, SVT>>,
     ) {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
 
@@ -510,7 +527,7 @@ mod test {
                         [127; 32],
                     )
                     .unwrap();
-                ConsensusState::<ST, SCT, _>::new(
+                ConsensusState::<ST, SCT, _, SVT>::new(
                     MockValidator,
                     k.pubkey(),
                     genesis_block.clone(),
@@ -530,7 +547,7 @@ mod test {
     #[test]
     fn lock_qc_high() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, SignatureCollectionType>(4);
+            setup::<NopSignature, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
@@ -589,7 +606,7 @@ mod test {
     #[test]
     fn timeout_stops_voting() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -636,7 +653,7 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -736,7 +753,7 @@ mod test {
     #[test]
     fn old_qc_in_timeout_message() {
         let (keys, cerkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -795,7 +812,7 @@ mod test {
     #[test]
     fn duplicate_proposals() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -851,7 +868,7 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1041,7 +1058,7 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1156,7 +1173,7 @@ mod test {
     fn test_commit_rule_non_consecutive() {
         use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::new(state.high_qc.clone());
@@ -1283,7 +1300,7 @@ mod test {
     #[test]
     fn test_malicious_proposal_to_next_leader() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>>(4);
+            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();

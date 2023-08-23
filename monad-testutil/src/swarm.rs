@@ -4,8 +4,9 @@ use monad_block_sync::{BlockSyncProcess, BlockSyncState};
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
     block::BlockType, message_signature::MessageSignature, multi_sig::MultiSig,
-    quorum_certificate::genesis_vote_info, signature_collection::SignatureCollection,
-    transaction_validator::MockValidator, validation::Sha256Hash,
+    payload::NopStateRoot, quorum_certificate::genesis_vote_info,
+    signature_collection::SignatureCollection, transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
@@ -35,8 +36,14 @@ use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
+type StateRootValidatorType = NopStateRoot;
 type MS = MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    ConsensusState<
+        SignatureType,
+        SignatureCollectionType,
+        TransactionValidatorType,
+        StateRootValidatorType,
+    >,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,

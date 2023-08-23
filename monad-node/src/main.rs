@@ -9,7 +9,7 @@ use monad_consensus_types::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, Payload, TransactionList},
+    payload::{ExecutionArtifacts, NopStateRoot, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
@@ -38,8 +38,14 @@ type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
+type StateRootValidatorType = NopStateRoot;
 type MonadState = monad_state::MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    ConsensusState<
+        SignatureType,
+        SignatureCollectionType,
+        TransactionValidatorType,
+        StateRootValidatorType,
+    >,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
