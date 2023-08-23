@@ -1,10 +1,10 @@
 FROM rust:1-buster AS chef 
 RUN cargo install cargo-chef 
-WORKDIR app
+WORKDIR /app
 
 FROM chef AS planner
 COPY . .
-RUN cargo chef prepare  --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
@@ -12,12 +12,13 @@ WORKDIR /usr/src/monad-bft
 RUN apt update
 RUN apt install -y python3
 
+# Build dependencies (docker layer cache)
 COPY --from=planner /app/recipe.json recipe.json
-# Build dependencies - this is the caching Docker layer!
 RUN cargo chef cook --release --recipe-path recipe.json
+
 # Build application
 COPY . .
-RUN cargo install --path monad-node
+RUN cargo build --release --bin monad-node
 RUN python3 tc-gen.py > tc.sh
 
 
@@ -26,7 +27,8 @@ WORKDIR /usr/src/monad-bft
 
 RUN apt update
 RUN apt install -y iproute2
-COPY --from=builder /usr/local/cargo/bin/monad-node /usr/local/bin/monad-node
+RUN apt clean
+COPY --from=builder /usr/src/monad-bft/target/release/monad-node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/tc.sh .
 
 ENV RUST_LOG=monad_node=DEBUG
