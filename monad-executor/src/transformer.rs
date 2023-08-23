@@ -124,15 +124,15 @@ impl<M> Transform<M> for DropTransformer {
 }
 
 #[derive(Clone, Debug)]
-pub struct PeriodicTranformer {
+pub struct PeriodicTransformer {
     pub start: u32,    // when period start
     pub duration: u32, // how long does it last
     cnt: u32,          // monotonically inreasing counter
 }
 
-impl PeriodicTranformer {
+impl PeriodicTransformer {
     pub fn new(start: u32, duration: u32) -> Self {
-        PeriodicTranformer {
+        PeriodicTransformer {
             start,
             duration,
             cnt: 0,
@@ -140,7 +140,7 @@ impl PeriodicTranformer {
     }
 }
 
-impl<M> Transform<M> for PeriodicTranformer {
+impl<M> Transform<M> for PeriodicTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         self.cnt += 1;
         if self.cnt < self.start || self.cnt >= self.start + self.duration {
@@ -224,7 +224,7 @@ pub enum Transformer<M> {
     RandLatency(RandLatencyTransformer),
     Partition(PartitionTransformer),
     Drop(DropTransformer),
-    Periodic(PeriodicTranformer),
+    Periodic(PeriodicTransformer),
     Replay(ReplayTransformer<M>),
 }
 
@@ -335,7 +335,7 @@ mod test {
     use crate::{
         mock_swarm::LinkMessage,
         transformer::{
-            DropTransformer, PartitionTransformer, PeriodicTranformer, RandLatencyTransformer,
+            DropTransformer, PartitionTransformer, PeriodicTransformer, RandLatencyTransformer,
             ReplayTransformer, TransformerStream, XorLatencyTransformer,
         },
         PeerId,
@@ -437,7 +437,7 @@ mod test {
         let keys = create_keys(2);
         let mut peers = HashSet::new();
         peers.insert(PeerId(keys[0].pubkey()));
-        let mut t = PeriodicTranformer::new(3, 5);
+        let mut t = PeriodicTransformer::new(3, 5);
         let m = get_mock_message();
         for _ in 0..2 {
             let TransformerStream::Complete(c) = t.transform(m.clone()) else {
@@ -517,7 +517,7 @@ mod test {
         let mut pipe = xfmr_pipe![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
             Transformer::Partition(PartitionTransformer(peers)),
-            Transformer::Periodic(PeriodicTranformer::new(3, 5)),
+            Transformer::Periodic(PeriodicTransformer::new(3, 5)),
             Transformer::Latency(LatencyTransformer(Duration::from_millis(30)))
         ];
         for _ in 0..1000 {

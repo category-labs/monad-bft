@@ -40,6 +40,7 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
         BlockId,
         Box<dyn (FnOnce(Option<Block<SCT>>) -> FetchedBlock<SCT>) + Send + Sync>,
     ),
+    LedgerFetchReset,
     /// Checkpoints periodically can upload/backup the ledger and garbage clean
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
@@ -96,5 +97,6 @@ pub struct FetchedFullTxs<ST, SCT> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedBlock<SCT> {
+    pub requester: NodeId,
     pub block: Option<Block<SCT>>,
 }

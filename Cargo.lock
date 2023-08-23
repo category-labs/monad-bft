@@ -4569,7 +4569,9 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
+ "monad-crypto",
  "monad-executor",
+ "monad-testutil",
  "monad-types",
  "monad-validator",
 ]

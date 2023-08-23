@@ -19,12 +19,6 @@ pub struct MockLedger<O: BlockType, E> {
     waker: Option<Waker>,
 }
 
-impl<O: BlockType, E> MockLedger<O, E> {
-    pub fn ready(&self) -> bool {
-        self.ledger_fetch_cb.is_some()
-    }
-}
-
 impl<O: BlockType, E> Default for MockLedger<O, E> {
     fn default() -> Self {
         Self {
@@ -36,22 +30,15 @@ impl<O: BlockType, E> Default for MockLedger<O, E> {
     }
 }
 
-impl<O: BlockType, E> MockLedger<O, E> {
-    pub fn get_blocks(&self) -> &Vec<O> {
-        &self.blockchain
-    }
-}
-
 impl<O: BlockType, E> Executor for MockLedger<O, E> {
     type Command = LedgerCommand<O, E>;
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(block) => {
-                    // it is assumed the consensus verified that block is valid, thus commiting shouldn't cause issue
-                    // only concern might be hash collision
                     self.block_index
                         .insert(block.get_id(), self.blockchain.len());
                     self.blockchain.push(block);
@@ -59,6 +46,10 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
                 LedgerCommand::LedgerFetch(block_id, cb) => {
                     self.ledger_fetch_cb = Some((block_id, cb));
                     wake = true;
+                }
+                LedgerCommand::LedgerFetchReset => {
+                    self.ledger_fetch_cb = None;
+                    wake = false;
                 }
             }
         }
@@ -70,10 +61,9 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
     }
 }
 
-impl<O, E> Stream for MockLedger<O, E>
+impl<O: BlockType, E> Stream for MockLedger<O, E>
 where
     Self: Unpin,
-    O: Clone + BlockType,
 {
     type Item = E;
 
@@ -82,11 +72,9 @@ where
 
         if let Some((block_id, cb)) = this.ledger_fetch_cb.take() {
             return Poll::Ready(Some(cb({
-                if let Some(i) = self.block_index.get(&block_id) {
-                    Some(self.blockchain[*i].clone())
-                } else {
-                    None
-                }
+                this.block_index
+                    .get(&block_id)
+                    .map(|idx| this.blockchain[*idx].clone())
             })));
         }
 
@@ -95,6 +83,17 @@ where
     }
 }
 
+impl<O: BlockType, E> MockLedger<O, E>
+where
+    O: BlockType,
+{
+    pub fn ready(&self) -> bool {
+        self.ledger_fetch_cb.is_some()
+    }
+    pub fn get_blocks(&self) -> &Vec<O> {
+        &self.blockchain
+    }
+}
 #[cfg(test)]
 mod tests {
     use futures::{FutureExt, StreamExt};

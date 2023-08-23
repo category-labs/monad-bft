@@ -167,8 +167,11 @@ where
                 }
             }
             ConsensusMessage::BlockSync(m) => {
-                let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validators.get_members(), sender)?;
+                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
+                    validators,
+                    validator_mapping,
+                    sender,
+                )?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -308,19 +311,32 @@ impl<S: MessageSignature> Unverified<S, RequestBlockSyncMessage> {
     }
 }
 
-impl<S, T> Unverified<S, BlockSyncMessage<T>>
+impl<S, SCT> Unverified<S, BlockSyncMessage<SCT>>
 where
     S: MessageSignature,
-    T: SignatureCollection,
+    SCT: SignatureCollection,
 {
-    pub fn verify<H: Hasher>(
+    pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
-        validators: &HashMap<NodeId, Stake>,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, BlockSyncMessage<T>>, Error> {
+    ) -> Result<Verified<S, BlockSyncMessage<SCT>>, Error> {
         let msg = H::hash_object(&self.obj);
 
-        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
+        let author = verify_author(
+            validators.get_members(),
+            sender,
+            &msg,
+            &self.author_signature,
+        )?;
+
+        verify_certificates::<S, H, _, _>(
+            validators,
+            validator_mapping,
+            &(None),
+            &self.obj.block.qc,
+        )?;
 
         let result = Verified {
             author: NodeId(author),

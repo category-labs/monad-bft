@@ -4,7 +4,10 @@ use message::MessageState;
 use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncMessage, ProposalMessage},
+    },
     pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
 };
@@ -397,8 +400,14 @@ where
                         cmds
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
-                        let cmds = vec![];
-                        // next commit adds next step
+                        let mut cmds = vec![ConsensusCommand::LedgerFetchReset];
+                        if let Some(b) = fetched_b.block {
+                            let m = BlockSyncMessage { block: b };
+                            cmds.push(ConsensusCommand::Publish {
+                                target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
+                                message: ConsensusMessage::BlockSync(m),
+                            })
+                        }
                         cmds
                     }
                     ConsensusEvent::Message {
@@ -436,13 +445,9 @@ where
                                     &self.leader_election,
                                 )
                             }
-                            ConsensusMessage::RequestBlockSync(msg) => {
-                                self.block_sync.handle_request_block_sync_message(
-                                    author,
-                                    msg,
-                                    &self.validator_set,
-                                )
-                            }
+                            ConsensusMessage::RequestBlockSync(msg) => self
+                                .block_sync
+                                .handle_request_block_sync_message(author, msg),
                             ConsensusMessage::BlockSync(msg) => {
                                 self.consensus.handle_block_sync_message(msg)
                             }
@@ -528,6 +533,10 @@ where
                                     )))
                                 }),
                             )))
+                        }
+
+                        ConsensusCommand::LedgerFetchReset => {
+                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetchReset))
                         }
 
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(

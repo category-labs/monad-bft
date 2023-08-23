@@ -172,7 +172,7 @@ impl<T> Ord for SequencedPeerEvent<T> {
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum ExecutorEventType {
     Router,
-
+    Ledger,
     Epoch,
     Timer,
     Mempool,
@@ -229,6 +229,11 @@ where
                 self.epoch
                     .ready()
                     .then_some((self.tick, ExecutorEventType::Epoch)),
+            )
+            .chain(
+                self.ledger
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::Ledger)),
             )
             .min()
     }
@@ -306,9 +311,11 @@ where
 
     S::Event: Unpin,
     S::Message: Deserializable<RS::M>,
+    S::Block: Unpin,
     Self: Unpin,
 {
     type Item = MockExecutorEvent<S::Event, RS::Serialized>;
+
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -342,6 +349,12 @@ where
                         .mempool
                         .poll_next_unpin(cx)
                         .map(|opt| opt.map(MockExecutorEvent::Event))
+                }
+                ExecutorEventType::Ledger => {
+                    return this
+                        .ledger
+                        .poll_next_unpin(cx)
+                        .map(|opt| opt.map(MockExecutorEvent::Event));
                 }
             };
             return Poll::Ready(Some(event));

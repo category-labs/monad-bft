@@ -105,7 +105,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
 
     MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
-    S::Block: PartialEq,
+    S::Block: PartialEq + Unpin,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
@@ -180,7 +180,7 @@ pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
 
     MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
-    S::Block: PartialEq,
+    S::Block: PartialEq + Unpin,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 

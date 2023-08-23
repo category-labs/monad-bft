@@ -48,6 +48,7 @@ where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     M: Stream<Item = E> + Unpin,
+    L: Stream<Item = E> + Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -59,6 +60,7 @@ where
             this.router.by_ref().boxed_local(),
             this.timer.by_ref().boxed_local(),
             this.mempool.by_ref().boxed_local(),
+            this.ledger.by_ref().boxed_local(),
         ])
         .poll_next_unpin(cx)
     }

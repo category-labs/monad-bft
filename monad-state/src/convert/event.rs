@@ -57,6 +57,7 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent
             }
             TypeConsensusEvent::FetchedBlock(fetched_block) => {
                 proto_consensus_event::Event::FetchedBlock(ProtoFetchedBlock {
+                    requester: Some((&fetched_block.requester).into()),
                     block: fetched_block.block.as_ref().map(|b| b.into()),
                 })
             }
@@ -148,6 +149,12 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> TryFrom<ProtoConsens
             }
             Some(proto_consensus_event::Event::FetchedBlock(fetched_block)) => {
                 ConsensusEvent::FetchedBlock(FetchedBlock {
+                    requester: fetched_block
+                        .requester
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_block.requester".to_owned(),
+                        ))?
+                        .try_into()?,
                     block: Some(
                         fetched_block
                             .block

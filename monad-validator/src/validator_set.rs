@@ -36,6 +36,8 @@ pub trait ValidatorSetType {
         Self: Sized;
     fn get_members(&self) -> &HashMap<NodeId, Stake>;
     fn get_list(&self) -> &Vec<NodeId>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
     fn is_member(&self, addr: &NodeId) -> bool;
     fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
     where
@@ -121,6 +123,14 @@ impl ValidatorSetType for ValidatorSet {
 
     fn get_list(&self) -> &Vec<NodeId> {
         &self.validator_list
+    }
+
+    fn len(&self) -> usize {
+        self.validator_list.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.validator_list.is_empty()
     }
 
     fn is_member(&self, addr: &NodeId) -> bool {

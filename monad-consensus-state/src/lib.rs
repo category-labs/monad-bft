@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
@@ -23,7 +23,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{PeerId, RouterTarget};
-use monad_types::{NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
@@ -44,6 +44,7 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV> {
     nodeid: NodeId,
 
     transaction_validator: TV,
+    requested_blocks: HashSet<BlockId>,
 
     // TODO deprecate
     keypair: KeyPair,
@@ -119,6 +120,8 @@ where
     fn get_current_round(&self) -> Round;
 
     fn get_keypair(&self) -> &KeyPair;
+
+    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT>;
 }
 
 impl<ST, SCT, TVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT>
@@ -152,7 +155,7 @@ where
             nodeid: NodeId(my_pubkey),
 
             transaction_validator,
-
+            requested_blocks: HashSet::new(),
             keypair,
             cert_keypair,
         }
@@ -213,11 +216,11 @@ where
         self.pending_block_tree
             .add(p.block.clone())
             .expect("Failed to add block to blocktree");
-
-        if !self.pending_block_tree.has_parent(&p.block) {
-            cmds.push(ConsensusCommand::RequestSync {
-                blockid: p.block.get_parent_id(),
-            });
+        if let Some(bid) = self
+            .pending_block_tree
+            .get_missing_ancestor(&p.block.get_id())
+        {
+            cmds.push(self.create_request_sync(bid));
         }
 
         if p.block.round != round || author != leader || p.block.author != leader {
@@ -323,11 +326,36 @@ where
         cmds
     }
 
+    /**
+     * Handle_block_sync_message only respond to blocks that was previously requested.
+     * Once successfully removed from requested dict, it then checks if its valid to add to
+     * pending_block_tree.
+     *
+     * Note, that it is possible that a requested block failed to be added to the tree
+     * due to the original proposal arrived before requested block is able to be returned.
+     *
+     */
     fn handle_block_sync_message(
         &mut self,
         b: BlockSyncMessage<SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
-        Vec::new()
+        let mut cmds = vec![];
+        let block = b.block;
+        let bid = block.get_id();
+        if self.requested_blocks.remove(&bid) && self.pending_block_tree.is_valid(&block) {
+            self.pending_block_tree
+                .add(block)
+                .expect("failed to add block to tree during block sync");
+            if let Some(blockid) = self.pending_block_tree.get_missing_ancestor(&bid) {
+                cmds.push(self.create_request_sync(blockid));
+            }
+        }
+        cmds
+    }
+
+    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT> {
+        self.requested_blocks.insert(blockid);
+        ConsensusCommand::RequestSync { blockid }
     }
 
     fn get_pubkey(&self) -> PubKey {
@@ -438,7 +466,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus::{
-        messages::message::{TimeoutMessage, VoteMessage},
+        messages::message::{BlockSyncMessage, TimeoutMessage, VoteMessage},
         pacemaker::PacemakerTimerExpire,
         validation::signing::Verified,
     };
@@ -1281,7 +1309,7 @@ mod test {
     // this test checks that a malicious proposal sent only to the next leader is
     // not incorrectly committed
     #[test]
-    fn test_malicious_proposal_to_next_leader() {
+    fn test_malicious_proposal_and_block_recovery() {
         let (keys, certkeys, valset, valmap, mut states) =
             setup::<NopSignature, MultiSig<NopSignature>>(4);
         let election = SimpleRoundRobin::new();
@@ -1317,6 +1345,7 @@ mod test {
         );
 
         let (author, _, verified_message) = cp1.destructure();
+        let block_1 = verified_message.block.clone();
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
@@ -1423,10 +1452,11 @@ mod test {
             Default::default(),
             ExecutionArtifacts::zero(),
         );
-        let (author, _, verified_message) = cp2.destructure();
+        let (author_2, _, verified_message_2) = cp2.destructure();
+        let block_2 = verified_message_2.block.clone();
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
-            author,
-            verified_message.clone(),
+            author_2,
+            verified_message_2.clone(),
             FullTransactionList(Vec::new()),
             &valset,
             &election,
@@ -1440,11 +1470,18 @@ mod test {
             )
         });
         assert!(res.is_some());
+        let sync_bid = match res.unwrap() {
+            ConsensusCommand::RequestSync { blockid } => Some(blockid),
+            _ => None,
+        }
+        .unwrap();
+
+        assert!(sync_bid == block_1.get_id());
 
         // first_state has the correct block in its blocktree, so it should not request anything
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
-            author,
-            verified_message,
+            author_2,
+            verified_message_2.clone(),
             FullTransactionList(Vec::new()),
             &valset,
             &election,
@@ -1452,9 +1489,8 @@ mod test {
         let res = cmds1.into_iter().find(|c| {
             matches!(
                 c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::RequestBlockSync(_),
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
                 },
             )
         });
@@ -1471,6 +1507,8 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp3.destructure();
+        let block_3 = verified_message.block.clone();
+
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
@@ -1500,5 +1538,159 @@ mod test {
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(res.is_some());
+
+        // a block sync request arrived, helping second state to recover
+        second_state.handle_block_sync_message(BlockSyncMessage { block: block_1 });
+
+        // in the next round, second_state should recover and able to commit
+        let cp4 = correct_proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author, _, verified_message) = cp4.destructure();
+        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message.clone(),
+            FullTransactionList(Vec::new()),
+            &valset,
+            &election,
+        );
+        // new block added should allow path_to_root properly, thus no more request sync
+        let res = cmds2.iter().clone().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_none());
+
+        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message.clone(),
+            FullTransactionList(Vec::new()),
+            &valset,
+            &election,
+        );
+
+        // second_state has the correct blocks, so expect to see a commit
+        assert_eq!(second_state.pending_block_tree.size(), 3);
+        let res = cmds2
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(res.is_some());
+
+        // first_state has the correct blocks, so expect to see a commit
+        assert_eq!(first_state.pending_block_tree.size(), 3);
+        let res = cmds1
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(res.is_some());
+
+        // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
+        // feeding third_state with a proposal from round 4 should trigger a recursive behaviour to ask for blocks
+
+        let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList(Vec::new()),
+            &valset,
+            &election,
+        );
+
+        assert_eq!(third_state.pending_block_tree.size(), 3);
+        let res = cmds3.iter().clone().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_some());
+
+        // BlockSyncMessage on blocks that were not requested should be ignored.
+        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage {
+            block: block_2.clone(),
+        });
+
+        assert_eq!(third_state.pending_block_tree.size(), 3);
+        let res = cmds3.iter().clone().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_none());
+
+        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage {
+            block: block_3.clone(),
+        });
+
+        assert_eq!(third_state.pending_block_tree.size(), 4);
+        let res = cmds3.iter().clone().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_some());
+
+        // repeated handling of the requested block should be ignored
+        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage { block: block_3 });
+
+        assert_eq!(third_state.pending_block_tree.size(), 4);
+        let res = cmds3.iter().clone().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_none());
+
+        //arrival of proposal should also prevent block_sync_request from modifying the tree
+        let cmds2 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author_2,
+            verified_message_2,
+            FullTransactionList(Vec::new()),
+            &valset,
+            &election,
+        );
+        assert_eq!(third_state.pending_block_tree.size(), 5);
+        let res = cmds2.into_iter().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_none());
+
+        // request sync which did not arrive in time should be ignored.
+        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage { block: block_2 });
+
+        assert_eq!(third_state.pending_block_tree.size(), 5);
+        let res = cmds3.iter().clone().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    blockid: BlockId(_)
+                },
+            )
+        });
+        assert!(res.is_none());
     }
 }

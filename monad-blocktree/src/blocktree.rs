@@ -31,7 +31,7 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockTreeBlock<T> {
     block: Block<T>,
     parent: Option<BlockId>,
@@ -46,6 +46,10 @@ impl<T: SignatureCollection> BlockTreeBlock<T> {
             parent,
             children: Vec::new(),
         }
+    }
+
+    pub fn get_block(&self) -> &Block<T> {
+        &self.block
     }
 
     fn tree_fmt(
@@ -216,7 +220,7 @@ impl<T: SignatureCollection> BlockTree<T> {
     }
 
     pub fn add(&mut self, b: Block<T>) -> Result<()> {
-        if self.tree.contains_key(&b.get_id()) {
+        if !self.is_valid(&b) {
             inc_count!(blocktree.add.duplicate);
             return Ok(());
         }
@@ -247,17 +251,36 @@ impl<T: SignatureCollection> BlockTree<T> {
         Ok(())
     }
 
-    pub fn path_to_root(&self, b: &BlockId) -> bool {
-        let mut bid = b;
-        let root_match = |block_tree_block: &BlockTreeBlock<T>| match self.root {
+    fn root_match(&self, block_tree_block: &BlockTreeBlock<T>) -> bool {
+        match self.root {
             RootKind::Rooted(b) => block_tree_block.block.get_id() == b,
             RootKind::Unrooted(r) => block_tree_block.block.round == r,
-        };
+        }
+    }
+
+    pub fn get_missing_ancestor(&self, b: &BlockId) -> Option<BlockId> {
+        let mut bid = b;
+        loop {
+            let Some(i) = self.tree.get(bid) else {
+                return Some(*bid);
+            };
+            if self.root_match(i) {
+                return None;
+            }
+            let Some(parent_id) = &i.parent else {
+                return None;
+            };
+            bid = parent_id;
+        }
+    }
+
+    pub fn path_to_root(&self, b: &BlockId) -> bool {
+        let mut bid = b;
         loop {
             let Some(i) = self.tree.get(bid) else {
                 return false;
             };
-            if root_match(i) {
+            if self.root_match(i) {
                 return true;
             }
             let Some(parent_id) = &i.parent else {
@@ -284,7 +307,16 @@ impl<T: SignatureCollection> BlockTree<T> {
             }
         }
 
-        self.tree.contains_key(&b.qc.info.vote.id)
+        self.tree.contains_key(&b.get_parent_id())
+    }
+
+    pub fn is_valid(&self, b: &Block<T>) -> bool {
+        return !self.tree.contains_key(&b.get_id()) && {
+            match self.root {
+                RootKind::Rooted(root_id) => b.round > self.tree.get(&root_id).unwrap().block.round,
+                RootKind::Unrooted(round) => b.round >= round,
+            }
+        };
     }
 
     pub fn debug_print(&self) -> std::io::Result<()> {
@@ -1333,5 +1365,197 @@ mod test {
         let mut unrooted_blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
         assert!(unrooted_blocktree.add(b4.clone()).is_ok());
         assert!(unrooted_blocktree.has_parent(&b4));
+    }
+
+    #[test]
+    fn test_is_valid() {
+        let blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+            seq_num: 0,
+        };
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(0),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let v4 = VoteInfo {
+            id: g.get_id(),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let b4 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(4),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: v4,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let v5 = VoteInfo {
+            id: g.get_id(),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let b5 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(5),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: v5,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+        // genesis should not be valid since its round is lower than root
+        assert!(!blocktree.is_valid(&g));
+        // block 4 should va valid, since the tree is unrooted and is one round 4
+        assert!(blocktree.is_valid(&b4));
+        // b5 will be valid because its at least (root round) + 1
+        assert!(blocktree.is_valid(&b5))
+    }
+
+    #[test]
+    fn test_get_missing_ancestor() {
+        let payload = Payload {
+            txns: TransactionList(vec![]),
+            header: ExecutionArtifacts::zero(),
+            seq_num: 0,
+        };
+        let g = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(0),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let v1 = VoteInfo {
+            id: g.get_id(),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+        };
+
+        let b1 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(1),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: v1,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let v2 = VoteInfo {
+            id: b1.get_id(),
+            round: Round(1),
+            parent_id: g.get_id(),
+            parent_round: Round(0),
+        };
+
+        let b2 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b3 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(3),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let b4 = Block::new::<Sha256Hash>(
+            node_id(),
+            Round(4),
+            &payload,
+            &QC::new::<HasherType>(
+                QcInfo {
+                    vote: v2,
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
+        assert!(blocktree.get_missing_ancestor(&g.get_id()).is_none()); // root naturally don't have missing ancestor
+        assert!(blocktree.get_missing_ancestor(&b1.get_id()).unwrap() == b1.get_id());
+
+        assert!(blocktree.add(b2.clone()).is_ok());
+        assert!(blocktree.get_missing_ancestor(&b2.get_id()).unwrap() == b1.get_id());
+
+        assert!(blocktree.add(b3.clone()).is_ok());
+        assert!(blocktree.get_missing_ancestor(&b3.get_id()).unwrap() == b1.get_id());
+
+        assert!(blocktree.add(b4.clone()).is_ok());
+        assert!(blocktree.get_missing_ancestor(&b4.get_id()).unwrap() == b1.get_id());
+
+        assert!(blocktree.add(b1.clone()).is_ok());
+        assert!(blocktree.get_missing_ancestor(&b1.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b2.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b3.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b4.get_id()).is_none());
+
+        blocktree.prune(&b1.get_id()).unwrap();
+        assert!(blocktree.get_missing_ancestor(&g.get_id()).unwrap() == g.get_id());
+
+        assert!(blocktree.get_missing_ancestor(&b1.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b2.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b3.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b4.get_id()).is_none());
     }
 }

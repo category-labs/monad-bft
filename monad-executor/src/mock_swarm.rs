@@ -69,6 +69,7 @@ where
 
     MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
+    S::Block: Unpin,
 {
     pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config)>, pipeline: T) -> Self {
         assert!(!peers.is_empty());

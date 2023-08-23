@@ -59,6 +59,7 @@ pub enum MempoolCommand<E> {
 pub enum LedgerCommand<B, E> {
     LedgerCommit(B),
     LedgerFetch(BlockId, Box<dyn (FnOnce(Option<B>) -> E) + Send + Sync>),
+    LedgerFetchReset,
 }
 
 pub enum CheckpointCommand<C> {

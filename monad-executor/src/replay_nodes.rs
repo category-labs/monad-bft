@@ -106,17 +106,14 @@ where
 
         for command in cmds {
             match command {
-                Command::LedgerCommand(cmd) => match cmd {
-                    LedgerCommand::LedgerCommit(b) => {
-                        let block = self
-                            .replay_nodes_info
-                            .get_mut(node_id)
-                            .unwrap()
-                            .mut_blockchain();
-                        block.push(b);
-                    }
-                    LedgerCommand::LedgerFetch(b_id, cb) => {}
-                },
+                Command::LedgerCommand(LedgerCommand::LedgerCommit(b)) => {
+                    let block = self
+                        .replay_nodes_info
+                        .get_mut(node_id)
+                        .unwrap()
+                        .mut_blockchain();
+                    block.push(b);
+                }
                 Command::RouterCommand(cmd) => match cmd {
                     RouterCommand::Publish { target, message } => {
                         to_publish.push((target, message));

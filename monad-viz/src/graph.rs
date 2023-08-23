@@ -93,6 +93,7 @@ where
 
     S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Unpin + Debug,
     S::OutboundMessage: Serializable<S::Message>,
+    S::Block: Unpin,
     RS::Serialized: Eq,
     MockExecutor<S, RS, ME>: Unpin,
 {
@@ -134,6 +135,7 @@ where
     S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Unpin + Debug,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
+    S::Block: Unpin,
     RS::Serialized: Eq,
     MockExecutor<S, RS, ME>: Unpin,
 {
