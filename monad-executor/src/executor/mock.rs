@@ -526,7 +526,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        mock_swarm::Nodes,
+        mock_swarm::{Nodes, NodesConfig},
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
         transformer::{LatencyTransformer, Transformer, TransformerPipeline},
         xfmr_pipe, Message,
@@ -797,34 +797,36 @@ mod tests {
         let state_configs = (0..NUM_NODES)
             .map(|idx| (pubkeys.clone(), pubkeys[idx as usize]))
             .collect::<Vec<_>>();
-        let peers = pubkeys
-            .iter()
-            .copied()
-            .map(|peer_id| peer_id.0)
-            .zip(state_configs)
-            .map(|(a, b)| {
-                (
-                    a,
-                    b,
-                    MockWALoggerConfig {},
-                    NoSerRouterConfig {
-                        all_peers: pubkeys.iter().copied().collect(),
-                    },
-                )
-            })
-            .collect();
+        let nodes_config = NodesConfig {
+            peers: pubkeys
+                .iter()
+                .copied()
+                .map(|peer_id| peer_id.0)
+                .zip(state_configs)
+                .map(|(a, b)| {
+                    (
+                        a,
+                        b,
+                        MockWALoggerConfig {},
+                        NoSerRouterConfig {
+                            all_peers: pubkeys.iter().copied().collect(),
+                        },
+                    )
+                })
+                .collect(),
+            pipeline: xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+                Duration::from_millis(50),
+            ))),
+            ..Default::default()
+        };
+
         let mut nodes = Nodes::<
             SimpleChainState,
             NoSerRouterScheduler<SimpleChainMessage>,
             _,
             MockWALogger<TimedEvent<SimpleChainEvent>>,
             MockMempool<SimpleChainEvent>,
-        >::new(
-            peers,
-            xfmr_pipe!(Transformer::Latency(LatencyTransformer(
-                Duration::from_millis(50),
-            ))),
-        );
+        >::new(nodes_config);
 
         while let Some((duration, id, event)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")

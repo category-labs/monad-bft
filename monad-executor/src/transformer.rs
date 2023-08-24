@@ -28,16 +28,7 @@ pub enum TransformerStream<M> {
 
 pub trait Transform<M> {
     #[must_use]
-    /// note that the output Duration should be a delay, not an absolute time
-    // TODO smallvec? resulting Vec will almost always be len 1
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M>;
-
-    fn boxed(self) -> Box<dyn Transform<M>>
-    where
-        Self: Sized + 'static,
-    {
-        Box::new(self)
-    }
 }
 
 /// adds constant latency
@@ -82,7 +73,6 @@ impl RandLatencyTransformer {
 
     pub fn next_latency(&mut self) -> Duration {
         let s = self.gen.gen_range(1..self.max_latency);
-
         Duration::from_millis(s)
     }
 }
@@ -162,15 +152,17 @@ pub struct ReplayTransformer<M> {
     pub cnt: u32,
     pub cnt_limit: u32,
     pub order: TransformerReplayOrder,
+    pub gap: Duration,
 }
 
 impl<M> ReplayTransformer<M> {
-    pub fn new(cnt_limit: u32, order: TransformerReplayOrder) -> Self {
+    pub fn new(cnt_limit: u32, order: TransformerReplayOrder, gap: Duration) -> Self {
         ReplayTransformer {
             filtered_msgs: Vec::new(),
             cnt: 0,
             cnt_limit,
             order,
+            gap,
         }
     }
 }
@@ -209,8 +201,9 @@ impl<M> Transform<M> for ReplayTransformer<M> {
                     result
                 }
             };
-
-            output.extend(std::iter::repeat(Duration::ZERO).zip(msgs));
+            let duration = (0..self.cnt)
+                .map(|i| Duration::from_millis((self.gap.as_millis() as u64) * (i as u64)));
+            output.extend(duration.zip(msgs));
         }
 
         TransformerStream::Continue(output)
@@ -246,7 +239,7 @@ impl<M> Transform<M> for Transformer<M> {
  * pipeline consist of transformers that goes through all the output
  * you can also use multiple pipelines to filter target for unique needs
  * */
-pub trait Pipeline<M> {
+pub trait Pipeline<M>: Default {
     #[must_use]
     fn process(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)>;
     fn len(&self) -> usize;
@@ -255,6 +248,14 @@ pub trait Pipeline<M> {
 #[derive(Clone, Debug)]
 pub struct TransformerPipeline<M> {
     transformers: Vec<Transformer<M>>,
+}
+
+impl<M> Default for TransformerPipeline<M> {
+    fn default() -> Self {
+        TransformerPipeline {
+            transformers: vec![],
+        }
+    }
 }
 
 impl<M> TransformerPipeline<M> {
@@ -471,7 +472,11 @@ mod test {
         let mut peers = HashSet::new();
         peers.insert(PeerId(keys[0].pubkey()));
         // we are mostly interested in the burst behaviur of replay
-        let mut t = ReplayTransformer::new(5, crate::transformer::TransformerReplayOrder::Forward);
+        let mut t = ReplayTransformer::new(
+            5,
+            crate::transformer::TransformerReplayOrder::Forward,
+            Duration::from_millis(5),
+        );
         let m = get_mock_message();
         for _ in 0..5 {
             let TransformerStream::Continue(c) = t.transform(m.clone()) else {
@@ -485,6 +490,12 @@ mod test {
         };
 
         assert_eq!(c.len(), 6);
+        assert_eq!(c[0].0, Duration::from_millis(0));
+        assert_eq!(c[1].0, Duration::from_millis(5));
+        assert_eq!(c[2].0, Duration::from_millis(10));
+        assert_eq!(c[3].0, Duration::from_millis(15));
+        assert_eq!(c[4].0, Duration::from_millis(20));
+        assert_eq!(c[5].0, Duration::from_millis(25));
 
         for _ in 0..1000 {
             let TransformerStream::Continue(c) = t.transform(m.clone()) else {

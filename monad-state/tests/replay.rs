@@ -10,7 +10,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    mock_swarm::Nodes,
+    mock_swarm::{Nodes, NodesConfig},
     timed_event::TimedEvent,
     transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
     xfmr_pipe, PeerId,
@@ -24,7 +24,14 @@ use tempfile::tempdir;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
-
+type S = MonadState<
+    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
+    SignatureType,
+    SignatureCollectionType,
+    ValidatorSet,
+    SimpleRoundRobin,
+    BlockSyncState,
+>;
 #[test]
 fn test_replay() {
     recover_nodes_msg_delays(4, 10, 5);
@@ -48,42 +55,36 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         });
     }
 
-    let peers = pubkeys
-        .iter()
-        .copied()
-        .zip(state_configs)
-        .zip(logger_configs.clone())
-        .map(|((a, b), c)| {
-            (
-                a,
-                b,
-                c,
-                NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
-                },
-            )
-        })
-        .collect::<Vec<_>>();
+    let nodes_config = NodesConfig {
+        peers: pubkeys
+            .iter()
+            .copied()
+            .zip(state_configs)
+            .zip(logger_configs.clone())
+            .map(|((a, b), c)| {
+                (
+                    a,
+                    b,
+                    c,
+                    NoSerRouterConfig {
+                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+        pipeline: xfmr_pipe!(Transformer::XorLatency(XorLatencyTransformer(
+            Duration::from_millis(u8::MAX as u64)
+        ))),
+        ..Default::default()
+    };
 
     let mut nodes = Nodes::<
-        MonadState<
-            ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
-            SignatureType,
-            SignatureCollectionType,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
+        S,
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         MockMempool<_>,
-    >::new(
-        peers,
-        xfmr_pipe!(Transformer::XorLatency(XorLatencyTransformer(
-            Duration::from_millis(u8::MAX as u64)
-        ))),
-    );
+    >::new(nodes_config);
 
     while let Some((_, _, _)) = nodes.step() {
         if nodes
@@ -127,42 +128,36 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             Duration::from_millis(2),
         );
 
-    let peers_clone = pubkeys_clone
-        .iter()
-        .copied()
-        .zip(state_configs_clone)
-        .zip(logger_configs)
-        .map(|((a, b), c)| {
-            (
-                a,
-                b,
-                c,
-                NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
-                },
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut nodes_config = NodesConfig {
+        peers: pubkeys_clone
+            .iter()
+            .copied()
+            .zip(state_configs_clone)
+            .zip(logger_configs)
+            .map(|((a, b), c)| {
+                (
+                    a,
+                    b,
+                    c,
+                    NoSerRouterConfig {
+                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+        pipeline: xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(1)
+        ))),
+        ..Default::default()
+    };
 
     let mut nodes_recovered = Nodes::<
-        MonadState<
-            ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
-            SignatureType,
-            SignatureCollectionType,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
+        S,
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         MockMempool<_>,
-    >::new(
-        peers_clone,
-        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
-            Duration::from_millis(1)
-        ))),
-    );
+    >::new(nodes_config);
 
     let node_ledger_recovered = nodes_recovered
         .states()

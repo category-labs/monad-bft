@@ -6,6 +6,7 @@ use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockVali
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+    mock_swarm::NodesConfig,
     transformer::{
         LatencyTransformer, PartitionTransformer, RandLatencyTransformer, ReplayTransformer,
         Transformer, TransformerPipeline, TransformerReplayOrder,
@@ -13,22 +14,24 @@ use monad_executor::{
     xfmr_pipe, PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{get_configs, run_nodes, run_nodes_until_step};
+use monad_testutil::swarm::{get_configs, prep_peers, run_nodes, run_nodes_until_step};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 use crate::RandomizedTest;
 
+type S = MonadState<
+    ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+    NopSignature,
+    MultiSig<NopSignature>,
+    ValidatorSet,
+    SimpleRoundRobin,
+    BlockSyncState,
+>;
+
 fn random_latency_test(seed: u64) {
     run_nodes::<
-        MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
-            NopSignature,
-            MultiSig<NopSignature>,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
+        S,
         NopSignature,
         MultiSig<NopSignature>,
         NoSerRouterScheduler<MonadMessage<_, _>>,
@@ -67,40 +70,45 @@ fn delayed_message_test(seed: u64) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step::<
-        MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+    let nodes_config = NodesConfig {
+        peers: prep_peers::<
+            S,
             NopSignature,
             MultiSig<NopSignature>,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
-        NopSignature,
-        MultiSig<NopSignature>,
-        NoSerRouterScheduler<MonadMessage<_, _>>,
-        _,
-        MockWALogger<_>,
-        _,
-        MockValidator,
-        MockMempool<_>,
-    >(
-        pubkeys,
-        state_configs,
-        |all_peers: Vec<_>, _| NoSerRouterConfig {
-            all_peers: all_peers.into_iter().collect(),
-        },
-        MockWALoggerConfig,
-        xfmr_pipe!(
+            NoSerRouterScheduler<MonadMessage<_, _>>,
+            _,
+            MockWALogger<_>,
+            MockValidator,
+        >(
+            pubkeys,
+            state_configs,
+            |all_peers: Vec<_>, _| NoSerRouterConfig {
+                all_peers: all_peers.into_iter().collect(),
+            },
+            MockWALoggerConfig,
+        ),
+        pipeline: xfmr_pipe!(
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             Transformer::Partition(PartitionTransformer(filter_peers)),
             Transformer::Replay(ReplayTransformer::new(
                 200,
                 TransformerReplayOrder::Random(seed),
+                Duration::from_millis(1)
             ))
         ),
-        400,
-    );
+        ..Default::default()
+    };
+
+    run_nodes_until_step::<
+        S,
+        NopSignature,
+        MultiSig<NopSignature>,
+        NoSerRouterScheduler<MonadMessage<_, _>>,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+        MockMempool<_>,
+    >(nodes_config, 400);
 }
 
 inventory::submit!(RandomizedTest {

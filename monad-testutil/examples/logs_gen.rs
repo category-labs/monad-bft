@@ -6,7 +6,7 @@ use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockVali
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    mock_swarm::Nodes,
+    mock_swarm::{Nodes, NodesConfig},
     timed_event::TimedEvent,
     transformer::{Pipeline, Transformer, TransformerPipeline},
     xfmr_pipe, PeerId, State,
@@ -44,26 +44,28 @@ pub fn generate_log<T: Pipeline<MM>>(
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
         sync: false,
     });
-    let peers = pubkeys
-        .iter()
-        .copied()
-        .zip(state_configs)
-        .zip(file_path_vec)
-        .map(|((a, b), c)| {
-            (
-                a,
-                b,
-                c,
-                NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, T, WALoggerType, MockMempool<ME>>::new(
-        peers,
-        transformer,
-    );
+    let mut nodes_config = NodesConfig {
+        peers: pubkeys
+            .iter()
+            .copied()
+            .zip(state_configs)
+            .zip(file_path_vec)
+            .map(|((a, b), c)| {
+                (
+                    a,
+                    b,
+                    c,
+                    NoSerRouterConfig {
+                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+        pipeline: transformer,
+        ..Default::default()
+    };
+    let mut nodes =
+        Nodes::<MS, NoSerRouterScheduler<MM>, T, WALoggerType, MockMempool<ME>>::new(nodes_config);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes

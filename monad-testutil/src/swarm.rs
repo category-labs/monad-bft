@@ -7,7 +7,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
-    mock_swarm::Nodes,
+    mock_swarm::{Nodes, NodesConfig},
     timed_event::TimedEvent,
     transformer::Pipeline,
     PeerId, State,
@@ -113,25 +113,31 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     TVT: Clone,
 {
     let (pubkeys, state_configs) = get_configs::<ST, SCT, TVT>(tvt, num_nodes, delta);
-    let peers = pubkeys
-        .iter()
-        .copied()
-        .zip(state_configs)
-        .map(|(pubkey, b)| {
-            (
-                pubkey,
-                b,
-                logger_config.clone(),
-                router_scheduler_config(
-                    pubkeys.iter().copied().map(PeerId).collect(),
-                    PeerId(pubkey),
-                ),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(peers, pipeline);
 
-    while let Some((duration, id, event)) = nodes.step() {
+    let nodes_config = NodesConfig::<S, RS, P, LGR> {
+        peers: pubkeys
+            .iter()
+            .copied()
+            .zip(state_configs)
+            .map(|(pubkey, b)| {
+                (
+                    pubkey,
+                    b,
+                    logger_config.clone(),
+                    router_scheduler_config(
+                        pubkeys.iter().copied().map(PeerId).collect(),
+                        PeerId(pubkey),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>(),
+        pipeline,
+        ..Default::default()
+    };
+
+    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(nodes_config);
+
+    while let Some((_, _, _)) = nodes.step() {
         if nodes
             .states()
             .values()
@@ -156,13 +162,47 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     );
 }
 
-pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+pub fn prep_peers<S, ST, SCT, RS, RSC, LGR, TVT>(
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
+) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config)>
+where
+    S: State<Config = MonadConfig<SCT, TVT>>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
-    pipeline: P,
+    RS: RouterScheduler<M = S::Message>,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
+    RS::Serialized: Eq,
+
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
+
+    LGR::Config: Clone,
+{
+    pubkeys
+        .iter()
+        .copied()
+        .zip(state_configs)
+        .map(|(pubkey, b)| {
+            (
+                pubkey,
+                b,
+                logger_config.clone(),
+                router_scheduler_config(
+                    pubkeys.iter().copied().map(PeerId).collect(),
+                    PeerId(pubkey),
+                ),
+            )
+        })
+        .collect()
+}
+
+pub fn run_nodes_until_step<S, ST, SCT, RS, LGR, P, TVT, ME>(
+    nodes_config: NodesConfig<S, RS, P, LGR>,
     step: i32,
 ) where
     S: State<Config = MonadConfig<SCT, TVT>>,
@@ -182,31 +222,10 @@ pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     S::Event: Unpin,
     S::Block: PartialEq + Unpin,
 
-    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
-
     LGR::Config: Clone,
     TVT: Clone,
 {
-    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(
-        pubkeys
-            .iter()
-            .copied()
-            .zip(state_configs)
-            .map(|(pubkey, b)| {
-                (
-                    pubkey,
-                    b,
-                    logger_config.clone(),
-                    router_scheduler_config(
-                        pubkeys.iter().copied().map(PeerId).collect(),
-                        PeerId(pubkey),
-                    ),
-                )
-            })
-            .collect(),
-        pipeline,
-    );
-
+    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(nodes_config);
     let mut cnt = 0;
     while let Some((_duration, _id, _event)) = nodes.step() {
         cnt += 1;

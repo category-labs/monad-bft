@@ -3,7 +3,7 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Debug, time::Duration};
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
     executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
-    mock_swarm::{LinkMessage, Nodes},
+    mock_swarm::{LinkMessage, Nodes, NodesConfig},
     timed_event::TimedEvent,
     transformer::Pipeline,
     Message, PeerId,
@@ -98,10 +98,15 @@ where
     MockExecutor<S, RS, ME>: Unpin,
 {
     pub fn new(config: C) -> Self {
-        Self {
-            nodes: Nodes::new(config.nodes(), config.pipeline().clone()),
-            current_tick: Duration::ZERO,
+        let nodes_config = NodesConfig {
+            peers: config.nodes(),
+            pipeline: config.pipeline().clone(),
+            ..Default::default()
+        };
 
+        Self {
+            nodes: Nodes::new(nodes_config),
+            current_tick: Duration::ZERO,
             config,
         }
     }
@@ -118,7 +123,12 @@ where
     }
 
     fn reset(&mut self) {
-        self.nodes = Nodes::new(self.config.nodes(), self.config.pipeline().clone());
+        let nodes_config = NodesConfig {
+            peers: self.config.nodes(),
+            pipeline: self.config.pipeline().clone(),
+            ..Default::default()
+        };
+        self.nodes = Nodes::new(nodes_config);
         self.current_tick = self.min_tick();
     }
 }
