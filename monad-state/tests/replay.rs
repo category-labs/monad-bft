@@ -9,11 +9,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
-    executor::mock::NoSerRouterScheduler,
+    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
     transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
-    xfmr_pipe,
+    xfmr_pipe, PeerId,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
@@ -45,10 +45,20 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
     }
 
     let peers = pubkeys
-        .into_iter()
+        .iter()
+        .copied()
         .zip(state_configs)
         .zip(logger_configs.clone())
-        .map(|((a, b), c)| (a, b, c))
+        .map(|((a, b), c)| {
+            (
+                a,
+                b,
+                c,
+                NoSerRouterConfig {
+                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                },
+            )
+        })
         .collect::<Vec<_>>();
 
     let mut nodes = Nodes::<
@@ -109,10 +119,20 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         get_configs::<SignatureCollectionType>(num_nodes, Duration::from_millis(2));
 
     let peers_clone = pubkeys_clone
-        .into_iter()
+        .iter()
+        .copied()
         .zip(state_configs_clone)
         .zip(logger_configs)
-        .map(|((a, b), c)| (a, b, c))
+        .map(|((a, b), c)| {
+            (
+                a,
+                b,
+                c,
+                NoSerRouterConfig {
+                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                },
+            )
+        })
         .collect::<Vec<_>>();
 
     let mut nodes_recovered = Nodes::<

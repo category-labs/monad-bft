@@ -10,6 +10,7 @@ use std::{
 
 use futures::{Stream, StreamExt};
 use monad_consensus_types::payload::{FullTransactionList, TransactionList};
+use monad_types::{Deserializable, Serializable};
 
 use super::{checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger};
 use crate::{
@@ -17,16 +18,18 @@ use crate::{
     TimerCommand,
 };
 
+#[derive(Debug)]
 pub enum RouterEvent<M, Serialized> {
     Rx(PeerId, M),
     Tx(PeerId, Serialized),
 }
 
 pub trait RouterScheduler {
+    type Config;
     type M;
     type Serialized;
 
-    fn new(all_peers: BTreeSet<PeerId>, me: PeerId) -> Self;
+    fn new(config: Self::Config) -> Self;
 
     fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized);
     fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM);
@@ -40,16 +43,20 @@ pub struct NoSerRouterScheduler<M> {
     events: VecDeque<(Duration, RouterEvent<M, M>)>,
 }
 
+pub struct NoSerRouterConfig {
+    pub all_peers: BTreeSet<PeerId>,
+}
 impl<M> RouterScheduler for NoSerRouterScheduler<M>
 where
     M: Clone,
 {
+    type Config = NoSerRouterConfig;
     type M = M;
     type Serialized = M;
 
-    fn new(all_peers: BTreeSet<PeerId>, _me: PeerId) -> Self {
+    fn new(config: NoSerRouterConfig) -> Self {
         Self {
-            all_peers,
+            all_peers: config.all_peers,
             events: Default::default(),
         }
     }
@@ -164,7 +171,7 @@ enum ExecutorEventType {
 impl<S, RS> MockExecutor<S, RS>
 where
     S: State,
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
 {
     pub fn new(router: RS) -> Self {
         Self {
@@ -223,7 +230,8 @@ where
 impl<S, RS> Executor for MockExecutor<S, RS>
 where
     S: State,
-    RS: RouterScheduler<M = S::Message>,
+    S::OutboundMessage: Serializable<RS::M>,
+    RS: RouterScheduler,
 {
     type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -267,7 +275,7 @@ where
             if to_unpublish.contains(&(target, id)) {
                 continue;
             }
-            self.router.outbound(self.tick, target, message);
+            self.router.outbound(self.tick, target, message.serialize());
         }
     }
 }
@@ -280,7 +288,8 @@ pub enum MockExecutorEvent<E, Ser> {
 impl<S, RS> Stream for MockExecutor<S, RS>
 where
     S: State,
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
+    S::Message: Deserializable<RS::M>,
     S::Event: Unpin,
     Self: Unpin,
 {
@@ -296,6 +305,9 @@ where
 
                     match router_event {
                         RouterEvent::Rx(from, message) => {
+                            let message =
+                                <S::Message as Deserializable<RS::M>>::deserialize(&message)
+                                    .expect("all messages should deserialize in mock executor");
                             MockExecutorEvent::Event(message.event(from))
                         }
                         RouterEvent::Tx(to, ser) => MockExecutorEvent::Send(to, ser),
@@ -754,11 +766,20 @@ mod tests {
             .map(|idx| (pubkeys.clone(), pubkeys[idx as usize]))
             .collect::<Vec<_>>();
         let peers = pubkeys
-            .into_iter()
+            .iter()
+            .copied()
             .map(|peer_id| peer_id.0)
             .zip(state_configs)
-            .zip(std::iter::repeat(MockWALoggerConfig {}))
-            .map(|((a, b), c)| (a, b, c))
+            .map(|(a, b)| {
+                (
+                    a,
+                    b,
+                    MockWALoggerConfig {},
+                    NoSerRouterConfig {
+                        all_peers: pubkeys.iter().copied().collect(),
+                    },
+                )
+            })
             .collect();
         let mut nodes = Nodes::<
             SimpleChainState,

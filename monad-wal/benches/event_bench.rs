@@ -54,7 +54,10 @@ impl MonadEventBencher {
             file_path,
             sync: false,
         };
-        println!("size of event: {}", event.serialize().len());
+        println!(
+            "size of event: {}",
+            Serializable::<Vec<u8>>::serialize(&event).len()
+        );
         Self {
             event,
             logger: WALogger::<BenchEvent>::new(config).unwrap().0,

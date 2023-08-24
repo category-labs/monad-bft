@@ -185,6 +185,15 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Ser
     }
 }
 
+impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
+    monad_types::Serializable<MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>>
+    for VerifiedMonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
+{
+    fn serialize(&self) -> MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>> {
+        MonadMessage(self.0.clone().into())
+    }
+}
+
 #[cfg(feature = "proto")]
 impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable<[u8]>
     for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>

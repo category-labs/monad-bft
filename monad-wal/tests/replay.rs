@@ -153,7 +153,7 @@ mod test {
             // state is not updated
             if i == input1_len - 1 {
                 let file_len = fs::metadata(&log1_path).unwrap().len();
-                let payload_len = e.serialize().len() as u64;
+                let payload_len = Serializable::<Vec<u8>>::serialize(&e).len() as u64;
 
                 let truncated_len = match test_config {
                     TestConfig::Full => file_len,

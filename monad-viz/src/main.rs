@@ -30,7 +30,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
-    executor::mock::NoSerRouterScheduler,
+    executor::mock::{NoSerRouterScheduler, RouterScheduler},
     timed_event::TimedEvent,
     transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
     xfmr_pipe, PeerId, State,
@@ -65,6 +65,7 @@ type MS = MonadState<
 type MM = <MS as State>::Message;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
+type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
 type Sim = NodesSimulation<
     MS,
     NoSerRouterScheduler<MM>,

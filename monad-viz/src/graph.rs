@@ -63,7 +63,7 @@ where
 {
     fn max_tick(&self) -> Duration;
     fn pipeline(&self) -> &T;
-    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config)>;
+    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config)>;
 }
 
 pub struct NodesSimulation<S, RS, T, LGR, C>
@@ -84,8 +84,10 @@ where
 impl<S, RS, T, LGR, C> NodesSimulation<S, RS, T, LGR, C>
 where
     S: monad_executor::State,
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
     RS::Serialized: Eq,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
     MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
     T: Pipeline<RS::Serialized> + Clone,
@@ -122,8 +124,10 @@ where
 impl<S, RS, T, LGR, C> Graph for NodesSimulation<S, RS, T, LGR, C>
 where
     S: monad_executor::State,
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
     RS::Serialized: Eq,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
     MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
     T: Pipeline<RS::Serialized> + Clone,

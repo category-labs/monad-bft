@@ -126,7 +126,7 @@ where
     where
         T: AsyncWrite + Unpin + Send,
     {
-        let bytes = req.serialize();
+        let bytes = Serializable::<Vec<u8>>::serialize(req.as_ref());
         io.write_all((bytes.len() as LengthEncoding).to_le_bytes().as_slice())
             .await?;
         io.write_all(&bytes).await?;

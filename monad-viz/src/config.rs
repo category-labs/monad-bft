@@ -15,14 +15,14 @@ use monad_executor::{
     transformer::{
         LatencyTransformer, Pipeline, Transformer, TransformerPipeline, XorLatencyTransformer,
     },
-    State,
+    PeerId, State,
 };
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::NodeId;
 use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
-use crate::{graph::SimulationConfig, PersistenceLoggerType, SignatureCollectionType, MM, MS};
+use crate::{graph::SimulationConfig, PersistenceLoggerType, Rsc, SignatureCollectionType, MM, MS};
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
@@ -58,6 +58,7 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
         PubKey,
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
+        Rsc,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) =
             create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
@@ -95,10 +96,19 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
             .collect::<Vec<_>>();
 
         pubkeys
-            .into_iter()
+            .iter()
+            .copied()
             .zip(state_configs)
-            .zip(std::iter::repeat(MockWALoggerConfig {}))
-            .map(|((a, b), c)| (a, b, c))
+            .map(|(a, b)| {
+                (
+                    a,
+                    b,
+                    MockWALoggerConfig {},
+                    Rsc {
+                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    },
+                )
+            })
             .collect()
     }
 

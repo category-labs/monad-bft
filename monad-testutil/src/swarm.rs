@@ -12,7 +12,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_executor::{
-    executor::mock::{MockExecutor, NoSerRouterScheduler},
+    executor::mock::{MockExecutor, NoSerRouterScheduler, RouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
     transformer::Pipeline,
@@ -46,6 +46,7 @@ type MS = MonadState<
 type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
 type MM = <MS as State>::Message;
 type RS = NoSerRouterScheduler<MM>;
+type Rsc = <RS as RouterScheduler>::Config;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 
@@ -138,10 +139,19 @@ pub fn node_ledger_verification<
 pub fn run_nodes<T: Pipeline<MM>>(num_nodes: u16, num_blocks: usize, delta: Duration, pipeline: T) {
     let (pubkeys, state_configs) = get_configs(num_nodes, delta);
     let peers = pubkeys
-        .into_iter()
+        .iter()
+        .copied()
         .zip(state_configs)
-        .zip(std::iter::repeat(MockWALoggerConfig {}))
-        .map(|((a, b), c)| (a, b, c))
+        .map(|(a, b)| {
+            (
+                a,
+                b,
+                MockWALoggerConfig {},
+                Rsc {
+                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                },
+            )
+        })
         .collect::<Vec<_>>();
     let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(peers, pipeline);
 
@@ -172,10 +182,19 @@ pub fn run_nodes_until_step<T: Pipeline<MM>>(
 ) {
     let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(
         pubkeys
-            .into_iter()
+            .iter()
+            .copied()
             .zip(state_configs)
-            .zip(std::iter::repeat(MockWALoggerConfig {}))
-            .map(|((a, b), c)| (a, b, c))
+            .map(|(a, b)| {
+                (
+                    a,
+                    b,
+                    MockWALoggerConfig {},
+                    Rsc {
+                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    },
+                )
+            })
             .collect(),
         pipeline,
     );

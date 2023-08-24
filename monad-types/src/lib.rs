@@ -3,6 +3,7 @@ pub mod convert;
 
 use std::{
     error::Error,
+    io,
     ops::{Add, AddAssign, Deref, Sub, SubAssign},
 };
 
@@ -148,8 +149,22 @@ pub trait Serializable<S> {
     fn serialize(&self) -> S;
 }
 
+impl<S: Clone> Serializable<S> for S {
+    fn serialize(&self) -> S {
+        self.clone()
+    }
+}
+
 pub trait Deserializable<S: ?Sized>: Sized {
     type ReadError: Error + Send + Sync;
 
     fn deserialize(message: &S) -> Result<Self, Self::ReadError>;
+}
+
+impl<S: Clone> Deserializable<S> for S {
+    type ReadError = io::Error;
+
+    fn deserialize(message: &S) -> Result<Self, Self::ReadError> {
+        Ok(message.clone())
+    }
 }

@@ -6,6 +6,7 @@ use std::{
 
 use futures::StreamExt;
 use monad_crypto::secp256k1::PubKey;
+use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 use tracing::info_span;
 
@@ -55,7 +56,9 @@ impl<S, RS, T, LGR> Nodes<S, RS, T, LGR>
 where
     S: State,
 
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
     T: Pipeline<RS::Serialized>,
@@ -64,15 +67,18 @@ where
     MockExecutor<S, RS>: Unpin,
     S::Event: Unpin,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config)>, pipeline: T) -> Self {
+    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config)>, pipeline: T) -> Self {
         assert!(!peers.is_empty());
 
         let mut states = BTreeMap::new();
 
-        let all_peers: BTreeSet<_> = peers.iter().map(|(pubkey, _, _)| PeerId(*pubkey)).collect();
-        for (pubkey, state_config, logger_config) in peers {
+        let all_peers: BTreeSet<_> = peers
+            .iter()
+            .map(|(pubkey, _, _, _)| PeerId(*pubkey))
+            .collect();
+        for (pubkey, state_config, logger_config, router_scheduler_config) in peers {
             let mut executor: MockExecutor<S, RS> =
-                MockExecutor::new(RS::new(all_peers.clone(), PeerId(pubkey)));
+                MockExecutor::new(RS::new(router_scheduler_config));
             let (wal, replay_events) = LGR::new(logger_config).unwrap();
             let (mut state, mut init_commands) = S::init(state_config);
 
