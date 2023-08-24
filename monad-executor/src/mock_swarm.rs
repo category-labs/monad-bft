@@ -11,7 +11,7 @@ use monad_wal::PersistenceLogger;
 use tracing::info_span;
 
 use crate::{
-    executor::mock::{MockExecutor, MockExecutorEvent, RouterScheduler},
+    executor::mock::{MockExecutor, MockExecutorEvent, MockableExecutor, RouterScheduler},
     timed_event::TimedEvent,
     transformer::Pipeline,
     Executor, PeerId, State,
@@ -40,19 +40,20 @@ where
     }
 }
 
-pub struct Nodes<S, RS, T, LGR>
+pub struct Nodes<S, RS, T, LGR, ME>
 where
     S: State,
     RS: RouterScheduler,
     T: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ME: MockableExecutor,
 {
-    states: BTreeMap<PeerId, (MockExecutor<S, RS>, S, LGR)>,
+    states: BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)>,
     pipeline: T,
     scheduled_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
 }
 
-impl<S, RS, T, LGR> Nodes<S, RS, T, LGR>
+impl<S, RS, T, LGR, ME> Nodes<S, RS, T, LGR, ME>
 where
     S: State,
 
@@ -64,7 +65,9 @@ where
     T: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    MockExecutor<S, RS>: Unpin,
+    ME: MockableExecutor<Event = S::Event>,
+
+    MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
 {
     pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config)>, pipeline: T) -> Self {
@@ -77,7 +80,7 @@ where
             .map(|(pubkey, _, _, _)| PeerId(*pubkey))
             .collect();
         for (pubkey, state_config, logger_config, router_scheduler_config) in peers {
-            let mut executor: MockExecutor<S, RS> =
+            let mut executor: MockExecutor<S, RS, ME> =
                 MockExecutor::new(RS::new(router_scheduler_config));
             let (wal, replay_events) = LGR::new(logger_config).unwrap();
             let (mut state, mut init_commands) = S::init(state_config);
@@ -98,10 +101,10 @@ where
         }
     }
 
-    pub fn next_tick(&self) -> Option<Duration> {
+    pub fn next_tick(&mut self) -> Option<Duration> {
         let min_event = self
             .states
-            .iter()
+            .iter_mut()
             .filter_map(|(id, (executor, state, wal))| {
                 let tick = executor.peek_event_tick()?;
                 Some((id, executor, state, wal, tick))
@@ -190,14 +193,15 @@ where
                 executor.send_message(scheduled_tick, message.from, message.message);
             }
         }
+
         None
     }
 
-    pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S, RS>, S, LGR)> {
+    pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)> {
         &self.states
     }
 
-    pub fn mut_states(&mut self) -> &mut BTreeMap<PeerId, (MockExecutor<S, RS>, S, LGR)> {
+    pub fn mut_states(&mut self) -> &mut BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)> {
         &mut self.states
     }
 

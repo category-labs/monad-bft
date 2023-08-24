@@ -30,7 +30,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
-    executor::mock::{NoSerRouterScheduler, RouterScheduler},
+    executor::mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
     timed_event::TimedEvent,
     transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
     xfmr_pipe, PeerId, State,
@@ -63,6 +63,7 @@ type MS = MonadState<
     BlockSyncState,
 >;
 type MM = <MS as State>::Message;
+type ME = <MS as State>::Event;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
@@ -72,6 +73,7 @@ type Sim = NodesSimulation<
     TransformerPipeline<MM>,
     PersistenceLoggerType,
     SimConfig,
+    MockMempool<ME>,
 >;
 type ReplaySim = ReplayNodesSimulation<MS, RepConfig>;
 
@@ -82,6 +84,7 @@ struct Arg {
 
 pub fn main() -> iced::Result {
     let cli = Arg::parse();
+
     Viz::run(Settings::<Arg> {
         flags: cli,
         ..Default::default()
@@ -187,6 +190,7 @@ impl Application for Viz {
                         BlockSyncState,
                     >,
                     NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
+                    _,
                     _,
                     _,
                     _,

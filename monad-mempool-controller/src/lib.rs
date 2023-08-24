@@ -21,6 +21,7 @@ use monad_mempool_checker::{Checker, CheckerConfig};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
 use monad_mempool_txpool::{Pool, PoolConfig};
 use monad_mempool_types::tx::{EthTx, EthTxBatch};
+use rand::distributions::{Alphanumeric, DistString};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, Mutex},
@@ -32,9 +33,11 @@ mod ipc;
 pub use ipc::MempoolTxIpcSender;
 
 #[cfg(target_os = "linux")]
-pub const DEFAULT_MEMPOOL_BIND_PATH: &str = "/run/monad_mempool.sock";
+const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/run/monad_mempool";
 #[cfg(target_os = "macos")]
-pub const DEFAULT_MEMPOOL_BIND_PATH: &str = "/var/run/monad_mempool.sock";
+const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/var/run/monad_mempool";
+
+const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
 
 const DEFAULT_TX_THRESHOLD: usize = 1000;
 const DEFAULT_TIME_THRESHOLD_S: u64 = 1;
@@ -64,11 +67,23 @@ pub struct ControllerConfig {
 
 impl Default for ControllerConfig {
     fn default() -> Self {
+        let mempool_ipc_path_postfix = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+
+        let mempool_ipc_path = format!(
+            "{}_{}{}",
+            DEFAULT_MEMPOOL_BIND_PATH_BASE, mempool_ipc_path_postfix, DEFAULT_MEMPOOL_BIND_PATH_EXT
+        );
+
+        println!(
+            "starting controller with ipc_path {:?}",
+            mempool_ipc_path_postfix
+        );
+
         Self {
             checker_config: CheckerConfig::default(),
             messenger_config: MessengerConfig::default(),
             pool_config: PoolConfig::default(),
-            mempool_ipc_path: DEFAULT_MEMPOOL_BIND_PATH.into(),
+            mempool_ipc_path: mempool_ipc_path.into(),
             time_threshold: Duration::from_secs(DEFAULT_TIME_THRESHOLD_S),
             wait_for_peers: 1,
             tx_threshold: DEFAULT_TX_THRESHOLD,
@@ -143,7 +158,6 @@ impl Controller {
         ));
 
         let tx_receiver = MempoolTxIpcReceiver::new(config.mempool_ipc_path.as_path())
-            .await
             .map_err(MessengerError::IpcReceiverBindError)?;
 
         // Spawn task to receive incoming transactions over ipc (from rpc server), add them to the mempool, and broadcast them to peers.
@@ -234,43 +248,35 @@ impl Controller {
     }
 
     async fn listen_messenger(checker: Checker, mut messenger: Messenger, pool: Arc<Mutex<Pool>>) {
-        loop {
-            let tx_batch = messenger.recv().await;
+        while let Some(tx_batch) = messenger.recv().await {
+            let expected_batch_hash = Self::calculate_batch_hash(&tx_batch.txs);
 
-            match tx_batch {
-                Some(tx_batch) => {
-                    let expected_batch_hash = Self::calculate_batch_hash(&tx_batch.txs);
+            if expected_batch_hash.as_bytes() != tx_batch.hash.as_slice() {
+                event!(Level::ERROR, "Rejecting batch due to hash mismatch");
+                continue;
+            }
 
-                    if expected_batch_hash.as_bytes() != tx_batch.hash.as_slice() {
-                        event!(Level::ERROR, "Rejecting batch due to hash mismatch",);
-                        continue;
-                    }
+            event!(
+                Level::INFO,
+                "Received transaction batch of size {}",
+                tx_batch.numtx
+            );
 
-                    event!(
-                        Level::INFO,
-                        "Received transaction batch of size {}",
-                        tx_batch.numtx
-                    );
+            let mut pool_guard = pool.lock().await;
 
-                    let mut pool_guard = pool.lock().await;
-
-                    for eth_tx in tx_batch.txs {
-                        if let Err(e) = checker.check_eth_tx(&eth_tx) {
-                            event!(Level::ERROR, "Rejecting tx: {}", e);
-                            continue;
-                        }
-
-                        if let Err(e) = pool_guard.insert(eth_tx) {
-                            event!(Level::ERROR, "Could not insert tx into pool: {}", e);
-                        }
-                    }
+            for eth_tx in tx_batch.txs {
+                if let Err(e) = checker.check_eth_tx(&eth_tx) {
+                    event!(Level::ERROR, "Rejecting tx: {}", e);
+                    continue;
                 }
-                None => {
-                    event!(Level::ERROR, "Received None from messenger channel");
-                    break;
+
+                if let Err(e) = pool_guard.insert(eth_tx) {
+                    event!(Level::ERROR, "Could not insert tx into pool: {}", e);
                 }
             }
         }
+
+        event!(Level::ERROR, "Received None from messenger channel");
     }
 
     /// Creates a new EthTxBatch and broadcasts it to peers via the messenger.

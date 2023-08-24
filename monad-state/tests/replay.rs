@@ -9,7 +9,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
-    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
+    executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
     transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
@@ -77,6 +77,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
+        MockMempool<_>,
     >::new(
         peers,
         xfmr_pipe!(Transformer::XorLatency(XorLatencyTransformer(
@@ -155,6 +156,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
+        MockMempool<_>,
     >::new(
         peers_clone,
         xfmr_pipe!(Transformer::Latency(LatencyTransformer(

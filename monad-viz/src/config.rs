@@ -76,7 +76,7 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
 
         let state_configs = keys
             .into_iter()
-            .zip(cert_keys.into_iter())
+            .zip(cert_keys)
             .map(|(key, certkey)| MonadConfig {
                 transaction_validator: MockValidator,
                 key,

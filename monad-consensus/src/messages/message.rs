@@ -18,10 +18,7 @@ pub struct VoteMessage<SCT: SignatureCollection> {
 
 impl<SCT: SignatureCollection> Clone for VoteMessage<SCT> {
     fn clone(&self) -> Self {
-        Self {
-            vote: self.vote,
-            sig: self.sig,
-        }
+        *self
     }
 }
 

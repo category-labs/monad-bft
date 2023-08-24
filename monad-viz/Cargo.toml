@@ -19,8 +19,7 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
+clap = {version = "4.3.11", features= ["derive"] }
 iced = { version = "0.9", features = ["canvas"] }
 iced_native = { version = "0.10" }
 iced_lazy = { version = "0.6" }
-clap = {version = "4.3.11", features= ["derive"] }
-

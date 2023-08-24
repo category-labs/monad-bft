@@ -5,7 +5,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
 use monad_executor::{
-    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
+    executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
     transformer::{Pipeline, Transformer, TransformerPipeline},
@@ -27,6 +27,7 @@ type MS = MonadState<
     BlockSyncState,
 >;
 type MM = <MS as State>::Message;
+type ME = <MS as State>::Event;
 
 pub fn generate_log<T: Pipeline<MM>>(
     num_nodes: u16,
@@ -59,7 +60,10 @@ pub fn generate_log<T: Pipeline<MM>>(
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, T, WALoggerType>::new(peers, transformer);
+    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, T, WALoggerType, MockMempool<ME>>::new(
+        peers,
+        transformer,
+    );
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes

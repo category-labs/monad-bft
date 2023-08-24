@@ -1,4 +1,7 @@
-use std::{path::Path, task::Poll};
+use std::{
+    path::{Path, PathBuf},
+    task::Poll,
+};
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use monad_mempool_types::tx::EthTx;
@@ -56,13 +59,15 @@ impl Sink<EthTx> for MempoolTxIpcSender {
 }
 
 pub(crate) struct MempoolTxIpcReceiver {
+    path: PathBuf,
     listener: UnixListener,
     readers: Vec<FramedRead<UnixStream, LengthDelimitedCodec>>,
 }
 
 impl MempoolTxIpcReceiver {
-    pub async fn new(bind_path: impl AsRef<std::path::Path>) -> Result<Self, std::io::Error> {
+    pub fn new(bind_path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         Ok(Self {
+            path: bind_path.as_ref().into(),
             listener: UnixListener::bind(bind_path)?,
             readers: Vec::default(),
         })
@@ -108,5 +113,11 @@ impl Stream for MempoolTxIpcReceiver {
         }
 
         Poll::Pending
+    }
+}
+
+impl Drop for MempoolTxIpcReceiver {
+    fn drop(&mut self) {
+        std::fs::remove_file(AsRef::<Path>::as_ref(&self.path)).unwrap();
     }
 }

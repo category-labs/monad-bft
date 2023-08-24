@@ -107,11 +107,20 @@ where
     }
 }
 
-pub struct MockExecutor<S, RS>
+pub trait MockableExecutor:
+    Executor<Command = MempoolCommand<Self::Event>> + Stream<Item = Self::Event> + Unpin + Default
+{
+    type Event;
+
+    fn ready(&mut self) -> bool;
+}
+
+pub struct MockExecutor<S, RS, ME>
 where
     S: State,
+    ME: MockableExecutor,
 {
-    mempool: MockMempool<S::Event>,
+    mempool: ME,
     ledger: MockLedger<S::Block, S::Event>,
     checkpoint: MockCheckpoint<S::Checkpoint>,
     epoch: MockEpoch<S::Event>,
@@ -169,10 +178,11 @@ enum ExecutorEventType {
     Mempool,
 }
 
-impl<S, RS> MockExecutor<S, RS>
+impl<S, RS, ME> MockExecutor<S, RS, ME>
 where
     S: State,
     RS: RouterScheduler,
+    ME: MockableExecutor,
 {
     pub fn new(router: RS) -> Self {
         Self {
@@ -198,7 +208,7 @@ where
         self.router.inbound(tick, from, message);
     }
 
-    fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
+    fn peek_event(&mut self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
             .chain(
                 self.mempool
@@ -223,16 +233,18 @@ where
             .min()
     }
 
-    pub fn peek_event_tick(&self) -> Option<Duration> {
+    pub fn peek_event_tick(&mut self) -> Option<Duration> {
         self.peek_event().map(|(duration, _)| duration)
     }
 }
 
-impl<S, RS> Executor for MockExecutor<S, RS>
+impl<S, RS, ME> Executor for MockExecutor<S, RS, ME>
 where
     S: State,
-    S::OutboundMessage: Serializable<RS::M>,
     RS: RouterScheduler,
+    ME: MockableExecutor<Event = S::Event>,
+
+    S::OutboundMessage: Serializable<RS::M>,
 {
     type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
@@ -286,12 +298,14 @@ pub enum MockExecutorEvent<E, Ser> {
     Send(PeerId, Ser),
 }
 
-impl<S, RS> Stream for MockExecutor<S, RS>
+impl<S, RS, ME> Stream for MockExecutor<S, RS, ME>
 where
     S: State,
     RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
+    ME: MockableExecutor<Event = S::Event>,
+
     S::Event: Unpin,
+    S::Message: Deserializable<RS::M>,
     Self: Unpin,
 {
     type Item = MockExecutorEvent<S::Event, RS::Serialized>;
@@ -337,9 +351,11 @@ where
     }
 }
 
-impl<S, RS> MockExecutor<S, RS>
+impl<S, RS, ME> MockExecutor<S, RS, ME>
 where
     S: State,
+    RS: RouterScheduler<M = S::Message>,
+    ME: MockableExecutor,
 {
     pub fn ledger(&self) -> &MockLedger<S::Block, S::Event> {
         &self.ledger
@@ -407,12 +423,6 @@ pub struct MockMempool<E> {
     waker: Option<Waker>,
 }
 
-impl<E> MockMempool<E> {
-    pub fn ready(&self) -> bool {
-        self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
-    }
-}
-
 impl<E> Default for MockMempool<E> {
     fn default() -> Self {
         Self {
@@ -477,6 +487,14 @@ where
 
         self.waker = Some(cx.waker().clone());
         Poll::Pending
+    }
+}
+
+impl<E> MockableExecutor for MockMempool<E> {
+    type Event = E;
+
+    fn ready(&mut self) -> bool {
+        self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
     }
 }
 
@@ -787,6 +805,7 @@ mod tests {
             NoSerRouterScheduler<SimpleChainMessage>,
             _,
             MockWALogger<TimedEvent<SimpleChainEvent>>,
+            MockMempool<SimpleChainEvent>,
         >::new(
             peers,
             xfmr_pipe!(Transformer::Latency(LatencyTransformer(

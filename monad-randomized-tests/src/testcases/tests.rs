@@ -5,7 +5,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
 use monad_executor::{
-    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
+    executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         LatencyTransformer, PartitionTransformer, RandLatencyTransformer, ReplayTransformer,
         Transformer, TransformerPipeline, TransformerReplayOrder,
@@ -36,6 +36,7 @@ fn random_latency_test(seed: u64) {
         MockWALogger<_>,
         _,
         MockValidator,
+        MockMempool<_>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -82,6 +83,7 @@ fn delayed_message_test(seed: u64) {
         MockWALogger<_>,
         _,
         MockValidator,
+        MockMempool<_>,
     >(
         pubkeys,
         state_configs,

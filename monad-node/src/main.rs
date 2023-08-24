@@ -21,8 +21,8 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
 use monad_executor::{
     executor::{
-        checkpoint::MockCheckpoint, ledger::MockLedger, mock::MockMempool, parent::ParentExecutor,
-        timer::TokioTimer,
+        checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool,
+        parent::ParentExecutor, timer::TokioTimer,
     },
     Executor, State,
 };
@@ -316,7 +316,7 @@ async fn run(
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        mempool: MockMempool::default(),
+        mempool: MonadMempool::default(),
         ledger: MockLedger::default(),
         checkpoint: MockCheckpoint::default(),
     };

@@ -5,7 +5,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
 use monad_executor::{
-    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
+    executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{LatencyTransformer, Transformer, TransformerPipeline},
     xfmr_pipe,
 };
@@ -34,6 +34,7 @@ fn two_nodes() {
         MockWALogger<_>,
         _,
         MockValidator,
+        MockMempool<_>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {

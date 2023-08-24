@@ -6,7 +6,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
-    executor::mock::{MockExecutor, RouterScheduler},
+    executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
     transformer::Pipeline,
@@ -37,7 +37,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
 
     let state_configs = keys
         .into_iter()
-        .zip(cert_keys.into_iter())
+        .zip(cert_keys)
         .map(|(key, certkey)| MonadConfig {
             transaction_validator: tvt.clone(),
             key,
@@ -80,7 +80,7 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(ledgers: &Vec<Vec<O>>)
     }
 }
 
-pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT>(
+pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     tvt: TVT,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
@@ -94,16 +94,18 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT>(
     ST: MessageSignature,
     SCT: SignatureCollection,
 
-    RS: RouterScheduler,
+    RS: RouterScheduler<M = S::Message>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized>,
+    ME: MockableExecutor<Event = S::Event>,
 
-    MockExecutor<S, RS>: Unpin,
+    MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
+    S::Block: PartialEq,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
@@ -127,7 +129,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT>(
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<S, RS, P, LGR>::new(peers, pipeline);
+    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(peers, pipeline);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes
@@ -154,7 +156,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT>(
     );
 }
 
-pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT>(
+pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
@@ -167,23 +169,25 @@ pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT>(
     ST: MessageSignature,
     SCT: SignatureCollection,
 
-    RS: RouterScheduler,
+    RS: RouterScheduler<M = S::Message>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized>,
+    ME: MockableExecutor<Event = S::Event>,
 
-    MockExecutor<S, RS>: Unpin,
+    MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
+    S::Block: PartialEq,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
     LGR::Config: Clone,
     TVT: Clone,
 {
-    let mut nodes = Nodes::<S, RS, P, LGR>::new(
+    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(
         pubkeys
             .iter()
             .copied()

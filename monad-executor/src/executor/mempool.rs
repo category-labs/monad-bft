@@ -16,6 +16,8 @@ use tokio::{
 
 use crate::{Executor, MempoolCommand};
 
+const DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE: usize = 2048;
+
 #[derive(Error, Debug)]
 enum ControllerTaskError {
     #[error(transparent)]
@@ -28,6 +30,7 @@ enum ControllerTaskError {
     Join(#[from] JoinError),
 }
 
+#[derive(Debug)]
 enum ControllerTaskCommand {
     FetchTxs,
     FetchFullTxs(TransactionList),
@@ -52,8 +55,8 @@ where
     E: 'static,
 {
     fn default() -> Self {
-        let (controller_task_tx, rx) = mpsc::channel(1);
-        let (tx, controller_task_rx) = mpsc::channel(1);
+        let (controller_task_tx, rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
+        let (tx, controller_task_rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
 
         let controller_task = tokio::spawn(Self::controller_task(tx, rx));
 
@@ -75,38 +78,40 @@ impl<E> MonadMempool<E> {
     ) -> Result<(), ControllerTaskError> {
         let mut controller = Controller::new(&ControllerConfig::default()).await?;
 
-        tokio::select! {
-            task = rx.recv() => {
-                let Some(task) = task else { return Ok(()) };
+        loop {
+            tokio::select! {
+                task = rx.recv() => {
+                    let Some(task) = task else {
+                        return Ok(())
+                    };
 
-                match task {
-                    ControllerTaskCommand::FetchTxs => {
-                        let proposal = controller.create_proposal().await;
+                    match task {
+                        ControllerTaskCommand::FetchTxs => {
+                            let proposal = controller.create_proposal().await;
 
-                        tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal)))
+                            tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal)))
+                                .await?;
+                        }
+                        ControllerTaskCommand::FetchFullTxs(txs) => {
+                            let full_txs = controller.fetch_full_txs(txs.0).await;
+
+                            tx.send(ControllerTaskResult::FetchFullTxs(
+                                full_txs.map(FullTransactionList),
+                            ))
                             .await?;
-                    }
-                    ControllerTaskCommand::FetchFullTxs(txs) => {
-                        let full_txs = controller.fetch_full_txs(txs.0).await;
-
-                        tx.send(ControllerTaskResult::FetchFullTxs(
-                            full_txs.map(FullTransactionList),
-                        ))
-                        .await?;
+                        }
                     }
                 }
-            }
 
-            result = controller.next() => {
-                return if let Some(e) = result {
-                    Err(e.into())
-                } else {
-                    Ok(())
-                };
+                result = controller.next() => {
+                    return if let Some(e) = result {
+                        Err(e.into())
+                    } else {
+                        Ok(())
+                    };
+                }
             }
         }
-
-        Ok(())
     }
 }
 

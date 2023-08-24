@@ -2,7 +2,7 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Debug, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
-    executor::mock::{MockExecutor, RouterScheduler},
+    executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{LinkMessage, Nodes},
     timed_event::TimedEvent,
     transformer::Pipeline,
@@ -66,34 +66,35 @@ where
     fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config)>;
 }
 
-pub struct NodesSimulation<S, RS, T, LGR, C>
+pub struct NodesSimulation<S, RS, T, LGR, C, ME>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
     T: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
+    ME: MockableExecutor,
 {
     config: C,
 
     // TODO move stuff below into separate struct
-    pub nodes: Nodes<S, RS, T, LGR>,
+    pub nodes: Nodes<S, RS, T, LGR, ME>,
     current_tick: Duration,
 }
 
-impl<S, RS, T, LGR, C> NodesSimulation<S, RS, T, LGR, C>
+impl<S, RS, T, LGR, C, ME> NodesSimulation<S, RS, T, LGR, C, ME>
 where
     S: monad_executor::State,
-    RS: RouterScheduler,
-    RS::Serialized: Eq,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    MockExecutor<S, RS>: Unpin,
-    S::Event: Unpin,
+    RS: RouterScheduler<M = S::Message>,
     T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
-    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug,
+    ME: MockableExecutor<Event = S::Event>,
+
+    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Unpin + Debug,
+    S::OutboundMessage: Serializable<S::Message>,
+    RS::Serialized: Eq,
+    MockExecutor<S, RS, ME>: Unpin,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -121,19 +122,20 @@ where
     }
 }
 
-impl<S, RS, T, LGR, C> Graph for NodesSimulation<S, RS, T, LGR, C>
+impl<S, RS, T, LGR, C, ME> Graph for NodesSimulation<S, RS, T, LGR, C, ME>
 where
     S: monad_executor::State,
-    RS: RouterScheduler,
-    RS::Serialized: Eq,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    MockExecutor<S, RS>: Unpin,
-    S::Event: Unpin,
+    RS: RouterScheduler<M = S::Message>,
     T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
-    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug,
+    ME: MockableExecutor<Event = S::Event>,
+
+    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Unpin + Debug,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
+    RS::Serialized: Eq,
+    MockExecutor<S, RS, ME>: Unpin,
 {
     type State = S;
     type Message = RS::Serialized;
