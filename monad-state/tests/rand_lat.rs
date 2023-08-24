@@ -1,10 +1,18 @@
 use std::env;
 
+use monad_block_sync::BlockSyncState;
+use monad_consensus_state::ConsensusState;
+use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_crypto::NopSignature;
 use monad_executor::{
+    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{Transformer, TransformerPipeline},
     xfmr_pipe,
 };
+use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::run_nodes;
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
 
@@ -47,12 +55,35 @@ fn nodes_with_random_latency(seed: u64) {
 
     use monad_executor::transformer::RandLatencyTransformer;
 
-    run_nodes(
-        4,
-        2048,
-        Duration::from_millis(250),
-        xfmr_pipe!(Transformer::RandLatency(RandLatencyTransformer::new(
+    run_nodes::<
+        MonadState<
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            NopSignature,
+            MultiSig<NopSignature>,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >,
+        NopSignature,
+        MultiSig<NopSignature>,
+        NoSerRouterScheduler<MonadMessage<_, _>>,
+        _,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+    >(
+        MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
+        MockWALoggerConfig,
+        xfmr_pipe!(Transformer::<
+            MonadMessage<NopSignature, MultiSig<NopSignature>>,
+        >::RandLatency(RandLatencyTransformer::new(
             seed, 330
         ))),
+        4,
+        2047,
+        Duration::from_millis(250),
     );
 }

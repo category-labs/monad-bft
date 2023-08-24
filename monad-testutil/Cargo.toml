@@ -9,9 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus = { path = "../monad-consensus" }
-monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = {path = "../monad-crypto" }
 monad-executor = {path = "../monad-executor" }
@@ -22,3 +20,7 @@ monad-wal = {path = "../monad-wal" }
 
 sha2 = { workspace = true }
 zerocopy = { workspace = true }
+
+[dev-dependencies]
+monad-block-sync = { path = "../monad-block-sync" }
+monad-consensus-state = { path = "../monad-consensus-state" }

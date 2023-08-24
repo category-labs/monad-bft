@@ -6,8 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+monad-block-sync = { path = "../monad-block-sync" }
+monad-consensus-state = { path = "../monad-consensus-state" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
+monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
+monad-validator = { path = "../monad-validator" }
+monad-wal = { path = "../monad-wal" }
 
 inventory = "0.3.6"
 simple-xml-builder = "1.1.0"

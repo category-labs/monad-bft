@@ -1,13 +1,21 @@
 use std::{collections::HashSet, time::Duration};
 
+use monad_block_sync::BlockSyncState;
+use monad_consensus_state::ConsensusState;
+use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_crypto::NopSignature;
 use monad_executor::{
+    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         DropTransformer, LatencyTransformer, PartitionTransformer, PeriodicTranformer, Transformer,
         TransformerPipeline,
     },
     PeerId,
 };
+use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, run_nodes_until_step};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 /**
  *  Simulate the situtation where around step 20, first node lost contact
@@ -22,7 +30,8 @@ use monad_testutil::swarm::{get_configs, run_nodes_until_step};
 fn black_out() {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
-    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
+    let (pubkeys, state_configs) =
+        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
@@ -33,15 +42,35 @@ fn black_out() {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step(
+    run_nodes_until_step::<
+        MonadState<
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            NopSignature,
+            MultiSig<NopSignature>,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >,
+        NopSignature,
+        MultiSig<NopSignature>,
+        NoSerRouterScheduler<MonadMessage<_, _>>,
+        _,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+    >(
+        pubkeys,
+        state_configs,
+        |all_peers: Vec<_>, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
+        MockWALoggerConfig,
         TransformerPipeline::new(vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
             Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
             Transformer::Periodic(PeriodicTranformer::new(20, 50)),
             Transformer::Drop(DropTransformer()),
         ]),
-        pubkeys,
-        state_configs,
         400,
     );
 }
@@ -58,7 +87,8 @@ fn black_out() {
 fn extreme_delay() {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
-    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
+    let (pubkeys, state_configs) =
+        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
@@ -69,15 +99,35 @@ fn extreme_delay() {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step(
+    run_nodes_until_step::<
+        MonadState<
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            NopSignature,
+            MultiSig<NopSignature>,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >,
+        NopSignature,
+        MultiSig<NopSignature>,
+        NoSerRouterScheduler<MonadMessage<_, _>>,
+        _,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+    >(
+        pubkeys,
+        state_configs,
+        |all_peers: Vec<_>, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
+        MockWALoggerConfig,
         TransformerPipeline::new(vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
             Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
             Transformer::Periodic(PeriodicTranformer::new(20, 20)),
             Transformer::Latency(LatencyTransformer(Duration::from_millis(400))), // delayed by a whole 2 seconds
         ]),
-        pubkeys,
-        state_configs,
         800,
     );
 }

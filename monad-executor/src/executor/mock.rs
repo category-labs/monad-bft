@@ -43,6 +43,7 @@ pub struct NoSerRouterScheduler<M> {
     events: VecDeque<(Duration, RouterEvent<M, M>)>,
 }
 
+#[derive(Clone)]
 pub struct NoSerRouterConfig {
     pub all_peers: BTreeSet<PeerId>,
 }

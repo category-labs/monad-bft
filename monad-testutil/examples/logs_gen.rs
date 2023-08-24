@@ -37,7 +37,8 @@ pub fn generate_log<T: Pipeline<MM>>(
     T: Clone,
 {
     type WALoggerType = WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
-    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
+    let (pubkeys, state_configs) =
+        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
         sync: false,

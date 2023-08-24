@@ -1,31 +1,61 @@
 use std::{collections::HashSet, time::Duration};
 
+use monad_block_sync::BlockSyncState;
+use monad_consensus_state::ConsensusState;
+use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_crypto::NopSignature;
 use monad_executor::{
+    executor::mock::{NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         LatencyTransformer, PartitionTransformer, RandLatencyTransformer, ReplayTransformer,
         Transformer, TransformerPipeline, TransformerReplayOrder,
     },
     xfmr_pipe, PeerId,
 };
+use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, run_nodes, run_nodes_until_step};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 use crate::RandomizedTest;
 
 fn random_latency_test(seed: u64) {
-    run_nodes(
-        4,
-        2048,
-        Duration::from_millis(250),
+    run_nodes::<
+        MonadState<
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            NopSignature,
+            MultiSig<NopSignature>,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >,
+        NopSignature,
+        MultiSig<NopSignature>,
+        NoSerRouterScheduler<MonadMessage<_, _>>,
+        _,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+    >(
+        MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
+        MockWALoggerConfig,
         xfmr_pipe!(Transformer::RandLatency(RandLatencyTransformer::new(
             seed, 330,
         ))),
+        4,
+        2048,
+        Duration::from_millis(250),
     );
 }
 
 fn delayed_message_test(seed: u64) {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
-    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
+    let (pubkeys, state_configs) =
+        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
@@ -36,7 +66,29 @@ fn delayed_message_test(seed: u64) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step(
+    run_nodes_until_step::<
+        MonadState<
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            NopSignature,
+            MultiSig<NopSignature>,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >,
+        NopSignature,
+        MultiSig<NopSignature>,
+        NoSerRouterScheduler<MonadMessage<_, _>>,
+        _,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+    >(
+        pubkeys,
+        state_configs,
+        |all_peers: Vec<_>, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
+        MockWALoggerConfig,
         xfmr_pipe!(
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             Transformer::Partition(PartitionTransformer(filter_peers)),
@@ -45,8 +97,6 @@ fn delayed_message_test(seed: u64) {
                 TransformerReplayOrder::Random(seed),
             ))
         ),
-        pubkeys,
-        state_configs,
         400,
     );
 }

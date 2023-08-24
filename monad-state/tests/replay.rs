@@ -31,7 +31,11 @@ fn test_replay() {
 }
 
 pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_block_after: usize) {
-    let (pubkeys, state_configs) = get_configs(num_nodes, Duration::from_millis(101));
+    let (pubkeys, state_configs) = get_configs::<SignatureType, SignatureCollectionType, _>(
+        TransactionValidatorType {},
+        num_nodes,
+        Duration::from_millis(101),
+    );
 
     // create the log file path
     let mut logger_configs = Vec::new();
@@ -116,7 +120,11 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
     drop(nodes);
 
     let (pubkeys_clone, state_configs_clone) =
-        get_configs::<SignatureCollectionType>(num_nodes, Duration::from_millis(2));
+        get_configs::<SignatureType, SignatureCollectionType, _>(
+            TransactionValidatorType {},
+            num_nodes,
+            Duration::from_millis(2),
+        );
 
     let peers_clone = pubkeys_clone
         .iter()
@@ -187,5 +195,11 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         }
     }
 
-    node_ledger_verification(nodes_recovered.states());
+    node_ledger_verification(
+        &nodes_recovered
+            .states()
+            .values()
+            .map(|(executor, _state, _logger)| executor.ledger().get_blocks().clone())
+            .collect(),
+    );
 }

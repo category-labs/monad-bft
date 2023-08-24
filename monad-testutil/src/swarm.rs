@@ -1,59 +1,28 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
-use monad_block_sync::{BlockSyncProcess, BlockSyncState};
-use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    block::BlockType, message_signature::MessageSignature, multi_sig::MultiSig,
-    quorum_certificate::genesis_vote_info, signature_collection::SignatureCollection,
-    transaction_validator::MockValidator, validation::Sha256Hash,
+    block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
+    signature_collection::SignatureCollection, validation::Sha256Hash,
 };
-use monad_crypto::{
-    secp256k1::{KeyPair, PubKey},
-    NopSignature,
-};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
-    executor::mock::{MockExecutor, NoSerRouterScheduler, RouterScheduler},
+    executor::mock::{MockExecutor, RouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
     transformer::Pipeline,
     PeerId, State,
 };
-use monad_state::{MonadConfig, MonadEvent, MonadMessage, MonadState};
-use monad_types::NodeId;
-use monad_validator::{
-    leader_election::LeaderElection,
-    simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetType},
-};
-use monad_wal::{
-    mock::{MockWALogger, MockWALoggerConfig},
-    PersistenceLogger,
-};
+use monad_state::MonadConfig;
+use monad_types::{Deserializable, NodeId, Serializable};
+use monad_wal::PersistenceLogger;
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
-type SignatureType = NopSignature;
-type SignatureCollectionType = MultiSig<SignatureType>;
-type TransactionValidatorType = MockValidator;
-type MS = MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, TransactionValidatorType>,
-    SignatureType,
-    SignatureCollectionType,
-    ValidatorSet,
-    SimpleRoundRobin,
-    BlockSyncState,
->;
-type MC = MonadConfig<SignatureCollectionType, TransactionValidatorType>;
-type MM = <MS as State>::Message;
-type RS = NoSerRouterScheduler<MM>;
-type Rsc = <RS as RouterScheduler>::Config;
-type PersistenceLoggerType =
-    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
-
-pub fn get_configs<SCT: SignatureCollection>(
+pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
+    tvt: TVT,
     num_nodes: u16,
     delta: Duration,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TransactionValidatorType>>) {
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -70,7 +39,7 @@ pub fn get_configs<SCT: SignatureCollection>(
         .into_iter()
         .zip(cert_keys.into_iter())
         .map(|(key, certkey)| MonadConfig {
-            transaction_validator: TransactionValidatorType {},
+            transaction_validator: tvt.clone(),
             key,
             certkey,
             validators: validator_mapping
@@ -89,71 +58,76 @@ pub fn get_configs<SCT: SignatureCollection>(
     (pubkeys, state_configs)
 }
 
-pub fn node_ledger_verification<
-    CT: ConsensusProcess<ST, SCT>,
-    ST: MessageSignature,
-    SCT: SignatureCollection + PartialEq,
-    VT: ValidatorSetType,
-    LT: LeaderElection,
-    BST: BlockSyncProcess<ST, SCT, VT>,
-    PL: PersistenceLogger,
->(
-    states: &BTreeMap<
-        PeerId,
-        (
-            MockExecutor<
-                MonadState<CT, ST, SCT, VT, LT, BST>,
-                NoSerRouterScheduler<MonadMessage<ST, SCT>>,
-            >,
-            MonadState<CT, ST, SCT, VT, LT, BST>,
-            PL,
-        ),
-    >,
-) {
-    for (k, v) in states {
-        println!("{:?}, {}", k, v.0.ledger().get_blocks().len());
-    }
-    let num_b = states
-        .values()
-        .map(|v| v.0.ledger().get_blocks().len())
-        .min()
-        .unwrap();
-    let max_b = states
-        .values()
-        .map(|v| v.0.ledger().get_blocks().len())
-        .max()
+pub fn node_ledger_verification<O: BlockType + PartialEq>(ledgers: &Vec<Vec<O>>) {
+    let (max_ledger_idx, max_b) = ledgers
+        .iter()
+        .map(Vec::len)
+        .enumerate()
+        .max_by_key(|(_idx, num_b)| *num_b)
         .unwrap();
 
-    assert!(max_b - num_b <= 5); // this 5 block bound is arbitrary... is there a better way to do
-                                 // this?
-
-    let b = states.values().next().unwrap().0.ledger().get_blocks();
-    for n in states {
-        let a = n.1 .0.ledger().get_blocks();
-
-        assert!(!b.is_empty());
-        assert!(a.iter().take(num_b).eq(b.iter().take(num_b)));
+    for ledger in ledgers {
+        let ledger_len = ledger.len();
+        assert_ne!(ledger_len, 0);
+        assert!(
+            ledger.iter().collect::<Vec<_>>()
+                == ledgers[max_ledger_idx]
+                    .iter()
+                    .take(ledger_len)
+                    .collect::<Vec<_>>()
+        );
+        assert!(max_b - ledger.len() <= 5); // this 5 block bound is arbitrary... is there a better way to do this?
     }
 }
 
-pub fn run_nodes<T: Pipeline<MM>>(num_nodes: u16, num_blocks: usize, delta: Duration, pipeline: T) {
-    let (pubkeys, state_configs) = get_configs(num_nodes, delta);
+pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT>(
+    tvt: TVT,
+    router_scheduler_config: RSC,
+    logger_config: LGR::Config,
+
+    pipeline: P,
+    num_nodes: u16,
+    num_blocks: usize,
+    delta: Duration,
+) where
+    S: State<Config = MonadConfig<SCT, TVT>>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+
+    RS: RouterScheduler,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
+    RS::Serialized: Eq,
+
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    P: Pipeline<RS::Serialized>,
+
+    MockExecutor<S, RS>: Unpin,
+    S::Event: Unpin,
+
+    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
+
+    LGR::Config: Clone,
+    TVT: Clone,
+{
+    let (pubkeys, state_configs) = get_configs::<ST, SCT, TVT>(tvt, num_nodes, delta);
     let peers = pubkeys
         .iter()
         .copied()
         .zip(state_configs)
-        .map(|(a, b)| {
+        .map(|(pubkey, b)| {
             (
-                a,
+                pubkey,
                 b,
-                MockWALoggerConfig {},
-                Rsc {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
-                },
+                logger_config.clone(),
+                router_scheduler_config(
+                    pubkeys.iter().copied().map(PeerId).collect(),
+                    PeerId(pubkey),
+                ),
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(peers, pipeline);
+    let mut nodes = Nodes::<S, RS, P, LGR>::new(peers, pipeline);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes
@@ -171,28 +145,58 @@ pub fn run_nodes<T: Pipeline<MM>>(num_nodes: u16, num_blocks: usize, delta: Dura
         }
     }
 
-    node_ledger_verification(nodes.states());
+    node_ledger_verification(
+        &nodes
+            .states()
+            .values()
+            .map(|(executor, _state, _logger)| executor.ledger().get_blocks().clone())
+            .collect(),
+    );
 }
 
-pub fn run_nodes_until_step<T: Pipeline<MM>>(
-    pipeline: T,
+pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT>(
     pubkeys: Vec<PubKey>,
-    state_configs: Vec<MC>,
+    state_configs: Vec<MonadConfig<SCT, TVT>>,
+    router_scheduler_config: RSC,
+    logger_config: LGR::Config,
+
+    pipeline: P,
     step: i32,
-) {
-    let mut nodes = Nodes::<MS, RS, T, PersistenceLoggerType>::new(
+) where
+    S: State<Config = MonadConfig<SCT, TVT>>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+
+    RS: RouterScheduler,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
+    RS::Serialized: Eq,
+
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    P: Pipeline<RS::Serialized>,
+
+    MockExecutor<S, RS>: Unpin,
+    S::Event: Unpin,
+
+    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
+
+    LGR::Config: Clone,
+    TVT: Clone,
+{
+    let mut nodes = Nodes::<S, RS, P, LGR>::new(
         pubkeys
             .iter()
             .copied()
             .zip(state_configs)
-            .map(|(a, b)| {
+            .map(|(pubkey, b)| {
                 (
-                    a,
+                    pubkey,
                     b,
-                    MockWALoggerConfig {},
-                    Rsc {
-                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
-                    },
+                    logger_config.clone(),
+                    router_scheduler_config(
+                        pubkeys.iter().copied().map(PeerId).collect(),
+                        PeerId(pubkey),
+                    ),
                 )
             })
             .collect(),
@@ -207,5 +211,11 @@ pub fn run_nodes_until_step<T: Pipeline<MM>>(
         }
     }
 
-    node_ledger_verification(nodes.states());
+    node_ledger_verification(
+        &nodes
+            .states()
+            .values()
+            .map(|(executor, _state, _logger)| executor.ledger().get_blocks().clone())
+            .collect(),
+    );
 }

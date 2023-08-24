@@ -8,12 +8,12 @@ use crate::{
     validation::{Hashable, Hasher},
 };
 
-pub trait BlockType: Clone {
+pub trait BlockType: Clone + PartialEq + Eq {
     fn get_id(&self) -> BlockId;
     fn get_parent_id(&self) -> BlockId;
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Block<T> {
     pub author: NodeId,
     pub round: Round,
@@ -21,6 +21,13 @@ pub struct Block<T> {
     pub qc: QuorumCertificate<T>,
     id: BlockId,
 }
+
+impl<T> PartialEq for Block<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl<T> Eq for Block<T> {}
 
 impl<T> std::fmt::Debug for Block<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
