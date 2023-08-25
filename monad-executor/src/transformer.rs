@@ -12,31 +12,18 @@ use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use crate::{mock_swarm::LinkMessage, PeerId};
 
 /**
- * TransformerStream carries (Duration, LinkedMessages) that emited
+ * TransformerStream carries (Duration, LinkedMessages) that emitted
  * after a transformer with Transform Trait complete their transform
  *
- * remain_message indicate messages that should
- * still get processed in the future (potentially by more transformer).
+ * Content of a Continue Stream will get processed further
  *
- * complete_messages indicate messages that are finished transforming
- * and do not wish to be processed further.
+ * Content of a Complete Stream will no longer get processed
  *
  */
-pub struct TransformerStream<M> {
-    remain_messages: Vec<(Duration, LinkMessage<M>)>,
-    complete_messages: Vec<(Duration, LinkMessage<M>)>,
-}
-
-impl<M> TransformerStream<M> {
-    fn new(
-        remain_messages: Vec<(Duration, LinkMessage<M>)>,
-        complete_messages: Vec<(Duration, LinkMessage<M>)>,
-    ) -> Self {
-        TransformerStream {
-            remain_messages,
-            complete_messages,
-        }
-    }
+type StreamMessage<M> = (Duration, LinkMessage<M>);
+pub enum TransformerStream<M> {
+    Continue(Vec<StreamMessage<M>>),
+    Complete(Vec<StreamMessage<M>>),
 }
 
 pub trait Transform<M> {
@@ -58,7 +45,7 @@ pub trait Transform<M> {
 pub struct LatencyTransformer(pub Duration);
 impl<M> Transform<M> for LatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
-        TransformerStream::new(vec![(self.0, message)], vec![])
+        TransformerStream::Continue(vec![(self.0, message)])
     }
 }
 
@@ -74,10 +61,7 @@ impl<M> Transform<M> for XorLatencyTransformer {
         for b in message.to.0.bytes() {
             ck ^= b;
         }
-        TransformerStream::new(
-            vec![(self.0.mul_f32(ck as f32 / u8::MAX as f32), message)],
-            vec![],
-        )
+        TransformerStream::Continue(vec![(self.0.mul_f32(ck as f32 / u8::MAX as f32), message)])
     }
 }
 
@@ -105,7 +89,7 @@ impl RandLatencyTransformer {
 
 impl<M> Transform<M> for RandLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
-        TransformerStream::new(vec![(self.next_latency(), message)], vec![])
+        TransformerStream::Continue(vec![(self.next_latency(), message)])
     }
 }
 #[derive(Clone)]
@@ -114,9 +98,9 @@ pub struct PartitionTransformer(pub HashSet<PeerId>);
 impl<M> Transform<M> for PartitionTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         if self.0.contains(&message.from) || self.0.contains(&message.to) {
-            TransformerStream::new(vec![(Duration::ZERO, message)], vec![])
+            TransformerStream::Continue(vec![(Duration::ZERO, message)])
         } else {
-            TransformerStream::new(vec![], vec![(Duration::ZERO, message)])
+            TransformerStream::Complete(vec![(Duration::ZERO, message)])
         }
     }
 }
@@ -135,7 +119,7 @@ pub struct DropTransformer();
 
 impl<M> Transform<M> for DropTransformer {
     fn transform(&mut self, _: LinkMessage<M>) -> TransformerStream<M> {
-        TransformerStream::new(vec![], vec![])
+        TransformerStream::Complete(vec![])
     }
 }
 
@@ -160,9 +144,9 @@ impl<M> Transform<M> for PeriodicTranformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         self.cnt += 1;
         if self.cnt < self.start || self.cnt >= self.start + self.duration {
-            TransformerStream::new(vec![], vec![(Duration::ZERO, message)])
+            TransformerStream::Complete(vec![(Duration::ZERO, message)])
         } else {
-            TransformerStream::new(vec![(Duration::ZERO, message)], vec![])
+            TransformerStream::Continue(vec![(Duration::ZERO, message)])
         }
     }
 }
@@ -204,7 +188,7 @@ impl<M> Debug for ReplayTransformer<M> {
 impl<M> Transform<M> for ReplayTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         if self.cnt > self.cnt_limit {
-            return TransformerStream::new(vec![(Duration::ZERO, message)], vec![]);
+            return TransformerStream::Continue(vec![(Duration::ZERO, message)]);
         }
 
         self.cnt += 1;
@@ -229,7 +213,7 @@ impl<M> Transform<M> for ReplayTransformer<M> {
             output.extend(std::iter::repeat(Duration::ZERO).zip(msgs));
         }
 
-        TransformerStream::new(output, vec![])
+        TransformerStream::Continue(output)
     }
 }
 
@@ -309,19 +293,22 @@ impl<M> Pipeline<M> for TransformerPipeline<M> {
         for layer in &mut self.transformers {
             let mut new_round_message = vec![];
             for (base_duration, message) in remain_message {
-                let TransformerStream {
-                    remain_messages: r,
-                    complete_messages: c,
-                } = (*layer).transform(message);
-                new_round_message.extend(
-                    r.into_iter()
-                        .map(move |(duration, message)| (base_duration + duration, message)),
-                );
-
-                complete_message.extend(
-                    c.into_iter()
-                        .map(move |(duration, message)| (base_duration + duration, message)),
-                );
+                match (*layer).transform(message) {
+                    TransformerStream::Continue(c) => {
+                        new_round_message.extend(
+                            c.into_iter().map(move |(duration, message)| {
+                                (base_duration + duration, message)
+                            }),
+                        );
+                    }
+                    TransformerStream::Complete(c) => {
+                        complete_message.extend(
+                            c.into_iter().map(move |(duration, message)| {
+                                (base_duration + duration, message)
+                            }),
+                        );
+                    }
+                }
             }
             remain_message = new_round_message;
         }
@@ -368,48 +355,42 @@ mod test {
     fn test_latency_transformer() {
         let mut t = LatencyTransformer(Duration::from_secs(1));
         let m = get_mock_message();
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m.clone());
+        let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+            panic!("latency_transformer returned wrong type")
+        };
 
-        assert_eq!(r.len(), 1);
-        assert_eq!(c.len(), 0);
-        assert!(r[0].0 == Duration::from_secs(1));
-        assert!(r[0].1 == m);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].0 == Duration::from_secs(1));
+        assert!(c[0].1 == m);
     }
 
     #[test]
     fn test_xorlatency_transformer() {
         let mut t = XorLatencyTransformer(Duration::from_secs(1));
         let m = get_mock_message();
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m.clone());
+        let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+            panic!("xorlatency_transformer returned wrong type")
+        };
 
-        assert_eq!(r.len(), 1);
-        assert_eq!(c.len(), 0);
+        assert_eq!(c.len(), 1);
         // instead of verifying the random algorithm's correctness,
         // verifying the message is not touched
         // and feed through the right channel is more useful
-        assert!(r[0].1 == m);
+        assert!(c[0].1 == m);
     }
 
     #[test]
     fn test_randlatency_transformer() {
         let mut t = RandLatencyTransformer::new(1, 30);
         let m = get_mock_message();
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m.clone());
+        let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+            panic!("randlatency_transformer returned wrong type")
+        };
 
-        assert_eq!(r.len(), 1);
-        assert_eq!(c.len(), 0);
-        assert!(r[0].0 >= Duration::from_millis(1));
-        assert!(r[0].0 <= Duration::from_millis(30));
-        assert!(r[0].1 == m);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].0 >= Duration::from_millis(1));
+        assert!(c[0].0 <= Duration::from_millis(30));
+        assert!(c[0].1 == m);
     }
 
     #[test]
@@ -419,24 +400,20 @@ mod test {
         peers.insert(PeerId(keys[0].pubkey()));
         let mut t = PartitionTransformer(peers.clone());
         let m = get_mock_message();
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m.clone());
+        let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+            panic!("partition_transformer returned wrong type")
+        };
 
-        assert_eq!(r.len(), 1);
-        assert_eq!(c.len(), 0);
-        assert!(r[0].0 == Duration::ZERO);
-        assert!(r[0].1 == m);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].0 == Duration::ZERO);
+        assert!(c[0].1 == m);
 
         let peers = HashSet::new();
         let mut t = PartitionTransformer(peers);
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m.clone());
+        let TransformerStream::Complete(c) = t.transform(m.clone()) else {
+            panic!("partition_transformer returned wrong type")
+        };
 
-        assert_eq!(r.len(), 0);
         assert_eq!(c.len(), 1);
         assert!(c[0].0 == Duration::ZERO);
         assert!(c[0].1 == m);
@@ -449,12 +426,9 @@ mod test {
         peers.insert(PeerId(keys[0].pubkey()));
         let mut t = DropTransformer();
         let m = get_mock_message();
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m);
-
-        assert_eq!(r.len(), 0);
+        let TransformerStream::Complete(c) = t.transform(m) else {
+            panic!("drop_transformer returned wrong type")
+        };
         assert_eq!(c.len(), 0);
     }
 
@@ -466,33 +440,26 @@ mod test {
         let mut t = PeriodicTranformer::new(3, 5);
         let m = get_mock_message();
         for _ in 0..2 {
-            let TransformerStream {
-                remain_messages: r,
-                complete_messages: c,
-            } = t.transform(m.clone());
-
-            assert_eq!(r.len(), 0);
+            let TransformerStream::Complete(c) = t.transform(m.clone()) else {
+                panic!("periodic_transformer returned wrong type")
+            };
             assert_eq!(c.len(), 1);
             assert!(c[0].1 == m);
         }
 
         for _ in 0..5 {
-            let TransformerStream {
-                remain_messages: r,
-                complete_messages: c,
-            } = t.transform(m.clone());
+            let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+                panic!("periodic_transformer returned wrong type")
+            };
 
-            assert_eq!(r.len(), 1);
-            assert_eq!(c.len(), 0);
-            assert!(r[0].1 == m);
+            assert_eq!(c.len(), 1);
+            assert!(c[0].1 == m);
         }
         for _ in 0..1000 {
-            let TransformerStream {
-                remain_messages: r,
-                complete_messages: c,
-            } = t.transform(m.clone());
+            let TransformerStream::Complete(c) = t.transform(m.clone()) else {
+                panic!("periodic_transformer returned wrong type")
+            };
 
-            assert_eq!(r.len(), 0);
             assert_eq!(c.len(), 1);
             assert!(c[0].1 == m);
         }
@@ -507,28 +474,23 @@ mod test {
         let mut t = ReplayTransformer::new(5, crate::transformer::TransformerReplayOrder::Forward);
         let m = get_mock_message();
         for _ in 0..5 {
-            let TransformerStream {
-                remain_messages: r,
-                complete_messages: c,
-            } = t.transform(m.clone());
-            assert_eq!(r.len(), 0);
+            let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+                panic!("replay_transformer returned wrong type")
+            };
             assert_eq!(c.len(), 0);
         }
 
-        let TransformerStream {
-            remain_messages: r,
-            complete_messages: c,
-        } = t.transform(m.clone());
-        assert_eq!(r.len(), 6);
-        assert_eq!(c.len(), 0);
+        let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+            panic!("replay_transformer returned wrong type")
+        };
+
+        assert_eq!(c.len(), 6);
 
         for _ in 0..1000 {
-            let TransformerStream {
-                remain_messages: r,
-                complete_messages: c,
-            } = t.transform(m.clone());
-            assert_eq!(r.len(), 1);
-            assert_eq!(c.len(), 0);
+            let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+                panic!("replay_transformer returned wrong type")
+            };
+            assert_eq!(c.len(), 1);
         }
     }
 
