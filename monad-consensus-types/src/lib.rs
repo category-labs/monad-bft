@@ -2,6 +2,7 @@
 pub mod convert;
 
 pub mod block;
+pub mod bls;
 pub mod certificate_signature;
 pub mod ledger;
 pub mod message_signature;

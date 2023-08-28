@@ -4627,6 +4627,7 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
+ "bitvec 1.0.1",
  "log",
  "monad-crypto",
  "monad-proto",

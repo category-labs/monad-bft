@@ -38,6 +38,7 @@ libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca60
 libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
 
 async-trait = "0.1"
+bitvec = "1.0.1"
 blst = "0.3.10"
 bytes = "1.4.0"
 clap = "4.2"

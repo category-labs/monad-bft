@@ -3,7 +3,7 @@ use monad_types::NodeId;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    certificate_signature::CertificateKeyPair,
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::ValidatorMapping,
 };
@@ -53,4 +53,16 @@ pub(crate) fn setup_sigcol_test<SCT: SignatureCollection>(
     let validator_mapping = ValidatorMapping::new(voting_identity);
 
     (voting_keys, validator_mapping)
+}
+
+pub(crate) fn get_sigs<'a, SCT: SignatureCollection>(
+    msg: &[u8],
+    iter: impl Iterator<Item = &'a (NodeId, SignatureCollectionKeyPairType<SCT>)>,
+) -> Vec<(NodeId, SCT::SignatureType)> {
+    let mut sigs = Vec::new();
+    for (node_id, key) in iter {
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(msg, key);
+        sigs.push((*node_id, sig));
+    }
+    sigs
 }

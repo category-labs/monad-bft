@@ -158,7 +158,7 @@ mod test {
 
     use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::signing::get_key;
-    use monad_types::Hash;
+    use monad_types::{Hash, NodeId};
     use rand::{seq::SliceRandom, SeedableRng};
     use rand_chacha::ChaChaRng;
     use test_case::test_case;
@@ -166,11 +166,28 @@ mod test {
     use super::MultiSig;
     use crate::{
         certificate_signature::CertificateSignature,
-        signature_collection::{SignatureCollection, SignatureCollectionError},
+        signature_collection::{
+            SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+        },
         test_utils::setup_sigcol_test,
     };
 
     type SignatureCollectionType = MultiSig<SecpSignature>;
+
+    fn get_sigs<'a>(
+        msg: &[u8],
+        iter: impl Iterator<
+            Item = &'a (
+                NodeId,
+                SignatureCollectionKeyPairType<SignatureCollectionType>,
+            ),
+        >,
+    ) -> Vec<(
+        NodeId,
+        <SignatureCollectionType as SignatureCollection>::SignatureType,
+    )> {
+        crate::test_utils::get_sigs::<SignatureCollectionType>(msg, iter)
+    }
 
     #[test_case(7, 5, 1; "seed 7, 1/5 invalid")]
     #[test_case(7, 32, 1; "seed 7, 1/32 invalid")]
@@ -185,19 +202,16 @@ mod test {
         let msg_hash = Hash([129_u8; 32]);
         let invalid_msg_hash = Hash([229_u8; 32]);
 
-        let mut sigs = Vec::new();
-        let mut invalid_sigs = Vec::new();
+        let invalid_sigs = get_sigs(
+            invalid_msg_hash.as_ref(),
+            cert_keys.iter().take(num_invalid as usize),
+        );
 
-        for (node_id, certkey) in cert_keys.iter().take(num_invalid as usize) {
-            let invalid_sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(invalid_msg_hash.as_ref(), certkey);
-            invalid_sigs.push(invalid_sig);
-            sigs.push((*node_id, invalid_sig));
-        }
-
-        for (node_id, certkey) in cert_keys.iter().skip(num_invalid as usize) {
-            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
+        let mut sigs = get_sigs(
+            msg_hash.as_ref(),
+            cert_keys.iter().skip(num_invalid as usize),
+        );
+        sigs.extend(invalid_sigs.clone());
 
         sigs.shuffle(&mut ChaChaRng::seed_from_u64(seed));
 
@@ -211,7 +225,10 @@ mod test {
 
         match sigcol_err {
             SignatureCollectionError::InvalidSignatures(sigs) => {
-                let expected_set = invalid_sigs.into_iter().collect::<HashSet<_>>();
+                let expected_set = invalid_sigs
+                    .into_iter()
+                    .map(|(_node_id, sig)| sig)
+                    .collect::<HashSet<_>>();
                 let test_set = sigs.into_iter().collect::<HashSet<_>>();
 
                 assert_eq!(expected_set, test_set);
@@ -226,12 +243,8 @@ mod test {
 
         let msg_hash = Hash([129_u8; 32]);
         let invalid_msg_hash = Hash([229_u8; 32]);
-        let mut sigs = Vec::new();
 
-        for (node_id, certkey) in cert_keys.iter() {
-            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
+        let sigs = get_sigs(msg_hash.as_ref(), cert_keys.iter());
 
         let mut sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
 
@@ -262,12 +275,8 @@ mod test {
         );
 
         let msg_hash = Hash([129_u8; 32]);
-        let mut sigs = Vec::new();
 
-        for (node_id, certkey) in cert_keys.iter() {
-            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
+        let sigs = get_sigs(msg_hash.as_ref(), cert_keys.iter());
 
         let mut sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
         // add a signature from a non-validator signer

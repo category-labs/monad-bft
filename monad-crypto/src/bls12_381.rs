@@ -362,7 +362,7 @@ impl BlsAggregateSignature {
         map_err_to_result(err)
     }
 
-    fn as_signature(&self) -> BlsSignature {
+    pub fn as_signature(&self) -> BlsSignature {
         self.0.to_signature().into()
     }
 

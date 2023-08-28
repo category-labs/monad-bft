@@ -73,58 +73,69 @@ mod test {
     use crate::{
         certificate_signature::CertificateSignature,
         signature_collection::{SignatureCollection, SignatureCollectionError},
-        test_utils::{get_certificate_key, setup_sigcol_test},
-        voting::ValidatorMapping,
+        test_utils::{get_certificate_key, get_sigs, setup_sigcol_test},
     };
 
     macro_rules! test_all_signature_collection {
-        ($test_name:ident, $test_code:block) => {
+        ($test_name:ident, $test_code:expr) => {
             mod $test_name {
                 use monad_crypto::{secp256k1::SecpSignature, NopSignature};
+                use test_case::test_case;
 
                 use super::*;
-                use crate::multi_sig::*;
+                use crate::{bls::BlsSignatureCollection, multi_sig::*};
 
-                fn invoke<T: SignatureCollection>() {
-                    $test_code
+                fn invoke<T: SignatureCollection>(num_keys: u32) {
+                    $test_code(num_keys)
                 }
 
-                #[test]
-                fn multi_sig_secp() {
-                    invoke::<MultiSig<SecpSignature>>();
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn multi_sig_secp(num_keys: u32) {
+                    invoke::<MultiSig<SecpSignature>>(num_keys);
                 }
 
-                #[test]
-                fn multi_sig_nop() {
-                    invoke::<MultiSig<NopSignature>>();
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn multi_sig_nop(num_keys: u32) {
+                    invoke::<MultiSig<NopSignature>>(num_keys);
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn bls(num_keys: u32) {
+                    invoke::<BlsSignatureCollection>(num_keys);
                 }
             }
         };
     }
 
-    test_all_signature_collection!(test_num_signatures, {
-        let validator_mapping = ValidatorMapping::new(std::iter::empty());
-        let hash = Hash([0_u8; 32]);
-        let sigs = T::new(Vec::new(), &validator_mapping, hash.as_ref()).unwrap();
-        assert_eq!(sigs.num_signatures(), 0);
-    });
-
-    test_all_signature_collection!(test_creation, {
-        let (voting_keys, valmap) = setup_sigcol_test::<T>(5);
+    test_all_signature_collection!(test_creation, |num_keys| {
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
 
         let msg_hash = Hash([129_u8; 32]);
-        let mut sigs = Vec::new();
 
-        for (node_id, certkey) in voting_keys.iter() {
-            let sig = <T::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
+        let sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
 
-        assert!(T::new(sigs, &valmap, msg_hash.as_ref()).is_ok());
+        let sigcol = T::new(sigs, &valmap, msg_hash.as_ref());
+        assert!(sigcol.is_ok());
     });
 
-    test_all_signature_collection!(test_node_id_not_in_validator_mapping, {
-        let (voting_keys, valmap) = setup_sigcol_test::<T>(5);
+    test_all_signature_collection!(test_num_signatures, |num_keys| {
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
+        let msg_hash = Hash([129_u8; 32]);
+
+        let sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
+
+        let sig_col = T::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        assert_eq!(sig_col.num_signatures(), num_keys as usize);
+    });
+
+    test_all_signature_collection!(test_node_id_not_in_validator_mapping, |num_keys| {
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
 
         let non_validator_node_id = NodeId(get_key(100).pubkey());
         let non_validator_cert_key = get_certificate_key::<T>(100);
@@ -132,12 +143,8 @@ mod test {
         assert!(!valmap.map.contains_key(&non_validator_node_id));
 
         let msg_hash = Hash([129_u8; 32]);
-        let mut sigs = Vec::new();
 
-        for (node_id, certkey) in voting_keys.iter() {
-            let sig = <T::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
+        let mut sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
 
         let non_validator_sig = <T::SignatureType as CertificateSignature>::sign(
             msg_hash.as_ref(),
@@ -154,16 +161,12 @@ mod test {
         );
     });
 
-    test_all_signature_collection!(test_duplicate_sig, {
-        let (voting_keys, valmap) = setup_sigcol_test::<T>(5);
+    test_all_signature_collection!(test_duplicate_sig, |num_keys| {
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
 
         let msg_hash = Hash([129_u8; 32]);
-        let mut sigs = Vec::new();
 
-        for (node_id, certkey) in voting_keys.iter() {
-            let sig = <T::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
+        let mut sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
 
         // duplicate the last signature
         sigs.push(*sigs.last().unwrap());
@@ -174,17 +177,12 @@ mod test {
         assert_eq!(sigcol.num_signatures(), voting_keys.len());
     });
 
-    test_all_signature_collection!(test_verify, {
-        let (voting_keys, valmap) = setup_sigcol_test::<T>(5);
+    test_all_signature_collection!(test_verify, |num_keys| {
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
 
         let msg_hash = Hash([129_u8; 32]);
-        let mut sigs = Vec::new();
 
-        for (node_id, certkey) in voting_keys.iter() {
-            let sig = <T::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
-            sigs.push((*node_id, sig));
-        }
-
+        let sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
         let sigcol = T::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
 
         let signers = sigcol.verify(&valmap, msg_hash.as_ref()).unwrap();

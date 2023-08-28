@@ -1,4 +1,5 @@
 use monad_crypto::{
+    bls12_381::{BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature},
     secp256k1::{Error as SecpError, KeyPair as SecpKeyPair, PubKey as SecpPubKey, SecpSignature},
     NopSignature,
 };
@@ -141,11 +142,63 @@ impl CertificateSignatureRecoverable for NopSignature {
     }
 }
 
+impl CertificateKeyPair for BlsKeyPair {
+    type PubKeyType = BlsPubKey;
+    type Error = BlsError;
+
+    fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error> {
+        Self::from_bytes(secret)
+    }
+
+    fn pubkey(&self) -> Self::PubKeyType {
+        self.pubkey()
+    }
+}
+
+impl Hashable for BlsSignature {
+    fn hash<H: crate::validation::Hasher>(&self, state: &mut H) {
+        let slice =
+            unsafe { std::mem::transmute::<Self, [u8; std::mem::size_of::<Self>()]>(*self) };
+        state.update(slice);
+    }
+}
+
+impl CertificateSignature for BlsSignature {
+    type KeyPairType = BlsKeyPair;
+    type Error = BlsError;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
+        keypair.sign(msg)
+    }
+
+    fn verify(
+        &self,
+        msg: &[u8],
+        pubkey: &<Self::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> Result<(), Self::Error> {
+        self.verify(msg, pubkey)
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        self.serialize()
+    }
+
+    fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
+        Self::deserialize(signature)
+    }
+}
+
+impl Hashable for BlsAggregateSignature {
+    fn hash<H: crate::validation::Hasher>(&self, state: &mut H) {
+        self.as_signature().hash(state);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::ops::AddAssign;
 
-    use monad_crypto::secp256k1::SecpSignature;
+    use monad_crypto::{bls12_381::BlsSignature, secp256k1::SecpSignature};
 
     // valid certificate signature tests
     use crate::certificate_signature::{
@@ -177,7 +230,10 @@ mod test {
                     invoke::<NopSignature>();
                 }
 
-                // TODO: add module for bls signature
+                #[test]
+                fn blssignature() {
+                    invoke::<BlsSignature>();
+                }
             }
         };
     }
