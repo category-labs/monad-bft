@@ -7,11 +7,13 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    signature_collection::{
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+    },
     validation::{Hashable, Hasher, Sha256Hash},
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::{Error as SecpError, KeyPair, PubKey, SecpSignature};
+use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
 use monad_types::{Hash, NodeId, Round};
 use sha2::{Digest, Sha256};
 use zerocopy::AsBytes;
@@ -45,16 +47,13 @@ impl Hashable for MockSignatures {
 }
 
 impl SignatureCollection for MockSignatures {
-    type SignatureError = SecpError;
     type SignatureType = SecpSignature;
 
     fn new(
         _sigs: Vec<(NodeId, Self::SignatureType)>,
-        _validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
-            <Self::SignatureType as monad_consensus_types::certificate_signature::CertificateSignature>::KeyPairType,
-        >,
+        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         _msg: &[u8],
-    ) -> Result<Self, Self::SignatureError> {
+    ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
         Ok(Self { pubkey: Vec::new() })
     }
 
@@ -64,11 +63,9 @@ impl SignatureCollection for MockSignatures {
 
     fn verify(
         &self,
-        _validator_mapping: &monad_consensus_types::voting::ValidatorMapping<
-            <Self::SignatureType as monad_consensus_types::certificate_signature::CertificateSignature>::KeyPairType,
-        >,
+        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         _msg: &[u8],
-    ) -> Result<Vec<NodeId>, Self::SignatureError> {
+    ) -> Result<Vec<NodeId>, SignatureCollectionError<Self::SignatureType>> {
         Ok(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)).collect())
     }
 

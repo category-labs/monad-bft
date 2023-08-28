@@ -1,10 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
+use log::{error, warn};
 use monad_types::{Hash, NodeId};
 
 use crate::{
-    certificate_signature::{CertificateSignature, CertificateSignatureRecoverable},
-    signature_collection::SignatureCollection,
+    certificate_signature::CertificateSignatureRecoverable,
+    signature_collection::{
+        SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+    },
     validation::{Hashable, Hasher},
     voting::ValidatorMapping,
 };
@@ -20,43 +23,6 @@ impl<S: CertificateSignatureRecoverable> Default for MultiSig<S> {
     }
 }
 
-#[derive(Debug)]
-pub enum MultiSigError<S> {
-    NodeIdNotInMapping((NodeId, S)),
-    ConflictingSignatures((NodeId, S, S)),
-    PubKeyMismatch((NodeId, S)),
-    // verifications error
-    FailedToRecoverPubKey(S),
-    InvalidSignature(S),
-}
-
-impl<S: CertificateSignatureRecoverable> std::fmt::Display for MultiSigError<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            MultiSigError::NodeIdNotInMapping((node_id, sig)) => {
-                write!(f, "NodeId {node_id:?} not in validator mapping sig {sig:?}")
-            }
-            MultiSigError::ConflictingSignatures((node_id, s1, s2)) => {
-                write!(
-                    f,
-                    "Conflicting signatures from {node_id:?}\ns1: {s1:?}\ns2: {s2:?}"
-                )
-            }
-            MultiSigError::PubKeyMismatch((node_id, sig)) => {
-                write!(f, "PubKey mismatch NodeId {node_id:?} Sig {sig:?}")
-            }
-            MultiSigError::InvalidSignature(sig) => {
-                write!(f, "Invalid signature ({sig:?})")
-            }
-            MultiSigError::FailedToRecoverPubKey(sig) => {
-                write!(f, "Failed to recover pubkey sig ({sig:?})")
-            }
-        }
-    }
-}
-
-impl<S: CertificateSignatureRecoverable> std::error::Error for MultiSigError<S> {}
-
 impl<S: CertificateSignatureRecoverable> Hashable for MultiSig<S> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         for s in self.sigs.iter() {
@@ -65,54 +31,78 @@ impl<S: CertificateSignatureRecoverable> Hashable for MultiSig<S> {
     }
 }
 
-// TODO: test duplicate votes
 impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
-    type SignatureError = MultiSigError<S>;
     type SignatureType = S;
 
     fn new(
         sigs: Vec<(NodeId, Self::SignatureType)>,
-        validator_mapping: &ValidatorMapping<
-            <Self::SignatureType as CertificateSignature>::KeyPairType,
-        >,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
-    ) -> Result<Self, Self::SignatureError> {
+    ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
         let mut sig_map = HashMap::new();
-        let mut multi_sig = Vec::new();
+        // software bug: signature collector should check the node_id is in validator set
+        let mut external_sigs = Vec::new();
+        // "slashable" behavior
+        let mut invalid_sigs = Vec::new();
 
         for (node_id, sig) in sigs.into_iter() {
+            // check if node_id is in validator_mapping
             if let Some(pubkey) = validator_mapping.map.get(&node_id) {
-                let pubkey_recovered = sig
-                    .recover_pubkey(msg)
-                    .map_err(|_| MultiSigError::FailedToRecoverPubKey(sig))?;
+                if let Ok(pubkey_recovered) = sig.recover_pubkey(msg) {
+                    if pubkey_recovered != *pubkey {
+                        warn!(
+                            "Pubkey mismatch NodeId={:?} sig={:?} expected={:?} recovered={:?}",
+                            node_id, sig, *pubkey, pubkey_recovered,
+                        );
+                        invalid_sigs.push(sig);
+                        continue;
+                    }
 
-                if pubkey_recovered != *pubkey {
-                    return Err(MultiSigError::PubKeyMismatch((node_id, sig)));
-                }
+                    if sig.verify(msg, pubkey).is_err() {
+                        warn!("Invalid sig NodeId={:?} sig={:?} ", node_id, sig);
+                        invalid_sigs.push(sig);
+                        continue;
+                    }
 
-                let sig_entry = sig_map.entry(node_id).or_insert(sig);
-                if *sig_entry != sig {
-                    return Err(MultiSigError::ConflictingSignatures((
-                        node_id, *sig_entry, sig,
-                    )));
-                }
-
-                <S as CertificateSignature>::verify(&sig, msg, pubkey)
-                    .map_err(|_| MultiSigError::InvalidSignature(sig))?;
-
-                multi_sig.push(sig);
+                    let sig_entry = sig_map.entry(node_id).or_insert(sig);
+                    if *sig_entry != sig {
+                        // unreachable if signature algo is deterministic
+                        // no two valid signatures can be created with the same keypair
+                        error!(
+                            "Conflicting signatures NodeId={:?} sig1={:?} sig2={:?}",
+                            node_id, *sig_entry, sig
+                        );
+                        return Err(SignatureCollectionError::ConflictingSignatures((
+                            node_id, *sig_entry, sig,
+                        )));
+                    }
+                } else {
+                    warn!(
+                        "Failed to recover pubkey NodeId={:?} sig={:?}",
+                        node_id, sig
+                    );
+                    invalid_sigs.push(sig);
+                };
             } else {
-                return Err(MultiSigError::NodeIdNotInMapping((node_id, sig)));
+                external_sigs.push((node_id, sig));
             }
         }
 
-        Ok(MultiSig { sigs: multi_sig })
+        if !external_sigs.is_empty() {
+            return Err(SignatureCollectionError::NodeIdNotInMapping(external_sigs));
+        }
+
+        if !invalid_sigs.is_empty() {
+            return Err(SignatureCollectionError::InvalidSignatures(invalid_sigs));
+        }
+
+        Ok(MultiSig {
+            sigs: sig_map.into_values().collect::<Vec<_>>(),
+        })
     }
 
     fn get_hash<H: Hasher>(&self) -> Hash {
-        let mut hasher = H::new();
-        self.hash(&mut hasher);
-        hasher.hash()
+        H::hash_object(self)
     }
 
     fn num_signatures(&self) -> usize {
@@ -121,35 +111,172 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
 
     fn verify(
         &self,
-        validator_mapping: &ValidatorMapping<
-            <Self::SignatureType as CertificateSignature>::KeyPairType,
-        >,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
-    ) -> Result<Vec<NodeId>, Self::SignatureError> {
+    ) -> Result<Vec<NodeId>, SignatureCollectionError<Self::SignatureType>> {
         let mut node_ids = Vec::new();
-        let mut pubkeys = HashSet::new();
+        let mut verified_unvalidated_sigs = HashMap::new();
+        let mut invalid_sigs = Vec::new();
 
         for sig in self.sigs.iter() {
-            let pubkey = sig
-                .recover_pubkey(msg)
-                .map_err(|_| MultiSigError::FailedToRecoverPubKey(*sig))?;
-
-            sig.verify(msg, &pubkey)
-                .map_err(|_| MultiSigError::InvalidSignature(*sig))?;
-
-            pubkeys.insert(pubkey);
-        }
-
-        for (node_id, pk) in validator_mapping.map.iter() {
-            if pubkeys.contains(pk) {
-                node_ids.push(*node_id);
-                pubkeys.remove(pk);
+            if let Ok(pubkey) = sig.recover_pubkey(msg) {
+                if sig.verify(msg, &pubkey).is_err() {
+                    warn!("Invalid sig sig={:?}", sig);
+                    invalid_sigs.push(sig);
+                    continue;
+                }
+                verified_unvalidated_sigs.insert(pubkey, *sig);
+            } else {
+                warn!("Failed to recover pubkey sig={:?}", sig);
+                invalid_sigs.push(sig);
             }
         }
 
-        if !pubkeys.is_empty() {
-            // TODO: collect evidence: author included signatures from nodes not in the validator set
+        // validate sigs: filter verified_unvalidated_sigs by validator node_id
+        for (node_id, pk) in validator_mapping.map.iter() {
+            if verified_unvalidated_sigs.contains_key(pk) {
+                node_ids.push(*node_id);
+                verified_unvalidated_sigs.remove(pk);
+            }
+        }
+
+        // verified_sigs contains valid but non-validator signatures
+        invalid_sigs.extend(verified_unvalidated_sigs.values());
+
+        if !invalid_sigs.is_empty() {
+            return Err(SignatureCollectionError::InvalidSignatures(
+                verified_unvalidated_sigs.into_values().collect::<Vec<_>>(),
+            ));
         }
         Ok(node_ids)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashSet;
+
+    use monad_crypto::secp256k1::SecpSignature;
+    use monad_testutil::signing::get_key;
+    use monad_types::Hash;
+    use rand::{seq::SliceRandom, SeedableRng};
+    use rand_chacha::ChaChaRng;
+    use test_case::test_case;
+
+    use super::MultiSig;
+    use crate::{
+        certificate_signature::CertificateSignature,
+        signature_collection::{SignatureCollection, SignatureCollectionError},
+        test_utils::setup_sigcol_test,
+    };
+
+    type SignatureCollectionType = MultiSig<SecpSignature>;
+
+    #[test_case(7, 5, 1; "seed 7, 1/5 invalid")]
+    #[test_case(7, 32, 1; "seed 7, 1/32 invalid")]
+    #[test_case(7, 32, 5; "seed 7, 5/32 invalid")]
+    #[test_case(8, 32, 5; "seed 8, 5/32 invalid")]
+    #[test_case(7, 32, 32; "seed 7, 32/32 invalid")]
+    #[test_case(8, 32, 32; "seed 8, 32/32 invalid")]
+    fn test_creation_invalid_signature(seed: u64, num_keys: u32, num_invalid: u32) {
+        assert!(num_invalid <= num_keys);
+        let (cert_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(num_keys);
+
+        let msg_hash = Hash([129_u8; 32]);
+        let invalid_msg_hash = Hash([229_u8; 32]);
+
+        let mut sigs = Vec::new();
+        let mut invalid_sigs = Vec::new();
+
+        for (node_id, certkey) in cert_keys.iter().take(num_invalid as usize) {
+            let invalid_sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(invalid_msg_hash.as_ref(), certkey);
+            invalid_sigs.push(invalid_sig);
+            sigs.push((*node_id, invalid_sig));
+        }
+
+        for (node_id, certkey) in cert_keys.iter().skip(num_invalid as usize) {
+            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
+            sigs.push((*node_id, sig));
+        }
+
+        sigs.shuffle(&mut ChaChaRng::seed_from_u64(seed));
+
+        let sigcol_err =
+            SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap_err();
+
+        assert!(matches!(
+            sigcol_err,
+            SignatureCollectionError::InvalidSignatures(_)
+        ));
+
+        match sigcol_err {
+            SignatureCollectionError::InvalidSignatures(sigs) => {
+                let expected_set = invalid_sigs.into_iter().collect::<HashSet<_>>();
+                let test_set = sigs.into_iter().collect::<HashSet<_>>();
+
+                assert_eq!(expected_set, test_set);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_verify_invalid_signature() {
+        let (cert_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(5);
+
+        let msg_hash = Hash([129_u8; 32]);
+        let invalid_msg_hash = Hash([229_u8; 32]);
+        let mut sigs = Vec::new();
+
+        for (node_id, certkey) in cert_keys.iter() {
+            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
+            sigs.push((*node_id, sig));
+        }
+
+        let mut sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+
+        // replace last one with an invalid signature
+        let _ = sig_col.sigs.pop().unwrap();
+        let invalid_sig = << SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(invalid_msg_hash.as_ref(), &cert_keys[0].1);
+        sig_col.sigs.push(invalid_sig);
+
+        let err = sig_col.verify(&valmap, msg_hash.as_ref()).unwrap_err();
+
+        assert_eq!(
+            err,
+            SignatureCollectionError::InvalidSignatures(vec![invalid_sig])
+        );
+    }
+
+    #[test]
+    fn test_verify_non_validator_signer() {
+        let (cert_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(5);
+        let non_validator_cert_key = get_key(100);
+
+        assert_eq!(
+            valmap
+                .map
+                .values()
+                .find(|&&pk| pk == non_validator_cert_key.pubkey()),
+            None
+        );
+
+        let msg_hash = Hash([129_u8; 32]);
+        let mut sigs = Vec::new();
+
+        for (node_id, certkey) in cert_keys.iter() {
+            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), certkey);
+            sigs.push((*node_id, sig));
+        }
+
+        let mut sig_col = SignatureCollectionType::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+        // add a signature from a non-validator signer
+        let sig = << SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), &non_validator_cert_key);
+        sig_col.sigs.push(sig);
+
+        assert_eq!(
+            sig_col.verify(&valmap, msg_hash.as_ref()).unwrap_err(),
+            SignatureCollectionError::InvalidSignatures(vec![sig])
+        );
     }
 }

@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+log = { workspace = true }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
 monad-types = { path = "../monad-types" }
@@ -23,4 +24,7 @@ proto = [
 ]
 
 [dev-dependencies]
+monad-testutil = { path = "../monad-testutil" }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 test-case = { workspace = true }

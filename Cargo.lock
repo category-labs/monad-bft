@@ -4625,10 +4625,14 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
+ "log",
  "monad-crypto",
  "monad-proto",
+ "monad-testutil",
  "monad-types",
  "prost",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "sha2 0.10.7",
  "test-case",
  "zerocopy",
