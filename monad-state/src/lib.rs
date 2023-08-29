@@ -210,6 +210,21 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Des
     }
 }
 
+#[cfg(feature = "proto")]
+impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable<Vec<u8>>
+    for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
+{
+    type ReadError = monad_proto::error::ProtoError;
+
+    fn deserialize(message: &Vec<u8>) -> Result<Self, Self::ReadError> {
+        Ok(MonadMessage(
+            monad_consensus::convert::interface::deserialize_unverified_consensus_message(
+                message.as_ref(),
+            )?,
+        ))
+    }
+}
+
 impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         MonadMessage(value.0.into())

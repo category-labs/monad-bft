@@ -94,7 +94,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     ST: MessageSignature,
     SCT: SignatureCollection,
 
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
@@ -170,7 +170,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     ST: MessageSignature,
     SCT: SignatureCollection,
 
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,

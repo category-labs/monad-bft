@@ -19,6 +19,9 @@ sha2 = { workspace = true }
 zerocopy = { workspace = true }
 zeroize = { workspace = true }
 
+rcgen = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+
 [dev-dependencies]
 hex = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
@@ -26,3 +29,4 @@ tiny-keccak = { workspace = true, features = ["keccak"] }
 [features]
 libp2p-identity = ["dep:libp2p-identity", "dep:multihash"]
 proto = ["dep:monad-proto"]
+rustls = ["dep:rcgen", "dep:rustls"]

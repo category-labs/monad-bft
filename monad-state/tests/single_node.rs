@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
@@ -8,6 +8,10 @@ use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{LatencyTransformer, Transformer, TransformerPipeline},
     xfmr_pipe,
+};
+use monad_quic::{
+    gossip::{MockGossip, MockGossipConfig},
+    QuicRouterScheduler, QuicRouterSchedulerConfig,
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::run_nodes;
@@ -47,5 +51,45 @@ fn two_nodes() {
         2,
         1024,
         Duration::from_millis(2),
+    );
+}
+
+#[test]
+fn two_nodes_quic() {
+    let zero_instant = Instant::now();
+
+    run_nodes::<
+        MonadState<
+            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
+            NopSignature,
+            MultiSig<NopSignature>,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >,
+        NopSignature,
+        MultiSig<NopSignature>,
+        QuicRouterScheduler<MockGossip>,
+        _,
+        MockWALogger<_>,
+        _,
+        MockValidator,
+        MockMempool<_>,
+    >(
+        MockValidator,
+        |all_peers, me| QuicRouterSchedulerConfig {
+            zero_instant,
+            all_peers: all_peers.iter().cloned().collect(),
+            me,
+
+            gossip_config: MockGossipConfig { all_peers },
+        },
+        MockWALoggerConfig,
+        xfmr_pipe!(Transformer::Latency::<Vec<u8>>(LatencyTransformer(
+            Duration::from_millis(1)
+        ))),
+        2,
+        1024,
+        Duration::from_millis(10),
     );
 }

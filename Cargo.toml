@@ -16,6 +16,7 @@ members = [
     "monad-node",
     "monad-p2p",
     "monad-proto",
+    "monad-quic",
     "monad-randomized-tests",
     "monad-state",
     "monad-testground",
@@ -62,10 +63,17 @@ prost-build = "0.11.9"
 prost-types = "0.11.8"
 protobuf-src = "1.1.0"
 ptree = "0.4.0"
+
+# the important commit: "307d80b9398d4e1e305c0131f2c3989090ec9432"
+# we can use latest release once it includes that
+quinn-proto = { git = "https://github.com/quinn-rs/quinn.git", rev = "307d80b9" }
+
 rand = "0.8.5"
 rand_chacha = "0.3.1"
+rcgen = "0.11"
 ref-cast = "1.0"
 rustls-pemfile = "1.0.3"
+rustls = "0.21"
 secp256k1 = "0.26"
 serde = "1.0.160"
 sha2 = "0.10.6"
@@ -80,5 +88,6 @@ tracing = "0.1.37"
 tracing-core = "0.1.30"
 tracing-opentelemetry = "0.19"
 tracing-subscriber = "0.3.17"
+x509-parser = "0.15"
 zerocopy = "0.6.1"
 zeroize = "1.3"

@@ -4134,7 +4134,7 @@ dependencies = [
  "libp2p-tls",
  "log",
  "parking_lot 0.12.1",
- "quinn-proto",
+ "quinn-proto 0.9.4",
  "rand 0.8.5",
  "rustls 0.20.8",
  "thiserror",
@@ -4650,6 +4650,8 @@ dependencies = [
  "libp2p-identity",
  "monad-proto",
  "multihash",
+ "rcgen 0.11.1",
+ "rustls 0.21.5",
  "secp256k1",
  "sha2 0.10.7",
  "tiny-keccak",
@@ -4815,6 +4817,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-quic"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "monad-executor",
+ "quinn-proto 0.11.0",
+]
+
+[[package]]
 name = "monad-randomized-tests"
 version = "0.1.0"
 dependencies = [
@@ -4845,6 +4856,7 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-proto",
+ "monad-quic",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -5818,6 +5830,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b13fe415cdf3c8e44518e18a7c95a13431d9bdf6d15367d82b23c377fdd441a"
+dependencies = [
+ "base64 0.21.2",
+ "serde 1.0.175",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6319,6 +6341,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "quinn-proto"
+version = "0.11.0"
+source = "git+https://github.com/quinn-rs/quinn.git?rev=307d80b9#307d80b9398d4e1e305c0131f2c3989090ec9432"
+dependencies = [
+ "bytes",
+ "rand 0.8.5",
+ "ring",
+ "rustc-hash",
+ "rustls 0.21.5",
+ "slab",
+ "thiserror",
+ "tinyvec",
+ "tracing",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6469,7 +6507,7 @@ version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6413f3de1edee53342e6138e75b56d32e7bc6e332b3bd62d497b1929d4cfbcdd"
 dependencies = [
- "pem",
+ "pem 1.1.1",
  "ring",
  "time",
  "x509-parser 0.13.2",
@@ -6482,7 +6520,19 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffbe84efe2f38dea12e9bfc1f65377fdf03e53a18cb3b995faedf7934c7e785b"
 dependencies = [
- "pem",
+ "pem 1.1.1",
+ "ring",
+ "time",
+ "yasna",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4954fbc00dcd4d8282c987710e50ba513d351400dbdd00e803a05172a90d8976"
+dependencies = [
+ "pem 2.0.1",
  "ring",
  "time",
  "yasna",

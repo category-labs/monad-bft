@@ -35,7 +35,7 @@ pub trait RouterScheduler {
     fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM);
 
     fn peek_tick(&self) -> Option<Duration>;
-    fn pop_event(&mut self) -> Option<RouterEvent<Self::M, Self::Serialized>>;
+    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>>;
 }
 
 pub struct NoSerRouterScheduler<M> {
@@ -103,8 +103,13 @@ where
         self.events.front().map(|(tick, _)| *tick)
     }
 
-    fn pop_event(&mut self) -> Option<RouterEvent<Self::M, Self::Serialized>> {
-        self.events.pop_front().map(|(_, event)| event)
+    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>> {
+        if self.peek_tick().unwrap_or(Duration::MAX) <= until {
+            let (_, event) = self.events.pop_front().expect("must exist");
+            Some(event)
+        } else {
+            None
+        }
     }
 }
 
@@ -326,7 +331,7 @@ where
             self.tick = tick;
             let event = match event_type {
                 ExecutorEventType::Router => {
-                    let maybe_router_event = self.router.pop_event();
+                    let maybe_router_event = self.router.step_until(tick);
 
                     match maybe_router_event {
                         None => continue, // try next tick

@@ -24,6 +24,7 @@ prost = { workspace = true, optional = true }
 ref-cast = { workspace = true }
 
 [dev-dependencies]
+monad-quic = { path = "../monad-quic" }
 monad-testutil = { path = "../monad-testutil"}
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-wal = { path = "../monad-wal" }
