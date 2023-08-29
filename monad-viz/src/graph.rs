@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::HashMap, fmt::Debug, time::Duration};
+use std::{cmp::Reverse, collections::HashMap, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
@@ -85,14 +85,15 @@ where
 impl<S, RS, T, LGR, C, ME> NodesSimulation<S, RS, T, LGR, C, ME>
 where
     S: monad_executor::State,
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
     T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
     ME: MockableExecutor<Event = S::Event>,
 
-    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Unpin + Debug,
-    S::OutboundMessage: Serializable<S::Message>,
+    S::Event: Unpin,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
     S::Block: Unpin,
     RS::Serialized: Eq,
     MockExecutor<S, RS, ME>: Unpin,
@@ -126,13 +127,13 @@ where
 impl<S, RS, T, LGR, C, ME> Graph for NodesSimulation<S, RS, T, LGR, C, ME>
 where
     S: monad_executor::State,
-    RS: RouterScheduler<M = S::Message>,
+    RS: RouterScheduler,
     T: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, T, LGR>,
     ME: MockableExecutor<Event = S::Event>,
 
-    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Unpin + Debug,
+    S::Event: Unpin,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     S::Block: Unpin,
@@ -200,12 +201,7 @@ where
             self.reset();
         }
         assert!(tick >= self.current_tick);
-        while let Some(next_tick) = self.nodes.next_tick() {
-            if next_tick > tick {
-                break;
-            }
-            self.nodes.step().unwrap();
-        }
+        while self.nodes.step_until(tick).is_some() {}
         self.current_tick = tick;
     }
 }

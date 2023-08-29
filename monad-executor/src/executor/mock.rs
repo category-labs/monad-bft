@@ -47,6 +47,7 @@ pub struct NoSerRouterScheduler<M> {
 pub struct NoSerRouterConfig {
     pub all_peers: BTreeSet<PeerId>,
 }
+
 impl<M> RouterScheduler for NoSerRouterScheduler<M>
 where
     M: Clone,
@@ -112,7 +113,7 @@ pub trait MockableExecutor:
 {
     type Event;
 
-    fn ready(&mut self) -> bool;
+    fn ready(&self) -> bool;
 }
 
 pub struct MockExecutor<S, RS, ME>
@@ -208,7 +209,7 @@ where
         self.router.inbound(tick, from, message);
     }
 
-    fn peek_event(&mut self) -> Option<(Duration, ExecutorEventType)> {
+    fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
             .chain(
                 self.mempool
@@ -238,7 +239,7 @@ where
             .min()
     }
 
-    pub fn peek_event_tick(&mut self) -> Option<Duration> {
+    pub fn peek_tick(&self) -> Option<Duration> {
         self.peek_event().map(|(duration, _)| duration)
     }
 }
@@ -303,7 +304,7 @@ pub enum MockExecutorEvent<E, Ser> {
     Send(PeerId, Ser),
 }
 
-impl<S, RS, ME> Stream for MockExecutor<S, RS, ME>
+impl<S, RS, ME> MockExecutor<S, RS, ME>
 where
     S: State,
     RS: RouterScheduler,
@@ -314,60 +315,56 @@ where
     S::Block: Unpin,
     Self: Unpin,
 {
-    type Item = MockExecutorEvent<S::Event, RS::Serialized>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.deref_mut();
-
-        if let Some((tick, event_type)) = this.peek_event() {
-            this.tick = tick;
+    pub fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<MockExecutorEvent<S::Event, RS::Serialized>> {
+        while let Some((tick, event_type)) = self.peek_event() {
+            if tick > until {
+                break;
+            }
+            self.tick = tick;
             let event = match event_type {
                 ExecutorEventType::Router => {
-                    let router_event = this.router.pop_event().unwrap();
+                    let maybe_router_event = self.router.pop_event();
 
-                    match router_event {
-                        RouterEvent::Rx(from, message) => {
+                    match maybe_router_event {
+                        None => continue, // try next tick
+                        Some(RouterEvent::Rx(from, message)) => {
                             let message =
                                 <S::Message as Deserializable<RS::M>>::deserialize(&message)
                                     .expect("all messages should deserialize in mock executor");
                             MockExecutorEvent::Event(message.event(from))
                         }
-                        RouterEvent::Tx(to, ser) => MockExecutorEvent::Send(to, ser),
+                        Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
                     }
                 }
                 ExecutorEventType::Epoch => {
-                    return this
-                        .epoch
-                        .poll_next_unpin(cx)
-                        .map(|opt| opt.map(MockExecutorEvent::Event))
+                    return futures::executor::block_on(self.epoch.next())
+                        .map(MockExecutorEvent::Event)
                 }
                 ExecutorEventType::Timer => {
-                    MockExecutorEvent::Event(this.timer.take().unwrap().event)
+                    MockExecutorEvent::Event(self.timer.take().unwrap().event)
                 }
                 ExecutorEventType::Mempool => {
-                    return this
-                        .mempool
-                        .poll_next_unpin(cx)
-                        .map(|opt| opt.map(MockExecutorEvent::Event))
+                    return futures::executor::block_on(self.mempool.next())
+                        .map(MockExecutorEvent::Event)
                 }
                 ExecutorEventType::Ledger => {
-                    return this
-                        .ledger
-                        .poll_next_unpin(cx)
-                        .map(|opt| opt.map(MockExecutorEvent::Event));
+                    return futures::executor::block_on(self.ledger.next())
+                        .map(MockExecutorEvent::Event)
                 }
             };
-            return Poll::Ready(Some(event));
+            return Some(event);
         }
 
-        Poll::Ready(None)
+        None
     }
 }
 
 impl<S, RS, ME> MockExecutor<S, RS, ME>
 where
     S: State,
-    RS: RouterScheduler<M = S::Message>,
     ME: MockableExecutor,
 {
     pub fn ledger(&self) -> &MockLedger<S::Block, S::Event> {
@@ -506,7 +503,7 @@ where
 impl<E> MockableExecutor for MockMempool<E> {
     type Event = E;
 
-    fn ready(&mut self) -> bool {
+    fn ready(&self) -> bool {
         self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
     }
 }
