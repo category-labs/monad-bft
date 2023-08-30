@@ -142,7 +142,7 @@ async fn main() {
             let maybe_provider = args.otel_endpoint.as_ref().map(|endpoint| {
                 make_provider(
                     endpoint.to_owned(),
-                    format!("monad-node-{:?}", &config.pubkey),
+                    format!("monad-testground-{:?}", &config.pubkey),
                 )
             });
 

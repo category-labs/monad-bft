@@ -155,7 +155,7 @@ for region_idx, region in enumerate(regions):
 
 commands.append("")
 commands.append("")
-commands.append("MONAD_MEMPOOL_RNDUDS=true monad-node -o http://jaeger:4317 --addresses {}".format(" ".join(node_ips)))
+commands.append("MONAD_MEMPOOL_RNDUDS=true monad-testground -o http://jaeger:4317 --addresses {}".format(" ".join(node_ips)))
 
 for command in commands:
     print(command)

@@ -4762,33 +4762,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-node"
-version = "0.1.0"
-dependencies = [
- "clap 4.3.19",
- "env_logger",
- "futures-util",
- "monad-block-sync",
- "monad-consensus-state",
- "monad-consensus-types",
- "monad-crypto",
- "monad-executor",
- "monad-p2p",
- "monad-state",
- "monad-types",
- "monad-validator",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_api",
- "rand 0.8.5",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "monad-p2p"
 version = "0.1.0"
 dependencies = [
@@ -4853,6 +4826,33 @@ dependencies = [
  "test-case",
  "tracing",
  "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "monad-testground"
+version = "0.1.0"
+dependencies = [
+ "clap 4.3.19",
+ "env_logger",
+ "futures-util",
+ "monad-block-sync",
+ "monad-consensus-state",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-p2p",
+ "monad-state",
+ "monad-types",
+ "monad-validator",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_api",
+ "rand 0.8.5",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 

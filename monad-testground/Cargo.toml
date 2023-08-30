@@ -1,5 +1,5 @@
 [package]
-name = "monad-node"
+name = "monad-testground"
 version = "0.1.0"
 edition = "2021"
 
