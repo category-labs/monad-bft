@@ -25,6 +25,7 @@ pub struct NodeState {
     pub certkey: KeyPair,
 
     pub otel_context: Option<opentelemetry::Context>,
+    pub mempool_ipc_path: Option<PathBuf>,
 }
 
 impl NodeState {
@@ -57,6 +58,7 @@ impl NodeState {
             certkey,
 
             otel_context,
+            mempool_ipc_path: cli.mempool_ipc_path,
         })
     }
 }

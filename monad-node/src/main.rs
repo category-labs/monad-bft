@@ -19,6 +19,7 @@ use monad_executor::{
     },
     Executor, State,
 };
+use monad_mempool_controller::ControllerConfig;
 use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
@@ -87,10 +88,17 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     // we can delete this once we support retry at the monad-p2p executor level
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
+    let mut mempool_controller_config = ControllerConfig::default();
+
+    if let Some(mempool_ipc_path) = node_state.mempool_ipc_path {
+        mempool_controller_config =
+            mempool_controller_config.with_mempool_ipc_path(mempool_ipc_path);
+    }
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        mempool: MonadMempool::default(),
+        mempool: MonadMempool::new(mempool_controller_config),
         ledger: MockLedger::default(),
         checkpoint: MockCheckpoint::default(),
     };

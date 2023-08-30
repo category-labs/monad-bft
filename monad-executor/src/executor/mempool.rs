@@ -55,10 +55,19 @@ where
     E: 'static,
 {
     fn default() -> Self {
+        Self::new(ControllerConfig::default())
+    }
+}
+
+impl<E> MonadMempool<E>
+where
+    E: 'static,
+{
+    pub fn new(controller_config: ControllerConfig) -> Self {
         let (controller_task_tx, rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
         let (tx, controller_task_rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
 
-        let controller_task = tokio::spawn(Self::controller_task(tx, rx));
+        let controller_task = tokio::spawn(Self::controller_task(tx, rx, controller_config));
 
         Self {
             controller_task,
@@ -69,14 +78,13 @@ where
             fetch_full_txs_state: None,
         }
     }
-}
 
-impl<E> MonadMempool<E> {
     async fn controller_task(
         tx: mpsc::Sender<ControllerTaskResult>,
         mut rx: mpsc::Receiver<ControllerTaskCommand>,
+        config: ControllerConfig,
     ) -> Result<(), ControllerTaskError> {
-        let mut controller = Controller::new(&ControllerConfig::default()).await?;
+        let mut controller = Controller::new(&config).await?;
 
         loop {
             tokio::select! {
