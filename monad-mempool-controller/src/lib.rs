@@ -39,6 +39,8 @@ const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/var/run/monad_mempool";
 
 const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
 
+const MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR: &str = "MONAD_MEMPOOL_RNDUDS";
+
 const DEFAULT_TX_THRESHOLD: usize = 1000;
 const DEFAULT_TIME_THRESHOLD_S: u64 = 1;
 const DEFAULT_BUFFER_SIZE: usize = 100000;
@@ -67,16 +69,24 @@ pub struct ControllerConfig {
 
 impl Default for ControllerConfig {
     fn default() -> Self {
-        let mempool_ipc_path_postfix = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+        let randomize_uds_path = cfg!(test)
+            || std::env::var(MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR)
+                .ok()
+                .map(|s| s.eq_ignore_ascii_case("true"))
+                .unwrap_or_default();
 
         let mempool_ipc_path = format!(
-            "{}_{}{}",
-            DEFAULT_MEMPOOL_BIND_PATH_BASE, mempool_ipc_path_postfix, DEFAULT_MEMPOOL_BIND_PATH_EXT
-        );
-
-        println!(
-            "starting controller with ipc_path {:?}",
-            mempool_ipc_path_postfix
+            "{}{}{}",
+            DEFAULT_MEMPOOL_BIND_PATH_BASE,
+            if randomize_uds_path {
+                format!(
+                    "_{}",
+                    Alphanumeric.sample_string(&mut rand::thread_rng(), 8)
+                )
+            } else {
+                "".to_string()
+            },
+            DEFAULT_MEMPOOL_BIND_PATH_EXT
         );
 
         Self {
