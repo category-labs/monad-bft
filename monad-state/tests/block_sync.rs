@@ -13,7 +13,7 @@ use monad_executor::{
     PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{get_configs, run_nodes_until_step};
+use monad_testutil::swarm::{get_configs, run_nodes_until};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -37,7 +37,7 @@ fn black_out() {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step::<
+    run_nodes_until::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
             NopSignature,
@@ -64,14 +64,17 @@ fn black_out() {
         TransformerPipeline::new(vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
             Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
-            Transformer::Periodic(PeriodicTransformer::new(20, 50)),
+            Transformer::Periodic(PeriodicTransformer::new(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+            )),
             Transformer::Drop(DropTransformer()),
         ]),
-        2000,
+        Duration::from_secs(4),
     );
 }
 /**
- *  Couple messages gets delayed significantly at step 20
+ *  Couple messages gets delayed significantly for 1 second
  */
 #[test]
 fn extreme_delay() {
@@ -89,7 +92,7 @@ fn extreme_delay() {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step::<
+    run_nodes_until::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
             NopSignature,
@@ -116,9 +119,12 @@ fn extreme_delay() {
         TransformerPipeline::new(vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
             Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
-            Transformer::Periodic(PeriodicTransformer::new(20, 20)),
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(400))), // delayed by a whole 2 seconds
+            Transformer::Periodic(PeriodicTransformer::new(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+            )),
+            Transformer::Latency(LatencyTransformer(Duration::from_millis(400))),
         ]),
-        800,
+        Duration::from_secs(4),
     );
 }

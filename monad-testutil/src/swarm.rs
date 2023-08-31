@@ -156,14 +156,14 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     );
 }
 
-pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
 
     pipeline: P,
-    step: i32,
+    until: Duration,
 ) where
     S: State<Config = MonadConfig<SCT, TVT>>,
     ST: MessageSignature,
@@ -207,13 +207,7 @@ pub fn run_nodes_until_step<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
         pipeline,
     );
 
-    let mut cnt = 0;
-    while let Some((_duration, _id, _event)) = nodes.step() {
-        cnt += 1;
-        if cnt > step {
-            break;
-        }
-    }
+    while nodes.step_until(until).is_some() {}
 
     node_ledger_verification(
         &nodes

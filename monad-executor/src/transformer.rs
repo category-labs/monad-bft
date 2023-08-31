@@ -125,25 +125,21 @@ impl<M> Transform<M> for DropTransformer {
 
 #[derive(Clone, Debug)]
 pub struct PeriodicTransformer {
-    pub start: u32,    // when period start
-    pub duration: u32, // how long does it last
-    cnt: u32,          // monotonically inreasing counter
+    pub start: Duration,
+    pub end: Duration,
 }
 
 impl PeriodicTransformer {
-    pub fn new(start: u32, duration: u32) -> Self {
-        PeriodicTransformer {
-            start,
-            duration,
-            cnt: 0,
-        }
+    /// [start, end)
+    pub fn new(start: Duration, end: Duration) -> Self {
+        assert!(start <= end);
+        PeriodicTransformer { start, end }
     }
 }
 
 impl<M> Transform<M> for PeriodicTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
-        self.cnt += 1;
-        if self.cnt < self.start || self.cnt >= self.start + self.duration {
+        if message.from_tick < self.start || message.from_tick >= self.end {
             TransformerStream::Complete(vec![(Duration::ZERO, message)])
         } else {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
@@ -159,17 +155,16 @@ pub enum TransformerReplayOrder {
 #[derive(Clone)]
 pub struct ReplayTransformer<M> {
     pub filtered_msgs: Vec<LinkMessage<M>>,
-    pub cnt: u32,
-    pub cnt_limit: u32,
+    pub end: Duration,
     pub order: TransformerReplayOrder,
 }
 
 impl<M> ReplayTransformer<M> {
-    pub fn new(cnt_limit: u32, order: TransformerReplayOrder) -> Self {
+    /// [Duration::ZERO, end)
+    pub fn new(end: Duration, order: TransformerReplayOrder) -> Self {
         ReplayTransformer {
             filtered_msgs: Vec::new(),
-            cnt: 0,
-            cnt_limit,
+            end,
             order,
         }
     }
@@ -178,8 +173,7 @@ impl<M> ReplayTransformer<M> {
 impl<M> Debug for ReplayTransformer<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReplayTransformer")
-            .field("cnt", &self.cnt)
-            .field("cnt_limit", &self.cnt_limit)
+            .field("end", &self.end)
             .field("order", &self.order)
             .finish()
     }
@@ -187,15 +181,10 @@ impl<M> Debug for ReplayTransformer<M> {
 
 impl<M> Transform<M> for ReplayTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
-        if self.cnt > self.cnt_limit {
-            return TransformerStream::Continue(vec![(Duration::ZERO, message)]);
-        }
-
-        self.cnt += 1;
-        let mut output = Vec::new();
-        self.filtered_msgs.push(message);
-
-        if self.cnt > self.cnt_limit {
+        if message.from_tick >= self.end {
+            if self.filtered_msgs.is_empty() {
+                return TransformerStream::Continue(vec![(Duration::ZERO, message)]);
+            }
             let mut result = mem::take(&mut self.filtered_msgs);
             let msgs = match self.order {
                 TransformerReplayOrder::Forward => result,
@@ -210,10 +199,13 @@ impl<M> Transform<M> for ReplayTransformer<M> {
                 }
             };
 
-            output.extend(std::iter::repeat(Duration::ZERO).zip(msgs));
+            return TransformerStream::Continue(
+                std::iter::repeat(Duration::ZERO).zip(msgs).collect(),
+            );
         }
 
-        TransformerStream::Continue(output)
+        self.filtered_msgs.push(message);
+        TransformerStream::Continue(Vec::new())
     }
 }
 
@@ -341,6 +333,7 @@ mod test {
         PeerId,
     };
 
+    /// FIXME these should take in from/to/from_tick as params, not have defaults
     fn get_mock_message() -> LinkMessage<String> {
         let keys = create_keys(2);
         LinkMessage {
@@ -437,9 +430,10 @@ mod test {
         let keys = create_keys(2);
         let mut peers = HashSet::new();
         peers.insert(PeerId(keys[0].pubkey()));
-        let mut t = PeriodicTransformer::new(3, 5);
-        let m = get_mock_message();
-        for _ in 0..2 {
+        let mut t = PeriodicTransformer::new(Duration::from_millis(2), Duration::from_millis(7));
+        for idx in 0..2 {
+            let mut m = get_mock_message();
+            m.from_tick = Duration::from_millis(idx);
             let TransformerStream::Complete(c) = t.transform(m.clone()) else {
                 panic!("periodic_transformer returned wrong type")
             };
@@ -447,7 +441,9 @@ mod test {
             assert!(c[0].1 == m);
         }
 
-        for _ in 0..5 {
+        for idx in 2..7 {
+            let mut m = get_mock_message();
+            m.from_tick = Duration::from_millis(idx);
             let TransformerStream::Continue(c) = t.transform(m.clone()) else {
                 panic!("periodic_transformer returned wrong type")
             };
@@ -455,7 +451,9 @@ mod test {
             assert_eq!(c.len(), 1);
             assert!(c[0].1 == m);
         }
-        for _ in 0..1000 {
+        for idx in 7..1000 {
+            let mut m = get_mock_message();
+            m.from_tick = Duration::from_millis(idx);
             let TransformerStream::Complete(c) = t.transform(m.clone()) else {
                 panic!("periodic_transformer returned wrong type")
             };
@@ -471,23 +469,31 @@ mod test {
         let mut peers = HashSet::new();
         peers.insert(PeerId(keys[0].pubkey()));
         // we are mostly interested in the burst behaviur of replay
-        let mut t = ReplayTransformer::new(5, crate::transformer::TransformerReplayOrder::Forward);
-        let m = get_mock_message();
-        for _ in 0..5 {
-            let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+        let mut t = ReplayTransformer::new(
+            Duration::from_millis(6),
+            crate::transformer::TransformerReplayOrder::Forward,
+        );
+        for idx in 0..6 {
+            let mut mock_message = get_mock_message();
+            mock_message.from_tick = Duration::from_millis(idx);
+            let TransformerStream::Continue(c) = t.transform(mock_message) else {
                 panic!("replay_transformer returned wrong type")
             };
             assert_eq!(c.len(), 0);
         }
 
-        let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+        let mut mock_message = get_mock_message();
+        mock_message.from_tick = Duration::from_millis(6);
+        let TransformerStream::Continue(c) = t.transform(mock_message) else {
             panic!("replay_transformer returned wrong type")
         };
 
         assert_eq!(c.len(), 6);
 
-        for _ in 0..1000 {
-            let TransformerStream::Continue(c) = t.transform(m.clone()) else {
+        for idx in 7..1000 {
+            let mut mock_message = get_mock_message();
+            mock_message.from_tick = Duration::from_millis(idx);
+            let TransformerStream::Continue(c) = t.transform(mock_message) else {
                 panic!("replay_transformer returned wrong type")
             };
             assert_eq!(c.len(), 1);
@@ -517,23 +523,28 @@ mod test {
         let mut pipe = xfmr_pipe![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
             Transformer::Partition(PartitionTransformer(peers)),
-            Transformer::Periodic(PeriodicTransformer::new(3, 5)),
+            Transformer::Periodic(PeriodicTransformer::new(
+                Duration::from_millis(2),
+                Duration::from_millis(7)
+            )),
             Transformer::Latency(LatencyTransformer(Duration::from_millis(30)))
         ];
-        for _ in 0..1000 {
+        for idx in 0..1000 {
             let mut mock_message = get_mock_message();
             mock_message.from = PeerId(keys[3].pubkey());
+            mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);
             // since its not part of the id, it doesn't get selected and filter
             assert_eq!(result[0].0, Duration::from_millis(30));
             assert!(result[0].1 == mock_message);
         }
-        // not the previous message never made it to periodic, thus it doesn't get trigger the cnt
+        // note the previous message never made it to periodic, thus it doesn't get trigger the cnt
 
         // first 2 message should not trigger extra mili
-        for _ in 0..2 {
-            let mock_message = get_mock_message();
+        for idx in 0..2 {
+            let mut mock_message = get_mock_message();
+            mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);
             // since its part of the id, it get selected and filter, thus 30 extra mili
@@ -541,8 +552,9 @@ mod test {
             assert!(result[0].1 == mock_message);
         }
         // follow by 5 message that get extra delay
-        for _ in 0..5 {
-            let mock_message = get_mock_message();
+        for idx in 2..7 {
+            let mut mock_message = get_mock_message();
+            mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);
             // since its part of the id, it get selected and filter, thus 30 extra mili
@@ -550,8 +562,9 @@ mod test {
             assert!(result[0].1 == mock_message);
         }
         // and then you nver get extra mili
-        for _ in 0..1000 {
-            let mock_message = get_mock_message();
+        for idx in 7..1000 {
+            let mut mock_message = get_mock_message();
+            mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);
             // since its part of the id, it get selected and filter, thus 30 extra mili

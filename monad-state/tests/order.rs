@@ -13,7 +13,7 @@ use monad_executor::{
     xfmr_pipe, PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{get_configs, run_nodes_until_step};
+use monad_testutil::swarm::{get_configs, run_nodes_until};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -62,7 +62,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until_step::<
+    run_nodes_until::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator>,
             NopSignature,
@@ -89,8 +89,11 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         xfmr_pipe!(
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             Transformer::Partition(PartitionTransformer(filter_peers)),
-            Transformer::Replay(ReplayTransformer::new(50, direction))
+            Transformer::Replay(ReplayTransformer::new(
+                Duration::from_millis(500),
+                direction
+            ))
         ),
-        400,
+        Duration::from_secs(1),
     );
 }
