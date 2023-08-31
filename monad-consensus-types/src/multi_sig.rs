@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use log::{error, warn};
+use monad_proto::proto::signing::ProtoMultiSig;
 use monad_types::{Hash, NodeId};
+use prost::Message;
 
 use crate::{
     certificate_signature::CertificateSignatureRecoverable,
@@ -149,6 +151,19 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
             ));
         }
         Ok(node_ids)
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let proto: ProtoMultiSig = self.into();
+        proto.encode_to_vec()
+    }
+
+    fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+        let multisig = ProtoMultiSig::decode(data)
+            .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))?;
+        multisig
+            .try_into()
+            .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))
     }
 }
 

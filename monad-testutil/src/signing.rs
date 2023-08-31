@@ -18,7 +18,7 @@ use monad_types::{Hash, NodeId, Round};
 use sha2::{Digest, Sha256};
 use zerocopy::AsBytes;
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockSignatures {
     pubkey: Vec<PubKey>,
 }
@@ -71,6 +71,14 @@ impl SignatureCollection for MockSignatures {
 
     fn num_signatures(&self) -> usize {
         self.pubkey.len()
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        unreachable!()
+    }
+
+    fn deserialize(_data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+        unreachable!()
     }
 }
 

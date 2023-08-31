@@ -11,7 +11,7 @@ message ProtoQcInfo{
   monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit = 2;
 }
 
-message ProtoQuorumCertificateAggSig {
+message ProtoQuorumCertificate {
   ProtoQcInfo info = 1;
-  monad_proto.signing.ProtoMultiSig signatures = 2;
+  monad_proto.signing.ProtoSignatureCollection signatures = 2;
 }

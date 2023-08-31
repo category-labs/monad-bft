@@ -21,16 +21,75 @@ mod test {
         validation::{Hasher, Sha256Hash},
         voting::{Vote, VoteInfo},
     };
-    use monad_crypto::secp256k1::SecpSignature;
     use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
     use monad_types::{BlockId, Hash, NodeId, Round};
 
-    type SignatureCollectionType = MultiSig<SecpSignature>;
+    macro_rules! test_all_combination {
+        ($test_name:ident, $test_code:expr) => {
+            mod $test_name {
+                use monad_consensus_types::{
+                    bls::BlsSignatureCollection, message_signature::MessageSignature,
+                };
+                use monad_crypto::{secp256k1::SecpSignature, NopSignature};
+                use test_case::test_case;
+
+                use super::*;
+
+                fn invoke<ST: MessageSignature, SCT: SignatureCollection>(num_keys: u32) {
+                    // to supress linter warning about unused ST
+                    let _: Option<ST> = None;
+                    $test_code(num_keys)
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn secp_multi_sig_secp(num_keys: u32) {
+                    invoke::<SecpSignature, MultiSig<SecpSignature>>(num_keys);
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn secp_multi_sig_nop(num_keys: u32) {
+                    invoke::<SecpSignature, MultiSig<NopSignature>>(num_keys);
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn secp_bls(num_keys: u32) {
+                    invoke::<SecpSignature, BlsSignatureCollection>(num_keys);
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn nop_multi_sig_secp(num_keys: u32) {
+                    invoke::<NopSignature, MultiSig<SecpSignature>>(num_keys);
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn nop_multi_sig_nop(num_keys: u32) {
+                    invoke::<NopSignature, MultiSig<NopSignature>>(num_keys);
+                }
+
+                #[test_case(1; "1 sig")]
+                #[test_case(5; "5 sigs")]
+                #[test_case(100; "100 sigs")]
+                fn nop_bls(num_keys: u32) {
+                    invoke::<NopSignature, BlsSignatureCollection>(num_keys);
+                }
+            }
+        };
+    }
+
     // TODO: revisit to cleanup
-    #[test]
-    fn test_vote_message() {
+    test_all_combination!(test_vote_message, |num_keys| {
         let (keypairs, certkeys, validators, validator_mapping) =
-            create_keys_w_validators::<SignatureCollectionType>(1);
+            create_keys_w_validators::<SCT>(num_keys);
         let vi = VoteInfo {
             id: BlockId(Hash([42_u8; 32])),
             round: Round(1),
@@ -47,7 +106,7 @@ mod test {
             ledger_commit_info: lci,
         };
 
-        let votemsg: ConsensusMessage<SecpSignature, SignatureCollectionType> =
+        let votemsg: ConsensusMessage<ST, SCT> =
             ConsensusMessage::Vote(VoteMessage::new::<Sha256Hash>(vote, &certkeys[0]));
 
         let author_keypair = &keypairs[0];
@@ -62,12 +121,11 @@ mod test {
             .unwrap();
 
         assert_eq!(verified_votemsg, verified_rx_vote);
-    }
+    });
 
-    #[test]
-    fn test_timeout_message() {
+    test_all_combination!(test_timeout_message, |num_keys| {
         let (keypairs, cert_keys, validators, validator_mapping) =
-            create_keys_w_validators::<SignatureCollectionType>(2);
+            create_keys_w_validators::<SCT>(num_keys);
 
         let author_keypair = &keypairs[0];
 
@@ -90,13 +148,16 @@ mod test {
 
         for i in 0..cert_keys.len() {
             let node_id = NodeId(keypairs[i].pubkey());
-            let sig =<< SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), &cert_keys[i]);
+            let sig = <SCT::SignatureType as CertificateSignature>::sign(
+                qcinfo_hash.as_ref(),
+                &cert_keys[i],
+            );
             sigs.push((node_id, sig));
         }
 
-        let multisig = MultiSig::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
+        let sigcol = SCT::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<Sha256Hash>(qcinfo, multisig);
+        let qc = QuorumCertificate::new::<Sha256Hash>(qcinfo, sigcol);
 
         let tmo_info = TimeoutInfo {
             round: Round(3),
@@ -140,12 +201,11 @@ mod test {
         );
 
         assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
-    }
+    });
 
-    #[test]
-    fn test_proposal_qc() {
+    test_all_combination!(test_proposal_qc, |num_keys| {
         let (keypairs, cert_keys, validators, validator_map) =
-            create_keys_w_validators::<SignatureCollectionType>(2);
+            create_keys_w_validators::<SCT>(num_keys);
 
         let author_keypair = &keypairs[0];
         let blk = setup_block(
@@ -157,11 +217,10 @@ mod test {
             &cert_keys,
             &validator_map,
         );
-        let proposal: ConsensusMessage<SecpSignature, SignatureCollectionType> =
-            ConsensusMessage::Proposal(ProposalMessage {
-                block: blk,
-                last_round_tc: None,
-            });
+        let proposal: ConsensusMessage<ST, SCT> = ConsensusMessage::Proposal(ProposalMessage {
+            block: blk,
+            last_round_tc: None,
+        });
         let verified_msg = Verified::new::<Sha256Hash>(proposal, author_keypair);
 
         let rx_buf = serialize_verified_consensus_message(&verified_msg);
@@ -171,15 +230,14 @@ mod test {
             rx_msg.verify::<Sha256Hash, _>(&validators, &validator_map, &author_keypair.pubkey());
 
         assert_eq!(verified_msg, verified_rx_msg.unwrap());
-    }
+    });
 
-    #[test]
-    fn test_unverified_proposal_tc() {
+    test_all_combination!(test_proposal_tc, |num_keys| {
         let (keypairs, cert_keys, validators, validator_map) =
-            create_keys_w_validators::<SignatureCollectionType>(2);
+            create_keys_w_validators::<SCT>(num_keys);
 
         let author_keypair = &keypairs[0];
-        let blk = setup_block::<SignatureCollectionType>(
+        let blk = setup_block::<SCT>(
             NodeId(author_keypair.pubkey()),
             Round(233),
             Round(231),
@@ -225,5 +283,5 @@ mod test {
             rx_msg.verify::<Sha256Hash, _>(&validators, &validator_map, &author_keypair.pubkey());
 
         assert_eq!(verified_msg, verified_rx_msg.unwrap());
-    }
+    });
 }

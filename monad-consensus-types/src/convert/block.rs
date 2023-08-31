@@ -8,9 +8,8 @@ use monad_proto::{
 
 use crate::{
     block::Block,
-    certificate_signature::CertificateSignatureRecoverable,
-    multi_sig::MultiSig,
     payload::{Bloom, ExecutionArtifacts, Gas, Payload, TransactionList},
+    signature_collection::SignatureCollection,
     validation::Sha256Hash,
 };
 
@@ -29,8 +28,8 @@ impl TryFrom<ProtoTransactionList> for TransactionList {
     }
 }
 
-impl<S: CertificateSignatureRecoverable> From<&Block<MultiSig<S>>> for ProtoBlockAggSig {
-    fn from(value: &Block<MultiSig<S>>) -> Self {
+impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
+    fn from(value: &Block<SCT>) -> Self {
         Self {
             author: Some((&value.author).into()),
             round: Some((&value.round).into()),
@@ -40,10 +39,10 @@ impl<S: CertificateSignatureRecoverable> From<&Block<MultiSig<S>>> for ProtoBloc
     }
 }
 
-impl<S: CertificateSignatureRecoverable> TryFrom<ProtoBlockAggSig> for Block<MultiSig<S>> {
+impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoBlockAggSig) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoBlock) -> Result<Self, Self::Error> {
         // The hasher is hard-coded to be Sha256Hash
         Ok(Self::new::<Sha256Hash>(
             value

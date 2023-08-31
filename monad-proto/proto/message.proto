@@ -20,22 +20,22 @@ message ProtoRequestBlockSyncMessage {
 }
 
 message ProtoBlockSyncMessage {
-  monad_proto.block.ProtoBlockAggSig block = 1;
+  monad_proto.block.ProtoBlock block = 1;
 }
 
 message ProtoTimeoutMessage {
-  monad_proto.timeout.ProtoTimeoutInfoAggSig tminfo = 1;
+  monad_proto.timeout.ProtoTimeoutInfo tminfo = 1;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
 }
 
-message ProtoProposalMessageAggSig {
-  monad_proto.block.ProtoBlockAggSig block = 1;
+message ProtoProposalMessage {
+  monad_proto.block.ProtoBlock block = 1;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
 }
 
 message ProtoUnverifiedConsensusMessage {
   oneof OneofMessage {
-    ProtoProposalMessageAggSig proposal = 1;
+    ProtoProposalMessage proposal = 1;
     ProtoTimeoutMessage timeout = 2;
     ProtoVoteMessage vote = 3;
     ProtoRequestBlockSyncMessage request_block_sync = 4;

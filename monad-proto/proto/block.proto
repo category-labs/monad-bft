@@ -24,9 +24,9 @@ message ProtoPayload {
   uint64 seq_num = 3;
 }
 
-message ProtoBlockAggSig {
+message ProtoBlock {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.basic.ProtoRound round = 2;
   ProtoPayload payload = 3;
-  monad_proto.quorum_certificate.ProtoQuorumCertificateAggSig qc = 4;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 4;
 }

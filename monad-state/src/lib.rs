@@ -147,6 +147,32 @@ impl monad_types::Serializable<Vec<u8>>
 impl monad_types::Deserializable<[u8]>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
+        monad_consensus_types::bls::BlsSignatureCollection,
+    >
+{
+    type ReadError = monad_proto::error::ProtoError;
+
+    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
+        crate::convert::interface::deserialize_event(data)
+    }
+}
+
+#[cfg(feature = "proto")]
+impl monad_types::Serializable<Vec<u8>>
+    for MonadEvent<
+        monad_crypto::secp256k1::SecpSignature,
+        monad_consensus_types::bls::BlsSignatureCollection,
+    >
+{
+    fn serialize(&self) -> Vec<u8> {
+        crate::convert::interface::serialize_event(self)
+    }
+}
+
+#[cfg(feature = "proto")]
+impl monad_types::Deserializable<[u8]>
+    for MonadEvent<
+        monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
@@ -180,26 +206,25 @@ pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
 pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
 #[cfg(feature = "proto")]
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Serializable<Vec<u8>>
-    for VerifiedMonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Vec<u8>>
+    for VerifiedMonadMessage<MS, SCT>
 {
     fn serialize(&self) -> Vec<u8> {
         monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
-    monad_types::Serializable<MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>>
-    for VerifiedMonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
+impl<MS: MessageSignature, SCT: SignatureCollection>
+    monad_types::Serializable<MonadMessage<MS, SCT>> for VerifiedMonadMessage<MS, SCT>
 {
-    fn serialize(&self) -> MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>> {
+    fn serialize(&self) -> MonadMessage<MS, SCT> {
         MonadMessage(self.0.clone().into())
     }
 }
 
 #[cfg(feature = "proto")]
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable<[u8]>
-    for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<[u8]>
+    for MonadMessage<MS, SCT>
 {
     type ReadError = monad_proto::error::ProtoError;
 

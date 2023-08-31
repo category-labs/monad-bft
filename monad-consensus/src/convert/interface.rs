@@ -1,5 +1,5 @@
 use monad_consensus_types::{
-    certificate_signature::CertificateSignatureRecoverable, message_signature::MessageSignature,
+    message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
 use monad_proto::{error::ProtoError, proto::message::ProtoUnverifiedConsensusMessage};
 use prost::Message;
@@ -7,18 +7,15 @@ use prost::Message;
 use super::message::{UnverifiedConsensusMessage, VerifiedConsensusMessage};
 
 pub fn serialize_verified_consensus_message(
-    msg: &VerifiedConsensusMessage<impl MessageSignature, impl CertificateSignatureRecoverable>,
+    msg: &VerifiedConsensusMessage<impl MessageSignature, impl SignatureCollection>,
 ) -> Vec<u8> {
     let proto_msg: ProtoUnverifiedConsensusMessage = msg.into();
     proto_msg.encode_to_vec()
 }
 
-pub fn deserialize_unverified_consensus_message<
-    MS: MessageSignature,
-    CS: CertificateSignatureRecoverable,
->(
+pub fn deserialize_unverified_consensus_message<MS: MessageSignature, SCT: SignatureCollection>(
     data: &[u8],
-) -> Result<UnverifiedConsensusMessage<MS, CS>, ProtoError> {
+) -> Result<UnverifiedConsensusMessage<MS, SCT>, ProtoError> {
     let msg = ProtoUnverifiedConsensusMessage::decode(data)?;
     msg.try_into()
 }

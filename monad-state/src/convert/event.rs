@@ -1,39 +1,33 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus_state::command::FetchedBlock;
 use monad_consensus_types::{
-    certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
-    multi_sig::MultiSig,
     payload::{FullTransactionList, TransactionList},
+    signature_collection::SignatureCollection,
 };
 use monad_proto::{
     error::ProtoError,
     proto::{event::*, pacemaker::ProtoPacemakerTimerExpire},
 };
 
-use crate::{
-    ConsensusEvent as TypeConsensusEvent, FetchedFullTxs, FetchedTxs, MonadEvent as TypeMonadEvent,
-};
+use crate::{ConsensusEvent, FetchedFullTxs, FetchedTxs, MonadEvent};
 
-pub(super) type MonadEvent<S> = TypeMonadEvent<S, MultiSig<S>>;
-pub(super) type ConsensusEvent<S> = TypeConsensusEvent<S, MultiSig<S>>;
-
-impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent<S>>
+impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
     for ProtoConsensusEvent
 {
-    fn from(value: &ConsensusEvent<S>) -> Self {
+    fn from(value: &ConsensusEvent<S, SCT>) -> Self {
         let event = match value {
-            TypeConsensusEvent::Message {
+            ConsensusEvent::Message {
                 sender,
                 unverified_message,
             } => proto_consensus_event::Event::Message(ProtoMessageWithSender {
                 sender: Some(sender.into()),
                 unverified_message: Some(unverified_message.into()),
             }),
-            TypeConsensusEvent::Timeout(_tmo) => {
+            ConsensusEvent::Timeout(_tmo) => {
                 proto_consensus_event::Event::Timeout(ProtoPacemakerTimerExpire {})
             }
-            TypeConsensusEvent::FetchedTxs(fetched) => {
+            ConsensusEvent::FetchedTxs(fetched) => {
                 proto_consensus_event::Event::FetchedTxs(ProtoFetchedTxs {
                     node_id: Some((&fetched.node_id).into()),
                     round: Some((&fetched.round).into()),
@@ -44,7 +38,7 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent
                     seq_num: fetched.seq_num,
                 })
             }
-            TypeConsensusEvent::FetchedFullTxs(fetched_full) => {
+            ConsensusEvent::FetchedFullTxs(fetched_full) => {
                 proto_consensus_event::Event::FetchedFullTxs(ProtoFetchedFullTxs {
                     author: Some((&fetched_full.author).into()),
                     p: Some((&fetched_full.p).into()),
@@ -55,20 +49,20 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent
                         .unwrap_or_default(),
                 })
             }
-            TypeConsensusEvent::FetchedBlock(fetched_block) => {
+            ConsensusEvent::FetchedBlock(fetched_block) => {
                 proto_consensus_event::Event::FetchedBlock(ProtoFetchedBlock {
                     requester: Some((&fetched_block.requester).into()),
                     block: fetched_block.block.as_ref().map(|b| b.into()),
                 })
             }
-            TypeConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
+            ConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
                 proto_consensus_event::Event::LoadEpoch(ProtoLoadEpochEvent {
                     epoch: Some(epoch.into()),
                     validator_set: Some(valset.into()),
                     upcoming_validator_set: Some(upcoming_valset.into()),
                 })
             }
-            TypeConsensusEvent::AdvanceEpoch(validator_set) => {
+            ConsensusEvent::AdvanceEpoch(validator_set) => {
                 proto_consensus_event::Event::AdvanceEpoch(ProtoAdvanceEpochEvent {
                     validator_set: validator_set.as_ref().map(|x| x.into()),
                 })
@@ -78,8 +72,8 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> From<&ConsensusEvent
     }
 }
 
-impl<S: MessageSignature + CertificateSignatureRecoverable> TryFrom<ProtoConsensusEvent>
-    for ConsensusEvent<S>
+impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
+    for ConsensusEvent<S, SCT>
 {
     type Error = ProtoError;
 
@@ -203,25 +197,21 @@ impl<S: MessageSignature + CertificateSignatureRecoverable> TryFrom<ProtoConsens
     }
 }
 
-impl<S: MessageSignature + CertificateSignatureRecoverable> From<&MonadEvent<S>>
-    for ProtoMonadEvent
-{
-    fn from(value: &MonadEvent<S>) -> Self {
+impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> for ProtoMonadEvent {
+    fn from(value: &MonadEvent<S, SCT>) -> Self {
         let event = match value {
-            TypeMonadEvent::ConsensusEvent(msg) => {
-                proto_monad_event::Event::ConsensusEvent(msg.into())
-            }
+            MonadEvent::ConsensusEvent(msg) => proto_monad_event::Event::ConsensusEvent(msg.into()),
         };
         Self { event: Some(event) }
     }
 }
 
-impl<S: MessageSignature + CertificateSignatureRecoverable> TryFrom<ProtoMonadEvent>
-    for MonadEvent<S>
+impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoMonadEvent>
+    for MonadEvent<S, SCT>
 {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
-        let event: MonadEvent<S> = match value.event {
+        let event: MonadEvent<S, SCT> = match value.event {
             Some(proto_monad_event::Event::ConsensusEvent(event)) => {
                 MonadEvent::ConsensusEvent(event.try_into()?)
             }

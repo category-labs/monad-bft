@@ -7,6 +7,7 @@ pub enum ProtoError {
     InvalidNodeId(String),
     CryptoError(String),
     SignatureHashMismatch(String),
+    DeserializeError(String),
 }
 
 impl fmt::Display for ProtoError {
@@ -18,6 +19,7 @@ impl fmt::Display for ProtoError {
             Self::InvalidNodeId(s) => write!(f, "Invalid NodeId: {}", s),
             Self::CryptoError(err) => write!(f, "Crypto error: {}", err),
             Self::SignatureHashMismatch(s) => write!(f, "QC Signature hash mismatch: {}", s),
+            Self::DeserializeError(s) => write!(f, "Deserialize error: {}", s),
         }
     }
 }

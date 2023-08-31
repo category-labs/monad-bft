@@ -1,13 +1,12 @@
 use std::ops::Deref;
 
 use monad_consensus_types::{
-    certificate_signature::CertificateSignatureRecoverable,
     convert::signing::{
         certificate_signature_to_proto, message_signature_to_proto, proto_to_certificate_signature,
         proto_to_message_signature,
     },
     message_signature::MessageSignature,
-    multi_sig::MultiSig,
+    signature_collection::SignatureCollection,
 };
 use monad_proto::{error::ProtoError, proto::message::*};
 
@@ -15,23 +14,17 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncMessage, ProposalMessage as ConsensusTypePropMsg, RequestBlockSyncMessage,
-            TimeoutMessage as ConsensusTypeTmoMsg, VoteMessage as ConsensusTypeVoteMsg,
+            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
         },
     },
     validation::signing::{Unverified, Verified},
 };
 
-type TimeoutMessage<MS, CS> = ConsensusTypeTmoMsg<MS, MultiSig<CS>>;
-type ProposalMessage<MS, CS> = ConsensusTypePropMsg<MS, MultiSig<CS>>;
-type VoteMessage<CS> = ConsensusTypeVoteMsg<MultiSig<CS>>;
+pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, ConsensusMessage<MS, SCT>>;
+pub(crate) type UnverifiedConsensusMessage<MS, SCT> = Unverified<MS, ConsensusMessage<MS, SCT>>;
 
-pub(crate) type VerifiedConsensusMessage<MS, CS> = Verified<MS, ConsensusMessage<MS, MultiSig<CS>>>;
-pub(crate) type UnverifiedConsensusMessage<MS, CS> =
-    Unverified<MS, ConsensusMessage<MS, MultiSig<CS>>>;
-
-impl<CS: CertificateSignatureRecoverable> From<&VoteMessage<CS>> for ProtoVoteMessage {
-    fn from(value: &VoteMessage<CS>) -> Self {
+impl<SCT: SignatureCollection> From<&VoteMessage<SCT>> for ProtoVoteMessage {
+    fn from(value: &VoteMessage<SCT>) -> Self {
         ProtoVoteMessage {
             vote: Some((&value.vote).into()),
             sig: Some(certificate_signature_to_proto(&value.sig)),
@@ -39,7 +32,7 @@ impl<CS: CertificateSignatureRecoverable> From<&VoteMessage<CS>> for ProtoVoteMe
     }
 }
 
-impl<CS: CertificateSignatureRecoverable> TryFrom<ProtoVoteMessage> for VoteMessage<CS> {
+impl<SCT: SignatureCollection> TryFrom<ProtoVoteMessage> for VoteMessage<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoVoteMessage) -> Result<Self, Self::Error> {
@@ -57,10 +50,10 @@ impl<CS: CertificateSignatureRecoverable> TryFrom<ProtoVoteMessage> for VoteMess
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> From<&TimeoutMessage<MS, CS>>
+impl<MS: MessageSignature, SCT: SignatureCollection> From<&TimeoutMessage<MS, SCT>>
     for ProtoTimeoutMessage
 {
-    fn from(value: &TimeoutMessage<MS, CS>) -> Self {
+    fn from(value: &TimeoutMessage<MS, SCT>) -> Self {
         ProtoTimeoutMessage {
             tminfo: Some((&value.tminfo).into()),
             last_round_tc: (value.last_round_tc.as_ref().map(|v| v.into())),
@@ -68,8 +61,8 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> From<&TimeoutMes
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> TryFrom<ProtoTimeoutMessage>
-    for TimeoutMessage<MS, CS>
+impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoTimeoutMessage>
+    for TimeoutMessage<MS, SCT>
 {
     type Error = ProtoError;
     fn try_from(value: ProtoTimeoutMessage) -> Result<Self, Self::Error> {
@@ -77,7 +70,7 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> TryFrom<ProtoTim
             tminfo: value
                 .tminfo
                 .ok_or(Self::Error::MissingRequiredField(
-                    "TmoMsg<AggSig>.tminfo".to_owned(),
+                    "TmoMsg.tminfo".to_owned(),
                 ))?
                 .try_into()?,
 
@@ -86,10 +79,10 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> TryFrom<ProtoTim
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> From<&ProposalMessage<MS, CS>>
-    for ProtoProposalMessageAggSig
+impl<MS: MessageSignature, SCT: SignatureCollection> From<&ProposalMessage<MS, SCT>>
+    for ProtoProposalMessage
 {
-    fn from(value: &ProposalMessage<MS, CS>) -> Self {
+    fn from(value: &ProposalMessage<MS, SCT>) -> Self {
         Self {
             block: Some((&value.block).into()),
             last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
@@ -97,12 +90,12 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> From<&ProposalMe
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> TryFrom<ProtoProposalMessageAggSig>
-    for ProposalMessage<MS, CS>
+impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoProposalMessage>
+    for ProposalMessage<MS, SCT>
 {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoProposalMessageAggSig) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoProposalMessage) -> Result<Self, Self::Error> {
         Ok(Self {
             block: value
                 .block
@@ -138,19 +131,15 @@ impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
     }
 }
 
-impl<CS: CertificateSignatureRecoverable> From<&BlockSyncMessage<MultiSig<CS>>>
-    for ProtoBlockSyncMessage
-{
-    fn from(value: &BlockSyncMessage<MultiSig<CS>>) -> Self {
+impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMessage {
+    fn from(value: &BlockSyncMessage<SCT>) -> Self {
         ProtoBlockSyncMessage {
             block: Some((&value.block).into()),
         }
     }
 }
 
-impl<CS: CertificateSignatureRecoverable> TryFrom<ProtoBlockSyncMessage>
-    for BlockSyncMessage<MultiSig<CS>>
-{
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncMessage<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
@@ -164,10 +153,10 @@ impl<CS: CertificateSignatureRecoverable> TryFrom<ProtoBlockSyncMessage>
         })
     }
 }
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
-    From<&VerifiedConsensusMessage<MS, CS>> for ProtoUnverifiedConsensusMessage
+impl<MS: MessageSignature, SCT: SignatureCollection> From<&VerifiedConsensusMessage<MS, SCT>>
+    for ProtoUnverifiedConsensusMessage
 {
-    fn from(value: &VerifiedConsensusMessage<MS, CS>) -> Self {
+    fn from(value: &VerifiedConsensusMessage<MS, SCT>) -> Self {
         let oneof_message = match value.deref() {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
@@ -192,8 +181,8 @@ impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
-    TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage<MS, CS>
+impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoUnverifiedConsensusMessage>
+    for UnverifiedConsensusMessage<MS, SCT>
 {
     type Error = ProtoError;
 

@@ -4,7 +4,9 @@ use bitvec::prelude::*;
 use monad_crypto::bls12_381::{
     BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature,
 };
+use monad_proto::proto::signing::ProtoBlsSignatureCollection;
 use monad_types::{Hash, NodeId};
+use prost::Message;
 
 use crate::{
     signature_collection::{
@@ -114,8 +116,8 @@ fn merge_nodes(n1: &BlsSignatureCollection, n2: &BlsSignatureCollection) -> BlsS
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlsSignatureCollection {
-    signers: BitVec<u8, Msb0>,
-    sig: BlsAggregateSignature,
+    pub signers: BitVec<u8, Msb0>,
+    pub sig: BlsAggregateSignature,
 }
 
 impl Hashable for BlsSignatureCollection {
@@ -211,6 +213,18 @@ impl SignatureCollection for BlsSignatureCollection {
 
     fn num_signatures(&self) -> usize {
         self.signers.count_ones()
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        let proto: ProtoBlsSignatureCollection = self.into();
+        proto.encode_to_vec()
+    }
+
+    fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+        let bls = ProtoBlsSignatureCollection::decode(data)
+            .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))?;
+        bls.try_into()
+            .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))
     }
 }
 

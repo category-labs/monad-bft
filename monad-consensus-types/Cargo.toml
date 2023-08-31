@@ -6,16 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bitvec = { workspace = true, features = ["serde"] }
 log = { workspace = true }
-bitvec = { workspace = true }
+prost = { workspace = true, optional = true }
+serde_cbor = { workspace = true }
+sha2 = { workspace = true }
+zerocopy = { workspace = true }
 
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto", optional = true }
 monad-types = { path = "../monad-types" }
-
-prost = { workspace = true, optional = true }
-sha2 = { workspace = true }
-zerocopy = { workspace = true }
 
 [features]
 proto = [

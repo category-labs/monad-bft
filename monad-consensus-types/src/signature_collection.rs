@@ -18,6 +18,7 @@ pub enum SignatureCollectionError<S> {
     ConflictingSignatures((NodeId, S, S)),
     // verification error
     InvalidSignatures(Vec<S>),
+    DeserializeError(String),
 }
 
 impl<S: CertificateSignature> std::fmt::Display for SignatureCollectionError<S> {
@@ -35,13 +36,18 @@ impl<S: CertificateSignature> std::fmt::Display for SignatureCollectionError<S> 
             SignatureCollectionError::InvalidSignatures(sig) => {
                 write!(f, "Invalid signature ({sig:?})")
             }
+            SignatureCollectionError::DeserializeError(err) => {
+                write!(f, "Deserialization error {:?}", err)
+            }
         }
     }
 }
 
 impl<S: CertificateSignature> std::error::Error for SignatureCollectionError<S> {}
 
-pub trait SignatureCollection: Clone + Hashable + Send + Sync + std::fmt::Debug + 'static {
+pub trait SignatureCollection:
+    Clone + Hashable + Eq + Send + Sync + std::fmt::Debug + 'static
+{
     type SignatureType: CertificateSignature;
 
     fn new(
@@ -61,6 +67,9 @@ pub trait SignatureCollection: Clone + Hashable + Send + Sync + std::fmt::Debug 
 
     // TODO: deprecate this function: only used by tests
     fn num_signatures(&self) -> usize;
+
+    fn serialize(&self) -> Vec<u8>;
+    fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>>;
 }
 
 #[cfg(test)]
@@ -190,6 +199,28 @@ mod test {
         let signers_set = signers.iter().collect::<HashSet<_>>();
         let expected_set = valmap.map.keys().collect::<HashSet<_>>();
         assert_eq!(signers_set, expected_set);
+    });
+
+    test_all_signature_collection!(test_serialization_roundtrip, |num_keys| {
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
+
+        let msg_hash = Hash([129_u8; 32]);
+
+        let sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
+        let sigcol = T::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
+
+        let sigcol_bytes = sigcol.serialize();
+        assert_eq!(sigcol, T::deserialize(&sigcol_bytes).unwrap());
+    });
+
+    test_all_signature_collection!(test_invalid_deserialization, |_num_keys| {
+        let bytes = [127; 27];
+        let sig_col_err = T::deserialize(&bytes).unwrap_err();
+
+        assert!(matches!(
+            sig_col_err,
+            SignatureCollectionError::DeserializeError(_)
+        ));
     });
 
     // invalid verification goes in specific impls

@@ -2,18 +2,10 @@ use monad_proto::{error::ProtoError, proto::timeout::*};
 
 use super::signing::{message_signature_to_proto, proto_to_message_signature};
 use crate::{
-    certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
-    multi_sig::MultiSig,
-    timeout::{
-        HighQcRound, HighQcRoundSigTuple as TypeHighQcRoundSigTuple,
-        TimeoutCertificate as ConsensusTC, TimeoutInfo as ConsensusTmoInfo,
-    },
+    signature_collection::SignatureCollection,
+    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
 };
-
-type HighQcRoundSigTuple<S> = TypeHighQcRoundSigTuple<S>;
-type TimeoutCertificate<S> = ConsensusTC<S>;
-type TimeoutInfo<S> = ConsensusTmoInfo<MultiSig<S>>;
 
 impl From<&HighQcRound> for ProtoHighQcRound {
     fn from(value: &HighQcRound) -> Self {
@@ -98,8 +90,8 @@ impl<S: MessageSignature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificat
     }
 }
 
-impl<S: CertificateSignatureRecoverable> From<&TimeoutInfo<S>> for ProtoTimeoutInfoAggSig {
-    fn from(value: &TimeoutInfo<S>) -> Self {
+impl<SCT: SignatureCollection> From<&TimeoutInfo<SCT>> for ProtoTimeoutInfo {
+    fn from(value: &TimeoutInfo<SCT>) -> Self {
         Self {
             round: Some((&value.round).into()),
             high_qc: Some((&value.high_qc).into()),
@@ -107,10 +99,10 @@ impl<S: CertificateSignatureRecoverable> From<&TimeoutInfo<S>> for ProtoTimeoutI
     }
 }
 
-impl<S: CertificateSignatureRecoverable> TryFrom<ProtoTimeoutInfoAggSig> for TimeoutInfo<S> {
+impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutInfo> for TimeoutInfo<SCT> {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoTimeoutInfoAggSig) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoTimeoutInfo) -> Result<Self, Self::Error> {
         Ok(Self {
             round: value
                 .round

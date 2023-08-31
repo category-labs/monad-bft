@@ -1,13 +1,11 @@
 use monad_proto::{error::ProtoError, proto::quorum_certificate::*};
 
+use super::signing::{proto_to_signature_collection, signature_collection_to_proto};
 use crate::{
-    certificate_signature::CertificateSignatureRecoverable,
-    multi_sig::MultiSig,
-    quorum_certificate::{QcInfo, QuorumCertificate as ConsensusQC},
+    quorum_certificate::{QcInfo, QuorumCertificate},
+    signature_collection::SignatureCollection,
     validation::Sha256Hash,
 };
-
-type QuorumCertificate<S> = ConsensusQC<MultiSig<S>>;
 
 impl From<&QcInfo> for ProtoQcInfo {
     fn from(qcinfo: &QcInfo) -> Self {
@@ -24,48 +22,39 @@ impl TryFrom<ProtoQcInfo> for QcInfo {
         Ok(Self {
             vote: proto_qci
                 .vote
-                .ok_or(Self::Error::MissingRequiredField("qcinfo.vote".to_owned()))?
+                .ok_or(Self::Error::MissingRequiredField("QcInfo.vote".to_owned()))?
                 .try_into()?,
             ledger_commit: proto_qci
                 .ledger_commit
                 .ok_or(Self::Error::MissingRequiredField(
-                    "qcinfo.ledger_commit".to_owned(),
+                    "QcInfo.ledger_commit".to_owned(),
                 ))?
                 .try_into()?,
         })
     }
 }
 
-impl<S: CertificateSignatureRecoverable> From<&QuorumCertificate<S>>
-    for ProtoQuorumCertificateAggSig
-{
-    fn from(value: &QuorumCertificate<S>) -> Self {
+impl<SCT: SignatureCollection> From<&QuorumCertificate<SCT>> for ProtoQuorumCertificate {
+    fn from(value: &QuorumCertificate<SCT>) -> Self {
         Self {
             info: Some((&value.info).into()),
-            signatures: Some((&value.signatures).into()),
+            signatures: Some(signature_collection_to_proto(&value.signatures)),
         }
     }
 }
 
-impl<S: CertificateSignatureRecoverable> TryFrom<ProtoQuorumCertificateAggSig>
-    for QuorumCertificate<S>
-{
+impl<SCT: SignatureCollection> TryFrom<ProtoQuorumCertificate> for QuorumCertificate<SCT> {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoQuorumCertificateAggSig) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoQuorumCertificate) -> Result<Self, Self::Error> {
         Ok(QuorumCertificate::new::<Sha256Hash>(
             value
                 .info
-                .ok_or(Self::Error::MissingRequiredField(
-                    "QC<AggSig>.info".to_owned(),
-                ))?
+                .ok_or(Self::Error::MissingRequiredField("QC.info".to_owned()))?
                 .try_into()?,
-            value
-                .signatures
-                .ok_or(Self::Error::MissingRequiredField(
-                    "QC<AggSig>.signatures".to_owned(),
-                ))?
-                .try_into()?,
+            proto_to_signature_collection(value.signatures.ok_or(
+                Self::Error::MissingRequiredField("QC.signatures".to_owned()),
+            )?)?,
         ))
     }
 }

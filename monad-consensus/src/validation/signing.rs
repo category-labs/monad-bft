@@ -1,7 +1,6 @@
 use std::{collections::HashMap, ops::Deref};
 
 use monad_consensus_types::{
-    certificate_signature::CertificateSignatureRecoverable,
     convert::signing::message_signature_to_proto,
     message_signature::MessageSignature,
     quorum_certificate::QuorumCertificate,
@@ -453,10 +452,10 @@ fn get_pubkey(msg: &[u8], sig: &impl MessageSignature) -> Result<PubKey, Error> 
 }
 
 #[cfg(feature = "proto")]
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable>
-    From<&UnverifiedConsensusMessage<MS, CS>> for ProtoUnverifiedConsensusMessage
+impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMessage<MS, SCT>>
+    for ProtoUnverifiedConsensusMessage
 {
-    fn from(value: &UnverifiedConsensusMessage<MS, CS>) -> Self {
+    fn from(value: &UnverifiedConsensusMessage<MS, SCT>) -> Self {
         let oneof_message = match &value.obj {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
