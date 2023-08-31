@@ -16,7 +16,7 @@ use monad_quic::{
     QuicRouterScheduler, QuicRouterSchedulerConfig,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::run_nodes;
+use monad_testutil::swarm::create_and_run_nodes;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -24,7 +24,7 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 fn two_nodes() {
     tracing_subscriber::fmt::init();
 
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
@@ -50,9 +50,11 @@ fn two_nodes() {
         xfmr_pipe!(Transformer::Latency::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >(LatencyTransformer(Duration::from_millis(1)))),
+        false,
         2,
-        1024,
         Duration::from_millis(2),
+        Duration::from_secs(10),
+        1024,
     );
 }
 
@@ -60,7 +62,7 @@ fn two_nodes() {
 fn two_nodes_quic() {
     let zero_instant = Instant::now();
 
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
@@ -90,8 +92,10 @@ fn two_nodes_quic() {
         xfmr_pipe!(Transformer::Latency::<Vec<u8>>(LatencyTransformer(
             Duration::from_millis(1)
         ))),
+        false,
         2,
-        1024,
         Duration::from_millis(10),
+        Duration::from_secs(10),
+        256,
     );
 }

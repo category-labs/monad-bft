@@ -7,7 +7,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
-    mock_swarm::Nodes,
+    mock_swarm::{Node, Nodes},
     timed_event::TimedEvent,
     transformer::Pipeline,
     PeerId, State,
@@ -58,7 +58,10 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
     (pubkeys, state_configs)
 }
 
-pub fn node_ledger_verification<O: BlockType + PartialEq>(ledgers: &Vec<Vec<O>>) {
+pub fn node_ledger_verification<O: BlockType + PartialEq>(
+    ledgers: &Vec<Vec<O>>,
+    min_ledger_len: u32,
+) {
     let (max_ledger_idx, max_b) = ledgers
         .iter()
         .map(Vec::len)
@@ -68,7 +71,7 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(ledgers: &Vec<Vec<O>>)
 
     for ledger in ledgers {
         let ledger_len = ledger.len();
-        assert_ne!(ledger_len, 0);
+        assert!(ledger_len as u32 >= min_ledger_len);
         assert!(
             ledger.iter().collect::<Vec<_>>()
                 == ledgers[max_ledger_idx]
@@ -80,15 +83,18 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(ledgers: &Vec<Vec<O>>)
     }
 }
 
-pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     tvt: TVT,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
-
     pipeline: P,
+    parallelize: bool,
+
     num_nodes: u16,
-    num_blocks: usize,
     delta: Duration,
+
+    until: Duration,
+    min_ledger_len: u32,
 ) where
     S: State<Config = MonadConfig<SCT, TVT>>,
     ST: MessageSignature,
@@ -106,55 +112,25 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
     S::Block: PartialEq + Unpin,
+    Node<S, RS, P, LGR, ME>: Send,
+    RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
     LGR::Config: Clone,
     TVT: Clone,
 {
-    let (pubkeys, state_configs) = get_configs::<ST, SCT, TVT>(tvt, num_nodes, delta);
-    let peers = pubkeys
-        .iter()
-        .copied()
-        .zip(state_configs)
-        .map(|(pubkey, state_config)| {
-            (
-                pubkey,
-                state_config,
-                logger_config.clone(),
-                router_scheduler_config(
-                    pubkeys.iter().copied().map(PeerId).collect(),
-                    PeerId(pubkey),
-                ),
-                pipeline.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(peers);
-
-    while let Some((duration, id, event)) = nodes.step() {
-        if nodes
-            .states()
-            .values()
-            .next()
-            .unwrap()
-            .executor
-            .ledger()
-            .get_blocks()
-            .len()
-            > num_blocks
-        {
-            break;
-        }
-    }
-
-    node_ledger_verification(
-        &nodes
-            .states()
-            .values()
-            .map(|node| node.executor.ledger().get_blocks().clone())
-            .collect(),
-    );
+    let (peers, state_configs) = get_configs::<ST, SCT, TVT>(tvt, num_nodes, delta);
+    run_nodes_until::<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+        peers,
+        state_configs,
+        router_scheduler_config,
+        logger_config,
+        pipeline,
+        parallelize,
+        until,
+        min_ledger_len,
+    )
 }
 
 pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
@@ -162,9 +138,11 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
-
     pipeline: P,
+    parallelize: bool,
+
     until: Duration,
+    min_ledger_len: u32,
 ) where
     S: State<Config = MonadConfig<SCT, TVT>>,
     ST: MessageSignature,
@@ -182,6 +160,8 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     MockExecutor<S, RS, ME>: Unpin,
     S::Event: Unpin,
     S::Block: PartialEq + Unpin,
+    Node<S, RS, P, LGR, ME>: Send,
+    RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
@@ -208,7 +188,11 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
             .collect(),
     );
 
-    while nodes.step_until(until).is_some() {}
+    if parallelize {
+        nodes.batch_step_until(until);
+    } else {
+        while nodes.step_until(until).is_some() {}
+    }
 
     node_ledger_verification(
         &nodes
@@ -216,5 +200,6 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
             .values()
             .map(|node| node.executor.ledger().get_blocks().clone())
             .collect(),
+        min_ledger_len,
     );
 }

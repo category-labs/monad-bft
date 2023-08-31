@@ -72,7 +72,9 @@ fn black_out() {
             )),
             Transformer::Drop(DropTransformer()),
         ]),
+        false,
         Duration::from_secs(4),
+        20,
     );
 }
 /**
@@ -127,6 +129,8 @@ fn extreme_delay() {
             )),
             Transformer::Latency(LatencyTransformer(Duration::from_millis(400))),
         ]),
+        false,
         Duration::from_secs(4),
+        20,
     );
 }

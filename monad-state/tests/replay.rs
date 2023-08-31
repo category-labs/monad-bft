@@ -211,5 +211,6 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             .values()
             .map(|node| node.executor.ledger().get_blocks().clone())
             .collect(),
+        1,
     );
 }

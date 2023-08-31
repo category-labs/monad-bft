@@ -12,7 +12,7 @@ use monad_executor::{
     xfmr_pipe,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::run_nodes;
+use monad_testutil::swarm::create_and_run_nodes;
 use monad_tracing_counter::{
     counter::{CounterLayer, MetricFilter},
     counter_status,
@@ -37,7 +37,7 @@ fn two_nodes() {
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
@@ -63,9 +63,11 @@ fn two_nodes() {
         xfmr_pipe!(Transformer::Latency(LatencyTransformer(
             Duration::from_millis(1)
         ))),
+        false,
         2,
-        1024,
         Duration::from_millis(2),
+        Duration::from_secs(10),
+        1024,
     );
     counter_status!();
 }

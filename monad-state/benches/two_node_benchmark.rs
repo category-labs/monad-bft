@@ -13,7 +13,7 @@ use monad_executor::{
     xfmr_pipe,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::run_nodes;
+use monad_testutil::swarm::create_and_run_nodes;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -25,7 +25,7 @@ criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
 
 fn two_nodes() {
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
@@ -51,8 +51,10 @@ fn two_nodes() {
         xfmr_pipe!(Transformer::Latency(LatencyTransformer(
             Duration::from_millis(1)
         ))),
+        false,
         2,
-        1024,
         Duration::from_millis(2),
+        Duration::from_secs(10),
+        1024,
     );
 }

@@ -12,7 +12,7 @@ use monad_executor::{
     xfmr_pipe,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::run_nodes;
+use monad_testutil::swarm::create_and_run_nodes;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -57,7 +57,7 @@ fn nodes_with_random_latency(seed: u64) {
 
     use monad_executor::transformer::RandLatencyTransformer;
 
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
@@ -85,8 +85,10 @@ fn nodes_with_random_latency(seed: u64) {
         >::RandLatency(RandLatencyTransformer::new(
             seed, 330
         ))),
+        false,
         4,
-        2047,
         Duration::from_millis(250),
+        Duration::from_secs(60 * 60),
+        2048,
     );
 }

@@ -243,6 +243,10 @@ pub trait Pipeline<M> {
     fn process(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)>;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
+
+    /// pipeline must always emit delays >= min_delay for EXTERNAl messages
+    /// min_external_delay MUST be > 0
+    fn min_external_delay(&self) -> Duration;
 }
 #[derive(Clone, Debug)]
 pub struct TransformerPipeline<M> {
@@ -314,6 +318,19 @@ impl<M> Pipeline<M> for TransformerPipeline<M> {
 
     fn is_empty(&self) -> bool {
         self.transformers.len() == 0
+    }
+
+    fn min_external_delay(&self) -> Duration {
+        let delay = self
+            .transformers
+            .iter()
+            .map_while(|transformer| match transformer {
+                Transformer::Latency(LatencyTransformer(delay)) => Some(delay),
+                _ => None,
+            })
+            .sum();
+        assert!(delay > Duration::ZERO, "min_external_delay must be > 0");
+        delay
     }
 }
 #[cfg(test)]

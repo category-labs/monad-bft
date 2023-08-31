@@ -38,6 +38,7 @@ pub fn generate_log<P: Pipeline<MM>>(
     pipeline: P,
 ) where
     P: Clone,
+    P: Send,
 {
     type WALoggerType = WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
     let (pubkeys, state_configs) =

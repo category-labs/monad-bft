@@ -1,9 +1,9 @@
-use std::{cmp::Reverse, collections::HashMap, time::Duration};
+use std::{cmp::Reverse, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{
     executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
-    mock_swarm::{LinkMessage, Nodes},
+    mock_swarm::{Node, Nodes},
     timed_event::TimedEvent,
     transformer::Pipeline,
     Message, PeerId,
@@ -90,12 +90,15 @@ where
     C: SimulationConfig<S, RS, P, LGR>,
     ME: MockableExecutor<Event = S::Event>,
 
-    S::Event: Unpin,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    S::Block: Unpin,
     RS::Serialized: Eq,
+
     MockExecutor<S, RS, ME>: Unpin,
+    S::Event: Unpin,
+    S::Block: Unpin,
+    Node<S, RS, P, LGR, ME>: Send,
+    RS::Serialized: Send,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -132,12 +135,15 @@ where
     C: SimulationConfig<S, RS, P, LGR>,
     ME: MockableExecutor<Event = S::Event>,
 
-    S::Event: Unpin,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    S::Block: Unpin,
     RS::Serialized: Eq,
+
     MockExecutor<S, RS, ME>: Unpin,
+    S::Event: Unpin,
+    S::Block: Unpin,
+    Node<S, RS, P, LGR, ME>: Send,
+    RS::Serialized: Send,
 {
     type State = S;
     type Message = RS::Serialized;
@@ -146,27 +152,6 @@ where
     type NodeId = PeerId;
 
     fn state(&self) -> Vec<NodeState<Self::NodeId, S, RS::Serialized, S::Event>> {
-        let mut pending_messages: HashMap<_, Vec<_>> = Default::default();
-        for Reverse((
-            rx_time,
-            LinkMessage {
-                from,
-                to: tx_peer,
-                message,
-                from_tick: tx_time,
-            },
-        )) in self.nodes.scheduled_messages()
-        {
-            pending_messages
-                .entry(from)
-                .or_default()
-                .push(NodeEvent::Message {
-                    tx_time: *tx_time,
-                    rx_time: *rx_time,
-                    tx_peer,
-                    message,
-                });
-        }
         let mut state = self
             .nodes
             .states()
@@ -174,8 +159,15 @@ where
             .map(|(peer_id, node)| NodeState {
                 id: peer_id,
                 state: &node.state,
-                pending_events: std::iter::empty()
-                    .chain(pending_messages.remove(&peer_id).into_iter().flatten())
+                pending_events: node
+                    .pending_inbound_messages
+                    .iter()
+                    .map(|Reverse((rx_time, message))| NodeEvent::Message {
+                        tx_time: message.from_tick,
+                        rx_time: *rx_time,
+                        tx_peer: &message.from,
+                        message: &message.message,
+                    })
                     .collect(),
             })
             .collect::<Vec<_>>();

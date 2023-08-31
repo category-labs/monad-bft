@@ -15,14 +15,14 @@ use monad_executor::{
     xfmr_pipe, PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{get_configs, run_nodes, run_nodes_until};
+use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 use crate::RandomizedTest;
 
 fn random_latency_test(seed: u64) {
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
@@ -48,9 +48,11 @@ fn random_latency_test(seed: u64) {
         xfmr_pipe!(Transformer::RandLatency(RandLatencyTransformer::new(
             seed, 330,
         ))),
+        false,
         4,
-        2048,
         Duration::from_millis(250),
+        Duration::from_secs(10),
+        2048,
     );
 }
 
@@ -101,7 +103,9 @@ fn delayed_message_test(seed: u64) {
                 TransformerReplayOrder::Random(seed),
             ))
         ),
+        false,
         Duration::from_secs(2),
+        20,
     );
 }
 

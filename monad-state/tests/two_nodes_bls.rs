@@ -12,7 +12,7 @@ use monad_executor::{
     xfmr_pipe,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::run_nodes;
+use monad_testutil::swarm::create_and_run_nodes;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -23,7 +23,7 @@ type SignatureCollectionType = BlsSignatureCollection;
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
-    run_nodes::<
+    create_and_run_nodes::<
         MonadState<
             ConsensusState<SignatureType, SignatureCollectionType, MockValidator, StateRoot>,
             SignatureType,
@@ -49,8 +49,10 @@ fn two_nodes_bls() {
         xfmr_pipe!(Transformer::Latency::<
             MonadMessage<SignatureType, SignatureCollectionType>,
         >(LatencyTransformer(Duration::from_millis(1)))),
+        false,
         2,
-        128,
         Duration::from_millis(2),
+        Duration::from_secs(10),
+        128,
     );
 }
