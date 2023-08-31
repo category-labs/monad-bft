@@ -1,5 +1,3 @@
-#![cfg(feature = "proto")]
-
 use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
 use monad_block_sync::BlockSyncState;

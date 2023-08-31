@@ -15,7 +15,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-mempool-controller = { path = "../monad-mempool-controller" }
 monad-mempool-messenger = { path = "../monad-mempool-messenger" }
-monad-proto = { path = "../monad-proto", optional = true }
+monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-wal = { path = "../monad-wal" }
 
@@ -30,6 +30,3 @@ tracing = { workspace = true }
 monad-testutil = { path = "../monad-testutil" }
 
 tokio = { workspace = true, features = ["macros", "rt"] }
-
-[features]
-proto = ["dep:monad-proto", "monad-crypto/proto"]

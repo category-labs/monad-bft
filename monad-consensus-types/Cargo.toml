@@ -8,22 +8,14 @@ edition = "2021"
 [dependencies]
 bitvec = { workspace = true, features = ["serde"] }
 log = { workspace = true }
-prost = { workspace = true, optional = true }
+prost = { workspace = true }
 serde_cbor = { workspace = true }
 sha2 = { workspace = true }
 zerocopy = { workspace = true }
 
 monad-crypto = { path = "../monad-crypto" }
-monad-proto = { path = "../monad-proto", optional = true }
+monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
-
-[features]
-proto = [
-    "dep:monad-proto",
-    "dep:prost",
-    "monad-crypto/proto",
-    "monad-types/proto",
-]
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }

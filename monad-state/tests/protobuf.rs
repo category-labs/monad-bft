@@ -1,5 +1,3 @@
-#![cfg(feature = "proto")]
-
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::VoteMessage},
     pacemaker::PacemakerTimerExpire,

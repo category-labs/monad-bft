@@ -16,16 +16,16 @@ monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
-monad-proto = { path = "../monad-proto", optional = true }
+monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
-prost = { workspace = true, optional = true }
+prost = { workspace = true }
 ref-cast = { workspace = true }
 
 [dev-dependencies]
 monad-quic = { path = "../monad-quic" }
-monad-testutil = { path = "../monad-testutil"}
+monad-testutil = { path = "../monad-testutil" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-wal = { path = "../monad-wal" }
 
@@ -38,9 +38,6 @@ test-case = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[features]
-proto = ["dep:monad-proto", "dep:prost", "monad-consensus/proto", "monad-consensus-types/proto", "monad-crypto/proto", "monad-types/proto", "monad-executor/proto"]
 
 [[bench]]
 name = "two_node_benchmark"

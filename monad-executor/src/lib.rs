@@ -9,7 +9,6 @@ pub mod replay_nodes;
 pub mod timed_event;
 pub mod transformer;
 
-#[cfg(feature = "proto")]
 pub mod convert;
 
 // driver loop

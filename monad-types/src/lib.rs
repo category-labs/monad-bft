@@ -1,4 +1,3 @@
-#[cfg(feature = "proto")]
 pub mod convert;
 
 use std::{

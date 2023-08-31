@@ -9,18 +9,15 @@ use monad_consensus_types::{
     validation::{Error, Hashable, Hasher},
     voting::ValidatorMapping,
 };
-#[cfg(feature = "proto")]
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-#[cfg(feature = "proto")]
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{Hash, NodeId, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
-#[cfg(feature = "proto")]
-use crate::convert::message::UnverifiedConsensusMessage;
 use crate::{
+    convert::message::UnverifiedConsensusMessage,
     messages::{
         consensus_message::ConsensusMessage,
         message::{
@@ -451,7 +448,6 @@ fn get_pubkey(msg: &[u8], sig: &impl MessageSignature) -> Result<PubKey, Error> 
     sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
 }
 
-#[cfg(feature = "proto")]
 impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMessage<MS, SCT>>
     for ProtoUnverifiedConsensusMessage
 {

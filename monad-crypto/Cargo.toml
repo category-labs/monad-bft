@@ -9,10 +9,12 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-proto = { path = "../monad-proto", optional = true }
+monad-proto = { path = "../monad-proto" }
 
 blst = { workspace = true }
-libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }
+libp2p-identity = { workspace = true, features = [
+    "secp256k1",
+], optional = true }
 multihash = { workspace = true, features = ["identity"], optional = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 sha2 = { workspace = true }
@@ -28,5 +30,4 @@ tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
 libp2p-identity = ["dep:libp2p-identity", "dep:multihash"]
-proto = ["dep:monad-proto"]
 rustls = ["dep:rcgen", "dep:rustls"]

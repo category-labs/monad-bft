@@ -39,7 +39,6 @@ use monad_validator::{
 };
 use ref_cast::RefCast;
 
-#[cfg(feature = "proto")]
 pub mod convert;
 
 mod message;
@@ -143,7 +142,6 @@ impl monad_types::Serializable<Vec<u8>>
     }
 }
 
-#[cfg(feature = "proto")]
 impl monad_types::Deserializable<[u8]>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
@@ -157,7 +155,6 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-#[cfg(feature = "proto")]
 impl monad_types::Serializable<Vec<u8>>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
@@ -169,7 +166,6 @@ impl monad_types::Serializable<Vec<u8>>
     }
 }
 
-#[cfg(feature = "proto")]
 impl monad_types::Deserializable<[u8]>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
@@ -183,7 +179,6 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-#[cfg(feature = "proto")]
 impl monad_types::Serializable<Vec<u8>>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
@@ -205,7 +200,6 @@ pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<ST, SCT>>);
 
-#[cfg(feature = "proto")]
 impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Vec<u8>>
     for VerifiedMonadMessage<MS, SCT>
 {
@@ -222,7 +216,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection>
     }
 }
 
-#[cfg(feature = "proto")]
 impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<[u8]>
     for MonadMessage<MS, SCT>
 {
@@ -235,7 +228,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable
     }
 }
 
-#[cfg(feature = "proto")]
 impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable<Vec<u8>>
     for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
 {

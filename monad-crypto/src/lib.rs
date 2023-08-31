@@ -1,12 +1,10 @@
 use crate::secp256k1::PubKey;
 
-#[cfg(feature = "proto")]
-pub mod convert;
-
 #[cfg(feature = "rustls")]
 pub mod rustls;
 
 pub mod bls12_381;
+pub mod convert;
 pub mod secp256k1;
 
 // This implementation won't sign or verify anything, but its still required to return a PubKey
