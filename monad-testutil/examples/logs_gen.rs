@@ -70,7 +70,7 @@ pub fn generate_log<P: Pipeline<MM>>(
             .values()
             .next()
             .unwrap()
-            .0
+            .executor
             .ledger()
             .get_blocks()
             .len()

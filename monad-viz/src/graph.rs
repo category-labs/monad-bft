@@ -172,9 +172,9 @@ where
             .nodes
             .states()
             .iter()
-            .map(|(peer_id, (_executor, state, _))| NodeState {
+            .map(|(peer_id, node)| NodeState {
                 id: peer_id,
-                state,
+                state: &node.state,
                 pending_events: std::iter::empty()
                     .chain(pending_messages.remove(&peer_id).into_iter().flatten())
                     .collect(),

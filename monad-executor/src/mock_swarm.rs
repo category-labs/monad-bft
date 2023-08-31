@@ -39,6 +39,16 @@ where
     }
 }
 
+pub struct Node<S, RS, LGR, ME>
+where
+    S: State,
+    ME: MockableExecutor,
+{
+    pub executor: MockExecutor<S, RS, ME>,
+    pub state: S,
+    pub logger: LGR,
+}
+
 pub struct Nodes<S, RS, P, LGR, ME>
 where
     S: State,
@@ -47,7 +57,7 @@ where
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     ME: MockableExecutor,
 {
-    states: BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)>,
+    states: BTreeMap<PeerId, Node<S, RS, LGR, ME>>,
     pipeline: P,
     scheduled_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
 }
@@ -92,7 +102,14 @@ where
 
             executor.exec(init_commands);
 
-            states.insert(PeerId(pubkey), (executor, state, wal));
+            states.insert(
+                PeerId(pubkey),
+                Node {
+                    executor,
+                    state,
+                    logger: wal,
+                },
+            );
         }
 
         Self {
@@ -106,10 +123,19 @@ where
         let min_event = self
             .states
             .iter()
-            .filter_map(|(id, (executor, state, wal))| {
-                let tick = executor.peek_tick()?;
-                Some((id, executor, state, wal, tick))
-            })
+            .filter_map(
+                |(
+                    id,
+                    Node {
+                        executor,
+                        state,
+                        logger,
+                    },
+                )| {
+                    let tick = executor.peek_tick()?;
+                    Some((id, executor, state, logger, tick))
+                },
+            )
             .min_by_key(|(_, _, _, _, tick)| *tick);
         let maybe_min_event_tick = min_event.as_ref().map(|(id, _, _, _, min_event_tick)| {
             (*min_event_tick, SwarmEventType::ExecutorEvent(**id))
@@ -142,7 +168,11 @@ where
 
             match event_type {
                 SwarmEventType::ExecutorEvent(id) => {
-                    let (executor, state, wal) = self
+                    let Node {
+                        executor,
+                        state,
+                        logger,
+                    } = self
                         .states
                         .get_mut(&id)
                         .expect("logic error, should be nonempty");
@@ -154,7 +184,7 @@ where
                                 timestamp: tick,
                                 event: event.clone(),
                             };
-                            wal.push(&timed_event).unwrap(); // FIXME: propagate the error
+                            logger.push(&timed_event).unwrap(); // FIXME: propagate the error
                             let node_span = info_span!("node", id = ?id);
                             let _guard = node_span.enter();
                             let commands = state.update(event.clone());
@@ -184,8 +214,9 @@ where
                         .pop()
                         .expect("logic error, should be nonempty");
                     assert_eq!(tick, scheduled_tick);
-                    let (executor, _, _) = self.states.get_mut(&message.to).unwrap();
-                    executor.send_message(scheduled_tick, message.from, message.message);
+                    let node = self.states.get_mut(&message.to).unwrap();
+                    node.executor
+                        .send_message(scheduled_tick, message.from, message.message);
                 }
             }
         }
@@ -193,12 +224,8 @@ where
         None
     }
 
-    pub fn states(&self) -> &BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)> {
+    pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, LGR, ME>> {
         &self.states
-    }
-
-    pub fn mut_states(&mut self) -> &mut BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)> {
-        &mut self.states
     }
 
     pub fn scheduled_messages(

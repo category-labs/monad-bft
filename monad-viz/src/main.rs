@@ -424,7 +424,7 @@ impl Program<Message> for &Sim {
                 .states()
                 .get(node.id)
                 .unwrap()
-                .0
+                .executor
                 .ledger()
                 .get_blocks();
             draw_circle(&mut frame, x, y);

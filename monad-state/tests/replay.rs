@@ -91,7 +91,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             .values()
             .next()
             .unwrap()
-            .0
+            .executor
             .ledger()
             .get_blocks()
             .len()
@@ -105,10 +105,11 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
     let node_ledger_before = nodes
         .states()
         .iter()
-        .map(|(peerid, (exec, _, _))| {
+        .map(|(peerid, node)| {
             (
                 *peerid,
-                exec.ledger()
+                node.executor
+                    .ledger()
                     .get_blocks()
                     .iter()
                     .map(|b| b.get_id())
@@ -167,10 +168,11 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
     let node_ledger_recovered = nodes_recovered
         .states()
         .iter()
-        .map(|(peerid, (exec, _, _))| {
+        .map(|(peerid, node)| {
             (
                 *peerid,
-                exec.ledger()
+                node.executor
+                    .ledger()
                     .get_blocks()
                     .iter()
                     .map(|b| b.get_id())
@@ -187,7 +189,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             .values()
             .next()
             .unwrap()
-            .0
+            .executor
             .ledger()
             .get_blocks()
             .len()
@@ -201,7 +203,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         &nodes_recovered
             .states()
             .values()
-            .map(|(executor, _state, _logger)| executor.ledger().get_blocks().clone())
+            .map(|node| node.executor.ledger().get_blocks().clone())
             .collect(),
     );
 }

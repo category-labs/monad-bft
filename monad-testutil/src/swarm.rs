@@ -137,7 +137,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
             .values()
             .next()
             .unwrap()
-            .0
+            .executor
             .ledger()
             .get_blocks()
             .len()
@@ -151,7 +151,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
         &nodes
             .states()
             .values()
-            .map(|(executor, _state, _logger)| executor.ledger().get_blocks().clone())
+            .map(|node| node.executor.ledger().get_blocks().clone())
             .collect(),
     );
 }
@@ -213,7 +213,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
         &nodes
             .states()
             .values()
-            .map(|(executor, _state, _logger)| executor.ledger().get_blocks().clone())
+            .map(|node| node.executor.ledger().get_blocks().clone())
             .collect(),
     );
 }
