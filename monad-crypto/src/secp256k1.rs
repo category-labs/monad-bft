@@ -96,6 +96,21 @@ impl KeyPair {
         Ok((monad_keypair, libp2p_keypair))
     }
 
+    #[cfg(feature = "libp2p-identity")]
+    pub fn libp2p_from_der(
+        der: impl AsMut<[u8]>,
+    ) -> Result<(Self, libp2p_identity::secp256k1::Keypair), Error> {
+        let secret_key = libp2p_identity::secp256k1::SecretKey::from_der(der)
+            .map_err(|_| Error(secp256k1::Error::InvalidSecretKey))?;
+
+        let monad_keypair = Self(secp256k1::KeyPair::from_secret_key(
+            secp256k1::SECP256K1,
+            &secp256k1::SecretKey::from_slice(&secret_key.to_bytes()).map_err(Error)?,
+        ));
+
+        Ok((monad_keypair, secret_key.into()))
+    }
+
     pub fn sign(&self, msg: &[u8]) -> SecpSignature {
         SecpSignature(Secp256k1::sign_ecdsa_recoverable(
             secp256k1::SECP256K1,

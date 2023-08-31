@@ -1,0 +1,19 @@
+[package]
+name = "monad-node"
+description = "Monad consensus node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
+
+clap = { workspace = true, features = ["derive"] }
+env_logger = { workspace = true }
+hex = { workspace = true }
+libp2p-identity = { workspace = true }
+log = { workspace = true }
+rustls-pemfile = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+toml = { workspace = true }

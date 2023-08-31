@@ -40,10 +40,7 @@ pub(crate) fn setup_sigcol_test<SCT: SignatureCollection>(
         .collect::<Vec<_>>();
     let keys = create_certificate_keys::<SCT>(num);
 
-    let voting_keys = node_ids
-        .into_iter()
-        .zip(keys.into_iter())
-        .collect::<Vec<_>>();
+    let voting_keys = node_ids.into_iter().zip(keys).collect::<Vec<_>>();
 
     let voting_identity = voting_keys
         .iter()

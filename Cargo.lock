@@ -4762,6 +4762,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-node"
+version = "0.1.0"
+dependencies = [
+ "clap 4.3.19",
+ "env_logger",
+ "hex",
+ "libp2p-identity",
+ "log",
+ "monad-crypto",
+ "rustls-pemfile",
+ "serde 1.0.175",
+ "thiserror",
+ "tokio",
+ "toml 0.7.6",
+]
+
+[[package]]
 name = "monad-p2p"
 version = "0.1.0"
 dependencies = [

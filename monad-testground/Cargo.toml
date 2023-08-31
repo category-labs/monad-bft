@@ -18,7 +18,7 @@ clap = { workspace = true, features = ["derive"] }
 futures-util = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-env_logger = "0.10"
+env_logger = { workspace = true }
 
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry_api = { workspace = true }
