@@ -39,16 +39,16 @@ where
     }
 }
 
-pub struct Nodes<S, RS, T, LGR, ME>
+pub struct Nodes<S, RS, P, LGR, ME>
 where
     S: State,
     RS: RouterScheduler,
-    T: Pipeline<RS::Serialized>,
+    P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     ME: MockableExecutor,
 {
     states: BTreeMap<PeerId, (MockExecutor<S, RS, ME>, S, LGR)>,
-    pipeline: T,
+    pipeline: P,
     scheduled_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
 }
 
@@ -57,7 +57,7 @@ enum SwarmEventType {
     ScheduledMessage,
 }
 
-impl<S, RS, T, LGR, ME> Nodes<S, RS, T, LGR, ME>
+impl<S, RS, P, LGR, ME> Nodes<S, RS, P, LGR, ME>
 where
     S: State,
 
@@ -66,7 +66,7 @@ where
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
-    T: Pipeline<RS::Serialized>,
+    P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
     ME: MockableExecutor<Event = S::Event>,
@@ -75,7 +75,7 @@ where
     S::Event: Unpin,
     S::Block: Unpin,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config)>, pipeline: T) -> Self {
+    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config)>, pipeline: P) -> Self {
         assert!(!peers.is_empty());
 
         let mut states = BTreeMap::new();

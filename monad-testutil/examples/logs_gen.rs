@@ -29,13 +29,13 @@ type MS = MonadState<
 type MM = <MS as State>::Message;
 type ME = <MS as State>::Event;
 
-pub fn generate_log<T: Pipeline<MM>>(
+pub fn generate_log<P: Pipeline<MM>>(
     num_nodes: u16,
     num_blocks: usize,
     delta: Duration,
-    transformer: T,
+    pipeline: P,
 ) where
-    T: Clone,
+    P: Clone,
 {
     type WALoggerType = WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
     let (pubkeys, state_configs) =
@@ -60,9 +60,8 @@ pub fn generate_log<T: Pipeline<MM>>(
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, T, WALoggerType, MockMempool<ME>>::new(
-        peers,
-        transformer,
+    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, P, WALoggerType, MockMempool<ME>>::new(
+        peers, pipeline,
     );
 
     while let Some((duration, id, event)) = nodes.step() {

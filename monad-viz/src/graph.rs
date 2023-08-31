@@ -54,41 +54,41 @@ where
     fn nodes(&self) -> Vec<(PubKey, S::Config)>;
 }
 
-pub trait SimulationConfig<S, RS, T, LGR>
+pub trait SimulationConfig<S, RS, P, LGR>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
-    T: Pipeline<RS::Serialized>,
+    P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     fn max_tick(&self) -> Duration;
-    fn pipeline(&self) -> &T;
+    fn pipeline(&self) -> &P;
     fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config)>;
 }
 
-pub struct NodesSimulation<S, RS, T, LGR, C, ME>
+pub struct NodesSimulation<S, RS, P, LGR, C, ME>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
-    T: Pipeline<RS::Serialized>,
+    P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, T, LGR>,
+    C: SimulationConfig<S, RS, P, LGR>,
     ME: MockableExecutor,
 {
     config: C,
 
     // TODO move stuff below into separate struct
-    pub nodes: Nodes<S, RS, T, LGR, ME>,
+    pub nodes: Nodes<S, RS, P, LGR, ME>,
     current_tick: Duration,
 }
 
-impl<S, RS, T, LGR, C, ME> NodesSimulation<S, RS, T, LGR, C, ME>
+impl<S, RS, P, LGR, C, ME> NodesSimulation<S, RS, P, LGR, C, ME>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
-    T: Pipeline<RS::Serialized> + Clone,
+    P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, T, LGR>,
+    C: SimulationConfig<S, RS, P, LGR>,
     ME: MockableExecutor<Event = S::Event>,
 
     S::Event: Unpin,
@@ -124,13 +124,13 @@ where
     }
 }
 
-impl<S, RS, T, LGR, C, ME> Graph for NodesSimulation<S, RS, T, LGR, C, ME>
+impl<S, RS, P, LGR, C, ME> Graph for NodesSimulation<S, RS, P, LGR, C, ME>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
-    T: Pipeline<RS::Serialized> + Clone,
+    P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, T, LGR>,
+    C: SimulationConfig<S, RS, P, LGR>,
     ME: MockableExecutor<Event = S::Event>,
 
     S::Event: Unpin,
