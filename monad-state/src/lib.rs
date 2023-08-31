@@ -493,11 +493,14 @@ where
                         ConsensusCommand::ScheduleReset => {
                             cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset))
                         }
-                        ConsensusCommand::FetchTxs(cb) => cmds.push(Command::MempoolCommand(
-                            MempoolCommand::FetchTxs(Box::new(|txs| {
-                                Self::Event::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
-                            })),
-                        )),
+                        ConsensusCommand::FetchTxs(max_txns, cb) => {
+                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchTxs(
+                                max_txns,
+                                Box::new(|txs| {
+                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
+                                }),
+                            )))
+                        }
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }

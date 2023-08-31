@@ -25,7 +25,10 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
         on_timeout: PacemakerTimerExpire,
     },
     ScheduleReset,
-    FetchTxs(Box<dyn (FnOnce(TransactionList) -> FetchedTxs<ST, SCT>) + Send + Sync>),
+    FetchTxs(
+        usize,
+        Box<dyn (FnOnce(TransactionList) -> FetchedTxs<ST, SCT>) + Send + Sync>,
+    ),
     FetchTxsReset,
     FetchFullTxs(
         TransactionList,

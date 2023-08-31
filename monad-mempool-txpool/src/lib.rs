@@ -37,24 +37,19 @@ impl Ord for EthTxItem {
 
 pub struct PoolConfig {
     ttl_duration: Duration,
-    block_tx_limit: usize,
 }
 
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             ttl_duration: Duration::from_secs(120),
-            block_tx_limit: 10000,
         }
     }
 }
 
 impl PoolConfig {
-    pub fn new(ttl_duration: Duration, block_tx_limit: usize) -> Self {
-        Self {
-            ttl_duration,
-            block_tx_limit,
-        }
+    pub fn new(ttl_duration: Duration) -> Self {
+        Self { ttl_duration }
     }
 }
 
@@ -62,7 +57,6 @@ pub struct Pool {
     map: HashMap<Bytes, Bytes>,
     pq: BinaryHeap<EthTxItem>,
     ttl_duration: Duration,
-    block_tx_limit: usize,
 }
 
 impl Pool {
@@ -71,7 +65,6 @@ impl Pool {
             map: HashMap::new(),
             pq: BinaryHeap::new(),
             ttl_duration: config.ttl_duration,
-            block_tx_limit: config.block_tx_limit,
         }
     }
 
@@ -141,10 +134,10 @@ impl Pool {
 
     /// Returns a Vec of transactions to be included in a block proposal.
     /// The highest priority transactions are returned, up to the block limit.
-    pub fn create_proposal(&mut self) -> Vec<Bytes> {
+    pub fn create_proposal(&mut self, tx_limit: usize) -> Vec<Bytes> {
         let mut txs = Vec::new();
 
-        while txs.len() < self.block_tx_limit && !self.pq.is_empty() {
+        while txs.len() < tx_limit && !self.pq.is_empty() {
             let tx = self.pq.pop().unwrap();
 
             if !self.map.contains_key(&tx.hash) {
@@ -230,10 +223,7 @@ mod test {
     fn test_pool() {
         const TX_BATCH_SIZE: usize = 10;
 
-        let mut pool = Pool::new(&PoolConfig::new(
-            std::time::Duration::from_secs(120),
-            TX_BATCH_SIZE,
-        ));
+        let mut pool = Pool::new(&PoolConfig::new(std::time::Duration::from_secs(120)));
 
         // Create 2 batches of transactions + 1 extra tx, with the second batch having a higher priority
         let mut txs = create_eth_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
@@ -258,7 +248,7 @@ mod test {
         )
         .unwrap();
 
-        let proposal = pool.create_proposal();
+        let proposal = pool.create_proposal(TX_BATCH_SIZE);
         let expected_proposal = txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]
             .iter()
             .map(|tx| tx.hash.clone().into())
@@ -268,7 +258,7 @@ mod test {
         assert_eq!(proposal, expected_proposal);
         pool.remove_tx_hashes(proposal);
 
-        let proposal2 = pool.create_proposal();
+        let proposal2 = pool.create_proposal(TX_BATCH_SIZE);
         let expected_proposal2 = txs[0..TX_BATCH_SIZE]
             .iter()
             .map(|tx| tx.hash.clone().into())
@@ -279,12 +269,12 @@ mod test {
 
         // Simulate a failed proposal, doesn't get removed
 
-        let proposal3 = pool.create_proposal();
+        let proposal3 = pool.create_proposal(TX_BATCH_SIZE);
         assert_eq!(proposal3.len(), TX_BATCH_SIZE);
         assert_eq!(proposal3, expected_proposal2);
         pool.remove_tx_hashes(proposal3);
 
-        let proposal3 = pool.create_proposal();
+        let proposal3 = pool.create_proposal(TX_BATCH_SIZE);
         assert_eq!(proposal3.len(), 1);
         assert_eq!(
             proposal3[0],
@@ -292,7 +282,7 @@ mod test {
         );
         pool.remove_tx_hashes(proposal3);
 
-        let proposal4 = pool.create_proposal();
+        let proposal4 = pool.create_proposal(TX_BATCH_SIZE);
         assert_eq!(proposal4.len(), 0);
     }
 }

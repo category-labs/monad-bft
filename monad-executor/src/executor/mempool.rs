@@ -32,7 +32,7 @@ enum ControllerTaskError {
 
 #[derive(Debug)]
 enum ControllerTaskCommand {
-    FetchTxs,
+    FetchTxs(usize),
     FetchFullTxs(TransactionList),
 }
 
@@ -86,8 +86,8 @@ impl<E> MonadMempool<E> {
                     };
 
                     match task {
-                        ControllerTaskCommand::FetchTxs => {
-                            let proposal = controller.create_proposal().await;
+                        ControllerTaskCommand::FetchTxs(num_max_txs) => {
+                            let proposal = controller.create_proposal(num_max_txs).await;
 
                             tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal)))
                                 .await?;
@@ -123,9 +123,9 @@ impl<E> Executor for MonadMempool<E> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(cb) => {
+                MempoolCommand::FetchTxs(num_max_txs, cb) => {
                     self.fetch_txs_state = Some(cb);
-                    task_command = Some(ControllerTaskCommand::FetchTxs);
+                    task_command = Some(ControllerTaskCommand::FetchTxs(num_max_txs));
                 }
                 MempoolCommand::FetchReset => {
                     self.fetch_txs_state = None;

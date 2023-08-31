@@ -447,16 +447,18 @@ where
         let high_qc = self.high_qc.clone();
         let seq_num = self.seq_num;
 
-        vec![ConsensusCommand::FetchTxs(Box::new(move |txns| {
-            FetchedTxs {
+        vec![ConsensusCommand::FetchTxs(
+            // FIXME get from config
+            10000,
+            Box::new(move |txns| FetchedTxs {
                 node_id,
                 round,
                 seq_num,
                 high_qc,
                 last_round_tc,
                 txns,
-            }
-        }))]
+            }),
+        )]
     }
 }
 
