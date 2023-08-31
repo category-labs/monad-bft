@@ -807,6 +807,9 @@ mod tests {
                     NoSerRouterConfig {
                         all_peers: pubkeys.iter().copied().collect(),
                     },
+                    xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+                        Duration::from_millis(50),
+                    ))),
                 )
             })
             .collect();
@@ -816,12 +819,7 @@ mod tests {
             _,
             MockWALogger<TimedEvent<SimpleChainEvent>>,
             MockMempool<SimpleChainEvent>,
-        >::new(
-            peers,
-            xfmr_pipe!(Transformer::Latency(LatencyTransformer(
-                Duration::from_millis(50),
-            ))),
-        );
+        >::new(peers);
 
         while let Some((duration, id, event)) = nodes.step() {
             println!("{duration:?} => {id:?} => {event:?}")

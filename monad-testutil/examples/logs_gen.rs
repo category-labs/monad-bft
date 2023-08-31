@@ -57,12 +57,12 @@ pub fn generate_log<P: Pipeline<MM>>(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
+                pipeline.clone(),
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<MS, NoSerRouterScheduler<MM>, P, WALoggerType, MockMempool<ME>>::new(
-        peers, pipeline,
-    );
+    let mut nodes =
+        Nodes::<MS, NoSerRouterScheduler<MM>, P, WALoggerType, MockMempool<ME>>::new(peers);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes

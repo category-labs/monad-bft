@@ -539,7 +539,6 @@ mod test {
             assert_eq!(result[0].0, Duration::from_millis(30));
             assert!(result[0].1 == mock_message);
         }
-        // note the previous message never made it to periodic, thus it doesn't get trigger the cnt
 
         // first 2 message should not trigger extra mili
         for idx in 0..2 {

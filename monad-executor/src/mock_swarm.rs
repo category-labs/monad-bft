@@ -39,7 +39,7 @@ where
     }
 }
 
-pub struct Node<S, RS, LGR, ME>
+pub struct Node<S, RS, P, LGR, ME>
 where
     S: State,
     ME: MockableExecutor,
@@ -47,6 +47,7 @@ where
     pub executor: MockExecutor<S, RS, ME>,
     pub state: S,
     pub logger: LGR,
+    pub pipeline: P,
 }
 
 pub struct Nodes<S, RS, P, LGR, ME>
@@ -57,8 +58,7 @@ where
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     ME: MockableExecutor,
 {
-    states: BTreeMap<PeerId, Node<S, RS, LGR, ME>>,
-    pipeline: P,
+    states: BTreeMap<PeerId, Node<S, RS, P, LGR, ME>>,
     scheduled_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
 }
 
@@ -85,12 +85,12 @@ where
     S::Event: Unpin,
     S::Block: Unpin,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config)>, pipeline: P) -> Self {
+    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config, P)>) -> Self {
         assert!(!peers.is_empty());
 
         let mut states = BTreeMap::new();
 
-        for (pubkey, state_config, logger_config, router_scheduler_config) in peers {
+        for (pubkey, state_config, logger_config, router_scheduler_config, pipeline) in peers {
             let mut executor: MockExecutor<S, RS, ME> =
                 MockExecutor::new(RS::new(router_scheduler_config));
             let (wal, replay_events) = LGR::new(logger_config).unwrap();
@@ -108,13 +108,13 @@ where
                     executor,
                     state,
                     logger: wal,
+                    pipeline,
                 },
             );
         }
 
         Self {
             states,
-            pipeline,
             scheduled_messages: Default::default(),
         }
     }
@@ -123,32 +123,20 @@ where
         let min_event = self
             .states
             .iter()
-            .filter_map(
-                |(
-                    id,
-                    Node {
-                        executor,
-                        state,
-                        logger,
-                    },
-                )| {
-                    let tick = executor.peek_tick()?;
-                    Some((id, executor, state, logger, tick))
-                },
-            )
-            .min_by_key(|(_, _, _, _, tick)| *tick);
-        let maybe_min_event_tick = min_event.as_ref().map(|(id, _, _, _, min_event_tick)| {
-            (*min_event_tick, SwarmEventType::ExecutorEvent(**id))
-        });
-        let maybe_min_scheduled_tick =
+            .filter_map(|(id, node)| {
+                let tick = node.executor.peek_tick()?;
+                Some((tick, SwarmEventType::ExecutorEvent(*id)))
+            })
+            .min_by_key(|(tick, _id)| *tick);
+        let min_scheduled =
             self.scheduled_messages
                 .peek()
                 .map(|Reverse((min_scheduled_tick, _))| {
                     (*min_scheduled_tick, SwarmEventType::ScheduledMessage)
                 });
-        maybe_min_event_tick
+        min_event
             .into_iter()
-            .chain(maybe_min_scheduled_tick)
+            .chain(min_scheduled)
             .min_by_key(|(tick, _)| *tick)
     }
 
@@ -172,6 +160,7 @@ where
                         executor,
                         state,
                         logger,
+                        pipeline,
                     } = self
                         .states
                         .get_mut(&id)
@@ -201,7 +190,7 @@ where
 
                                 from_tick: tick,
                             };
-                            let transformed = self.pipeline.process(lm);
+                            let transformed = pipeline.process(lm);
                             for (delay, msg) in transformed {
                                 self.scheduled_messages.push(Reverse((tick + delay, msg)));
                             }
@@ -224,7 +213,7 @@ where
         None
     }
 
-    pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, LGR, ME>> {
+    pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, P, LGR, ME>> {
         &self.states
     }
 

@@ -61,6 +61,9 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
+                xfmr_pipe!(Transformer::XorLatency(XorLatencyTransformer(
+                    Duration::from_millis(u8::MAX as u64)
+                ))),
             )
         })
         .collect::<Vec<_>>();
@@ -78,12 +81,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         MockMempool<_>,
-    >::new(
-        peers,
-        xfmr_pipe!(Transformer::XorLatency(XorLatencyTransformer(
-            Duration::from_millis(u8::MAX as u64)
-        ))),
-    );
+    >::new(peers);
 
     while let Some((_, _, _)) = nodes.step() {
         if nodes
@@ -141,6 +139,9 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
+                xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+                    Duration::from_millis(1)
+                ))),
             )
         })
         .collect::<Vec<_>>();
@@ -158,12 +159,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
         MockMempool<_>,
-    >::new(
-        peers_clone,
-        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
-            Duration::from_millis(1)
-        ))),
-    );
+    >::new(peers_clone);
 
     let node_ledger_recovered = nodes_recovered
         .states()

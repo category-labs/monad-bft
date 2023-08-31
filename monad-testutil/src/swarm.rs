@@ -100,7 +100,7 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized>,
+    P: Pipeline<RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event>,
 
     MockExecutor<S, RS, ME>: Unpin,
@@ -117,19 +117,20 @@ pub fn run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
         .iter()
         .copied()
         .zip(state_configs)
-        .map(|(pubkey, b)| {
+        .map(|(pubkey, state_config)| {
             (
                 pubkey,
-                b,
+                state_config,
                 logger_config.clone(),
                 router_scheduler_config(
                     pubkeys.iter().copied().map(PeerId).collect(),
                     PeerId(pubkey),
                 ),
+                pipeline.clone(),
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(peers, pipeline);
+    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(peers);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes
@@ -175,7 +176,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized>,
+    P: Pipeline<RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event>,
 
     MockExecutor<S, RS, ME>: Unpin,
@@ -192,19 +193,19 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
             .iter()
             .copied()
             .zip(state_configs)
-            .map(|(pubkey, b)| {
+            .map(|(pubkey, state_config)| {
                 (
                     pubkey,
-                    b,
+                    state_config,
                     logger_config.clone(),
                     router_scheduler_config(
                         pubkeys.iter().copied().map(PeerId).collect(),
                         PeerId(pubkey),
                     ),
+                    pipeline.clone(),
                 )
             })
             .collect(),
-        pipeline,
     );
 
     while nodes.step_until(until).is_some() {}

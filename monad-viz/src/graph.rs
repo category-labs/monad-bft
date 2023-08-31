@@ -62,8 +62,7 @@ where
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     fn max_tick(&self) -> Duration;
-    fn pipeline(&self) -> &P;
-    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config)>;
+    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config, P)>;
 }
 
 pub struct NodesSimulation<S, RS, P, LGR, C, ME>
@@ -100,7 +99,7 @@ where
 {
     pub fn new(config: C) -> Self {
         Self {
-            nodes: Nodes::new(config.nodes(), config.pipeline().clone()),
+            nodes: Nodes::new(config.nodes()),
             current_tick: Duration::ZERO,
 
             config,
@@ -119,7 +118,7 @@ where
     }
 
     fn reset(&mut self) {
-        self.nodes = Nodes::new(self.config.nodes(), self.config.pipeline().clone());
+        self.nodes = Nodes::new(self.config.nodes());
         self.current_tick = self.min_tick();
     }
 }
