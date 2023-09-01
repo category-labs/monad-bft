@@ -1,0 +1,20 @@
+#########################################################
+#                                                       #
+#        WARNING: THIS FILE SHOULD NEVER BE USED        #
+#              IN PRODUCTION ENVIRONMENTS!              #
+#                                                       #
+#########################################################
+
+[bootstrap]
+
+[[bootstrap.peers]]
+ip = "192.168.0.0"
+port = 8000
+pubkey = "043e4b75bf044e2ad1cd5e56aa7867dda2e91ee59b067ae3e7b4c706bcf41bc15d739405fd6da516d212cbe51c71c2a941a745cf6e0dbd0c99798aa9d897220601"
+certkey = "043e4b75bf044e2ad1cd5e56aa7867dda2e91ee59b067ae3e7b4c706bcf41bc15d739405fd6da516d212cbe51c71c2a941a745cf6e0dbd0c99798aa9d897220601"
+
+[network]
+bind_address_host = "0.0.0.0"
+bind_address_port = 8888
+libp2p_timeout_ms = 5000
+libp2p_keepalive_ms = 5000

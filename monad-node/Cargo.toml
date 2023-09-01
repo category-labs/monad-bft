@@ -5,15 +5,30 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+monad-block-sync = { path = "../monad-block-sync" }
+monad-consensus-state = { path = "../monad-consensus-state" }
+monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
+monad-executor = { path = "../monad-executor", features = ["tokio"] }
+monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
+monad-state = { path = "../monad-state", features = ["proto"] }
+monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
 
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
+futures-util = { workspace = true }
 hex = { workspace = true }
 libp2p-identity = { workspace = true }
 log = { workspace = true }
+opentelemetry = { workspace = true, features = ["rt-tokio"] }
+opentelemetry_api = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 toml = { workspace = true }
+tracing = { workspace = true, features = ["log"] }
+tracing-opentelemetry = { workspace = true }

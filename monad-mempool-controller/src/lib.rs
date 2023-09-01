@@ -95,7 +95,7 @@ impl Default for ControllerConfig {
             pool_config: PoolConfig::default(),
             mempool_ipc_path: mempool_ipc_path.into(),
             time_threshold: Duration::from_secs(DEFAULT_TIME_THRESHOLD_S),
-            wait_for_peers: 1,
+            wait_for_peers: 0,
             tx_threshold: DEFAULT_TX_THRESHOLD,
             buffer_size: DEFAULT_BUFFER_SIZE,
         }

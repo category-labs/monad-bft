@@ -2,38 +2,79 @@ use std::path::PathBuf;
 
 use clap::{error::ErrorKind, FromArgMatches};
 use libp2p_identity::secp256k1::Keypair;
+use monad_consensus_types::voting::ValidatorMapping;
 use monad_crypto::secp256k1::KeyPair;
+use monad_types::NodeId;
+use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider};
+use opentelemetry_otlp::WithExportConfig;
 
-use crate::{cli::Cli, config::NodeConfig, error::NodeSetupError};
+use crate::{
+    cli::Cli,
+    config::{NodeBootstrapConfig, NodeConfig},
+    error::NodeSetupError,
+    genesis::GenesisState,
+};
 
 pub struct NodeState {
     pub config: NodeConfig,
+    pub genesis: GenesisState,
+    pub val_mapping: ValidatorMapping<KeyPair>,
+
     pub identity: KeyPair,
     pub identity_libp2p: Keypair,
+    pub certkey: KeyPair,
+
+    pub otel_context: Option<opentelemetry::Context>,
 }
 
 impl NodeState {
     pub fn setup(cmd: &mut clap::Command) -> Result<Self, NodeSetupError> {
         let cli = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
-        let config = toml::from_str(&std::fs::read_to_string(cli.config)?)?;
+        let config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.config)?)?;
 
-        let (identity, identity_libp2p) = load_identity_keypair(cli.identity)?;
+        let val_mapping = build_validator_mapping(&config.bootstrap);
 
-        env_logger::try_init().map_err(NodeSetupError::EnvLoggerError)?;
+        let genesis = GenesisState::setup(cli.genesis, &val_mapping)?;
+
+        let (identity, identity_libp2p) = load_secp256k1_keypairs_from_ec_pem(cli.identity)?;
+
+        let (certkey, _) = load_secp256k1_keypairs_from_ec_pem(cli.certkey)?;
+
+        let otel_context = if let Some(otel_endpoint) = cli.otel_endpoint {
+            Some(build_otel_context(otel_endpoint)?)
+        } else {
+            None
+        };
 
         Ok(Self {
             config,
+            genesis,
+            val_mapping,
+
             identity,
             identity_libp2p,
+            certkey,
+
+            otel_context,
         })
     }
 }
 
-fn load_identity_keypair(
-    identity: PathBuf,
+fn build_validator_mapping(bootstrap_config: &NodeBootstrapConfig) -> ValidatorMapping<KeyPair> {
+    let voting_identities = bootstrap_config
+        .peers
+        .iter()
+        .map(|peer| (NodeId(peer.pubkey), peer.certkey))
+        .collect::<Vec<_>>();
+
+    ValidatorMapping::new(voting_identities)
+}
+
+fn load_secp256k1_keypairs_from_ec_pem(
+    path: PathBuf,
 ) -> Result<(KeyPair, libp2p_identity::secp256k1::Keypair), NodeSetupError> {
-    let file = std::fs::File::open(identity)?;
+    let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
 
     let mut ec_private_keys = rustls_pemfile::ec_private_keys(&mut reader)?.into_iter();
@@ -53,4 +94,29 @@ fn load_identity_keypair(
     }
 
     Ok(KeyPair::libp2p_from_der(private_key_bytes)?)
+}
+
+fn build_otel_context(otel_endpoint: String) -> Result<opentelemetry::Context, NodeSetupError> {
+    let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
+        opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(otel_endpoint),
+    )
+    .build_span_exporter()?;
+
+    let provider_builder = opentelemetry::sdk::trace::TracerProvider::builder()
+        .with_config(opentelemetry::sdk::trace::config().with_resource(
+            opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                "monad-coordinator",
+            )]),
+        ))
+        .with_batch_exporter(exporter, opentelemetry::runtime::Tokio);
+
+    let provider = provider_builder.build();
+
+    let tracer = provider.tracer("opentelemetry");
+    let span = tracer.start("exec");
+
+    Ok(opentelemetry::Context::default().with_remote_span_context(span.span_context().clone()))
 }

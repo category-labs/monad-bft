@@ -22,7 +22,18 @@ pub enum NodeSetupError {
     Secp256k1(#[from] monad_crypto::secp256k1::Error),
 
     #[error(transparent)]
+    SignatureCollectionError(
+        #[from]
+        monad_consensus_types::signature_collection::SignatureCollectionError<
+            crate::SignatureType,
+        >,
+    ),
+
+    #[error(transparent)]
     TomlDeError(#[from] toml::de::Error),
+
+    #[error(transparent)]
+    TraceError(#[from] opentelemetry_api::trace::TraceError),
 }
 
 impl NodeSetupError {
@@ -34,7 +45,9 @@ impl NodeSetupError {
             NodeSetupError::FromHexError(_) => ErrorKind::ValueValidation,
             NodeSetupError::IoError(_) => ErrorKind::Io,
             NodeSetupError::Secp256k1(_) => ErrorKind::ValueValidation,
+            NodeSetupError::SignatureCollectionError(_) => ErrorKind::ValueValidation,
             NodeSetupError::TomlDeError(_) => ErrorKind::ValueValidation,
+            NodeSetupError::TraceError(_) => ErrorKind::ValueValidation,
         }
     }
 }

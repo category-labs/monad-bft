@@ -1,0 +1,12 @@
+#########################################################
+#                                                       #
+#        WARNING: THIS FILE SHOULD NEVER BE USED        #
+#              IN PRODUCTION ENVIRONMENTS!              #
+#                                                       #
+#########################################################
+
+author = "043359f5234ce62e0eb80460046d8fd1aae018cc8b9e687b40aa2c047e352409b45153d1ad888e4e7e780a3b1fa8c69ca8998bd271c8849137149142e96816a5a4"
+
+[[signatures]]
+id = "043e4b75bf044e2ad1cd5e56aa7867dda2e91ee59b067ae3e7b4c706bcf41bc15d739405fd6da516d212cbe51c71c2a941a745cf6e0dbd0c99798aa9d897220601"
+signature = "5551e29f140c4f6e13f178716ae0f6ee5b404f6d51cb6bae1c6e80214133cd5c10e5b3169b996db22de9e7afbfb0d1ca1f4d7b0eafdb4bdece0ad014fd7e779500"
