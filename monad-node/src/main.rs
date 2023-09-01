@@ -5,7 +5,7 @@ use std::{
 
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
@@ -22,6 +22,7 @@ use monad_executor::{
 use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -111,44 +112,64 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         genesis_vote_info: node_state.genesis.genesis_vote_info,
         genesis_signatures: node_state.genesis.genesis_signatures,
     });
+
     executor.exec(init_commands);
 
     let total_start = Instant::now();
     let mut start = total_start;
     let mut last_printed_len = 0;
+
     const BLOCK_INTERVAL: usize = 100;
 
     let mut last_ledger_len = executor.ledger().get_blocks().len();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+
     if let Some(cx) = &node_state.otel_context {
         ledger_span.set_parent(cx.clone());
     }
 
-    while let Some(event) = executor.next().await {
-        println!("event: {:?}", event);
-        let commands = {
-            let _ledger_span = ledger_span.enter();
-            let _event_span = tracing::info_span!("event_span", ?event).entered();
-            state.update(event)
-        };
-        executor.exec(commands);
-        let ledger_len = executor.ledger().get_blocks().len();
-        if ledger_len > last_ledger_len {
-            last_ledger_len = ledger_len;
-            ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
-            if let Some(cx) = &node_state.otel_context {
-                ledger_span.set_parent(cx.clone());
+    let mut ctrlc = Box::pin(signal::ctrl_c()).into_stream();
+
+    loop {
+        tokio::select! {
+            _ = ctrlc.next() => {
+                break;
             }
-        }
-        if ledger_len >= last_printed_len + BLOCK_INTERVAL {
-            event!(
-                Level::INFO,
-                ledger_len = ledger_len,
-                elapsed_ms = start.elapsed().as_millis(),
-                "100 blocks"
-            );
-            start = Instant::now();
-            last_printed_len = ledger_len / BLOCK_INTERVAL * BLOCK_INTERVAL;
+            event = executor.next() => {
+                let Some(event) = event else {
+                    return Err(());
+                };
+
+                let commands = {
+                    let _ledger_span = ledger_span.enter();
+                    let _event_span = tracing::info_span!("event_span", ?event).entered();
+                    state.update(event)
+                };
+
+                executor.exec(commands);
+
+                let ledger_len = executor.ledger().get_blocks().len();
+
+                if ledger_len > last_ledger_len {
+                    last_ledger_len = ledger_len;
+                    ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
+
+                    if let Some(cx) = &node_state.otel_context {
+                        ledger_span.set_parent(cx.clone());
+                    }
+                }
+
+                if ledger_len >= last_printed_len + BLOCK_INTERVAL {
+                    event!(
+                        Level::INFO,
+                        ledger_len = ledger_len,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "100 blocks"
+                    );
+                    start = Instant::now();
+                    last_printed_len = ledger_len / BLOCK_INTERVAL * BLOCK_INTERVAL;
+                }
+            }
         }
     }
 
