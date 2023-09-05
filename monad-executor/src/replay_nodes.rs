@@ -112,7 +112,7 @@ where
                         .get_mut(node_id)
                         .unwrap()
                         .mut_blockchain();
-                    block.push(b);
+                    block.extend(b);
                 }
                 Command::RouterCommand(cmd) => match cmd {
                     RouterCommand::Publish { target, message } => {

@@ -410,11 +410,7 @@ where
             self.state_root.remove_old_roots(self.seq_num);
 
             if !blocks_to_commit.is_empty() {
-                cmds.extend(
-                    blocks_to_commit
-                        .into_iter()
-                        .map(ConsensusCommand::<ST, SCT>::LedgerCommit),
-                );
+                cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(blocks_to_commit));
             }
         }
         cmds

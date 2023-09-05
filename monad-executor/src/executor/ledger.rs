@@ -38,10 +38,12 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
 
         for command in commands {
             match command {
-                LedgerCommand::LedgerCommit(block) => {
-                    self.block_index
-                        .insert(block.get_id(), self.blockchain.len());
-                    self.blockchain.push(block);
+                LedgerCommand::LedgerCommit(blocks) => {
+                    for block in blocks {
+                        self.block_index
+                            .insert(block.get_id(), self.blockchain.len());
+                        self.blockchain.push(block);
+                    }
                 }
                 LedgerCommand::LedgerFetch(block_id, cb) => {
                     self.ledger_fetch_cb = Some((block_id, cb));
@@ -114,7 +116,7 @@ mod tests {
             block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
             parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
         };
-        mock_ledger.exec(vec![LedgerCommand::LedgerCommit(block)]);
+        mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![block])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
@@ -138,24 +140,24 @@ mod tests {
     fn test_seeking_exist() {
         let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
-        mock_ledger.exec(vec![
-            LedgerCommand::LedgerCommit(MockBlock {
+        mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
-            }),
-            LedgerCommand::LedgerCommit(MockBlock {
+            },
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
-            }),
-            LedgerCommand::LedgerCommit(MockBlock {
+            },
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
-            }),
-            LedgerCommand::LedgerCommit(MockBlock {
+            },
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x04_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
-            }),
-        ]);
+            },
+        ])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
@@ -196,24 +198,24 @@ mod tests {
         let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
 
-        mock_ledger.exec(vec![
-            LedgerCommand::LedgerCommit(MockBlock {
+        mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
-            }),
-            LedgerCommand::LedgerCommit(MockBlock {
+            },
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
-            }),
-            LedgerCommand::LedgerCommit(MockBlock {
+            },
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
-            }),
-            LedgerCommand::LedgerCommit(MockBlock {
+            },
+            MockBlock {
                 block_id: monad_types::BlockId(monad_types::Hash([0x04_u8; 32])),
                 parent_block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
-            }),
-        ]);
+            },
+        ])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
