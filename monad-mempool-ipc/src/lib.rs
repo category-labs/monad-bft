@@ -6,8 +6,40 @@ use std::{
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use monad_mempool_types::tx::EthTx;
 use prost::Message;
+use rand::distributions::{Alphanumeric, DistString};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+
+#[cfg(target_os = "linux")]
+const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/run/monad_mempool";
+#[cfg(target_os = "macos")]
+const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/var/run/monad_mempool";
+
+const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
+
+const MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR: &str = "MONAD_MEMPOOL_RNDUDS";
+
+pub fn generate_uds_path() -> String {
+    let randomize = cfg!(test)
+        || std::env::var(MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR)
+            .ok()
+            .map(|s| s.eq_ignore_ascii_case("true"))
+            .unwrap_or_default();
+
+    format!(
+        "{}{}{}",
+        DEFAULT_MEMPOOL_BIND_PATH_BASE,
+        if randomize {
+            format!(
+                "_{}",
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 8)
+            )
+        } else {
+            "".to_string()
+        },
+        DEFAULT_MEMPOOL_BIND_PATH_EXT
+    )
+}
 
 pub struct MempoolTxIpcSender {
     writer: FramedWrite<UnixStream, LengthDelimitedCodec>,
@@ -58,7 +90,7 @@ impl Sink<EthTx> for MempoolTxIpcSender {
     }
 }
 
-pub(crate) struct MempoolTxIpcReceiver {
+pub struct MempoolTxIpcReceiver {
     path: PathBuf,
     listener: UnixListener,
     readers: Vec<FramedRead<UnixStream, LengthDelimitedCodec>>,

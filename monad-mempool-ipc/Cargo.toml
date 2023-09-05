@@ -1,0 +1,13 @@
+[package]
+name = "monad-mempool-ipc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-mempool-types = { path = "../monad-mempool-types" }
+
+futures = { workspace = true }
+prost = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true, features = ["codec"] }

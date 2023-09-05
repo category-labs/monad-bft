@@ -10,14 +10,12 @@ monad-mempool-checker = { path = "../monad-mempool-checker" }
 monad-mempool-messenger = { path = "../monad-mempool-messenger" }
 monad-mempool-txpool = { path = "../monad-mempool-txpool" }
 monad-mempool-types = { path = "../monad-mempool-types" }
+monad-mempool-ipc = { path = "../monad-mempool-ipc" }
 
 ethers = { workspace = true }
 futures = { workspace = true }
-prost = { workspace = true }
-rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

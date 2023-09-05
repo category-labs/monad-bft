@@ -4782,17 +4782,27 @@ dependencies = [
  "ethers",
  "futures",
  "monad-mempool-checker",
+ "monad-mempool-ipc",
  "monad-mempool-messenger",
  "monad-mempool-txpool",
  "monad-mempool-types",
  "oorandom",
- "prost",
- "rand 0.8.5",
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "monad-mempool-ipc"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-mempool-types",
+ "prost",
+ "rand 0.8.5",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

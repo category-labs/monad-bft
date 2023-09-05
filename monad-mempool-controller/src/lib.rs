@@ -16,30 +16,17 @@ use ethers::{
     },
 };
 use futures::{FutureExt, Stream, StreamExt};
-use ipc::MempoolTxIpcReceiver;
 use monad_mempool_checker::{Checker, CheckerConfig};
+use monad_mempool_ipc::{generate_uds_path, MempoolTxIpcReceiver};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
 use monad_mempool_txpool::{Pool, PoolConfig};
 use monad_mempool_types::tx::{EthTx, EthTxBatch};
-use rand::distributions::{Alphanumeric, DistString};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, Mutex},
     task::{JoinError, JoinHandle},
 };
 use tracing::{event, Level};
-
-mod ipc;
-pub use ipc::MempoolTxIpcSender;
-
-#[cfg(target_os = "linux")]
-const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/run/monad_mempool";
-#[cfg(target_os = "macos")]
-const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/var/run/monad_mempool";
-
-const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
-
-const MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR: &str = "MONAD_MEMPOOL_RNDUDS";
 
 const DEFAULT_TX_THRESHOLD: usize = 1000;
 const DEFAULT_TIME_THRESHOLD_S: u64 = 1;
@@ -69,31 +56,11 @@ pub struct ControllerConfig {
 
 impl Default for ControllerConfig {
     fn default() -> Self {
-        let randomize_uds_path = cfg!(test)
-            || std::env::var(MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR)
-                .ok()
-                .map(|s| s.eq_ignore_ascii_case("true"))
-                .unwrap_or_default();
-
-        let mempool_ipc_path = format!(
-            "{}{}{}",
-            DEFAULT_MEMPOOL_BIND_PATH_BASE,
-            if randomize_uds_path {
-                format!(
-                    "_{}",
-                    Alphanumeric.sample_string(&mut rand::thread_rng(), 8)
-                )
-            } else {
-                "".to_string()
-            },
-            DEFAULT_MEMPOOL_BIND_PATH_EXT
-        );
-
         Self {
             checker_config: CheckerConfig::default(),
             messenger_config: MessengerConfig::default(),
             pool_config: PoolConfig::default(),
-            mempool_ipc_path: mempool_ipc_path.into(),
+            mempool_ipc_path: generate_uds_path().into(),
             time_threshold: Duration::from_secs(DEFAULT_TIME_THRESHOLD_S),
             wait_for_peers: 0,
             tx_threshold: DEFAULT_TX_THRESHOLD,
@@ -402,11 +369,12 @@ mod test {
         types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest},
     };
     use futures::SinkExt;
+    use monad_mempool_ipc::MempoolTxIpcSender;
     use monad_mempool_types::tx::EthTx;
     use oorandom::Rand32;
     use tempfile::NamedTempFile;
 
-    use crate::{Controller, ControllerConfig, MempoolTxIpcSender};
+    use crate::{Controller, ControllerConfig};
 
     const NUM_CONTROLLER: u16 = 4;
     const NUM_TX: u16 = 10;

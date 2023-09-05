@@ -10,6 +10,7 @@ members = [
     "monad-executor",
     "monad-mempool-checker",
     "monad-mempool-controller",
+    "monad-mempool-ipc",
     "monad-mempool-messenger",
     "monad-mempool-txpool",
     "monad-mempool-types",
