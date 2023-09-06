@@ -1,5 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
+use log::{debug, warn};
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
@@ -23,8 +24,10 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{PeerId, RouterTarget};
+use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use tracing::trace;
 
 use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 
@@ -166,6 +169,11 @@ where
         &mut self,
         event: PacemakerTimerExpire,
     ) -> Vec<PacemakerCommand<ST, SCT>> {
+        inc_count!(local_timeout);
+        debug!(
+            "local timeout: round={:?}",
+            self.pacemaker.get_current_round()
+        );
         self.pacemaker
             .handle_event(&mut self.safety, &self.high_qc, event)
     }
@@ -177,6 +185,8 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         // NULL blocks are not required to have state root hashes
         if p.block.payload.txns.0.is_empty() {
+            debug!("Received empty block: block={:?}", p.block);
+            inc_count!(rx_empty_block);
             return vec![ConsensusCommand::FetchFullTxs(
                 TransactionList::default(),
                 Box::new(move |txns| FetchedFullTxs { author, p, txns }),
@@ -190,17 +200,26 @@ where
             // TODO execution lagging too far behind should be a trigger for something
             // to try and catch up faster. For now, just wait
             StateRootResult::OutOfRange => {
+                inc_count!(rx_execution_lagging);
                 vec![]
             }
             // Don't vote and locally timeout if the proposed state root does not match
             // or if state root is missing
             StateRootResult::Missing | StateRootResult::Mismatch => {
+                inc_count!(rx_bad_state_root);
                 vec![]
             }
-            StateRootResult::Success => vec![ConsensusCommand::FetchFullTxs(
-                p.block.payload.txns.clone(),
-                Box::new(move |txns| FetchedFullTxs { author, p, txns }),
-            )],
+            StateRootResult::Success => {
+                debug!(
+                    "Received Proposal Message, fetching txns: txns={:?}",
+                    p.block.payload.txns
+                );
+                inc_count!(rx_proposal);
+                vec![ConsensusCommand::FetchFullTxs(
+                    p.block.payload.txns.clone(),
+                    Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+                )]
+            }
         }
     }
 
@@ -212,9 +231,14 @@ where
         validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
+        debug!("Fetched full proposal: {:?}", p);
+        inc_count!(fetched_proposal);
         let mut cmds = vec![];
 
         if !self.transaction_validator.validate(&txns) {
+            warn!("Transaction validation failed");
+            debug!("failed txns: {:?}", txns);
+            inc_count!(failed_txn_validation);
             return cmds;
         }
 
@@ -222,6 +246,8 @@ where
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
+            debug!("Handled proposal with TC: {:?}", last_round_tc);
+            inc_count!(proposal_with_tc);
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
@@ -240,10 +266,20 @@ where
             .pending_block_tree
             .get_missing_ancestor(&p.block.get_id())
         {
+            debug!("Block sync request: blockid={:?}", bid);
             cmds.push(self.create_request_sync(bid));
         }
 
         if p.block.round != round || author != leader || p.block.author != leader {
+            debug!(
+                "Invalid proposal: expected-round={:?} \
+                round={:?} \
+                expected-leader={:?} \
+                author={:?} \
+                block-author={:?}",
+                round, p.block.round, leader, author, p.block.author
+            );
+            inc_count!(invalid_proposal_round_leader);
             return cmds;
         }
 
@@ -259,6 +295,8 @@ where
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
                 message: ConsensusMessage::Vote(vote_msg),
             };
+            debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
+            inc_count!(created_vote);
             cmds.push(send_cmd);
         }
 
@@ -273,9 +311,12 @@ where
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
+        debug!("Vote Message: {:?}", vote_msg);
         if vote_msg.vote.vote_info.round < self.pacemaker.get_current_round() {
+            inc_count!(old_vote_received);
             return Default::default();
         }
+        inc_count!(vote_received);
 
         let qc: Option<QuorumCertificate<SCT>> =
             self.vote_state
@@ -283,6 +324,8 @@ where
 
         let mut cmds = Vec::new();
         if let Some(qc) = qc {
+            debug!("Created QC {:?}", qc);
+            inc_count!(created_qc);
             cmds.extend(self.process_certificate_qc(&qc));
 
             if self.nodeid
@@ -304,13 +347,18 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
         if tm.tminfo.round < self.pacemaker.get_current_round() {
+            inc_count!(old_remote_timeout);
             return cmds;
         }
+
+        debug!("Remote timeout msg: {:?}", tm);
+        inc_count!(remote_timeout_msg);
 
         let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
+            inc_count!(remote_timeout_msg_with_tc);
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
@@ -329,6 +377,8 @@ where
         );
         cmds.extend(remote_timeout_cmds.into_iter().map(Into::into));
         if let Some(tc) = tc {
+            debug!("Created TC: {:?}", tc);
+            inc_count!(created_tc);
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(&tc)
@@ -362,6 +412,9 @@ where
         let mut cmds = vec![];
         let block = b.block;
         let bid = block.get_id();
+        debug!("Block sync response: block={:?}", block);
+        inc_count!(block_sync_response);
+
         if self.requested_blocks.remove(&bid) && self.pending_block_tree.is_valid(&block) {
             self.pending_block_tree
                 .add(block)
@@ -374,6 +427,7 @@ where
     }
 
     fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT> {
+        inc_count!(block_sync_request);
         self.requested_blocks.insert(blockid);
         ConsensusCommand::RequestSync { blockid }
     }
@@ -416,8 +470,10 @@ where
     #[must_use]
     pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
+            inc_count!(process_old_qc);
             return Vec::new();
         }
+        inc_count!(process_qc);
 
         self.high_qc = qc.clone();
         let mut cmds = Vec::new();
@@ -436,6 +492,11 @@ where
                     .remove_old_roots(b.payload.seq_num);
             }
 
+            debug!(
+                "QC triggered commit: num_commits={:?}",
+                blocks_to_commit.len()
+            );
+
             if !blocks_to_commit.is_empty() {
                 cmds.extend(
                     blocks_to_commit
@@ -448,7 +509,6 @@ where
         cmds
     }
 
-    // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_certificate_qc(
         &mut self,
@@ -461,7 +521,6 @@ where
         cmds
     }
 
-    // TODO consider changing return type to Option<T>
     #[must_use]
     fn process_new_round_event(
         &mut self,
@@ -482,6 +541,9 @@ where
                 let seq_num = s + 1;
                 match self.state_root_validator.get_next_state_root(seq_num) {
                     Some(h) => {
+                        inc_count!(creating_proposal);
+                        debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
+                                node_id, round, high_qc, seq_num, last_round_tc);
                         vec![ConsensusCommand::FetchTxs(
                             // FIXME get from config
                             10000,
@@ -499,6 +561,9 @@ where
                     None => {
                         // Don't have the necessary state root hash ready so propose
                         // a NULL block
+                        inc_count!(creating_empty_block_proposal);
+                        debug!("Creating Empty Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
+                                node_id, round, high_qc, seq_num, last_round_tc);
                         vec![ConsensusCommand::FetchTxs(
                             0,
                             Box::new(move |_txns| FetchedTxs {
@@ -558,6 +623,7 @@ mod test {
         leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
         validator_set::ValidatorSet,
     };
+    use tracing_test::traced_test;
 
     use crate::{ConsensusCommand, ConsensusMessage, ConsensusProcess, ConsensusState};
 
@@ -618,7 +684,8 @@ mod test {
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
-    #[test]
+    #[traced_test]
+    #[test_log::test]
     fn lock_qc_high() {
         let (keys, certkeys, valset, valmap, mut states) =
             setup::<NopSignature, SignatureCollectionType, StateRootValidatorType>(4);
@@ -674,6 +741,17 @@ mod test {
             &election,
         );
         assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
+
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains("monotonic_counter.vote_received"))
+                .count()
+            {
+                3 => Ok(()),
+                n => Err(format!("Expected count 3 got {}", n)),
+            }
+        });
     }
 
     // When a node locally timesout on a round, it no longer produces votes in that round
