@@ -116,21 +116,26 @@ fn merge_nodes(n1: &BlsSignatureCollection, n2: &BlsSignatureCollection) -> BlsS
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlsSignatureCollection {
-    pub signers: BitVec<u8, Msb0>,
+    pub signers: BitVec<usize, Lsb0>,
     pub sig: BlsAggregateSignature,
 }
 
 impl Hashable for BlsSignatureCollection {
     fn hash<H: Hasher>(&self, state: &mut H) {
         let bitvec_slice = self.signers.as_raw_slice();
-        state.update(bitvec_slice);
+        let mut u8_slice = Vec::new();
+        for elem in bitvec_slice {
+            let bytes = elem.to_le_bytes();
+            u8_slice.extend_from_slice(&bytes);
+        }
+        state.update(u8_slice.as_slice());
         self.sig.hash(state);
     }
 }
 
 impl BlsSignatureCollection {
     fn with_capacity(n: usize) -> Self {
-        let signers = bitvec![u8, Msb0; 0; n];
+        let signers = bitvec![usize, Lsb0; 0; n];
         let sig = BlsAggregateSignature::infinity();
         Self { signers, sig }
     }
