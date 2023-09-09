@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use futures_util::{FutureExt, StreamExt};
 use monad_block_sync::BlockSyncState;
-use monad_consensus_state::ConsensusState;
+use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::{Block, BlockType},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
@@ -70,7 +70,7 @@ pub struct Config {
         SignatureCollectionPubKeyType<SignatureCollectionType>,
     )>,
     pub delta: Duration,
-    pub state_root_delay: u64,
+    pub consensus_config: ConsensusConfig,
     pub genesis_block: Block<SignatureCollectionType>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SignatureCollectionType,
@@ -283,7 +283,11 @@ fn testnet(
             libp2p_keepalive: keepalive,
             genesis_peers: peers.clone(),
             delta,
-            state_root_delay,
+            consensus_config: ConsensusConfig {
+                proposal_size: 5000,
+                state_root_delay,
+                propose_with_missing_blocks: false,
+            },
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
             genesis_signatures: genesis_signatures.clone(),
@@ -337,7 +341,7 @@ async fn run(
         key: keypair,
         certkey: certkeypair,
         delta: config.delta,
-        state_root_delay: config.state_root_delay,
+        consensus_config: config.consensus_config,
         genesis_block: config.genesis_block,
         genesis_vote_info: config.genesis_vote_info,
         genesis_signatures: config.genesis_signatures,

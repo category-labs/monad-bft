@@ -7,7 +7,7 @@ use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_block_sync::BlockSyncState;
-use monad_consensus_state::ConsensusState;
+use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
     validation::Sha256Hash,
@@ -122,7 +122,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         key: node_state.identity,
         certkey: node_state.certkey,
         delta: Duration::from_secs(1),
-        state_root_delay: 0,
+        consensus_config: ConsensusConfig {
+            proposal_size: 5000,
+            state_root_delay: 0,
+            propose_with_missing_blocks: false,
+        },
         genesis_block: node_state.genesis.genesis_block,
         genesis_vote_info: node_state.genesis.genesis_vote_info,
         genesis_signatures: node_state.genesis.genesis_signatures,

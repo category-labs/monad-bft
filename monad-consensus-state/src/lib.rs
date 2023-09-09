@@ -1,7 +1,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use log::{debug, warn};
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, RootKind};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
@@ -44,6 +44,7 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
     safety: Safety,
 
     nodeid: NodeId,
+    config: ConsensusConfig,
 
     transaction_validator: TV,
     requested_blocks: HashSet<BlockId>,
@@ -52,6 +53,13 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
     keypair: KeyPair,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
 }
+
+pub struct ConsensusConfig {
+    pub proposal_size: usize,
+    pub state_root_delay: u64,
+    pub propose_with_missing_blocks: bool,
+}
+
 pub trait ConsensusProcess<ST, SCT>
 where
     ST: MessageSignature,
@@ -65,7 +73,7 @@ where
         genesis_block: Block<SCT>,
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
-        state_root_delay: u64,
+        config: ConsensusConfig,
         keypair: KeyPair,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self;
@@ -143,7 +151,7 @@ where
         genesis_block: Block<SCT>,
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
-        state_root_delay: u64,
+        config: ConsensusConfig,
 
         // TODO deprecate
         keypair: KeyPair,
@@ -153,10 +161,11 @@ where
             pending_block_tree: BlockTree::new(genesis_block),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
-            state_root_validator: SVT::new(state_root_delay),
+            state_root_validator: SVT::new(config.state_root_delay),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
+            config,
 
             transaction_validator,
             requested_blocks: HashSet::new(),
@@ -534,54 +543,86 @@ where
         let high_qc = self.high_qc.clone();
 
         let parent_bid = high_qc.info.vote.id;
-        let seq_num = self.pending_block_tree.get_seq_num(parent_bid);
-
-        match seq_num {
-            Some(s) => {
-                let seq_num = s + 1;
-                match self.state_root_validator.get_next_state_root(seq_num) {
-                    Some(h) => {
-                        inc_count!(creating_proposal);
-                        debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
-                                node_id, round, high_qc, seq_num, last_round_tc);
-                        vec![ConsensusCommand::FetchTxs(
-                            // FIXME get from config
-                            10000,
-                            Box::new(move |txns| FetchedTxs {
-                                node_id,
-                                round,
-                                seq_num,
-                                state_root_hash: h,
-                                high_qc,
-                                last_round_tc,
-                                txns,
-                            }),
-                        )]
-                    }
-                    None => {
-                        // Don't have the necessary state root hash ready so propose
-                        // a NULL block
-                        inc_count!(creating_empty_block_proposal);
-                        debug!("Creating Empty Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
-                                node_id, round, high_qc, seq_num, last_round_tc);
-                        vec![ConsensusCommand::FetchTxs(
-                            0,
-                            Box::new(move |_txns| FetchedTxs {
-                                node_id,
-                                round,
-                                seq_num,
-                                state_root_hash: Hash([0; 32]),
-                                high_qc,
-                                last_round_tc,
-                                txns: TransactionList::default(),
-                            }),
-                        )]
-                    }
-                }
+        let seq_num_qc = high_qc.info.vote.seq_num;
+        let proposed_seq_num = seq_num_qc + 1;
+        match self.proposal_policy(&parent_bid, proposed_seq_num) {
+            ConsensusAction::Propose(h) => {
+                inc_count!(creating_proposal);
+                debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
+                                node_id, round, high_qc, proposed_seq_num, last_round_tc);
+                vec![ConsensusCommand::FetchTxs(
+                    self.config.proposal_size,
+                    Box::new(move |txns| FetchedTxs {
+                        node_id,
+                        round,
+                        seq_num: proposed_seq_num,
+                        state_root_hash: h,
+                        high_qc,
+                        last_round_tc,
+                        txns,
+                    }),
+                )]
             }
-            None => vec![],
+            ConsensusAction::Abstain => {
+                inc_count!(abstain_proposal);
+                // TODO: This could potentially be an empty block
+                vec![]
+            }
+            ConsensusAction::ProposeEmpty => {
+                // Don't have the necessary state root hash ready so propose
+                // a NULL block
+                inc_count!(creating_empty_block_proposal);
+                debug!("Creating Empty Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
+                                node_id, round, high_qc, proposed_seq_num, last_round_tc);
+                vec![ConsensusCommand::FetchTxs(
+                    0,
+                    Box::new(move |_txns| FetchedTxs {
+                        node_id,
+                        round,
+                        seq_num: proposed_seq_num,
+                        state_root_hash: Hash([0; 32]),
+                        high_qc,
+                        last_round_tc,
+                        txns: TransactionList::default(),
+                    }),
+                )]
+            }
         }
     }
+
+    #[must_use]
+    fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: u64) -> ConsensusAction {
+        match self.pending_block_tree.root {
+            RootKind::Unrooted(_) => return ConsensusAction::Abstain,
+            RootKind::Rooted(_) => (),
+        }
+
+        if !self.pending_block_tree.tree().contains_key(parent_bid)
+            && !self.config.propose_with_missing_blocks
+        {
+            return ConsensusAction::Abstain;
+        }
+
+        if self.config.propose_with_missing_blocks
+            || self.pending_block_tree.path_to_root(parent_bid)
+        {
+            match self
+                .state_root_validator
+                .get_next_state_root(proposed_seq_num)
+            {
+                Some(h) => ConsensusAction::Propose(h),
+                None => ConsensusAction::ProposeEmpty,
+            }
+        } else {
+            ConsensusAction::Abstain
+        }
+    }
+}
+
+pub enum ConsensusAction {
+    Propose(Hash),
+    ProposeEmpty,
+    Abstain,
 }
 
 #[cfg(test)]
@@ -625,7 +666,9 @@ mod test {
     };
     use tracing_test::traced_test;
 
-    use crate::{ConsensusCommand, ConsensusMessage, ConsensusProcess, ConsensusState};
+    use crate::{
+        ConsensusCommand, ConsensusConfig, ConsensusMessage, ConsensusProcess, ConsensusState,
+    };
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
@@ -673,7 +716,11 @@ mod test {
                     genesis_block.clone(),
                     genesis_qc.clone(),
                     Duration::from_secs(1),
-                    0,
+                    ConsensusConfig {
+                        proposal_size: 5000,
+                        state_root_delay: 0,
+                        propose_with_missing_blocks: false,
+                    },
                     std::mem::replace(&mut dupkeys[i], default_key),
                     std::mem::replace(&mut dupcertkeys[i], default_cert_key),
                 )

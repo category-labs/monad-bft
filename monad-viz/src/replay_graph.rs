@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
 
+use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
     validation::Sha256Hash,
@@ -51,7 +52,11 @@ impl ReplayConfig<MS> for RepConfig {
                     .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
                     .collect::<Vec<_>>(),
                 delta: self.delta,
-                state_root_delay: 0,
+                consensus_config: ConsensusConfig {
+                    proposal_size: 5000,
+                    state_root_delay: 0,
+                    propose_with_missing_blocks: false,
+                },
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                 genesis_signatures: genesis_sigs.clone(),

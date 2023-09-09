@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
     signature_collection::SignatureCollection, validation::Sha256Hash,
@@ -48,7 +49,11 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
                 .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
                 .collect::<Vec<_>>(),
             delta,
-            state_root_delay: 4,
+            consensus_config: ConsensusConfig {
+                proposal_size: 5000,
+                state_root_delay: 4,
+                propose_with_missing_blocks: false,
+            },
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
             genesis_signatures: genesis_sigs.clone(),

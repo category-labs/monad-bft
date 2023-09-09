@@ -4,7 +4,7 @@ mod tests {
 
     use futures::StreamExt;
     use monad_block_sync::BlockSyncState;
-    use monad_consensus_state::ConsensusState;
+    use monad_consensus_state::{ConsensusConfig, ConsensusState};
     use monad_consensus_types::{
         block::BlockType, certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
         payload::NopStateRoot, quorum_certificate::genesis_vote_info,
@@ -132,7 +132,11 @@ mod tests {
                         certkey,
                         validators: config_validators.clone(),
                         delta: Duration::from_millis(2),
-                        state_root_delay: 0,
+                        consensus_config: ConsensusConfig {
+                            proposal_size: 5000,
+                            state_root_delay: 0,
+                            propose_with_missing_blocks: false,
+                        },
                         genesis_block: genesis_block.clone(),
                         genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                         genesis_signatures: genesis_sigs.clone(),

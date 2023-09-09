@@ -13,7 +13,7 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     command::{Checkpoint, ConsensusCommand, FetchedBlock, FetchedFullTxs, FetchedTxs},
-    ConsensusProcess,
+    ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
     block::Block,
@@ -285,7 +285,7 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub certkey: SignatureCollectionKeyPairType<SCT>,
 
     pub delta: Duration,
-    pub state_root_delay: u64,
+    pub consensus_config: ConsensusConfig,
     pub genesis_block: Block<SCT>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SCT,
@@ -355,7 +355,7 @@ where
                 config.genesis_block,
                 genesis_qc,
                 config.delta,
-                config.state_root_delay,
+                config.consensus_config,
                 config.key,
                 config.certkey,
             ),

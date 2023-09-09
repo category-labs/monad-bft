@@ -101,7 +101,7 @@ pub enum RootKind {
 }
 
 pub struct BlockTree<T> {
-    root: RootKind,
+    pub root: RootKind,
     tree: HashMap<BlockId, BlockTreeBlock<T>>,
     high_round: Round,
 }
