@@ -185,6 +185,8 @@ impl<M> Transform<M> for ReplayTransformer<M> {
             if self.filtered_msgs.is_empty() {
                 return TransformerStream::Continue(vec![(Duration::ZERO, message)]);
             }
+
+            self.filtered_msgs.push(message);
             let mut result = mem::take(&mut self.filtered_msgs);
             let msgs = match self.order {
                 TransformerReplayOrder::Forward => result,
@@ -505,7 +507,10 @@ mod test {
             panic!("replay_transformer returned wrong type")
         };
 
-        assert_eq!(c.len(), 6);
+        assert_eq!(c.len(), 7);
+        for (idx, (_, m)) in c.iter().enumerate().take(7) {
+            assert_eq!(m.from_tick, Duration::from_millis(idx as u64))
+        }
 
         for idx in 7..1000 {
             let mut mock_message = get_mock_message();
