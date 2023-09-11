@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bitvec::prelude::*;
 use monad_crypto::bls12_381::{
@@ -214,6 +214,22 @@ impl SignatureCollection for BlsSignatureCollection {
                 .as_signature()]));
         }
         Ok(signers)
+    }
+
+    fn get_participants(
+        &self,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        _msg: &[u8],
+    ) -> HashSet<NodeId> {
+        assert_eq!(self.signers.len(), validator_mapping.map.len());
+
+        let mut signers = HashSet::new();
+        for (bit, (node_id, _)) in self.signers.iter().zip(validator_mapping.map.iter()) {
+            if *bit {
+                signers.insert(*node_id);
+            }
+        }
+        signers
     }
 
     fn num_signatures(&self) -> usize {

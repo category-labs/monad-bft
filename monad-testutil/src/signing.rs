@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{collections::HashSet, marker::PhantomData};
 
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
@@ -67,6 +67,14 @@ impl SignatureCollection for MockSignatures {
         _msg: &[u8],
     ) -> Result<Vec<NodeId>, SignatureCollectionError<Self::SignatureType>> {
         Ok(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)).collect())
+    }
+
+    fn get_participants(
+        &self,
+        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        _msg: &[u8],
+    ) -> HashSet<NodeId> {
+        HashSet::from_iter(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)))
     }
 
     fn num_signatures(&self) -> usize {

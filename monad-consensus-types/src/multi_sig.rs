@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use log::{error, warn};
 use monad_proto::proto::signing::ProtoMultiSig;
@@ -151,6 +151,29 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
             ));
         }
         Ok(node_ids)
+    }
+
+    fn get_participants(
+        &self,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        msg: &[u8],
+    ) -> HashSet<NodeId> {
+        let mut node_ids = HashSet::new();
+        let mut pub_keys = HashSet::new();
+
+        for sig in self.sigs.iter() {
+            if let Ok(pubkey) = sig.recover_pubkey(msg) {
+                pub_keys.insert(pubkey);
+            }
+        }
+
+        for (node_id, pk) in validator_mapping.map.iter() {
+            if pub_keys.contains(pk) {
+                node_ids.insert(*node_id);
+            }
+        }
+
+        node_ids
     }
 
     fn serialize(&self) -> Vec<u8> {

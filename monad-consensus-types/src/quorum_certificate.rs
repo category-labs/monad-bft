@@ -1,6 +1,13 @@
+use std::collections::HashSet;
+
 use monad_types::*;
 
-use crate::{ledger::*, signature_collection::SignatureCollection, validation::Hasher, voting::*};
+use crate::{
+    ledger::*,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validation::Hasher,
+    voting::*,
+};
 
 pub const GENESIS_PRIME_QC_HASH: Hash = Hash([0xAA; 32]);
 
@@ -123,5 +130,15 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
 
     pub fn get_hash(&self) -> Hash {
         self.signature_hash
+    }
+
+    pub fn get_participants<H: Hasher>(
+        &self,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    ) -> HashSet<NodeId> {
+        // TODO, consider caching this qc_msg hash in qc for performance in future
+        let qc_msg = H::hash_object(&self.info.ledger_commit);
+        self.signatures
+            .get_participants(validator_mapping, qc_msg.as_ref())
     }
 }
