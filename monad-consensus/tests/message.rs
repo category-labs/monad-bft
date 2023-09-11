@@ -7,7 +7,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
@@ -108,9 +108,9 @@ fn max_high_qc() {
     .map(|x| {
         let msg = Sha256Hash::hash_object(x);
         let keypair = get_key(0);
-        HighQcRoundSigTuple {
+        HighQcRoundSigColTuple {
             high_qc_round: *x,
-            author_signature: keypair.sign(msg.as_ref()),
+            sigs: keypair.sign(msg.as_ref()),
         }
     })
     .collect();

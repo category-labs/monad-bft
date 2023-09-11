@@ -56,6 +56,7 @@ impl<S: MessageSignature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
 {
     fn from(cmd: PacemakerCommand<S, SC>) -> Self {
         match cmd {
+            PacemakerCommand::PrepareTimeout(_) => unreachable!(),
             PacemakerCommand::Broadcast(message) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
                 message: ConsensusMessage::Timeout(message),

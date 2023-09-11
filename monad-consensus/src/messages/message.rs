@@ -3,7 +3,7 @@ use monad_consensus_types::{
     certificate_signature::CertificateSignature,
     message_signature::MessageSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{TimeoutCertificate, TimeoutInfo},
+    timeout::{Timeout, TimeoutCertificate},
     validation::{Hashable, Hasher},
     voting::Vote,
 };
@@ -51,15 +51,27 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TimeoutMessage<S, T> {
-    pub tminfo: TimeoutInfo<T>,
-    pub last_round_tc: Option<TimeoutCertificate<S>>,
+pub struct TimeoutMessage<SCT: SignatureCollection> {
+    pub timeout: Timeout<SCT>,
+    pub sig: SCT::SignatureType,
 }
 
-impl<S: MessageSignature, T: SignatureCollection> Hashable for TimeoutMessage<S, T> {
+impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
+    pub fn new<H: Hasher>(
+        timeout: Timeout<SCT>,
+        key: &SignatureCollectionKeyPairType<SCT>,
+    ) -> Self {
+        let tmo_hash = timeout.timeout_digest();
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_hash.as_ref(), key);
+
+        Self { timeout, sig }
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.update(self.tminfo.round);
-        state.update(self.tminfo.high_qc.info.vote.round);
+        self.timeout.hash(state);
+        self.sig.hash(state);
     }
 }
 

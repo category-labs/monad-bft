@@ -16,7 +16,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
@@ -190,9 +190,9 @@ fn bench_timeout(c: &mut Criterion) {
 
     let mut high_qc_rounds = Vec::new();
     for keypair in keypairs.iter() {
-        high_qc_rounds.push(HighQcRoundSigTuple {
+        high_qc_rounds.push(HighQcRoundSigColTuple {
             high_qc_round,
-            author_signature: keypair.sign(high_qc_round_hash.as_ref()),
+            sigs: keypair.sign(high_qc_round_hash.as_ref()),
         });
     }
 

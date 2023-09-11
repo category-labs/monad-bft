@@ -161,12 +161,20 @@ where
         }
     }
 
-    fn handle_timeout_expiry(
+    fn handle_timeout_expiry<H: Hasher>(
         &mut self,
         event: PacemakerTimerExpire,
     ) -> Vec<PacemakerCommand<ST, SCT>> {
         self.pacemaker
             .handle_event(&mut self.safety, &self.high_qc, event)
+            .into_iter()
+            .map(|cmd| match cmd {
+                PacemakerCommand::PrepareTimeout(tmo) => {
+                    let tmo_msg = TimeoutMessage::new::<H>(timeout, &self.cert_keypair);
+                    PacemakerCommand::Broadcast(tmo_msg)
+                }
+                _ => cmd,
+            })
     }
 
     fn handle_proposal_message<H: Hasher>(

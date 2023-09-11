@@ -246,7 +246,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> Unverified<S, VoteMessage<SC
     }
 }
 
-impl<S, SCT> Unverified<S, TimeoutMessage<S, SCT>>
+impl<S, SCT> Unverified<S, TimeoutMessage<SCT>>
 where
     S: MessageSignature,
     SCT: SignatureCollection,
@@ -256,7 +256,7 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, TimeoutMessage<S, SCT>>, Error> {
+    ) -> Result<Verified<S, TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
         let msg = H::hash_object(&self.obj);
         let author = verify_author(
@@ -356,7 +356,7 @@ where
     VT: ValidatorSetType,
 {
     if let Some(tc) = tc {
-        verify_tc::<S, H, _>(validators, tc)?;
+        verify_tc::<S, H, _>(validators, validator_mapping, tc)?;
     }
 
     verify_qc::<SCT, H, _>(validators, validator_mapping, qc)?;
@@ -364,9 +364,13 @@ where
     Ok(())
 }
 
-fn verify_tc<S, H, VT>(validators: &VT, tc: &TimeoutCertificate<S>) -> Result<(), Error>
+fn verify_tc<SCT, H, VT>(
+    validators: &VT,
+    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    tc: &TimeoutCertificate<SCT>,
+) -> Result<(), Error>
 where
-    S: MessageSignature,
+    SCT: SignatureCollection,
     H: Hasher,
     VT: ValidatorSetType,
 {
@@ -382,14 +386,12 @@ where
         t.high_qc_round.hash(&mut h);
         let msg = h.hash();
 
-        let pubkey = get_pubkey(msg.as_ref(), &t.author_signature)?;
-        pubkey.valid_pubkey(validators.get_members())?;
-
-        t.author_signature
-            .verify(msg.as_ref(), &pubkey)
+        let signers = t
+            .sigs
+            .verify(msg.as_ref(), validator_mapping)
             .map_err(|_| Error::InvalidSignature)?;
 
-        node_ids.push(NodeId(pubkey));
+        node_ids.extend(signers);
     }
 
     if !validators.has_super_majority_votes(node_ids.iter()) {
@@ -501,7 +503,7 @@ mod test {
         multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
-        timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
+        timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate},
         validation::{Error, Hashable, Hasher, Sha256Hash},
         voting::{ValidatorMapping, VoteInfo},
     };
@@ -546,9 +548,9 @@ mod test {
             h.update(Round(5));
             x.hash(&mut h);
             let msg = h.hash();
-            HighQcRoundSigTuple {
+            HighQcRoundSigColTuple {
                 high_qc_round: *x,
-                author_signature: keypair.sign(msg.as_ref()),
+                sigs: keypair.sign(msg.as_ref()),
             }
         })
         .collect();
@@ -679,9 +681,9 @@ mod test {
             h.update(round);
             x.hash(&mut h);
             let msg = h.hash();
-            HighQcRoundSigTuple {
+            HighQcRoundSigColTuple {
                 high_qc_round: *x,
-                author_signature: keypair.sign(msg.as_ref()),
+                sigs: keypair.sign(msg.as_ref()),
             }
         })
         .collect();

@@ -4,7 +4,7 @@ use super::signing::{message_signature_to_proto, proto_to_message_signature};
 use crate::{
     message_signature::MessageSignature,
     signature_collection::SignatureCollection,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate, TimeoutInfo},
 };
 
 impl From<&HighQcRound> for ProtoHighQcRound {
@@ -29,16 +29,16 @@ impl TryFrom<ProtoHighQcRound> for HighQcRound {
     }
 }
 
-impl<S: MessageSignature> From<&HighQcRoundSigTuple<S>> for ProtoHighQcRoundSigTuple {
-    fn from(value: &HighQcRoundSigTuple<S>) -> Self {
+impl<S: MessageSignature> From<&HighQcRoundSigColTuple<S>> for ProtoHighQcRoundSigTuple {
+    fn from(value: &HighQcRoundSigColTuple<S>) -> Self {
         Self {
             high_qc_round: Some((&value.high_qc_round).into()),
-            author_signature: Some(message_signature_to_proto(&value.author_signature)),
+            author_signature: Some(message_signature_to_proto(&value.sigs)),
         }
     }
 }
 
-impl<S: MessageSignature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> {
+impl<S: MessageSignature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigColTuple<S> {
     type Error = ProtoError;
     fn try_from(value: ProtoHighQcRoundSigTuple) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -48,7 +48,7 @@ impl<S: MessageSignature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTu
                     "Unverified<HighQcRound>.obj".to_owned(),
                 ))?
                 .try_into()?,
-            author_signature: proto_to_message_signature(value.author_signature.ok_or(
+            sigs: proto_to_message_signature(value.author_signature.ok_or(
                 Self::Error::MissingRequiredField(
                     "Unverified<HighQcRound>.author_signature".to_owned(),
                 ),
