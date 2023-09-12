@@ -111,6 +111,7 @@ fn bench_vote(c: &mut Criterion) {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
+        seq_num: 0,
     };
     let lci = LedgerCommitInfo {
         commit_state_hash: None,
@@ -155,6 +156,7 @@ fn bench_timeout(c: &mut Criterion) {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
+        seq_num: 0,
     };
     let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
 

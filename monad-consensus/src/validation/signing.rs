@@ -1,6 +1,7 @@
 use std::{collections::HashMap, ops::Deref};
 
 use monad_consensus_types::{
+    block::BlockType,
     convert::signing::message_signature_to_proto,
     message_signature::MessageSignature,
     quorum_certificate::QuorumCertificate,
@@ -217,11 +218,19 @@ where
     }
 
     fn well_formed_proposal(&self) -> Result<(), Error> {
+        self.valid_seq_num()?;
         well_formed(
             self.obj.block.round,
             self.obj.block.qc.info.vote.round,
             &self.obj.last_round_tc,
         )
+    }
+
+    fn valid_seq_num(&self) -> Result<(), Error> {
+        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + 1 {
+            return Err(Error::InvalidSeqNum);
+        }
+        Ok(())
     }
 }
 
@@ -568,6 +577,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);
@@ -592,6 +602,7 @@ mod test {
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let qc = QuorumCertificate::new::<Sha256Hash>(
@@ -614,6 +625,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);

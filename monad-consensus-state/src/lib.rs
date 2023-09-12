@@ -701,6 +701,7 @@ mod test {
             round: expected_qc_high_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
+            seq_num: 0,
         };
         let v = Vote {
             vote_info: vi,

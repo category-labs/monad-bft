@@ -99,6 +99,7 @@ impl Safety {
                 round: block.round,
                 parent_id: block.qc.info.vote.id,
                 parent_round: block.qc.info.vote.round,
+                seq_num: block.get_seq_num(),
             };
 
             let commit_hash = if commit_condition(block.round, block.qc.info) {

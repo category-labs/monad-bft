@@ -10,6 +10,7 @@ impl From<&VoteInfo> for ProtoVoteInfo {
             round: vi.round.0,
             parent_id: Some((&vi.parent_id).into()),
             parent_round: vi.parent_round.0,
+            seq_num: vi.seq_num,
         }
     }
 }
@@ -29,6 +30,7 @@ impl TryFrom<ProtoVoteInfo> for VoteInfo {
                 ))?
                 .try_into()?,
             parent_round: Round(proto_vi.parent_round),
+            seq_num: proto_vi.seq_num,
         })
     }
 }

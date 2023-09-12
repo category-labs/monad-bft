@@ -392,6 +392,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -404,6 +405,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -424,6 +426,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b2 = Block::new::<Sha256Hash>(
@@ -444,6 +447,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b3 = Block::new::<Sha256Hash>(
@@ -464,6 +468,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b4 = Block::new::<Sha256Hash>(
@@ -484,6 +489,7 @@ mod test {
             round: Round(3),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b5 = Block::new::<Sha256Hash>(
@@ -504,6 +510,7 @@ mod test {
             round: Round(5),
             parent_id: b3.get_id(),
             parent_round: Round(3),
+            seq_num: 0,
         };
 
         let b6 = Block::new::<Sha256Hash>(
@@ -524,6 +531,7 @@ mod test {
             round: Round(6),
             parent_id: b5.get_id(),
             parent_round: Round(5),
+            seq_num: 0,
         };
 
         let b7 = Block::new::<Sha256Hash>(
@@ -616,6 +624,7 @@ mod test {
             round: Round(5),
             parent_id: b3.get_id(),
             parent_round: Round(3),
+            seq_num: 0,
         };
 
         let b8 = Block::new::<Sha256Hash>(
@@ -653,6 +662,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -665,6 +675,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -685,6 +696,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b2 = Block::new::<Sha256Hash>(
@@ -741,6 +753,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -753,6 +766,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -794,6 +808,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b3 = Block::new::<Sha256Hash>(
@@ -856,6 +871,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -868,6 +884,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -920,6 +937,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -932,6 +950,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -952,6 +971,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b2 = Block::new::<Sha256Hash>(
@@ -1049,6 +1069,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -1060,6 +1081,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b4 = Block::new::<Sha256Hash>(
@@ -1080,6 +1102,7 @@ mod test {
             round: Round(4),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b5 = Block::new::<Sha256Hash>(
@@ -1100,6 +1123,7 @@ mod test {
             round: Round(5),
             parent_id: b4.get_id(),
             parent_round: Round(4),
+            seq_num: 0,
         };
 
         let b6 = Block::new::<Sha256Hash>(
@@ -1156,6 +1180,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -1168,6 +1193,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b2 = Block::new::<Sha256Hash>(
@@ -1188,6 +1214,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b3 = Block::new::<Sha256Hash>(
@@ -1208,6 +1235,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b4 = Block::new::<Sha256Hash>(
@@ -1228,6 +1256,7 @@ mod test {
             round: Round(4),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b5 = Block::new::<Sha256Hash>(
@@ -1248,6 +1277,7 @@ mod test {
             round: Round(5),
             parent_id: b4.get_id(),
             parent_round: Round(4),
+            seq_num: 0,
         };
 
         let b6 = Block::new::<Sha256Hash>(
@@ -1311,6 +1341,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -1323,6 +1354,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -1343,6 +1375,7 @@ mod test {
             round: Round(3),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(3),
+            seq_num: 0,
         };
 
         let b4 = Block::new::<Sha256Hash>(
@@ -1390,6 +1423,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -1402,6 +1436,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b4 = Block::new::<Sha256Hash>(
@@ -1422,6 +1457,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b5 = Block::new::<Sha256Hash>(
@@ -1462,6 +1498,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
+                        seq_num: 0,
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -1474,6 +1511,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b1 = Block::new::<Sha256Hash>(
@@ -1494,6 +1532,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let b2 = Block::new::<Sha256Hash>(

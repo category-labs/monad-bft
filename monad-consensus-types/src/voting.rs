@@ -57,6 +57,7 @@ pub struct VoteInfo {
     pub round: Round,
     pub parent_id: BlockId,
     pub parent_round: Round,
+    pub seq_num: u64,
 }
 
 impl std::fmt::Debug for VoteInfo {
@@ -66,6 +67,7 @@ impl std::fmt::Debug for VoteInfo {
             .field("r", &self.round)
             .field("pid", &self.parent_id)
             .field("pr", &self.parent_round)
+            .field("sn", &self.seq_num)
             .finish()
     }
 }
@@ -76,6 +78,7 @@ impl Hashable for VoteInfo {
         state.update(self.round.as_bytes());
         state.update(self.parent_id.0.as_bytes());
         state.update(self.parent_round.as_bytes());
+        state.update(self.seq_num.as_bytes());
     }
 }
 
@@ -84,6 +87,7 @@ mod test {
     use monad_types::{BlockId, Hash, Round};
     use sha2::Digest;
     use test_case::test_case;
+    use zerocopy::AsBytes;
 
     use super::VoteInfo;
     use crate::{
@@ -99,6 +103,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let mut hasher = sha2::Sha256::new();
@@ -106,6 +111,7 @@ mod test {
         hasher.update(vi.round);
         hasher.update(vi.parent_id.0);
         hasher.update(vi.parent_round);
+        hasher.update(vi.seq_num.as_bytes());
 
         let h1 = Hash(hasher.finalize_reset().into());
         let h2 = Sha256Hash::hash_object(&vi);
@@ -121,6 +127,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let vi_hash = Sha256Hash::hash_object(&vi);

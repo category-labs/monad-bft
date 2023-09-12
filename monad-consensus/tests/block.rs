@@ -21,6 +21,7 @@ fn block_hash_id() {
                 parent_id: BlockId(Hash([0x00_u8; 32])),
                 round: Round(0),
                 parent_round: Round(0),
+                seq_num: 0,
             },
             ledger_commit: LedgerCommitInfo::default(),
         },

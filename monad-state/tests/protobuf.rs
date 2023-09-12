@@ -49,6 +49,7 @@ fn test_consensus_message_event_vote_multisig() {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
+        seq_num: 0,
     };
     let lci: LedgerCommitInfo = LedgerCommitInfo {
         commit_state_hash: None,

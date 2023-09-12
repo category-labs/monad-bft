@@ -77,6 +77,7 @@ where
         );
 
         self.high_qc = self.qc.clone();
+        self.seq_num += 1;
         self.qc = self.get_next_qc(certkeys, &block, validator_mapping);
 
         let proposal = ProposalMessage {
@@ -84,7 +85,6 @@ where
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;
-        self.seq_num += 1;
 
         Verified::new::<Sha256Hash>(proposal, leader_key)
     }
@@ -153,6 +153,7 @@ where
             round: block.round,
             parent_id: block.qc.info.vote.id,
             parent_round: block.qc.info.vote.round,
+            seq_num: self.seq_num,
         };
         let commit = Some(block.get_id().0); // FIXME: is this hash correct?
         let lci = LedgerCommitInfo::new::<Sha256Hash>(commit, &vi);

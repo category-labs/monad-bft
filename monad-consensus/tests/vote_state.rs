@@ -29,6 +29,7 @@ fn create_signed_vote_message(
         round: vote_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
+        seq_num: 0,
     };
 
     let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi);

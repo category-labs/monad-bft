@@ -58,6 +58,7 @@ pub fn setup_block<SCT: SignatureCollection>(
         round: qc_round,
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
+        seq_num: 0,
     };
     let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
 
@@ -88,7 +89,7 @@ pub fn setup_block<SCT: SignatureCollection>(
         &Payload {
             txns,
             header: execution_header,
-            seq_num: 0,
+            seq_num: 1,
         },
         &qc,
     )

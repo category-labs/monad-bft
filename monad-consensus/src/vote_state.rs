@@ -125,6 +125,7 @@ mod test {
             round: vote_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi);
@@ -217,6 +218,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let v = Vote {
@@ -241,6 +243,7 @@ mod test {
             round: Round(5),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(4),
+            seq_num: 0,
         };
 
         let vi2 = VoteInfo {
@@ -248,6 +251,7 @@ mod test {
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         };
 
         let invalid_vote = Vote {

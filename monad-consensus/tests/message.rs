@@ -30,6 +30,7 @@ fn timeout_msg_hash() {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x00_u8; 32])),
                     parent_round: Round(0),
+                    seq_num: 0,
                 },
                 ledger_commit: Default::default(),
             },
@@ -69,6 +70,7 @@ fn proposal_msg_hash() {
                 round: Round(0),
                 parent_id: BlockId(Hash([0x00_u8; 32])),
                 parent_round: Round(0),
+                seq_num: 0,
             },
             ledger_commit: LedgerCommitInfo::default(),
         },
@@ -136,6 +138,7 @@ fn test_vote_message() {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
+            seq_num: 0,
         },
         ledger_commit_info: lci,
     };
@@ -171,6 +174,7 @@ fn vote_msg_hash(cs: Option<Hash>) {
         round: Round(0),
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
+        seq_num: 0,
     };
     let vi_hash = Sha256Hash::hash_object(&vi);
 

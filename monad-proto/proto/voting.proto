@@ -10,6 +10,7 @@ message ProtoVoteInfo {
   uint64 round = 2;
   monad_proto.basic.ProtoBlockId parent_id = 3;
   uint64 parent_round = 4;
+  uint64 seq_num = 5;
 }
 
 message ProtoVote {
