@@ -13,6 +13,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
+    command::{FetchedFullTxs, FetchedTxs},
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -22,7 +23,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{PeerId, RouterTarget};
+use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
@@ -30,7 +31,7 @@ use tracing::trace;
 
 use crate::{
     blocksync::{BlockSyncManager, BlockSyncResult},
-    command::{ConsensusCommand, FetchedFullTxs, FetchedTxs},
+    command::ConsensusCommand,
 };
 
 pub mod blocksync;
@@ -216,7 +217,12 @@ where
             inc_count!(rx_empty_block);
             return vec![ConsensusCommand::FetchFullTxs(
                 TransactionList::default(),
-                Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+                Box::new(move |txns| FetchedFullTxs {
+                    author,
+                    p_block: p.block,
+                    p_last_round_tc: p.last_round_tc,
+                    txns,
+                }),
             )];
         }
 
@@ -244,7 +250,12 @@ where
                 inc_count!(rx_proposal);
                 vec![ConsensusCommand::FetchFullTxs(
                     p.block.payload.txns.clone(),
-                    Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+                    Box::new(move |txns| FetchedFullTxs {
+                        author,
+                        p_block: p.block,
+                        p_last_round_tc: p.last_round_tc,
+                        txns,
+                    }),
                 )]
             }
         }
@@ -728,7 +739,7 @@ mod test {
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{secp256k1::KeyPair, NopSignature};
-    use monad_executor::{PeerId, RouterTarget};
+    use monad_executor_glue::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},

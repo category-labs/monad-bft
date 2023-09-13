@@ -1,6 +1,6 @@
 use monad_consensus::messages::message::RequestBlockSyncMessage;
-use monad_consensus_state::command::{ConsensusCommand, FetchedBlock};
-use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_consensus_state::command::ConsensusCommand;
+use monad_consensus_types::{command::FetchedBlock, signature_collection::SignatureCollection};
 use monad_types::NodeId;
 use monad_validator::validator_set::ValidatorSetType;
 #[derive(Debug)]

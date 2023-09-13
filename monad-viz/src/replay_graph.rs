@@ -2,16 +2,16 @@ use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
+    block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
+    signature_collection::SignatureCollection, transaction_validator::MockValidator,
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{
-    replay_nodes::ReplayNodes, timed_event::TimedEvent, Identifiable, PeerId, State,
-};
+use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
+use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
-use monad_types::{Deserializable, NodeId, Serializable};
+use monad_types::NodeId;
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
@@ -74,9 +74,11 @@ impl ReplayConfig<MS> for RepConfig {
     }
 }
 
-pub struct ReplayNodesSimulation<S, C>
+pub struct ReplayNodesSimulation<S, C, ST, SCT>
 where
-    S: monad_executor::State,
+    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
     C: ReplayConfig<S>,
 {
     pub nodes: ReplayNodes<S>,
@@ -85,10 +87,12 @@ where
     pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>,
 }
 
-impl<S, C> ReplayNodesSimulation<S, C>
+impl<S, C, ST, SCT> ReplayNodesSimulation<S, C, ST, SCT>
 where
-    S: monad_executor::State,
-    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug + Eq,
+    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    // S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug + Eq,
     C: ReplayConfig<S>,
 {
     pub fn new(config: C, replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>) -> Self {
@@ -140,10 +144,12 @@ where
     }
 }
 
-impl<S, C> Graph for ReplayNodesSimulation<S, C>
+impl<S, C, ST, SCT> Graph for ReplayNodesSimulation<S, C, ST, SCT>
 where
-    S: monad_executor::State,
-    S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Eq + Debug,
+    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    // S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Eq + Debug,
     C: ReplayConfig<S>,
 {
     type State = S;

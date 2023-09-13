@@ -13,16 +13,14 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::SecpSignature;
-use monad_executor::{
-    executor::{
-        checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool,
-        parent::ParentExecutor, timer::TokioTimer,
-    },
-    Executor, State,
-};
+use monad_executor::{Executor, State};
 use monad_mempool_controller::ControllerConfig;
 use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_updaters::{
+    checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool, parent::ParentExecutor,
+    timer::TokioTimer,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;
 use tracing::{event, Level};

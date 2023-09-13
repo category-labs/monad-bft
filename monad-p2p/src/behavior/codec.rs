@@ -3,7 +3,7 @@ use std::{io::ErrorKind, marker::PhantomData, sync::Arc};
 use async_trait::async_trait;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::request_response::Codec;
-use monad_executor::{Message, PeerId};
+use monad_executor_glue::{Message, PeerId};
 use monad_types::{Deserializable, Serializable};
 
 pub(crate) struct ReliableMessageCodec<M, OM> {

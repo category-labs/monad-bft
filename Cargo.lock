@@ -4690,7 +4690,7 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
- "monad-executor",
+ "monad-executor-glue",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -4751,10 +4751,13 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
  "monad-p2p",
  "monad-state",
  "monad-testutil",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "monad-wal",
  "tempfile",
@@ -4765,22 +4768,25 @@ dependencies = [
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [
- "futures",
  "monad-consensus-types",
  "monad-crypto",
- "monad-mempool-controller",
- "monad-mempool-messenger",
- "monad-proto",
+ "monad-executor-glue",
  "monad-testutil",
  "monad-types",
- "monad-wal",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
  "test-case",
- "thiserror",
  "tokio",
- "tracing",
+]
+
+[[package]]
+name = "monad-executor-glue"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-proto",
+ "monad-types",
+ "prost",
 ]
 
 [[package]]
@@ -4856,6 +4862,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-mock-swarm"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "futures",
+ "itertools",
+ "monad-block-sync",
+ "monad-consensus",
+ "monad-consensus-state",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-quic",
+ "monad-state",
+ "monad-testutil",
+ "monad-tracing-counter",
+ "monad-types",
+ "monad-updaters",
+ "monad-validator",
+ "monad-wal",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "tempfile",
+ "test-case",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
@@ -4874,6 +4912,7 @@ dependencies = [
  "monad-p2p",
  "monad-state",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4897,6 +4936,7 @@ dependencies = [
  "libp2p",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
  "monad-types",
 ]
 
@@ -4914,7 +4954,8 @@ name = "monad-quic"
 version = "0.1.0"
 dependencies = [
  "monad-crypto",
- "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
  "quinn-proto 0.11.0",
 ]
 
@@ -4927,7 +4968,8 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
  "monad-validator",
@@ -4948,6 +4990,8 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
  "monad-proto",
  "monad-quic",
  "monad-testutil",
@@ -4955,7 +4999,6 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "monad-wal",
- "prost",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "ref-cast",
@@ -4981,6 +5024,7 @@ dependencies = [
  "monad-p2p",
  "monad-state",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5003,6 +5047,8 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
  "monad-state",
  "monad-types",
  "monad-validator",
@@ -5030,12 +5076,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-updaters"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "monad-consensus-types",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-mempool-controller",
+ "monad-mempool-messenger",
+ "monad-testutil",
+ "monad-types",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "test-case",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
  "log",
  "monad-crypto",
- "monad-proto",
  "monad-testutil",
  "monad-types",
 ]
@@ -5049,6 +5114,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
  "monad-validator",
@@ -5068,6 +5134,8 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
  "monad-types",
@@ -5084,6 +5152,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
  "monad-state",
  "monad-testutil",
  "monad-types",

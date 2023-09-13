@@ -6,10 +6,8 @@ use std::{
 };
 
 use monad_crypto::rustls::UnsafeTlsVerifier;
-use monad_executor::{
-    executor::mock::{RouterEvent, RouterScheduler},
-    PeerId, RouterTarget,
-};
+use monad_executor_glue::{PeerId, RouterTarget};
+use monad_mock_swarm::mock::{RouterEvent, RouterScheduler};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
     TransportConfig,
@@ -129,7 +127,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
     fn inbound(
         &mut self,
         time: std::time::Duration,
-        from: monad_executor::PeerId,
+        from: monad_executor_glue::PeerId,
         message: Self::Serialized,
     ) {
         if from == self.me {

@@ -12,6 +12,7 @@ bench = false
 
 [dependencies]
 monad-crypto = { path = "../monad-crypto", features = ["rustls"] }
-monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-mock-swarm = { path = "../monad-mock-swarm" }
 
 quinn-proto = { workspace = true }

@@ -16,15 +16,16 @@ monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
-prost = { workspace = true }
 ref-cast = { workspace = true }
 
 [dev-dependencies]
 monad-quic = { path = "../monad-quic" }
+monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-testutil = { path = "../monad-testutil" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-wal = { path = "../monad-wal" }
@@ -38,7 +39,3 @@ test-case = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[[bench]]
-name = "two_node_benchmark"
-harness = false

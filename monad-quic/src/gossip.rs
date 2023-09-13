@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use monad_executor::{PeerId, RouterTarget};
+use monad_executor_glue::{PeerId, RouterTarget};
 
 pub enum GossipEvent {
     /// Send gossip_message to peer

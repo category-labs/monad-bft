@@ -1,0 +1,50 @@
+[package]
+name = "monad-mock-swarm"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dependencies]
+monad-crypto = { path = "../monad-crypto" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-types = { path = "../monad-types" }
+monad-updaters = { path = "../monad-updaters" }
+monad-wal = { path = "../monad-wal" }
+
+futures = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+monad-block-sync = { path = "../monad-block-sync" }
+monad-consensus = { path = "../monad-consensus" }
+monad-consensus-state = { path = "../monad-consensus-state" }
+monad-quic = { path = "../monad-quic" }
+monad-state = { path = "../monad-state" }
+monad-testutil = { path = "../monad-testutil" }
+monad-tracing-counter = { path = "../monad-tracing-counter" }
+monad-validator = { path = "../monad-validator" }
+
+criterion = { workspace = true }
+itertools = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tempfile = { workspace = true }
+test-case = { workspace = true }
+tracing = { workspace = true }
+tracing-core = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "two_node_benchmark"
+harness = false

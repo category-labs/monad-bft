@@ -21,7 +21,7 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-use monad_state::{ConsensusEvent, MonadEvent};
+use monad_executor_glue::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
     block::setup_block,
     signing::{get_certificate_key, get_key},

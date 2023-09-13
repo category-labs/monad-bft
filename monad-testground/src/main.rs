@@ -19,15 +19,13 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
-use monad_executor::{
-    executor::{
-        checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool,
-        parent::ParentExecutor, timer::TokioTimer,
-    },
-    Executor, State,
-};
+use monad_executor::{Executor, State};
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
+use monad_updaters::{
+    checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool, parent::ParentExecutor,
+    timer::TokioTimer,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;

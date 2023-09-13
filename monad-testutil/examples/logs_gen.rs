@@ -6,14 +6,14 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::{
-    executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor_glue::{MonadEvent, PeerId};
+use monad_mock_swarm::{
+    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
-    timed_event::TimedEvent,
     transformer::{GenericTransformer, Pipeline},
-    PeerId, State,
 };
-use monad_state::{MonadEvent, MonadState};
+use monad_state::MonadState;
 use monad_testutil::swarm::get_configs;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
@@ -29,7 +29,7 @@ type MS = MonadState<
     BlockSyncState,
 >;
 type MM = <MS as State>::Message;
-type ME = <MS as State>::Event;
+type ME = MonadEvent<SignatureType, SignatureCollectionType>;
 
 pub fn generate_log<P: Pipeline<MM>>(
     num_nodes: u16,
@@ -40,7 +40,7 @@ pub fn generate_log<P: Pipeline<MM>>(
     P: Clone,
     P: Send,
 {
-    type WALoggerType = WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
+    type WALoggerType = WALogger<TimedEvent<ME>>;
     let (pubkeys, state_configs) =
         get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
@@ -64,8 +64,15 @@ pub fn generate_log<P: Pipeline<MM>>(
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes =
-        Nodes::<MS, NoSerRouterScheduler<MM>, P, WALoggerType, MockMempool<ME>>::new(peers);
+    let mut nodes = Nodes::<
+        MS,
+        NoSerRouterScheduler<MM>,
+        P,
+        WALoggerType,
+        MockMempool<ME>,
+        SignatureType,
+        SignatureCollectionType,
+    >::new(peers);
 
     while let Some((duration, id, event)) = nodes.step() {
         if nodes
@@ -85,7 +92,7 @@ pub fn generate_log<P: Pipeline<MM>>(
 }
 
 fn main() {
-    use monad_executor::transformer::LatencyTransformer;
+    use monad_mock_swarm::transformer::LatencyTransformer;
     generate_log(
         4,
         10,

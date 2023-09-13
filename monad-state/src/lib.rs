@@ -12,7 +12,7 @@ use monad_consensus::{
     validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand, FetchedBlock, FetchedFullTxs, FetchedTxs},
+    command::{Checkpoint, ConsensusCommand},
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -28,15 +28,13 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{
-    CheckpointCommand, Command, Identifiable, LedgerCommand, MempoolCommand, Message, PeerId,
-    RouterCommand, RouterTarget, State, StateRootHashCommand, TimerCommand,
+use monad_executor::State;
+use monad_executor_glue::{
+    CheckpointCommand, Command, ConsensusEvent, Identifiable, LedgerCommand, MempoolCommand,
+    Message, MonadEvent, PeerId, RouterCommand, RouterTarget, StateRootHashCommand, TimerCommand,
 };
-use monad_types::{Epoch, Hash, NodeId, Stake};
-use monad_validator::{
-    leader_election::LeaderElection,
-    validator_set::{ValidatorData, ValidatorSetType},
-};
+use monad_types::{Epoch, NodeId, Stake, ValidatorData};
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 
 pub mod convert;
@@ -106,87 +104,6 @@ where
             VT::new(upcoming_val_set.0)
                 .expect("ValidatorData should not have duplicates or invalid entries"),
         );
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MonadEvent<ST, SCT>
-where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-{
-    ConsensusEvent(ConsensusEvent<ST, SCT>),
-}
-
-impl monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        monad_crypto::NopSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
-    >
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
-    }
-}
-
-impl monad_types::Serializable<Vec<u8>>
-    for MonadEvent<
-        monad_crypto::NopSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
-    >
-{
-    fn serialize(&self) -> Vec<u8> {
-        crate::convert::interface::serialize_event(self)
-    }
-}
-
-impl monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::bls::BlsSignatureCollection,
-    >
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
-    }
-}
-
-impl monad_types::Serializable<Vec<u8>>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::bls::BlsSignatureCollection,
-    >
-{
-    fn serialize(&self) -> Vec<u8> {
-        crate::convert::interface::serialize_event(self)
-    }
-}
-
-impl monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
-    >
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
-    }
-}
-
-impl monad_types::Serializable<Vec<u8>>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
-    >
-{
-    fn serialize(&self) -> Vec<u8> {
-        crate::convert::interface::serialize_event(self)
     }
 }
 
@@ -376,7 +293,7 @@ where
 
     fn update(
         &mut self,
-        event: Self::Event,
+        event: MonadEvent<ST, SCT>,
     ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>> {
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
@@ -424,11 +341,15 @@ where
                         let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
 
                         if let Some(txns) = fetched_txs.txns {
+                            let proposal_msg = ProposalMessage {
+                                block: fetched_txs.p_block,
+                                last_round_tc: fetched_txs.p_last_round_tc,
+                            };
                             cmds.extend(
                                 self.consensus
                                     .handle_proposal_message_full::<HasherType, _, _>(
                                         fetched_txs.author,
-                                        fetched_txs.p,
+                                        proposal_msg,
                                         txns,
                                         &self.validator_set,
                                         &self.leader_election,
@@ -444,7 +365,15 @@ where
                                 fetched_b.requester,
                                 fetched_b.block_id,
                             ),
-                            fetched_b.into(),
+                            ConsensusCommand::Publish {
+                                target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
+                                message: ConsensusMessage::BlockSync(
+                                    match fetched_b.unverified_full_block {
+                                        Some(b) => BlockSyncMessage::BlockFound(b),
+                                        None => BlockSyncMessage::NotAvailable(fetched_b.block_id),
+                                    },
+                                ),
+                            },
                         ]
                     }
                     ConsensusEvent::Message {
@@ -542,7 +471,7 @@ where
                             on_timeout,
                         } => cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                             duration,
-                            on_timeout: Self::Event::ConsensusEvent(ConsensusEvent::Timeout(
+                            on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
                                 on_timeout,
                             )),
                         })),
@@ -553,7 +482,7 @@ where
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchTxs(
                                 max_txns,
                                 Box::new(|txs| {
-                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
+                                    MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
                                 }),
                             )))
                         }
@@ -564,7 +493,7 @@ where
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullTxs(
                                 txs,
                                 Box::new(|full_txs| {
-                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedFullTxs(cb(
+                                    MonadEvent::ConsensusEvent(ConsensusEvent::FetchedFullTxs(cb(
                                         full_txs,
                                     )))
                                 }),
@@ -611,7 +540,7 @@ where
                             Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(
                                 full_block,
                                 Box::new(|s, h| {
-                                    Self::Event::ConsensusEvent(ConsensusEvent::StateUpdate((s, h)))
+                                    MonadEvent::ConsensusEvent(ConsensusEvent::StateUpdate((s, h)))
                                 }),
                             )),
                         ),
@@ -620,51 +549,6 @@ where
 
                 cmds
             }
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
-    Message {
-        sender: PubKey,
-        unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
-    },
-    Timeout(PacemakerTimerExpire),
-    FetchedTxs(FetchedTxs<SCT>),
-    FetchedFullTxs(FetchedFullTxs<SCT>),
-    FetchedBlock(FetchedBlock<SCT>),
-    LoadEpoch(Epoch, ValidatorData, ValidatorData),
-    AdvanceEpoch(Option<ValidatorData>),
-    StateUpdate((u64, Hash)),
-}
-
-impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConsensusEvent::Message {
-                sender,
-                unverified_message,
-            } => f
-                .debug_struct("Message")
-                .field("sender", &sender)
-                .field("msg", &unverified_message)
-                .finish(),
-            ConsensusEvent::Timeout(p) => p.fmt(f),
-            ConsensusEvent::FetchedTxs(p) => p.fmt(f),
-            ConsensusEvent::FetchedFullTxs(p) => f
-                .debug_struct("FetchedFullTxs")
-                .field("author", &p.author)
-                .field("proposal", &p.p)
-                .field("txns", &p.txns)
-                .finish(),
-            ConsensusEvent::FetchedBlock(b) => f
-                .debug_struct("FetchedBlock")
-                .field("unverified_full_block", &b.unverified_full_block)
-                .finish(),
-            ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
-            ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
-            ConsensusEvent::StateUpdate(e) => e.fmt(f),
         }
     }
 }

@@ -6,13 +6,13 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::{
-    executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+use monad_executor_glue::PeerId;
+use monad_mock_swarm::{
+    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
         ReplayTransformer, TransformerReplayOrder,
     },
-    PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};

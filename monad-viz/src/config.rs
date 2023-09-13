@@ -11,12 +11,13 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{
-    executor::mock::NoSerRouterScheduler,
+use monad_executor::State;
+use monad_executor_glue::PeerId;
+use monad_mock_swarm::{
+    mock::NoSerRouterScheduler,
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
     },
-    PeerId, State,
 };
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
@@ -24,7 +25,7 @@ use monad_types::NodeId;
 use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
 use crate::{
-    graph::SimulationConfig, PersistenceLoggerType, Rsc, SignatureCollectionType,
+    graph::SimulationConfig, PersistenceLoggerType, Rsc, SignatureCollectionType, SignatureType,
     TransactionValidatorType, MM, MS,
 };
 
@@ -59,6 +60,8 @@ impl
         NoSerRouterScheduler<MM>,
         GenericTransformerPipeline<MM>,
         PersistenceLoggerType,
+        SignatureType,
+        SignatureCollectionType,
     > for SimConfig
 {
     fn nodes(

@@ -12,13 +12,13 @@ mod tests {
         validation::Sha256Hash, voting::ValidatorMapping,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
-    use monad_executor::{
-        executor::{checkpoint::MockCheckpoint, ledger::MockLedger, mock::MockMempool},
-        Executor, State,
-    };
+    use monad_executor::{Executor, State};
+    use monad_executor_glue::MonadEvent;
+    use monad_mock_swarm::mock::MockMempool;
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
     use monad_types::NodeId;
+    use monad_updaters::{checkpoint::MockCheckpoint, ledger::MockLedger};
     use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
     use monad_wal::{
         mock::{MockWALogger, MockWALoggerConfig},
@@ -38,7 +38,7 @@ mod tests {
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type PersistenceLoggerType = MockWALogger<<S as State>::Event>;
+    type PersistenceLoggerType = MockWALogger<MonadEvent<SignatureType, SignatureCollectionType>>;
 
     #[tokio::test]
     async fn libp2p_executor() {
@@ -55,12 +55,12 @@ mod tests {
 
                 let certificate_key = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(k.as_mut_slice()).expect("certificate keypair creation");
 
-                let executor = monad_executor::executor::parent::ParentExecutor {
+                let executor = monad_updaters::parent::ParentExecutor {
                     router: monad_p2p::Service::without_executor(key_libp2p.into()),
                     mempool: MockMempool::default(),
                     ledger: MockLedger::default(),
                     checkpoint: MockCheckpoint::default(),
-                    timer: monad_executor::executor::timer::TokioTimer::default(),
+                    timer: monad_updaters::timer::TokioTimer::default(),
                 };
 
                 let logger_config = MockWALoggerConfig {};

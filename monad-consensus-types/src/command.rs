@@ -1,0 +1,41 @@
+use monad_types::{BlockId, Hash, NodeId, Round};
+
+use crate::{
+    block::{Block, UnverifiedFullBlock},
+    payload::{FullTransactionList, TransactionList},
+    quorum_certificate::QuorumCertificate,
+    timeout::TimeoutCertificate,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedTxs<SCT> {
+    // some of this stuff is probably not strictly necessary
+    // they're included here just to be extra safe
+    pub node_id: NodeId,
+    pub round: Round,
+    pub seq_num: u64,
+    pub state_root_hash: Hash,
+    pub high_qc: QuorumCertificate<SCT>,
+    pub last_round_tc: Option<TimeoutCertificate<SCT>>,
+
+    pub txns: TransactionList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedFullTxs<SCT> {
+    pub author: NodeId,
+    pub p_block: Block<SCT>,
+    pub p_last_round_tc: Option<TimeoutCertificate<SCT>>,
+    pub txns: Option<FullTransactionList>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedBlock<SCT> {
+    pub requester: NodeId,
+    pub block_id: BlockId,
+
+    // FetchedBlock results should only be used to send block data to peers
+    // over the network so we should unverify it before sending to consensus
+    // to prevent it from being used for anything else
+    pub unverified_full_block: Option<UnverifiedFullBlock<SCT>>,
+}

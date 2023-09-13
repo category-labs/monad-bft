@@ -9,7 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
 log = { workspace = true }

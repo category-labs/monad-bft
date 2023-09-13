@@ -4,7 +4,7 @@ use std::{
     marker::PhantomData,
 };
 
-use monad_executor::{Message, PeerId, RouterTarget};
+use monad_executor_glue::{Message, PeerId, RouterTarget};
 use monad_types::Round;
 
 pub struct MessageState<M: Message, OM: Into<M> + Clone> {
@@ -125,7 +125,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use monad_executor::{Identifiable, Message, PeerId, RouterTarget};
+    use monad_executor_glue::{Identifiable, Message, PeerId, RouterTarget};
     use monad_testutil::signing::node_id;
     use monad_types::Round;
 

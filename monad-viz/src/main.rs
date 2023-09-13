@@ -30,15 +30,15 @@ use monad_consensus_types::{
     transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::{
-    executor::mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
-    timed_event::TimedEvent,
+use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor_glue::{MonadEvent, PeerId};
+use monad_mock_swarm::{
+    mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
     },
-    PeerId, State,
 };
-use monad_state::{MonadEvent, MonadMessage, MonadState};
+use monad_state::{MonadMessage, MonadState};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::MockWALogger,
@@ -67,7 +67,7 @@ type MS = MonadState<
     BlockSyncState,
 >;
 type MM = <MS as State>::Message;
-type ME = <MS as State>::Event;
+type ME = MonadEvent<SignatureType, SignatureCollectionType>;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
@@ -78,8 +78,10 @@ type Sim = NodesSimulation<
     PersistenceLoggerType,
     SimConfig,
     MockMempool<ME>,
+    SignatureType,
+    SignatureCollectionType,
 >;
-type ReplaySim = ReplayNodesSimulation<MS, RepConfig>;
+type ReplaySim = ReplayNodesSimulation<MS, RepConfig, SignatureType, SignatureCollectionType>;
 
 #[derive(Parser, Default)]
 struct Arg {
@@ -160,6 +162,8 @@ impl Application for Viz {
                         BlockSyncState,
                     >,
                     _,
+                    SignatureType,
+                    SignatureCollectionType,
                 >::new(config, replay_events)
             };
 
@@ -200,6 +204,8 @@ impl Application for Viz {
                     _,
                     _,
                     _,
+                    SignatureType,
+                    SignatureCollectionType,
                 >::new(config)
             };
 

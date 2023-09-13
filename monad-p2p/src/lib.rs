@@ -8,7 +8,8 @@ use std::{
 
 use futures::{FutureExt, Stream, StreamExt};
 use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
-use monad_executor::{Executor, Message, RouterCommand, RouterTarget};
+use monad_executor::Executor;
+use monad_executor_glue::{Message, RouterCommand, RouterTarget};
 use monad_types::{Deserializable, Serializable};
 
 mod behavior;
@@ -32,7 +33,7 @@ where
     self_events: VecDeque<M::Event>,
 
     // TODO deprecate this once we have a RouterCommand for setting peers
-    peers: HashSet<monad_executor::PeerId>,
+    peers: HashSet<monad_executor_glue::PeerId>,
 }
 
 impl<M, OM> Service<M, OM>
@@ -74,7 +75,9 @@ where
 
             peers: {
                 let mut peers = HashSet::new();
-                peers.insert(monad_executor::PeerId(local_peer_id.try_into().unwrap()));
+                peers.insert(monad_executor_glue::PeerId(
+                    local_peer_id.try_into().unwrap(),
+                ));
                 peers
             },
         }
@@ -116,7 +119,9 @@ where
 
             peers: {
                 let mut peers = HashSet::new();
-                peers.insert(monad_executor::PeerId(local_peer_id.try_into().unwrap()));
+                peers.insert(monad_executor_glue::PeerId(
+                    local_peer_id.try_into().unwrap(),
+                ));
                 peers
             },
         }
@@ -124,7 +129,7 @@ where
 
     pub fn add_peer(&mut self, peer: &libp2p::PeerId, address: Multiaddr) {
         self.peers
-            .insert(monad_executor::PeerId((*peer).try_into().unwrap()));
+            .insert(monad_executor_glue::PeerId((*peer).try_into().unwrap()));
 
         self.swarm
             .behaviour_mut()
@@ -138,7 +143,7 @@ where
         self.swarm.listeners()
     }
 
-    pub fn publish_message(&mut self, to: &monad_executor::PeerId, message: OM) {
+    pub fn publish_message(&mut self, to: &monad_executor_glue::PeerId, message: OM) {
         let to_libp2p: libp2p::PeerId = (&to.0).into();
         if self.swarm.local_peer_id() == &to_libp2p {
             // we need special case send to self
@@ -162,7 +167,7 @@ where
         );
     }
 
-    pub fn unpublish_message(&mut self, to: &monad_executor::PeerId, message_id: &M::Id) {
+    pub fn unpublish_message(&mut self, to: &monad_executor_glue::PeerId, message_id: &M::Id) {
         let to: libp2p::PeerId = (&to.0).into();
         if let Some(request_id) = self
             .outbound_messages_lookup
@@ -265,7 +270,7 @@ where
                                     .unwrap_or_else(|_| {
                                         panic!("more than 1 copies of Arc<Message>")
                                     })
-                                    .event(monad_executor::PeerId(pubkey)),
+                                    .event(monad_executor_glue::PeerId(pubkey)),
                             ));
                         }
                         libp2p::request_response::Message::Response {
@@ -311,7 +316,7 @@ mod tests {
     };
 
     use futures::StreamExt;
-    use monad_executor::{Identifiable, Message};
+    use monad_executor_glue::{Identifiable, Message};
     use monad_types::{Deserializable, Serializable};
 
     use crate::Service;
@@ -321,7 +326,7 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     enum TestEvent {
-        Message(monad_executor::PeerId, TestMessage),
+        Message(monad_executor_glue::PeerId, TestMessage),
     }
 
     impl Identifiable for TestMessage {
@@ -335,7 +340,7 @@ mod tests {
     impl Message for TestMessage {
         type Event = TestEvent;
 
-        fn event(self, from: monad_executor::PeerId) -> Self::Event {
+        fn event(self, from: monad_executor_glue::PeerId) -> Self::Event {
             Self::Event::Message(from, self)
         }
     }
@@ -360,20 +365,23 @@ mod tests {
         }
     }
 
-    fn create_random_node() -> (monad_executor::PeerId, Service<TestMessage, TestMessage>) {
+    fn create_random_node() -> (
+        monad_executor_glue::PeerId,
+        Service<TestMessage, TestMessage>,
+    ) {
         let keypair = libp2p::identity::Keypair::generate_secp256k1();
         let public = keypair.public();
         let service = Service::<TestMessage, TestMessage>::without_executor(keypair);
         let libp2p_peer_id = public.to_peer_id();
         (
-            monad_executor::PeerId(libp2p_peer_id.try_into().unwrap()),
+            monad_executor_glue::PeerId(libp2p_peer_id.try_into().unwrap()),
             service,
         )
     }
 
     fn create_random_nodes(
         num: usize,
-    ) -> BTreeMap<monad_executor::PeerId, Service<TestMessage, TestMessage>> {
+    ) -> BTreeMap<monad_executor_glue::PeerId, Service<TestMessage, TestMessage>> {
         let mut nodes: BTreeMap<_, _> = std::iter::repeat_with(create_random_node)
             .take(num)
             .collect();

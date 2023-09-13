@@ -7,12 +7,12 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{
-    executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
+use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor_glue::{MonadEvent, PeerId};
+use monad_mock_swarm::{
+    mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes},
-    timed_event::TimedEvent,
     transformer::Pipeline,
-    PeerId, State,
 };
 use monad_state::MonadConfig;
 use monad_types::{Deserializable, NodeId, Serializable};
@@ -107,9 +107,9 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     swarm_config: SwarmTestConfig,
 ) -> Duration
 where
-    S: State<Config = MonadConfig<SCT, TVT>>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    S: State<Config = MonadConfig<SCT, TVT>, Event = MonadEvent<ST, SCT>>,
+    ST: MessageSignature + Unpin,
+    SCT: SignatureCollection + Unpin,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
@@ -120,10 +120,9 @@ where
     P: Pipeline<RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event>,
 
-    MockExecutor<S, RS, ME>: Unpin,
-    S::Event: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: PartialEq + Unpin,
-    Node<S, RS, P, LGR, ME>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
     RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
@@ -159,9 +158,9 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     min_ledger_len: u32,
 ) -> Duration
 where
-    S: State<Config = MonadConfig<SCT, TVT>>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    S: State<Config = MonadConfig<SCT, TVT>, Event = MonadEvent<ST, SCT>>,
+    ST: MessageSignature + Unpin,
+    SCT: SignatureCollection + Unpin,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
@@ -172,10 +171,9 @@ where
     P: Pipeline<RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event>,
 
-    MockExecutor<S, RS, ME>: Unpin,
-    S::Event: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: PartialEq + Unpin,
-    Node<S, RS, P, LGR, ME>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
     RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
@@ -183,7 +181,7 @@ where
     LGR::Config: Clone,
     TVT: Clone,
 {
-    let mut nodes = Nodes::<S, RS, P, LGR, ME>::new(
+    let mut nodes = Nodes::<S, RS, P, LGR, ME, ST, SCT>::new(
         pubkeys
             .iter()
             .copied()

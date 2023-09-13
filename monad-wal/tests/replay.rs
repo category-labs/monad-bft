@@ -2,7 +2,8 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
-    use monad_executor::{Identifiable, Message, State};
+    use monad_executor::State;
+    use monad_executor_glue::{Identifiable, Message};
     use monad_testutil::block::MockBlock;
     use monad_types::{Deserializable, Serializable};
     use monad_wal::{
@@ -61,7 +62,7 @@ mod test {
     impl Message for MockMessage {
         type Event = TestEvent;
 
-        fn event(self, _from: monad_executor::PeerId) -> Self::Event {
+        fn event(self, _from: monad_executor_glue::PeerId) -> Self::Event {
             TestEvent { data: 0 }
         }
     }
@@ -85,7 +86,7 @@ mod test {
         ) -> (
             Self,
             Vec<
-                monad_executor::Command<
+                monad_executor_glue::Command<
                     Self::Message,
                     Self::OutboundMessage,
                     Self::Block,
@@ -101,7 +102,7 @@ mod test {
             &mut self,
             event: Self::Event,
         ) -> Vec<
-            monad_executor::Command<
+            monad_executor_glue::Command<
                 Self::Message,
                 Self::OutboundMessage,
                 Self::Block,
