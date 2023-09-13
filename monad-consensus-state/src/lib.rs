@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, time::Duration, vec};
 
 use log::{debug, warn};
 use monad_blocktree::blocktree::BlockTree;
@@ -34,6 +34,12 @@ use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 pub mod command;
 pub mod wrapper;
 
+pub enum AttemptVoteResult<ST, SCT: SignatureCollection> {
+    Unsafe,
+    Successful(ConsensusCommand<ST, SCT>),
+    MissingInfo, // tree not complete
+}
+
 pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
     pending_block_tree: BlockTree<SCT>,
     vote_state: VoteState<SCT>,
@@ -47,6 +53,7 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
 
     transaction_validator: TV,
     requested_blocks: HashSet<BlockId>,
+    high_proposal: ProposalMessage<ST, SCT>,
 
     // TODO deprecate
     keypair: KeyPair,
@@ -114,18 +121,32 @@ where
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
 
-    fn handle_block_sync_message(
+    fn handle_block_sync_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         b: BlockSyncMessage<SCT>,
+        election: &LT,
+        validators: &VT,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
 
     fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash);
+
+    fn attempt_voting<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
+        &mut self,
+        election: &LT,
+        round: Round,
+        validators: &VT,
+        p: &ProposalMessage<ST, SCT>,
+    ) -> AttemptVoteResult<ST, SCT>;
 
     fn get_current_round(&self) -> Round;
 
     fn get_keypair(&self) -> &KeyPair;
 
-    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT>;
+    fn request_blocks_if_missing(&mut self, blockid: BlockId) -> Vec<ConsensusCommand<ST, SCT>>;
+
+    fn try_find_pending_block(&mut self, blockid: &BlockId) -> Option<Block<SCT>>;
+
+    fn create_request_sync(&mut self, blockid: BlockId) -> Vec<ConsensusCommand<ST, SCT>>;
 }
 
 impl<ST, SCT, TVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT, SVT>
@@ -150,7 +171,7 @@ where
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self {
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_block),
+            pending_block_tree: BlockTree::new(genesis_block.clone()),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             state_root_validator: SVT::new(state_root_delay),
@@ -162,6 +183,10 @@ where
             requested_blocks: HashSet::new(),
             keypair,
             cert_keypair,
+            high_proposal: ProposalMessage {
+                block: genesis_block,
+                last_round_tc: None,
+            },
         }
     }
 
@@ -242,6 +267,10 @@ where
             return cmds;
         }
 
+        self.pending_block_tree
+            .add(p.block.clone())
+            .expect("Failed to add block to blocktree");
+
         let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
         cmds.extend(process_certificate_cmds);
 
@@ -259,17 +288,6 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = election.get_leader(round, validators.get_list());
 
-        self.pending_block_tree
-            .add(p.block.clone())
-            .expect("Failed to add block to blocktree");
-        if let Some(bid) = self
-            .pending_block_tree
-            .get_missing_ancestor(&p.block.get_id())
-        {
-            debug!("Block sync request: blockid={:?}", bid);
-            cmds.push(self.create_request_sync(bid));
-        }
-
         if p.block.round != round || author != leader || p.block.author != leader {
             debug!(
                 "Invalid proposal: expected-round={:?} \
@@ -283,6 +301,24 @@ where
             return cmds;
         }
 
+        match self.attempt_voting::<H, VT, LT>(election, round, validators, &p) {
+            AttemptVoteResult::Successful(vote_cmd) => cmds.push(vote_cmd),
+            AttemptVoteResult::MissingInfo => {
+                self.high_proposal = p;
+            }
+            AttemptVoteResult::Unsafe => {}
+        };
+
+        cmds
+    }
+
+    fn attempt_voting<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
+        &mut self,
+        election: &LT,
+        round: Round,
+        validators: &VT,
+        p: &ProposalMessage<ST, SCT>,
+    ) -> AttemptVoteResult<ST, SCT> {
         let vote = self
             .safety
             .make_vote::<ST, SCT, H>(&p.block, &p.last_round_tc);
@@ -293,14 +329,13 @@ where
             let next_leader = election.get_leader(round + Round(1), validators.get_list());
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
-                message: ConsensusMessage::Vote(vote_msg),
+                message: ConsensusMessage::<ST, SCT>::Vote(vote_msg),
             };
             debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
             inc_count!(created_vote);
-            cmds.push(send_cmd);
+            return AttemptVoteResult::Successful(send_cmd);
         }
-
-        cmds
+        return AttemptVoteResult::Unsafe;
     }
 
     fn handle_vote_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
@@ -317,12 +352,16 @@ where
             return Default::default();
         }
         inc_count!(vote_received);
+        let mut cmds = Vec::new();
+
+        // you can also request missing block here,
+        // but optimistically we hope block arrives before vote is accumulated
+        // in case it doesn't, process_certificate_qc would request for blocks
 
         let qc: Option<QuorumCertificate<SCT>> =
             self.vote_state
                 .process_vote::<H, _>(&author, &vote_msg, validators, validator_mapping);
 
-        let mut cmds = Vec::new();
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);
@@ -405,9 +444,11 @@ where
      * due to the original proposal arrived before requested block is able to be returned.
      *
      */
-    fn handle_block_sync_message(
+    fn handle_block_sync_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         b: BlockSyncMessage<SCT>,
+        election: &LT,
+        validators: &VT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
         let block = b.block;
@@ -419,17 +460,50 @@ where
             self.pending_block_tree
                 .add(block)
                 .expect("failed to add block to tree during block sync");
-            if let Some(blockid) = self.pending_block_tree.get_missing_ancestor(&bid) {
-                cmds.push(self.create_request_sync(blockid));
+            if let Some(_) = self.pending_block_tree.get_missing_ancestor(&bid) {
+                cmds.extend(self.create_request_sync(bid));
+            } else {
+                if let AttemptVoteResult::Successful(vote_msg) = self.attempt_voting::<H, VT, LT>(
+                    election,
+                    self.pacemaker.get_current_round(),
+                    validators,
+                    &self.high_proposal.clone(),
+                ) {
+                    cmds.push(vote_msg);
+                }
             }
         }
         cmds
     }
 
-    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT> {
-        inc_count!(block_sync_request);
-        self.requested_blocks.insert(blockid);
-        ConsensusCommand::RequestSync { blockid }
+    /**
+     * Given a block id, if such id doesn't chain back to pending_block_tree root, then request for missing ancestors
+     */
+    fn request_blocks_if_missing(&mut self, blockid: BlockId) -> Vec<ConsensusCommand<ST, SCT>> {
+        // TODO: Add timeout
+
+        if let Some(bid) = self.pending_block_tree.get_missing_ancestor(&blockid) {
+            debug!("Block sync request: blockid={:?}", bid);
+            inc_count!(block_sync_request);
+            self.create_request_sync(bid)
+        } else {
+            vec![]
+        }
+    }
+
+    fn try_find_pending_block(&mut self, blockid: &BlockId) -> Option<Block<SCT>> {
+        if let Some(b_tree_block) = self.pending_block_tree.tree().get(blockid) {
+            return Some(b_tree_block.get_block().clone());
+        } else {
+            None
+        }
+    }
+
+    fn create_request_sync(&mut self, blockid: BlockId) -> Vec<ConsensusCommand<ST, SCT>> {
+        if self.requested_blocks.insert(blockid) {
+            return vec![ConsensusCommand::RequestSync { blockid }];
+        }
+        vec![]
     }
 
     fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash) {
@@ -516,8 +590,8 @@ where
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
-
         cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
+        cmds.extend(self.request_blocks_if_missing(qc.info.vote.id));
         cmds
     }
 
@@ -1567,21 +1641,32 @@ mod test {
         // Deliver all the votes to second_state, who is the leader for the next round
         for i in 0..4 {
             let v = Verified::<NopSignature, VoteMessage<_>>::new::<Sha256Hash>(votes[i], &keys[i]);
-            second_state.handle_vote_message::<Sha256Hash, _, _>(
+            let cmds2 = second_state.handle_vote_message::<Sha256Hash, _, _>(
                 *v.author(),
                 *v,
                 &valset,
                 &valmap,
                 &election,
             );
+
+            if i == 3 {
+                // by the formation of qc, second_state would realize its missing information.
+                let res = cmds2.into_iter().find(|c| {
+                    matches!(
+                        c,
+                        ConsensusCommand::RequestSync {
+                            blockid: BlockId(_)
+                        },
+                    )
+                });
+                assert!(res.is_some());
+            }
         }
 
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
         assert_eq!(second_state.high_qc.info.vote, votes[0].vote.vote_info);
 
         // use the correct proposal gen to make next proposal and send it to second_state
-        // this should cause it to emit the RequestBlockSync Message because the the QC parent
-        // points to a different proposal (second_state has the malicious proposal in its blocktree)
         let cp2 = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
@@ -1600,22 +1685,6 @@ mod test {
             &valset,
             &election,
         );
-        let res = cmds2.into_iter().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    blockid: BlockId(_)
-                },
-            )
-        });
-        assert!(res.is_some());
-        let sync_bid = match res.unwrap() {
-            ConsensusCommand::RequestSync { blockid } => Some(blockid),
-            _ => None,
-        }
-        .unwrap();
-
-        assert!(sync_bid == block_1.get_id());
 
         // first_state has the correct block in its blocktree, so it should not request anything
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
@@ -1679,7 +1748,11 @@ mod test {
         assert!(res.is_some());
 
         // a block sync request arrived, helping second state to recover
-        second_state.handle_block_sync_message(BlockSyncMessage { block: block_1 });
+        second_state.handle_block_sync_message::<Sha256Hash, _, _>(
+            BlockSyncMessage { block: block_1 },
+            &election,
+            &valset,
+        );
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
@@ -1755,9 +1828,13 @@ mod test {
         assert!(res.is_some());
 
         // BlockSyncMessage on blocks that were not requested should be ignored.
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage {
-            block: block_2.clone(),
-        });
+        let cmds3 = third_state.handle_block_sync_message::<Sha256Hash, _, _>(
+            BlockSyncMessage {
+                block: block_2.clone(),
+            },
+            &election,
+            &valset,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3.iter().clone().find(|c| {
@@ -1770,9 +1847,13 @@ mod test {
         });
         assert!(res.is_none());
 
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage {
-            block: block_3.clone(),
-        });
+        let cmds3 = third_state.handle_block_sync_message::<Sha256Hash, _, _>(
+            BlockSyncMessage {
+                block: block_3.clone(),
+            },
+            &election,
+            &valset,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -1786,7 +1867,11 @@ mod test {
         assert!(res.is_some());
 
         // repeated handling of the requested block should be ignored
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage { block: block_3 });
+        let cmds3 = third_state.handle_block_sync_message::<Sha256Hash, _, _>(
+            BlockSyncMessage { block: block_3 },
+            &election,
+            &valset,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -1819,7 +1904,11 @@ mod test {
         assert!(res.is_none());
 
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage { block: block_2 });
+        let cmds3 = third_state.handle_block_sync_message::<Sha256Hash, _, _>(
+            BlockSyncMessage { block: block_2 },
+            &election,
+            &valset,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 5);
         let res = cmds3.iter().clone().find(|c| {

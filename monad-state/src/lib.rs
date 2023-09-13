@@ -479,12 +479,27 @@ where
                                     &self.leader_election,
                                 )
                             }
-                            ConsensusMessage::RequestBlockSync(msg) => self
-                                .block_sync
-                                .handle_request_block_sync_message(author, msg),
-                            ConsensusMessage::BlockSync(msg) => {
-                                self.consensus.handle_block_sync_message(msg)
+                            ConsensusMessage::RequestBlockSync(msg) => {
+                                if let Some(b) =
+                                    self.consensus.try_find_pending_block(&msg.block_id)
+                                {
+                                    let m = BlockSyncMessage { block: b };
+                                    vec![ConsensusCommand::Publish {
+                                        target: RouterTarget::PointToPoint(PeerId(author.0)),
+                                        message: ConsensusMessage::BlockSync(m),
+                                    }]
+                                } else {
+                                    self.block_sync
+                                        .handle_request_block_sync_message(author, msg)
+                                }
                             }
+                            ConsensusMessage::BlockSync(msg) => self
+                                .consensus
+                                .handle_block_sync_message::<HasherType, _, _>(
+                                    msg,
+                                    &self.leader_election,
+                                    &self.validator_set,
+                                ),
                         }
                     }
                     ConsensusEvent::LoadEpoch(epoch, current_val_set, next_val_set) => {
