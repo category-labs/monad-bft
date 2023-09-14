@@ -1,7 +1,7 @@
 use std::{fmt::Debug, time::Duration};
 
 use message::MessageState;
-use monad_block_sync::BlockSyncProcess;
+use monad_block_sync::{BlockRetrievalResult, BlockSyncProcess};
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
@@ -435,13 +435,16 @@ where
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
                         let mut cmds = vec![ConsensusCommand::LedgerFetchReset];
-                        if let Some(b) = fetched_b.block {
-                            let m = BlockSyncMessage { block: b };
-                            cmds.push(ConsensusCommand::Publish {
-                                target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
-                                message: ConsensusMessage::BlockSync(m),
-                            })
-                        }
+                        let m = BlockSyncMessage {
+                            block_id: fetched_b.block_id,
+                            block: fetched_b.block,
+                        };
+
+                        cmds.push(ConsensusCommand::Publish {
+                            target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
+                            message: ConsensusMessage::BlockSync(m),
+                        });
+
                         cmds
                     }
                     ConsensusEvent::Message {
@@ -483,7 +486,25 @@ where
                                 .block_sync
                                 .handle_request_block_sync_message(author, msg),
                             ConsensusMessage::BlockSync(msg) => {
-                                self.consensus.handle_block_sync_message(msg)
+                                match self.block_sync.handle_block_sync_message(
+                                    author,
+                                    msg,
+                                    &self.validator_set,
+                                ) {
+                                    BlockRetrievalResult::Failed((peer, message)) => {
+                                        vec![
+                                            (ConsensusCommand::Publish {
+                                                target: RouterTarget::PointToPoint(peer),
+                                                message,
+                                            }),
+                                        ]
+                                    }
+                                    BlockRetrievalResult::Success(block) => {
+                                        self.consensus.handle_block_sync(block)
+                                    }
+                                    // TODO: network layer should have censor callback that was not initiated.
+                                    BlockRetrievalResult::IllegalResponse(_peer) => vec![],
+                                }
                             }
                         }
                     }
@@ -557,10 +578,15 @@ where
                         }
 
                         ConsensusCommand::RequestSync { blockid } => {
-                            let (target, message) = self
+                            if let Some((target, message)) = self
                                 .block_sync
-                                .request_block_sync(blockid, &self.validator_set);
-                            cmds.push(prepare_router_message(target, message));
+                                .request_block_sync(blockid, &self.validator_set)
+                            {
+                                cmds.push(prepare_router_message(
+                                    RouterTarget::PointToPoint(target),
+                                    message,
+                                ));
+                            }
                         }
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))

@@ -20,7 +20,8 @@ message ProtoRequestBlockSyncMessage {
 }
 
 message ProtoBlockSyncMessage {
-  monad_proto.block.ProtoBlock block = 1;
+  monad_proto.basic.ProtoBlockId block_id = 1;
+  optional monad_proto.block.ProtoBlock block = 2;
 }
 
 message ProtoTimeoutMessage {

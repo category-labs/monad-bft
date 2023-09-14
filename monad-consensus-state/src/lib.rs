@@ -1,11 +1,12 @@
-use std::{collections::HashSet, time::Duration};
+use std::time::Duration;
 
 use log::{debug, warn};
+use manager::BlockSyncManager;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
     pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
     validation::safety::Safety,
@@ -25,13 +26,14 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Hash, NodeId, Round};
+use monad_types::{Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use tracing::trace;
 
 use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 
 pub mod command;
+pub mod manager;
 pub mod wrapper;
 
 pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
@@ -46,7 +48,7 @@ pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
     nodeid: NodeId,
 
     transaction_validator: TV,
-    requested_blocks: HashSet<BlockId>,
+    block_sync_manager: BlockSyncManager<SCT>,
 
     // TODO deprecate
     keypair: KeyPair,
@@ -114,10 +116,7 @@ where
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
 
-    fn handle_block_sync_message(
-        &mut self,
-        b: BlockSyncMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>>;
+    fn handle_block_sync(&mut self, b: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>>;
 
     fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash);
 
@@ -125,7 +124,7 @@ where
 
     fn get_keypair(&self) -> &KeyPair;
 
-    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT>;
+    fn request_sync(&mut self, qc: QuorumCertificate<SCT>) -> Vec<ConsensusCommand<ST, SCT>>;
 }
 
 impl<ST, SCT, TVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT, SVT>
@@ -159,7 +158,7 @@ where
             nodeid: NodeId(my_pubkey),
 
             transaction_validator,
-            requested_blocks: HashSet::new(),
+            block_sync_manager: BlockSyncManager::new(),
             keypair,
             cert_keypair,
         }
@@ -262,12 +261,9 @@ where
         self.pending_block_tree
             .add(p.block.clone())
             .expect("Failed to add block to blocktree");
-        if let Some(bid) = self
-            .pending_block_tree
-            .get_missing_ancestor(&p.block.get_id())
-        {
+        if let Some(bid) = self.pending_block_tree.get_missing_ancestor(&p.block.qc) {
             debug!("Block sync request: blockid={:?}", bid);
-            cmds.push(self.create_request_sync(bid));
+            cmds.extend(self.request_sync(bid));
         }
 
         if p.block.round != round || author != leader || p.block.author != leader {
@@ -397,39 +393,40 @@ where
     }
 
     /**
-     * Handle_block_sync_message only respond to blocks that was previously requested.
+     * Handle_block_sync only respond to blocks that was previously requested.
      * Once successfully removed from requested dict, it then checks if its valid to add to
      * pending_block_tree.
      *
      * Note, that it is possible that a requested block failed to be added to the tree
-     * due to the original proposal arrived before requested block is able to be returned.
+     * due to the original proposal arrived before requested block is able to be returned,
+     * or the requested block is no longer relevant due to prune
      *
      */
-    fn handle_block_sync_message(
-        &mut self,
-        b: BlockSyncMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    fn handle_block_sync(&mut self, block: Block<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
-        let block = b.block;
         let bid = block.get_id();
         debug!("Block sync response: block={:?}", block);
         inc_count!(block_sync_response);
-
-        if self.requested_blocks.remove(&bid) && self.pending_block_tree.is_valid(&block) {
-            self.pending_block_tree
-                .add(block)
-                .expect("failed to add block to tree during block sync");
-            if let Some(blockid) = self.pending_block_tree.get_missing_ancestor(&bid) {
-                cmds.push(self.create_request_sync(blockid));
+        if let Some(qc) = self.block_sync_manager.handle_request(&bid) {
+            if self.pending_block_tree.is_valid(&block) {
+                self.pending_block_tree
+                    .add(block)
+                    .expect("failed to add block to tree during block sync");
+                if let Some(qc) = self.pending_block_tree.get_missing_ancestor(&qc) {
+                    cmds.extend(self.request_sync(qc));
+                }
             }
         }
         cmds
     }
 
-    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT> {
+    fn request_sync(&mut self, qc: QuorumCertificate<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
         inc_count!(block_sync_request);
-        self.requested_blocks.insert(blockid);
-        ConsensusCommand::RequestSync { blockid }
+        if let Some(req) = self.block_sync_manager.request(&qc) {
+            vec![req.into()]
+        } else {
+            vec![]
+        }
     }
 
     fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash) {
@@ -486,6 +483,9 @@ where
                 .pending_block_tree
                 .prune(&qc.info.vote.parent_id)
                 .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
+
+            // all in flight request for rounds before root (inclusive) is invalidated
+            self.block_sync_manager.prune(qc.info.vote.parent_round);
 
             if let Some(b) = blocks_to_commit.last() {
                 self.state_root_validator
@@ -590,7 +590,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus::{
-        messages::message::{BlockSyncMessage, TimeoutMessage, VoteMessage},
+        messages::message::{TimeoutMessage, VoteMessage},
         pacemaker::PacemakerTimerExpire,
         validation::signing::Verified,
     };
@@ -1680,7 +1680,7 @@ mod test {
         assert!(res.is_some());
 
         // a block sync request arrived, helping second state to recover
-        second_state.handle_block_sync_message(BlockSyncMessage { block: block_1 });
+        second_state.handle_block_sync(block_1);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
@@ -1756,9 +1756,7 @@ mod test {
         assert!(res.is_some());
 
         // BlockSyncMessage on blocks that were not requested should be ignored.
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage {
-            block: block_2.clone(),
-        });
+        let cmds3 = third_state.handle_block_sync(block_2.clone());
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3.iter().clone().find(|c| {
@@ -1771,9 +1769,7 @@ mod test {
         });
         assert!(res.is_none());
 
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage {
-            block: block_3.clone(),
-        });
+        let cmds3 = third_state.handle_block_sync(block_3.clone());
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -1787,7 +1783,7 @@ mod test {
         assert!(res.is_some());
 
         // repeated handling of the requested block should be ignored
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage { block: block_3 });
+        let cmds3 = third_state.handle_block_sync(block_3);
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -1820,7 +1816,7 @@ mod test {
         assert!(res.is_none());
 
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = third_state.handle_block_sync_message(BlockSyncMessage { block: block_2 });
+        let cmds3 = third_state.handle_block_sync(block_2);
 
         assert_eq!(third_state.pending_block_tree.size(), 5);
         let res = cmds3.iter().clone().find(|c| {

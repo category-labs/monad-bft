@@ -134,7 +134,8 @@ impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
 impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMessage {
     fn from(value: &BlockSyncMessage<SCT>) -> Self {
         ProtoBlockSyncMessage {
-            block: Some((&value.block).into()),
+            block_id: Some((&value.block_id).into()),
+            block: value.block.as_ref().map(|b| b.into()),
         }
     }
 }
@@ -144,12 +145,13 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncMessa
 
     fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
         Ok(Self {
-            block: value
-                .block
+            block_id: value
+                .block_id
                 .ok_or(Self::Error::MissingRequiredField(
-                    "BlockSyncMessage.block_id".to_owned(),
+                    "RequestBlockSyncMessage.block_id".to_owned(),
                 ))?
                 .try_into()?,
+            block: value.block.map(|b| b.try_into()).transpose()?,
         })
     }
 }

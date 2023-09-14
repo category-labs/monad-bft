@@ -88,11 +88,15 @@ impl Hashable for RequestBlockSyncMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockSyncMessage<T> {
-    pub block: Block<T>,
+    pub block_id: BlockId,
+    pub block: Option<Block<T>>,
 }
 
 impl<T: SignatureCollection> Hashable for BlockSyncMessage<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.block.hash(state);
+        state.update(self.block_id.0.as_bytes());
+        if let Some(b) = &self.block {
+            b.hash(state);
+        }
     }
 }
