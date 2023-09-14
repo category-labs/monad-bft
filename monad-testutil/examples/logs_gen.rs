@@ -21,7 +21,7 @@ use monad_wal::wal::{WALogger, WALoggerConfig};
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type MS = MonadState<
-    ConsensusState<SignatureType, SignatureCollectionType, MockValidator, NopStateRoot>,
+    ConsensusState<SignatureCollectionType, MockValidator, NopStateRoot>,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,

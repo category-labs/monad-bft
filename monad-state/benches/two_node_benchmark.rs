@@ -27,7 +27,7 @@ criterion_main!(benches);
 fn two_nodes() {
     create_and_run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,

@@ -7,7 +7,7 @@ use monad_consensus_types::{
     validation::{Error, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::{PubKey, SecpSignature};
+use monad_crypto::secp256k1::PubKey;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
     validators::create_keys_w_validators,
@@ -56,7 +56,7 @@ fn test_proposal_hash() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let author = NodeId(keypairs[0].pubkey());
 
-    let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
+    let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
         block: setup_block(
             author,
             Round(234),

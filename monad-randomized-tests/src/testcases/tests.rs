@@ -24,7 +24,7 @@ use crate::RandomizedTest;
 fn random_latency_test(seed: u64) {
     create_and_run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, NopStateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,
@@ -73,7 +73,7 @@ fn delayed_message_test(seed: u64) {
 
     run_nodes_until::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, NopStateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,

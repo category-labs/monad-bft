@@ -14,13 +14,45 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    signature_collection::SignatureCollection,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
-    validation::{Hasher, Sha256Hash},
-    voting::{Vote, VoteInfo},
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+    validation::{Hashable, Hasher, Sha256Hash},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
+use monad_crypto::secp256k1::KeyPair;
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
 use monad_types::{BlockId, Hash, NodeId, Round};
+use zerocopy::AsBytes;
+
+fn make_tc<SCT: SignatureCollection>(
+    tc_round: Round,
+    high_qc_round: HighQcRound,
+    keys: &[KeyPair],
+    certkeys: &[SignatureCollectionKeyPairType<SCT>],
+    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+) -> TimeoutCertificate<SCT> {
+    let mut hasher = Sha256Hash::new();
+    hasher.update(tc_round.0.as_bytes());
+    high_qc_round.hash(&mut hasher);
+    let tmo_digest = hasher.hash();
+
+    let mut tc_sigs = Vec::new();
+    for (key, certkey) in keys.iter().zip(certkeys.iter()) {
+        let node_id = NodeId(key.pubkey());
+        let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_digest.as_ref(), certkey);
+        tc_sigs.push((node_id, sig));
+    }
+
+    let sig_col = SCT::new(tc_sigs, validator_mapping, tmo_digest.as_ref()).unwrap();
+
+    TimeoutCertificate {
+        round: tc_round,
+        high_qc_rounds: vec![HighQcRoundSigColTuple {
+            high_qc_round,
+            sigs: sig_col,
+        }],
+    }
+}
 
 macro_rules! test_all_combination {
     ($test_name:ident, $test_code:expr) => {
@@ -105,12 +137,11 @@ test_all_combination!(test_vote_message, |num_keys| {
         ledger_commit_info: lci,
     };
 
-    let votemsg: ConsensusMessage<ST, SCT> =
-        ConsensusMessage::Vote(VoteMessage::new::<Sha256Hash>(vote, &certkeys[0]));
+    let votemsg = ConsensusMessage::Vote(VoteMessage::<SCT>::new::<Sha256Hash>(vote, &certkeys[0]));
 
     let author_keypair = &keypairs[0];
 
-    let verified_votemsg = Verified::new::<Sha256Hash>(votemsg, author_keypair);
+    let verified_votemsg = Verified::<NopSignature, _>::new::<Sha256Hash>(votemsg, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
     let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
@@ -127,12 +158,13 @@ test_all_combination!(test_timeout_message, |num_keys| {
         create_keys_w_validators::<SCT>(num_keys);
 
     let author_keypair = &keypairs[0];
+    let author_cert_key = &cert_keys[0];
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
-        parent_round: Round(2),
+        parent_round: Round(0),
         seq_num: 0,
     };
     let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
@@ -157,37 +189,31 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     let qc = QuorumCertificate::new::<Sha256Hash>(qcinfo, sigcol);
 
+    // timeout certificate for Round(2)
+    // timeout message for Round(3)
+    // TODO: add more high_qc_rounds
+    let tc = make_tc::<SCT>(
+        Round(2),
+        HighQcRound { qc_round: Round(1) },
+        keypairs.as_slice(),
+        cert_keys.as_slice(),
+        &validator_mapping,
+    );
+
     let tmo_info = TimeoutInfo {
         round: Round(3),
         high_qc: qc,
     };
-
-    let high_qc_round = HighQcRound { qc_round: Round(1) };
-    // FIXME: is there a cleaner way to do the high qc hash?
-    let tc_round = Round(2);
-    let mut hasher = Sha256Hash::new();
-    hasher.update(tc_round);
-    hasher.update(high_qc_round.qc_round);
-    let high_qc_round_hash = hasher.hash();
-
-    let mut high_qc_rounds = Vec::new();
-    for keypair in keypairs.iter() {
-        high_qc_rounds.push(HighQcRoundSigTuple {
-            high_qc_round,
-            author_signature: keypair.sign(high_qc_round_hash.as_ref()),
-        });
-    }
-
-    let tc = TimeoutCertificate {
-        round: tc_round,
-        high_qc_rounds,
-    };
-
-    let tmo_message = ConsensusMessage::Timeout(TimeoutMessage {
+    let tmo = Timeout {
         tminfo: tmo_info,
         last_round_tc: Some(tc),
-    });
-    let verified_tmo_message = Verified::new::<Sha256Hash>(tmo_message, author_keypair);
+    };
+
+    let tmo_message =
+        ConsensusMessage::Timeout(TimeoutMessage::new::<Sha256Hash>(tmo, author_cert_key));
+
+    let verified_tmo_message =
+        Verified::<NopSignature, _>::new::<Sha256Hash>(tmo_message, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
     let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
@@ -209,14 +235,14 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         Round(232),
         TransactionList(vec![1, 2, 3, 4]),
         ExecutionArtifacts::zero(),
-        &cert_keys,
+        cert_keys.as_slice(),
         &validator_map,
     );
-    let proposal: ConsensusMessage<ST, SCT> = ConsensusMessage::Proposal(ProposalMessage {
+    let proposal: ConsensusMessage<SCT> = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
         last_round_tc: None,
     });
-    let verified_msg = Verified::new::<Sha256Hash>(proposal, author_keypair);
+    let verified_msg = Verified::<NopSignature, _>::new::<Sha256Hash>(proposal, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
     let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
@@ -238,7 +264,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         Round(231),
         TransactionList(vec![1, 2, 3, 4]),
         ExecutionArtifacts::zero(),
-        &cert_keys,
+        cert_keys.as_slice(),
         &validator_map,
     );
 
@@ -246,30 +272,20 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let high_qc_round = HighQcRound {
         qc_round: Round(231),
     };
-    let mut hasher = Sha256Hash::new();
-    hasher.update(tc_round);
-    hasher.update(high_qc_round.qc_round);
-    let high_qc_round_hash = hasher.hash();
 
-    let mut high_qc_rounds = Vec::new();
-
-    for keypair in keypairs.iter() {
-        high_qc_rounds.push(HighQcRoundSigTuple {
-            high_qc_round,
-            author_signature: keypair.sign(high_qc_round_hash.as_ref()),
-        });
-    }
-
-    let tc = TimeoutCertificate {
-        round: Round(232),
-        high_qc_rounds,
-    };
+    let tc = make_tc::<SCT>(
+        tc_round,
+        high_qc_round,
+        keypairs.as_slice(),
+        cert_keys.as_slice(),
+        &validator_map,
+    );
 
     let msg = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
         last_round_tc: Some(tc),
     });
-    let verified_msg = Verified::new::<Sha256Hash>(msg, author_keypair);
+    let verified_msg = Verified::<NopSignature, _>::new::<Sha256Hash>(msg, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
     let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();

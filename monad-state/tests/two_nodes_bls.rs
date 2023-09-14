@@ -25,7 +25,7 @@ fn two_nodes_bls() {
 
     create_and_run_nodes::<
         MonadState<
-            ConsensusState<SignatureType, SignatureCollectionType, MockValidator, StateRoot>,
+            ConsensusState<SignatureCollectionType, MockValidator, StateRoot>,
             SignatureType,
             SignatureCollectionType,
             ValidatorSet,

@@ -16,7 +16,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
@@ -150,6 +150,7 @@ fn bench_timeout(c: &mut Criterion) {
     let (keypairs, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SignatureCollectionType>(N_VALIDATORS as u32);
     let author_keypair = &keypairs[0];
+    let author_certkey = &cert_keys[0];
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
@@ -190,23 +191,32 @@ fn bench_timeout(c: &mut Criterion) {
     hasher.update(high_qc_round.qc_round);
     let high_qc_round_hash = hasher.hash();
 
-    let mut high_qc_rounds = Vec::new();
-    for keypair in keypairs.iter() {
-        high_qc_rounds.push(HighQcRoundSigTuple {
-            high_qc_round,
-            author_signature: keypair.sign(high_qc_round_hash.as_ref()),
-        });
+    let mut sigs = Vec::new();
+    for (key, certkey) in keypairs.iter().zip(cert_keys.iter()) {
+        let node_id = NodeId(key.pubkey());
+        let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(high_qc_round_hash.as_ref(), certkey);
+        sigs.push((node_id, sig));
     }
+    let sigcol =
+        SignatureCollectionType::new(sigs, &validator_mapping, high_qc_round_hash.as_ref())
+            .unwrap();
+
+    let high_qc_rounds = vec![HighQcRoundSigColTuple {
+        high_qc_round,
+        sigs: sigcol,
+    }];
 
     let tc = TimeoutCertificate {
         round: tc_round,
         high_qc_rounds,
     };
 
-    let tmo = ConsensusMessage::Timeout(TimeoutMessage {
+    let timeout = Timeout {
         tminfo: tmo_info,
         last_round_tc: Some(tc),
-    });
+    };
+
+    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new::<Sha256Hash>(timeout, author_certkey));
 
     let tmo_hash = Sha256Hash::hash_object(&tmo);
     let unverified_message = Unverified::new(tmo, author_keypair.sign(tmo_hash.as_ref()));

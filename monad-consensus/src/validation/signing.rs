@@ -97,7 +97,7 @@ impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
     }
 }
 
-impl<S, SCT> Unverified<S, ConsensusMessage<S, SCT>>
+impl<S, SCT> Unverified<S, ConsensusMessage<SCT>>
 where
     S: MessageSignature,
     SCT: SignatureCollection,
@@ -109,7 +109,7 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, ConsensusMessage<S, SCT>>, Error> {
+    ) -> Result<Verified<S, ConsensusMessage<SCT>>, Error> {
         // FIXME this feels wrong... it feels like the enum variant should factor into the hash so
         //       signatures can't be reused across variant members
         Ok(match self.obj {
@@ -181,7 +181,7 @@ where
     }
 }
 
-impl<S, SCT> Unverified<S, ProposalMessage<S, SCT>>
+impl<S, SCT> Unverified<S, ProposalMessage<SCT>>
 where
     S: MessageSignature,
     SCT: SignatureCollection,
@@ -193,7 +193,7 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, ProposalMessage<S, SCT>>, Error> {
+    ) -> Result<Verified<S, ProposalMessage<SCT>>, Error> {
         self.well_formed_proposal()?;
         let msg = H::hash_object(&self.obj);
         let author = verify_author(
@@ -202,7 +202,7 @@ where
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<S, H, _, _>(
+        verify_certificates::<H, _, _>(
             validators,
             validator_mapping,
             &self.obj.last_round_tc,
@@ -255,7 +255,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> Unverified<S, VoteMessage<SC
     }
 }
 
-impl<S, SCT> Unverified<S, TimeoutMessage<S, SCT>>
+impl<S, SCT> Unverified<S, TimeoutMessage<SCT>>
 where
     S: MessageSignature,
     SCT: SignatureCollection,
@@ -265,7 +265,7 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, TimeoutMessage<S, SCT>>, Error> {
+    ) -> Result<Verified<S, TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
         let msg = H::hash_object(&self.obj);
         let author = verify_author(
@@ -274,11 +274,11 @@ where
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<S, H, _, _>(
+        verify_certificates::<H, _, _>(
             validators,
             validator_mapping,
-            &self.obj.last_round_tc,
-            &self.obj.tminfo.high_qc,
+            &self.obj.timeout.last_round_tc,
+            &self.obj.timeout.tminfo.high_qc,
         )?;
 
         let result = Verified {
@@ -290,9 +290,9 @@ where
 
     fn well_formed_timeout(&self) -> Result<(), Error> {
         well_formed(
-            self.obj.tminfo.round,
-            self.obj.tminfo.high_qc.info.vote.round,
-            &self.obj.last_round_tc,
+            self.obj.timeout.tminfo.round,
+            self.obj.timeout.tminfo.high_qc.info.vote.round,
+            &self.obj.timeout.last_round_tc,
         )
     }
 }
@@ -336,12 +336,7 @@ where
             &self.author_signature,
         )?;
 
-        verify_certificates::<S, H, _, _>(
-            validators,
-            validator_mapping,
-            &(None),
-            &self.obj.block.qc,
-        )?;
+        verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &self.obj.block.qc)?;
 
         let result = Verified {
             author: NodeId(author),
@@ -352,20 +347,19 @@ where
     }
 }
 
-fn verify_certificates<S, H, SCT, VT>(
+fn verify_certificates<H, SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    tc: &Option<TimeoutCertificate<S>>,
+    tc: &Option<TimeoutCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
-    S: MessageSignature,
     H: Hasher,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
     if let Some(tc) = tc {
-        verify_tc::<S, H, _>(validators, tc)?;
+        verify_tc::<SCT, H, _>(validators, validator_mapping, tc)?;
     }
 
     verify_qc::<SCT, H, _>(validators, validator_mapping, qc)?;
@@ -373,9 +367,13 @@ where
     Ok(())
 }
 
-fn verify_tc<S, H, VT>(validators: &VT, tc: &TimeoutCertificate<S>) -> Result<(), Error>
+fn verify_tc<SCT, H, VT>(
+    validators: &VT,
+    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    tc: &TimeoutCertificate<SCT>,
+) -> Result<(), Error>
 where
-    S: MessageSignature,
+    SCT: SignatureCollection,
     H: Hasher,
     VT: ValidatorSetType,
 {
@@ -391,14 +389,12 @@ where
         t.high_qc_round.hash(&mut h);
         let msg = h.hash();
 
-        let pubkey = get_pubkey(msg.as_ref(), &t.author_signature)?;
-        pubkey.valid_pubkey(validators.get_members())?;
-
-        t.author_signature
-            .verify(msg.as_ref(), &pubkey)
+        let signers = t
+            .sigs
+            .verify(validator_mapping, msg.as_ref())
             .map_err(|_| Error::InvalidSignature)?;
 
-        node_ids.push(NodeId(pubkey));
+        node_ids.extend(signers);
     }
 
     if !validators.has_super_majority_votes(node_ids.iter()) {
@@ -510,13 +506,14 @@ mod test {
         multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
-        timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
+        timeout::{HighQcRound, HighQcRoundSigColTuple, TimeoutCertificate},
         validation::{Error, Hashable, Hasher, Sha256Hash},
         voting::{ValidatorMapping, VoteInfo},
     };
     use monad_crypto::secp256k1::SecpSignature;
-    use monad_testutil::signing::{
-        create_certificate_keys, create_keys, get_certificate_key, get_key,
+    use monad_testutil::{
+        signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
+        validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, Hash, NodeId, Round, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
@@ -535,13 +532,8 @@ mod test {
     #[test_case(6 => matches Err(_); "TC has a newer round")]
     #[test_case(5 => matches Ok(()); "TC has the correct round")]
     fn tc_comprised_of_old_tmo(round: u64) -> Result<(), Error> {
-        let keypairs = create_keys(3);
-        let vlist = keypairs
-            .iter()
-            .map(|kp| (NodeId(kp.pubkey()), Stake(1)))
-            .collect::<Vec<_>>();
-
-        let vset = ValidatorSet::new(vlist).unwrap();
+        let (keypairs, certkeys, vset, vmap) =
+            create_keys_w_validators::<SignatureCollectionType>(3);
 
         let high_qc_rounds = [
             HighQcRound { qc_round: Round(1) },
@@ -549,15 +541,20 @@ mod test {
             HighQcRound { qc_round: Round(3) },
         ]
         .iter()
-        .zip(keypairs.iter())
-        .map(|(x, keypair)| {
+        .zip(0..3)
+        .map(|(x, i)| {
             let mut h = Sha256Hash::new();
             h.update(Round(5));
             x.hash(&mut h);
             let msg = h.hash();
-            HighQcRoundSigTuple {
+
+            let sigs = vec![(NodeId(keypairs[i].pubkey()), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &certkeys[i]))];
+
+            let sigcol = <SignatureCollectionType as SignatureCollection>::new(sigs, &vmap, msg.as_ref()).unwrap();
+
+            HighQcRoundSigColTuple {
                 high_qc_round: *x,
-                author_signature: keypair.sign(msg.as_ref()),
+                sigs: sigcol,
             }
         })
         .collect();
@@ -567,7 +564,7 @@ mod test {
             high_qc_rounds,
         };
 
-        verify_tc::<SecpSignature, Sha256Hash, _>(&vset, &tc)
+        verify_tc::<_, Sha256Hash, _>(&vset, &vmap, &tc)
     }
 
     #[test]
@@ -670,13 +667,8 @@ mod test {
 
     #[test]
     fn test_tc_verify_insufficient_stake() {
-        let keypairs = create_keys(4);
-        let vlist = keypairs
-            .iter()
-            .map(|kp| (NodeId(kp.pubkey()), Stake(1)))
-            .collect::<Vec<_>>();
-
-        let vset = ValidatorSet::new(vlist).unwrap();
+        let (keypairs, certkeys, vset, vmap) =
+            create_keys_w_validators::<SignatureCollectionType>(4);
 
         let round = Round(5);
 
@@ -686,14 +678,20 @@ mod test {
         ]
         .iter()
         .zip(keypairs[..2].iter())
-        .map(|(x, keypair)| {
+        .zip(certkeys[..2].iter())
+        .map(|((x, keypair), certkey)| {
             let mut h = Sha256Hash::new();
             h.update(round);
             x.hash(&mut h);
             let msg = h.hash();
-            HighQcRoundSigTuple {
+
+            let sigs = vec![(NodeId(keypair.pubkey()), < <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey))];
+
+            let sigcol = <SignatureCollectionType as SignatureCollection>::new(sigs, &vmap, msg.as_ref()).unwrap();
+
+            HighQcRoundSigColTuple {
                 high_qc_round: *x,
-                author_signature: keypair.sign(msg.as_ref()),
+                sigs: sigcol,
             }
         })
         .collect();
@@ -704,7 +702,7 @@ mod test {
         };
 
         assert!(matches!(
-            verify_tc::<SecpSignature, Sha256Hash, _>(&vset, &tc),
+            verify_tc::<_, Sha256Hash, _>(&vset, &vmap, &tc),
             Err(Error::InsufficientStake)
         ));
     }

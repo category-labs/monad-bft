@@ -71,7 +71,6 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
     let mut nodes = Nodes::<
         MonadState<
             ConsensusState<
-                SignatureType,
                 SignatureCollectionType,
                 TransactionValidatorType,
                 StateRootValidatorType,
@@ -154,7 +153,6 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
     let mut nodes_recovered = Nodes::<
         MonadState<
             ConsensusState<
-                SignatureType,
                 SignatureCollectionType,
                 TransactionValidatorType,
                 StateRootValidatorType,

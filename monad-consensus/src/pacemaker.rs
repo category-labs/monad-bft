@@ -1,10 +1,11 @@
 use std::{collections::HashMap, time::Duration};
 
 use monad_consensus_types::{
-    message_signature::MessageSignature,
     quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate},
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    timeout::{Timeout, TimeoutCertificate},
+    validation::Hasher,
+    voting::ValidatorMapping,
 };
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
@@ -15,14 +16,14 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct Pacemaker<S, T> {
+pub struct Pacemaker<SCT: SignatureCollection> {
     delta: Duration,
 
     current_round: Round,
-    last_round_tc: Option<TimeoutCertificate<S>>,
+    last_round_tc: Option<TimeoutCertificate<SCT>>,
 
     // only need to store for current round
-    pending_timeouts: HashMap<NodeId, (TimeoutMessage<S, T>, S)>,
+    pending_timeouts: HashMap<NodeId, TimeoutMessage<SCT>>,
 
     // used to not duplicate broadcast/tc
     phase: PhaseHonest,
@@ -36,8 +37,9 @@ enum PhaseHonest {
 }
 
 #[derive(Debug)]
-pub enum PacemakerCommand<S, T> {
-    Broadcast(TimeoutMessage<S, T>),
+pub enum PacemakerCommand<SCT: SignatureCollection> {
+    PrepareTimeout(Timeout<SCT>),
+    Broadcast(TimeoutMessage<SCT>),
     Schedule {
         duration: Duration,
         on_timeout: PacemakerTimerExpire,
@@ -48,15 +50,11 @@ pub enum PacemakerCommand<S, T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PacemakerTimerExpire;
 
-impl<S, T> Pacemaker<S, T>
-where
-    S: MessageSignature,
-    T: SignatureCollection,
-{
+impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn new(
         delta: Duration,
         current_round: Round,
-        last_round_tc: Option<TimeoutCertificate<S>>,
+        last_round_tc: Option<TimeoutCertificate<SCT>>,
     ) -> Self {
         Self {
             delta,
@@ -77,7 +75,7 @@ where
     }
 
     #[must_use]
-    fn start_timer(&mut self, new_round: Round) -> PacemakerCommand<S, T> {
+    fn start_timer(&mut self, new_round: Round) -> PacemakerCommand<SCT> {
         assert!(new_round > self.current_round);
 
         self.phase = PhaseHonest::Zero;
@@ -95,8 +93,8 @@ where
     fn local_timeout_round(
         &self,
         safety: &mut Safety,
-        high_qc: &QuorumCertificate<T>,
-    ) -> Vec<PacemakerCommand<S, T>> {
+        high_qc: &QuorumCertificate<SCT>,
+    ) -> Vec<PacemakerCommand<SCT>> {
         let mut cmds = vec![PacemakerCommand::ScheduleReset];
         let maybe_broadcast = safety
             .make_timeout(self.current_round, high_qc.clone(), &self.last_round_tc)
@@ -107,7 +105,8 @@ where
                     &self.last_round_tc,
                 )
                 .expect("invalid timeout");
-                PacemakerCommand::Broadcast(TimeoutMessage {
+
+                PacemakerCommand::PrepareTimeout(Timeout {
                     tminfo: timeout_info,
                     last_round_tc: self.last_round_tc.clone(),
                 })
@@ -120,34 +119,33 @@ where
     pub fn handle_event(
         &mut self,
         safety: &mut Safety,
-        high_qc: &QuorumCertificate<T>,
+        high_qc: &QuorumCertificate<SCT>,
         _event: PacemakerTimerExpire,
-    ) -> Vec<PacemakerCommand<S, T>> {
+    ) -> Vec<PacemakerCommand<SCT>> {
         self.phase = PhaseHonest::One;
         self.local_timeout_round(safety, high_qc)
     }
 
     #[must_use]
-    pub fn process_remote_timeout<VST: ValidatorSetType>(
+    pub fn process_remote_timeout<H: Hasher, VST: ValidatorSetType>(
         &mut self,
         validators: &VST,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         safety: &mut Safety,
-        high_qc: &QuorumCertificate<T>,
+        high_qc: &QuorumCertificate<SCT>,
         author: NodeId,
-        signature: S,
-        tmo: TimeoutMessage<S, T>,
-    ) -> (Option<TimeoutCertificate<S>>, Vec<PacemakerCommand<S, T>>) {
+        tmo: TimeoutMessage<SCT>,
+    ) -> (Option<TimeoutCertificate<SCT>>, Vec<PacemakerCommand<SCT>>) {
         let mut ret_commands = Vec::new();
 
-        let tm_info = &tmo.tminfo;
+        let tm_info = &tmo.timeout.tminfo;
         if tm_info.round < self.current_round {
             return (None, ret_commands);
         }
         assert_eq!(tm_info.round, self.current_round);
 
         // it's fine to overwrite if already exists
-        self.pending_timeouts
-            .insert(author, (tmo.clone(), signature));
+        self.pending_timeouts.insert(author, tmo.clone());
 
         let timeouts: Vec<NodeId> = self.pending_timeouts.keys().copied().collect();
 
@@ -156,24 +154,24 @@ where
             ret_commands.extend(self.local_timeout_round(safety, high_qc));
             self.phase = PhaseHonest::One;
         }
-        let mut ret_tc = None;
+        let mut ret_tc: Option<TimeoutCertificate<SCT>> = None;
         if self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
-            ret_tc = Some(TimeoutCertificate {
-                round: tm_info.round,
-                high_qc_rounds: self
-                    .pending_timeouts
-                    .values()
-                    .map(|(tmo, signature)| {
-                        assert_eq!(tmo.tminfo.round, tm_info.round);
-                        HighQcRoundSigTuple {
-                            high_qc_round: HighQcRound {
-                                qc_round: tmo.tminfo.high_qc.info.vote.round,
-                            },
-                            author_signature: *signature,
-                        }
-                    })
-                    .collect(),
-            });
+            // FIXME: error handling when creating certificate
+            ret_tc = Some(
+                TimeoutCertificate::new::<H>(
+                    tm_info.round,
+                    self.pending_timeouts
+                        .iter()
+                        .map(|(node_id, tmo_msg)| {
+                            (*node_id, tmo_msg.timeout.tminfo.clone(), tmo_msg.sig)
+                        })
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    validator_mapping,
+                )
+                .expect("TimeoutCertificate creation"),
+            );
+
             self.phase = PhaseHonest::Supermajority;
         }
 
@@ -183,8 +181,8 @@ where
     #[must_use]
     pub fn advance_round_tc(
         &mut self,
-        tc: &TimeoutCertificate<S>,
-    ) -> Option<PacemakerCommand<S, T>> {
+        tc: &TimeoutCertificate<SCT>,
+    ) -> Option<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
             return None;
         }
@@ -196,8 +194,8 @@ where
     #[must_use]
     pub fn advance_round_qc(
         &mut self,
-        qc: &QuorumCertificate<T>,
-    ) -> Option<PacemakerCommand<S, T>> {
+        qc: &QuorumCertificate<SCT>,
+    ) -> Option<PacemakerCommand<SCT>> {
         if qc.info.vote.round < self.current_round {
             return None;
         }

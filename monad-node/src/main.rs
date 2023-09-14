@@ -47,12 +47,7 @@ type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
 type StateRootValidatorType = NopStateRoot;
 type MonadState = monad_state::MonadState<
-    ConsensusState<
-        SignatureType,
-        SignatureCollectionType,
-        TransactionValidatorType,
-        StateRootValidatorType,
-    >,
+    ConsensusState<SignatureCollectionType, TransactionValidatorType, StateRootValidatorType>,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,

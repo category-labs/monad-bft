@@ -24,8 +24,8 @@ message ProtoBlockSyncMessage {
 }
 
 message ProtoTimeoutMessage {
-  monad_proto.timeout.ProtoTimeoutInfo tminfo = 1;
-  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
+  monad_proto.timeout.ProtoTimeout timeout = 1;
+  monad_proto.signing.ProtoSignature sig = 2;
 }
 
 message ProtoProposalMessage {

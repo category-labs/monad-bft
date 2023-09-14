@@ -60,7 +60,7 @@ fn test_consensus_message_event_vote_multisig() {
         ledger_commit_info: lci,
     };
 
-    let votemsg: ConsensusMessage<SecpSignature, SignatureCollectionType> =
+    let votemsg: ConsensusMessage<SignatureCollectionType> =
         ConsensusMessage::Vote(VoteMessage::new::<Sha256Hash>(vote, &certkeypair));
     let votemsg_hash = Sha256Hash::hash_object(&votemsg);
     let sig = keypair.sign(votemsg_hash.as_ref());
@@ -98,7 +98,7 @@ fn test_consensus_message_event_proposal_bls() {
 
     let proposal = propgen.next_proposal(
         &keys,
-        &cert_keys,
+        cert_keys.as_slice(),
         &valset,
         &election,
         &valmap,

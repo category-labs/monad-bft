@@ -20,8 +20,8 @@ use crate::{
     validation::signing::{Unverified, Verified},
 };
 
-pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, ConsensusMessage<MS, SCT>>;
-pub(crate) type UnverifiedConsensusMessage<MS, SCT> = Unverified<MS, ConsensusMessage<MS, SCT>>;
+pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, ConsensusMessage<SCT>>;
+pub(crate) type UnverifiedConsensusMessage<MS, SCT> = Unverified<MS, ConsensusMessage<SCT>>;
 
 impl<SCT: SignatureCollection> From<&VoteMessage<SCT>> for ProtoVoteMessage {
     fn from(value: &VoteMessage<SCT>) -> Self {
@@ -50,39 +50,34 @@ impl<SCT: SignatureCollection> TryFrom<ProtoVoteMessage> for VoteMessage<SCT> {
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> From<&TimeoutMessage<MS, SCT>>
-    for ProtoTimeoutMessage
-{
-    fn from(value: &TimeoutMessage<MS, SCT>) -> Self {
+impl<SCT: SignatureCollection> From<&TimeoutMessage<SCT>> for ProtoTimeoutMessage {
+    fn from(value: &TimeoutMessage<SCT>) -> Self {
         ProtoTimeoutMessage {
-            tminfo: Some((&value.tminfo).into()),
-            last_round_tc: (value.last_round_tc.as_ref().map(|v| v.into())),
+            timeout: Some((&value.timeout).into()),
+            sig: Some(certificate_signature_to_proto(&value.sig)),
         }
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoTimeoutMessage>
-    for TimeoutMessage<MS, SCT>
-{
+impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutMessage> for TimeoutMessage<SCT> {
     type Error = ProtoError;
     fn try_from(value: ProtoTimeoutMessage) -> Result<Self, Self::Error> {
         Ok(Self {
-            tminfo: value
-                .tminfo
-                .ok_or(Self::Error::MissingRequiredField(
-                    "TmoMsg.tminfo".to_owned(),
+            timeout: value
+                .timeout
+                .ok_or(ProtoError::MissingRequiredField(
+                    "TimeoutMessage.timeout".to_owned(),
                 ))?
                 .try_into()?,
-
-            last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
+            sig: proto_to_certificate_signature(value.sig.ok_or(
+                ProtoError::MissingRequiredField("TimeoutMessage.sig".to_owned()),
+            )?)?,
         })
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> From<&ProposalMessage<MS, SCT>>
-    for ProtoProposalMessage
-{
-    fn from(value: &ProposalMessage<MS, SCT>) -> Self {
+impl<SCT: SignatureCollection> From<&ProposalMessage<SCT>> for ProtoProposalMessage {
+    fn from(value: &ProposalMessage<SCT>) -> Self {
         Self {
             block: Some((&value.block).into()),
             last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
@@ -90,9 +85,7 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&ProposalMessage<MS, S
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoProposalMessage>
-    for ProposalMessage<MS, SCT>
-{
+impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoProposalMessage) -> Result<Self, Self::Error> {

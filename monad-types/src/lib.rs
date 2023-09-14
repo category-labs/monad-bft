@@ -27,7 +27,7 @@ impl AsRef<[u8]> for Hash {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd, AsBytes)]
+#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
 pub struct Round(pub u64);
 
 impl AsRef<[u8]> for Round {

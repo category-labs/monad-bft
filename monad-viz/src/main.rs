@@ -57,12 +57,7 @@ type NS<'a> = NodeState<
     MonadEvent<SignatureType, SignatureCollectionType>,
 >;
 type MS = MonadState<
-    ConsensusState<
-        SignatureType,
-        SignatureCollectionType,
-        TransactionValidatorType,
-        StateRootValidatorType,
-    >,
+    ConsensusState<SignatureCollectionType, TransactionValidatorType, StateRootValidatorType>,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
@@ -152,7 +147,6 @@ impl Application for Viz {
                 ReplayNodesSimulation::<
                     MonadState<
                         ConsensusState<
-                            SignatureType,
                             SignatureCollectionType,
                             TransactionValidatorType,
                             StateRootValidatorType,
@@ -187,7 +181,6 @@ impl Application for Viz {
                 NodesSimulation::<
                     MonadState<
                         ConsensusState<
-                            SignatureType,
                             SignatureCollectionType,
                             TransactionValidatorType,
                             StateRootValidatorType,

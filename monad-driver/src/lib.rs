@@ -31,12 +31,7 @@ mod tests {
     type TransactionValidatorType = MockValidator;
     type StateRootValidatorType = NopStateRoot;
     type S = MonadState<
-        ConsensusState<
-            SignatureType,
-            SignatureCollectionType,
-            TransactionValidatorType,
-            StateRootValidatorType,
-        >,
+        ConsensusState<SignatureCollectionType, TransactionValidatorType, StateRootValidatorType>,
         SignatureType,
         SignatureCollectionType,
         ValidatorSet,

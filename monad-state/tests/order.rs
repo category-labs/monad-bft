@@ -66,7 +66,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     run_nodes_until::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,

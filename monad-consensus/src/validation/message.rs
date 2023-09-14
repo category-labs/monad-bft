@@ -3,10 +3,10 @@ use monad_types::*;
 
 // (DiemBFT v4, p.12)
 // https://developers.diem.com/papers/diem-consensus-state-machine-replication-in-the-diem-blockchain/2021-08-17.pdf
-pub fn well_formed<S>(
+pub fn well_formed<SCT>(
     round: Round,
     qc_round: Round,
-    tc: &Option<TimeoutCertificate<S>>,
+    tc: &Option<TimeoutCertificate<SCT>>,
 ) -> Result<(), Error> {
     let prev_round = round - Round(1);
     let valid_qc_round = qc_round == prev_round;

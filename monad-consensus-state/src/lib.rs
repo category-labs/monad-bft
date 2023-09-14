@@ -13,7 +13,6 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, BlockType},
-    message_signature::MessageSignature,
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -34,13 +33,13 @@ use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
 pub mod command;
 pub mod wrapper;
 
-pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
+pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     pending_block_tree: BlockTree<SCT>,
     vote_state: VoteState<SCT>,
     high_qc: QuorumCertificate<SCT>,
     state_root_validator: SVT,
 
-    pacemaker: Pacemaker<ST, SCT>,
+    pacemaker: Pacemaker<SCT>,
     safety: Safety,
 
     nodeid: NodeId,
@@ -60,9 +59,8 @@ pub struct ConsensusConfig {
     pub propose_with_missing_blocks: bool,
 }
 
-pub trait ConsensusProcess<ST, SCT>
+pub trait ConsensusProcess<SCT>
 where
-    ST: MessageSignature,
     SCT: SignatureCollection,
 {
     type TransactionValidatorType;
@@ -84,25 +82,25 @@ where
 
     fn blocktree(&self) -> &BlockTree<SCT>;
 
-    fn handle_timeout_expiry(
+    fn handle_timeout_expiry<H: Hasher>(
         &mut self,
         event: PacemakerTimerExpire,
-    ) -> Vec<PacemakerCommand<ST, SCT>>;
+    ) -> Vec<PacemakerCommand<SCT>>;
 
     fn handle_proposal_message<H: Hasher>(
         &mut self,
         author: NodeId,
-        p: ProposalMessage<ST, SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>>;
+        p: ProposalMessage<SCT>,
+    ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
-        p: ProposalMessage<ST, SCT>,
+        p: ProposalMessage<SCT>,
         txns: FullTransactionList,
         validators: &VT,
         election: &LT,
-    ) -> Vec<ConsensusCommand<ST, SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_vote_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
@@ -111,21 +109,19 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<ST, SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>;
 
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_timeout_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
-        signature: ST,
-        tm: TimeoutMessage<ST, SCT>,
+        tm: TimeoutMessage<SCT>,
         validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<ST, SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>;
 
-    fn handle_block_sync_message(
-        &mut self,
-        b: BlockSyncMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>>;
+    fn handle_block_sync_message(&mut self, b: BlockSyncMessage<SCT>)
+        -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash);
 
@@ -133,12 +129,11 @@ where
 
     fn get_keypair(&self) -> &KeyPair;
 
-    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT>;
+    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<SCT>;
 }
 
-impl<ST, SCT, TVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, TVT, SVT>
+impl<SCT, TVT, SVT> ConsensusProcess<SCT> for ConsensusState<SCT, TVT, SVT>
 where
-    ST: MessageSignature,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
     SVT: StateRootValidator,
@@ -174,10 +169,10 @@ where
         }
     }
 
-    fn handle_timeout_expiry(
+    fn handle_timeout_expiry<H: Hasher>(
         &mut self,
         event: PacemakerTimerExpire,
-    ) -> Vec<PacemakerCommand<ST, SCT>> {
+    ) -> Vec<PacemakerCommand<SCT>> {
         inc_count!(local_timeout);
         debug!(
             "local timeout: round={:?}",
@@ -185,13 +180,22 @@ where
         );
         self.pacemaker
             .handle_event(&mut self.safety, &self.high_qc, event)
+            .into_iter()
+            .map(|cmd| match cmd {
+                PacemakerCommand::PrepareTimeout(tmo) => {
+                    let tmo_msg = TimeoutMessage::new::<H>(tmo, &self.cert_keypair);
+                    PacemakerCommand::Broadcast(tmo_msg)
+                }
+                _ => cmd,
+            })
+            .collect()
     }
 
     fn handle_proposal_message<H: Hasher>(
         &mut self,
         author: NodeId,
-        p: ProposalMessage<ST, SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        p: ProposalMessage<SCT>,
+    ) -> Vec<ConsensusCommand<SCT>> {
         // NULL blocks are not required to have state root hashes
         if p.block.payload.txns.0.is_empty() {
             debug!("Received empty block: block={:?}", p.block);
@@ -235,11 +239,11 @@ where
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
-        p: ProposalMessage<ST, SCT>,
+        p: ProposalMessage<SCT>,
         txns: FullTransactionList,
         validators: &VT,
         election: &LT,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Fetched full proposal: {:?}", p);
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
@@ -292,9 +296,7 @@ where
             return cmds;
         }
 
-        let vote = self
-            .safety
-            .make_vote::<ST, SCT, H>(&p.block, &p.last_round_tc);
+        let vote = self.safety.make_vote::<SCT, H>(&p.block, &p.last_round_tc);
 
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new::<H>(v, &self.cert_keypair);
@@ -319,7 +321,7 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Vote Message: {:?}", vote_msg);
         if vote_msg.vote.vote_info.round < self.pacemaker.get_current_round() {
             inc_count!(old_vote_received);
@@ -346,14 +348,15 @@ where
         cmds
     }
 
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_timeout_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
-        signature: ST,
-        tm: TimeoutMessage<ST, SCT>,
+        tmo_msg: TimeoutMessage<SCT>,
         validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>> {
+        let tm = &tmo_msg.timeout;
         let mut cmds = Vec::new();
         if tm.tminfo.round < self.pacemaker.get_current_round() {
             inc_count!(old_remote_timeout);
@@ -376,15 +379,24 @@ where
             cmds.extend(advance_round_cmds);
         }
 
-        let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout(
+        let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout::<H, VT>(
             validators,
+            validator_mapping,
             &mut self.safety,
             &self.high_qc,
             author,
-            signature,
-            tm,
+            tmo_msg,
         );
-        cmds.extend(remote_timeout_cmds.into_iter().map(Into::into));
+
+        // map PrepareTimeout to TimeoutMesasge
+        let remote_timeout_cmds = remote_timeout_cmds.into_iter().map(|cmd| match cmd {
+            PacemakerCommand::PrepareTimeout(tmo) => {
+                let tmo_msg = TimeoutMessage::new::<H>(tmo, &self.cert_keypair);
+                PacemakerCommand::Broadcast(tmo_msg)
+            }
+            _ => cmd,
+        });
+        cmds.extend(remote_timeout_cmds.map(Into::into));
         if let Some(tc) = tc {
             debug!("Created TC: {:?}", tc);
             inc_count!(created_tc);
@@ -417,7 +429,7 @@ where
     fn handle_block_sync_message(
         &mut self,
         b: BlockSyncMessage<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = vec![];
         let block = b.block;
         let bid = block.get_id();
@@ -435,7 +447,7 @@ where
         cmds
     }
 
-    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<ST, SCT> {
+    fn create_request_sync(&mut self, blockid: BlockId) -> ConsensusCommand<SCT> {
         inc_count!(block_sync_request);
         self.requested_blocks.insert(blockid);
         ConsensusCommand::RequestSync { blockid }
@@ -466,9 +478,8 @@ where
     }
 }
 
-impl<ST, SCT, TVT, SVT> ConsensusState<ST, SCT, TVT, SVT>
+impl<SCT, TVT, SVT> ConsensusState<SCT, TVT, SVT>
 where
-    ST: MessageSignature,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
     SVT: StateRootValidator,
@@ -477,7 +488,7 @@ where
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
-    pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<ST, SCT>> {
+    pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<SCT>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
             inc_count!(process_old_qc);
             return Vec::new();
@@ -512,7 +523,7 @@ where
                         .iter()
                         .map(|b| ConsensusCommand::StateRootHash(b.clone())),
                 );
-                cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(blocks_to_commit));
+                cmds.push(ConsensusCommand::<SCT>::LedgerCommit(blocks_to_commit));
             }
         }
         cmds
@@ -522,7 +533,7 @@ where
     fn process_certificate_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
@@ -533,8 +544,8 @@ where
     #[must_use]
     fn process_new_round_event(
         &mut self,
-        last_round_tc: Option<TimeoutCertificate<ST>>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        last_round_tc: Option<TimeoutCertificate<SCT>>,
+    ) -> Vec<ConsensusCommand<SCT>> {
         self.vote_state
             .start_new_round(self.pacemaker.get_current_round());
 
@@ -632,7 +643,7 @@ mod test {
     use itertools::Itertools;
     use monad_consensus::{
         messages::message::{BlockSyncMessage, TimeoutMessage, VoteMessage},
-        pacemaker::PacemakerTimerExpire,
+        pacemaker::{PacemakerCommand, PacemakerTimerExpire},
         validation::signing::Verified,
     };
     use monad_consensus_types::{
@@ -647,7 +658,7 @@ mod test {
         },
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        timeout::TimeoutInfo,
+        timeout::{Timeout, TimeoutInfo},
         transaction_validator::MockValidator,
         validation::Sha256Hash,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -681,7 +692,7 @@ mod test {
         Vec<SignatureCollectionKeyPairType<SCT>>,
         ValidatorSet,
         ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        Vec<ConsensusState<ST, SCT, MockValidator, SVT>>,
+        Vec<ConsensusState<SCT, MockValidator, SVT>>,
     ) {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
 
@@ -710,7 +721,7 @@ mod test {
                         [127; 32],
                     )
                     .unwrap();
-                ConsensusState::<ST, SCT, _, SVT>::new(
+                ConsensusState::<SCT, _, SVT>::new(
                     MockValidator,
                     k.pubkey(),
                     genesis_block.clone(),
@@ -809,7 +820,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
@@ -853,10 +864,11 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen =
+            ProposalGen::<SignatureType, SignatureCollectionType>::new(state.high_qc.clone());
 
         let p1 = propgen.next_proposal(
             &keys,
@@ -952,18 +964,18 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, cerkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
         let mut qc2 = state.high_qc.clone();
 
         for i in 1..5 {
             let p = propgen.next_proposal(
                 &keys,
-                &cerkeys,
+                &certkeys,
                 &valset,
                 &election,
                 &valmap,
@@ -996,26 +1008,29 @@ mod test {
             assert_eq!(state.pacemaker.get_current_round(), Round(i));
             assert!(result.is_some());
         }
-
-        let byzantine_tm = TimeoutMessage {
+        let byzantine_tmo = Timeout {
             tminfo: TimeoutInfo {
                 round: state.pacemaker.get_current_round(),
                 high_qc: qc2,
             },
             last_round_tc: None,
         };
-        let signed_byzantine_tm = Verified::new::<Sha256Hash>(byzantine_tm, &keys[1]);
-        let (author, signature, tm) = signed_byzantine_tm.destructure();
-        state.handle_timeout_message::<_, _>(author, signature, tm, &valset, &election);
+        let byzantine_tmo_msg = TimeoutMessage::new::<Sha256Hash>(byzantine_tmo, &certkeys[1]);
+        let signed_byzantine_tm: Verified<SignatureType, _> =
+            Verified::new::<Sha256Hash>(byzantine_tmo_msg, &keys[1]);
+        let (author, _signature, tm) = signed_byzantine_tm.destructure();
+        state.handle_timeout_message::<Sha256Hash, _, _>(author, tm, &valset, &valmap, &election);
+        // FIXME: what are we expecting here?
     }
 
     #[test]
     fn duplicate_proposals() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen =
+            ProposalGen::<SignatureType, SignatureCollectionType>::new(state.high_qc.clone());
 
         let p1 = propgen.next_proposal(
             &keys,
@@ -1068,10 +1083,10 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
         // first proposal
         let p1 = propgen.next_proposal(
@@ -1258,10 +1273,10 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
         // round 1 proposal
         let p1 = propgen.next_proposal(
@@ -1369,12 +1384,11 @@ mod test {
 
     #[test]
     fn test_commit_rule_non_consecutive() {
-        use monad_consensus::pacemaker::PacemakerCommand::Broadcast;
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
         // round 1 proposal
         let p1 = propgen.next_proposal(
@@ -1440,17 +1454,17 @@ mod test {
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
-            .find(|cmd| matches!(cmd, Broadcast(_)))
+            .find(|cmd| matches!(cmd, PacemakerCommand::PrepareTimeout(_)))
             .unwrap();
 
-        let tmo_msg = if let Broadcast(tmo_msg) = broadcast_cmd {
-            tmo_msg
+        let tmo = if let PacemakerCommand::PrepareTimeout(tmo) = broadcast_cmd {
+            tmo
         } else {
             panic!()
         };
-        assert_eq!(tmo_msg.tminfo.round, Round(2));
+        assert_eq!(tmo.tminfo.round, Round(2));
 
-        let _ = propgen.next_tc(&keys, &valset);
+        let _ = propgen.next_tc(&keys, &certkeys, &valset, &valmap);
 
         // round 3 proposal, has qc(1)
         let p3 = propgen.next_proposal(
@@ -1498,7 +1512,7 @@ mod test {
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, MultiSig<NopSignature>, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -1509,8 +1523,10 @@ mod test {
         // the next leader, all other nodes get B.
         // effect is that nodes send votes for B to the next leader who thinks that
         // the "correct" proposal is A.
-        let mut correct_proposal_gen = ProposalGen::new(first_state.high_qc.clone());
-        let mut mal_proposal_gen = ProposalGen::new(first_state.high_qc.clone());
+        let mut correct_proposal_gen =
+            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
+        let mut mal_proposal_gen =
+            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
 
         let cp1 = correct_proposal_gen.next_proposal(
             &keys,

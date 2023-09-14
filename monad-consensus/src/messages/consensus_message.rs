@@ -15,15 +15,15 @@ use crate::{
 };
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusMessage<ST, SCT: SignatureCollection> {
-    Proposal(ProposalMessage<ST, SCT>),
+pub enum ConsensusMessage<SCT: SignatureCollection> {
+    Proposal(ProposalMessage<SCT>),
     Vote(VoteMessage<SCT>),
-    Timeout(TimeoutMessage<ST, SCT>),
+    Timeout(TimeoutMessage<SCT>),
     RequestBlockSync(RequestBlockSyncMessage),
     BlockSync(BlockSyncMessage<SCT>),
 }
 
-impl<ST: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusMessage<ST, SCT> {
+impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
@@ -35,9 +35,8 @@ impl<ST: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusMessage<ST,
     }
 }
 
-impl<ST, SCT> Hashable for ConsensusMessage<ST, SCT>
+impl<SCT> Hashable for ConsensusMessage<SCT>
 where
-    ST: MessageSignature,
     SCT: SignatureCollection,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -57,12 +56,14 @@ where
     }
 }
 
-impl<ST, SCT> ConsensusMessage<ST, SCT>
+impl<SCT> ConsensusMessage<SCT>
 where
-    ST: MessageSignature,
     SCT: SignatureCollection,
 {
-    pub fn sign<H: Hasher>(self, keypair: &KeyPair) -> Verified<ST, ConsensusMessage<ST, SCT>> {
+    pub fn sign<H: Hasher, ST: MessageSignature>(
+        self,
+        keypair: &KeyPair,
+    ) -> Verified<ST, ConsensusMessage<SCT>> {
         Verified::new::<H>(self, keypair)
     }
 }

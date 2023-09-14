@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use monad_consensus::{
     messages::message::{ProposalMessage, TimeoutMessage},
     validation::signing::Verified,
@@ -10,8 +12,8 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
-    validation::{Hashable, Hasher, Sha256Hash},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
+    validation::{Hasher, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::KeyPair;
@@ -23,7 +25,8 @@ pub struct ProposalGen<ST, SCT> {
     seq_num: u64,
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
-    last_tc: Option<TimeoutCertificate<ST>>,
+    last_tc: Option<TimeoutCertificate<SCT>>,
+    phantom: PhantomData<ST>,
 }
 
 impl<ST, SCT> ProposalGen<ST, SCT>
@@ -38,6 +41,7 @@ where
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
             last_tc: None,
+            phantom: PhantomData,
         }
     }
 
@@ -50,7 +54,7 @@ where
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         txns: TransactionList,
         execution_header: ExecutionArtifacts,
-    ) -> Verified<ST, ProposalMessage<ST, SCT>> {
+    ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
             &self.high_qc
@@ -96,8 +100,10 @@ where
     pub fn next_tc<VT: ValidatorSetType>(
         &mut self,
         keys: &[KeyPair],
+        certkeys: &[SignatureCollectionKeyPairType<SCT>],
         valset: &VT,
-    ) -> Vec<Verified<ST, TimeoutMessage<ST, SCT>>> {
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    ) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
         let node_ids = keys
             .iter()
             .map(|keypair| NodeId(keypair.pubkey()))
@@ -106,39 +112,50 @@ where
             return Vec::new();
         }
 
-        let mut tc = TimeoutCertificate::<ST> {
-            round: self.round,
-            high_qc_rounds: Vec::new(),
-        };
-
         let high_qc_round = HighQcRound {
             qc_round: self.high_qc.info.vote.round,
         };
-        let mut h = Sha256Hash::new();
-        h.update(tc.round);
-        high_qc_round.hash(&mut h);
-        let msg_hash = h.hash();
+
+        let tminfo = TimeoutInfo {
+            round: self.round,
+            high_qc: self.high_qc.clone(),
+        };
+
+        let tmo_digest = tminfo.timeout_digest::<Sha256Hash>();
+        // aggregate all tmo signatures into one collection because all nodes share a global state
+        // in reality we don't have this configuration because timeout messages
+        // can't all contain TC carrying signatures from all validators. It's fine
+        // for tests
+        let mut tc_sigs = Vec::new();
+        for (node_id, certkey) in node_ids.iter().zip(certkeys.iter()) {
+            let sig =
+                <SCT::SignatureType as CertificateSignature>::sign(tmo_digest.as_ref(), certkey);
+            tc_sigs.push((*node_id, sig));
+        }
+        let tmo_sig_col = SCT::new(tc_sigs, validator_mapping, tmo_digest.as_ref()).unwrap();
+        let high_qc_sig_tuple = HighQcRoundSigColTuple {
+            high_qc_round,
+            sigs: tmo_sig_col,
+        };
+        let tc = TimeoutCertificate::<SCT> {
+            round: self.round,
+            high_qc_rounds: vec![high_qc_sig_tuple],
+        };
+
+        let timeout = Timeout {
+            tminfo,
+            last_round_tc: self.last_tc.clone(),
+        };
 
         let mut tmo_msgs = Vec::new();
-        for key in keys {
-            let high_qc_sig_tuple = HighQcRoundSigTuple {
-                high_qc_round,
-                author_signature: <ST as MessageSignature>::sign(msg_hash.as_ref(), key),
-            };
-            tc.high_qc_rounds.push(high_qc_sig_tuple);
-            let tmo_msg = TimeoutMessage {
-                tminfo: TimeoutInfo {
-                    round: self.round,
-                    high_qc: self.high_qc.clone(),
-                },
-                last_round_tc: self.last_tc.clone(),
-            };
+        for (key, certkey) in keys.iter().zip(certkeys.iter()) {
+            let tmo_msg = TimeoutMessage::new::<Sha256Hash>(timeout.clone(), certkey);
             tmo_msgs.push(Verified::<ST, _>::new::<Sha256Hash>(tmo_msg, key));
         }
 
         // entering new round through tc
         self.round += Round(1);
-        self.last_tc = Some(tc.clone());
+        self.last_tc = Some(tc);
         tmo_msgs
     }
 

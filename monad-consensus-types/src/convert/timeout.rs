@@ -1,10 +1,9 @@
 use monad_proto::{error::ProtoError, proto::timeout::*};
 
-use super::signing::{message_signature_to_proto, proto_to_message_signature};
+use super::signing::{proto_to_signature_collection, signature_collection_to_proto};
 use crate::{
-    message_signature::MessageSignature,
     signature_collection::SignatureCollection,
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
 };
 
 impl From<&HighQcRound> for ProtoHighQcRound {
@@ -29,36 +28,36 @@ impl TryFrom<ProtoHighQcRound> for HighQcRound {
     }
 }
 
-impl<S: MessageSignature> From<&HighQcRoundSigTuple<S>> for ProtoHighQcRoundSigTuple {
-    fn from(value: &HighQcRoundSigTuple<S>) -> Self {
+impl<SCT: SignatureCollection> From<&HighQcRoundSigColTuple<SCT>> for ProtoHighQcRoundSigColTuple {
+    fn from(value: &HighQcRoundSigColTuple<SCT>) -> Self {
         Self {
             high_qc_round: Some((&value.high_qc_round).into()),
-            author_signature: Some(message_signature_to_proto(&value.author_signature)),
+            sigs: Some(signature_collection_to_proto(&value.sigs)),
         }
     }
 }
 
-impl<S: MessageSignature> TryFrom<ProtoHighQcRoundSigTuple> for HighQcRoundSigTuple<S> {
+impl<SCT: SignatureCollection> TryFrom<ProtoHighQcRoundSigColTuple>
+    for HighQcRoundSigColTuple<SCT>
+{
     type Error = ProtoError;
-    fn try_from(value: ProtoHighQcRoundSigTuple) -> Result<Self, Self::Error> {
+    fn try_from(value: ProtoHighQcRoundSigColTuple) -> Result<Self, Self::Error> {
         Ok(Self {
             high_qc_round: value
                 .high_qc_round
                 .ok_or(Self::Error::MissingRequiredField(
-                    "Unverified<HighQcRound>.obj".to_owned(),
+                    "HighQcRoundSigColTuple.high_qc_round".to_owned(),
                 ))?
                 .try_into()?,
-            author_signature: proto_to_message_signature(value.author_signature.ok_or(
-                Self::Error::MissingRequiredField(
-                    "Unverified<HighQcRound>.author_signature".to_owned(),
-                ),
+            sigs: proto_to_signature_collection(value.sigs.ok_or(
+                Self::Error::MissingRequiredField("HighQcRoundSigColTuple.sigs".to_owned()),
             )?)?,
         })
     }
 }
 
-impl<S: MessageSignature> From<&TimeoutCertificate<S>> for ProtoTimeoutCertificate {
-    fn from(value: &TimeoutCertificate<S>) -> Self {
+impl<SCT: SignatureCollection> From<&TimeoutCertificate<SCT>> for ProtoTimeoutCertificate {
+    fn from(value: &TimeoutCertificate<SCT>) -> Self {
         Self {
             round: Some((&value.round).into()),
             high_qc_rounds: value
@@ -70,7 +69,7 @@ impl<S: MessageSignature> From<&TimeoutCertificate<S>> for ProtoTimeoutCertifica
     }
 }
 
-impl<S: MessageSignature> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<S> {
+impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutCertificate> for TimeoutCertificate<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoTimeoutCertificate) -> Result<Self, Self::Error> {
@@ -116,6 +115,31 @@ impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutInfo> for TimeoutInfo<SCT> {
                     "TimeoutInfo<AggregateSignatures>.high_qc".to_owned(),
                 ))?
                 .try_into()?,
+        })
+    }
+}
+
+impl<SCT: SignatureCollection> From<&Timeout<SCT>> for ProtoTimeout {
+    fn from(value: &Timeout<SCT>) -> Self {
+        Self {
+            tminfo: Some((&value.tminfo).into()),
+            last_round_tc: value.last_round_tc.as_ref().map(|v| v.into()),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoTimeout> for Timeout<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoTimeout) -> Result<Self, Self::Error> {
+        Ok(Self {
+            tminfo: value
+                .tminfo
+                .ok_or(ProtoError::MissingRequiredField(
+                    "Timeout.tminfo".to_owned(),
+                ))?
+                .try_into()?,
+            last_round_tc: value.last_round_tc.map(|v| v.try_into()).transpose()?,
         })
     }
 }

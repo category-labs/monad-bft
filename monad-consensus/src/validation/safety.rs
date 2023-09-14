@@ -35,11 +35,11 @@ impl Safety {
         self.highest_qc_round = cmp::max(r, self.highest_qc_round);
     }
 
-    fn safe_to_vote<S>(
+    fn safe_to_vote<SCT>(
         &self,
         block_round: Round,
         qc_round: Round,
-        tc: &Option<TimeoutCertificate<S>>,
+        tc: &Option<TimeoutCertificate<SCT>>,
     ) -> bool {
         if block_round <= cmp::max(self.highest_vote_round, qc_round) {
             return false;
@@ -48,11 +48,11 @@ impl Safety {
         consecutive(block_round, qc_round) || safe_to_extend(block_round, qc_round, tc)
     }
 
-    fn safe_to_timeout<S>(
+    fn safe_to_timeout<SCT>(
         &self,
         round: Round,
         qc_round: Round,
-        tc: &Option<TimeoutCertificate<S>>,
+        tc: &Option<TimeoutCertificate<SCT>>,
     ) -> bool {
         if qc_round < self.highest_qc_round
             || round + Round(1) <= self.highest_vote_round
@@ -69,12 +69,12 @@ impl Safety {
         consecutive(round, qc_round) || consecutive_tc
     }
 
-    pub fn make_timeout<S, T: SignatureCollection>(
+    pub fn make_timeout<SCT: SignatureCollection>(
         &mut self,
         round: Round,
-        high_qc: QuorumCertificate<T>,
-        last_tc: &Option<TimeoutCertificate<S>>,
-    ) -> Option<TimeoutInfo<T>> {
+        high_qc: QuorumCertificate<SCT>,
+        last_tc: &Option<TimeoutCertificate<SCT>>,
+    ) -> Option<TimeoutInfo<SCT>> {
         let qc_round = high_qc.info.vote.round;
         if self.safe_to_timeout(round, qc_round, last_tc) {
             self.update_highest_vote_round(round);
@@ -84,10 +84,10 @@ impl Safety {
         }
     }
 
-    pub fn make_vote<S, T: SignatureCollection, H: Hasher>(
+    pub fn make_vote<SCT: SignatureCollection, H: Hasher>(
         &mut self,
-        block: &Block<T>,
-        last_tc: &Option<TimeoutCertificate<S>>,
+        block: &Block<SCT>,
+        last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<Vote> {
         let qc_round = block.qc.info.vote.round;
         if self.safe_to_vote(block.round, qc_round, last_tc) {
@@ -124,10 +124,10 @@ fn consecutive(block_round: Round, round: Round) -> bool {
     block_round == round + Round(1)
 }
 
-fn safe_to_extend<S>(
+fn safe_to_extend<SCT>(
     block_round: Round,
     qc_round: Round,
-    tc: &Option<TimeoutCertificate<S>>,
+    tc: &Option<TimeoutCertificate<SCT>>,
 ) -> bool {
     match tc {
         Some(t) => consecutive(block_round, t.round) && qc_round >= t.max_round(),

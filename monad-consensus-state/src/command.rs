@@ -6,7 +6,6 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
-    message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -15,10 +14,10 @@ use monad_consensus_types::{
 use monad_executor::RouterTarget;
 use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
 
-pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
+pub enum ConsensusCommand<SCT: SignatureCollection> {
     Publish {
         target: RouterTarget,
-        message: ConsensusMessage<ST, SCT>,
+        message: ConsensusMessage<SCT>,
     },
     Schedule {
         duration: Duration,
@@ -27,12 +26,12 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     ScheduleReset,
     FetchTxs(
         usize,
-        Box<dyn (FnOnce(TransactionList) -> FetchedTxs<ST, SCT>) + Send + Sync>,
+        Box<dyn (FnOnce(TransactionList) -> FetchedTxs<SCT>) + Send + Sync>,
     ),
     FetchTxsReset,
     FetchFullTxs(
         TransactionList,
-        Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<ST, SCT>) + Send + Sync>,
+        Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<SCT>) + Send + Sync>,
     ),
     FetchFullTxsReset,
     LedgerCommit(Vec<Block<SCT>>),
@@ -52,11 +51,10 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     // - to handle this command, we need to call message_state.set_round()
 }
 
-impl<S: MessageSignature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
-    for ConsensusCommand<S, SC>
-{
-    fn from(cmd: PacemakerCommand<S, SC>) -> Self {
+impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<SCT> {
+    fn from(cmd: PacemakerCommand<SCT>) -> Self {
         match cmd {
+            PacemakerCommand::PrepareTimeout(_) => unreachable!(),
             PacemakerCommand::Broadcast(message) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
                 message: ConsensusMessage::Timeout(message),
@@ -80,7 +78,7 @@ pub struct Checkpoint<SCT> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedTxs<ST, SCT> {
+pub struct FetchedTxs<SCT> {
     // some of this stuff is probably not strictly necessary
     // they're included here just to be extra safe
     pub node_id: NodeId,
@@ -88,15 +86,15 @@ pub struct FetchedTxs<ST, SCT> {
     pub seq_num: u64,
     pub state_root_hash: Hash,
     pub high_qc: QuorumCertificate<SCT>,
-    pub last_round_tc: Option<TimeoutCertificate<ST>>,
+    pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 
     pub txns: TransactionList,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedFullTxs<ST, SCT> {
+pub struct FetchedFullTxs<SCT> {
     pub author: NodeId,
-    pub p: ProposalMessage<ST, SCT>,
+    pub p: ProposalMessage<SCT>,
     pub txns: Option<FullTransactionList>,
 }
 

@@ -63,11 +63,11 @@ where
 
 impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
 where
-    CT: ConsensusProcess<ST, SCT>,
+    CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
-    BST: BlockSyncProcess<ST, SCT, VT>,
+    BST: BlockSyncProcess<SCT, VT>,
 {
     pub fn pubkey(&self) -> PubKey {
         self.consensus.get_pubkey()
@@ -191,14 +191,12 @@ impl monad_types::Serializable<Vec<u8>>
 }
 
 #[derive(Debug, Clone)]
-pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
-    Verified<ST, ConsensusMessage<ST, SCT>>,
-);
+pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(Verified<ST, ConsensusMessage<SCT>>);
 
 #[derive(RefCast)]
 #[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<ST, SCT>>);
+pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<SCT>>);
 
 impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Vec<u8>>
     for VerifiedMonadMessage<MS, SCT>
@@ -293,12 +291,12 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
 
 impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
 where
-    CT: ConsensusProcess<ST, SCT>,
+    CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<ST, SCT, VT>,
+    BST: BlockSyncProcess<SCT, VT>,
 {
     type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
     type Event = MonadEvent<ST, SCT>;
@@ -375,10 +373,10 @@ where
     ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>> {
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
-                let consensus_commands: Vec<ConsensusCommand<ST, SCT>> = match consensus_event {
+                let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(pacemaker_expire) => self
                         .consensus
-                        .handle_timeout_expiry(pacemaker_expire)
+                        .handle_timeout_expiry::<HasherType>(pacemaker_expire)
                         .into_iter()
                         .map(Into::into)
                         .collect(),
@@ -456,7 +454,7 @@ where
                             Ok(m) => m,
                             Err(e) => todo!("{e:?}"),
                         };
-                        let (author, signature, verified_message) = verified_message.destructure();
+                        let (author, _, verified_message) = verified_message.destructure();
                         match verified_message {
                             ConsensusMessage::Proposal(msg) => self
                                 .consensus
@@ -471,11 +469,11 @@ where
                                 )
                             }
                             ConsensusMessage::Timeout(msg) => {
-                                self.consensus.handle_timeout_message::<_, _>(
+                                self.consensus.handle_timeout_message::<HasherType, _, _>(
                                     author,
-                                    signature,
                                     msg,
                                     &self.validator_set,
+                                    &self.validator_mapping,
                                     &self.leader_election,
                                 )
                             }
@@ -502,9 +500,9 @@ where
                 };
 
                 let mut prepare_router_message =
-                    |target: RouterTarget, message: ConsensusMessage<ST, SCT>| {
+                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
                         let message = VerifiedMonadMessage(
-                            message.sign::<HasherType>(self.consensus.get_keypair()),
+                            message.sign::<HasherType, ST>(self.consensus.get_keypair()),
                         );
                         let publish_action = self.message_state.send(target, message);
                         Command::RouterCommand(RouterCommand::Publish {
@@ -601,11 +599,11 @@ where
 pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
         sender: PubKey,
-        unverified_message: Unverified<ST, ConsensusMessage<ST, SCT>>,
+        unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
     },
     Timeout(PacemakerTimerExpire),
-    FetchedTxs(FetchedTxs<ST, SCT>),
-    FetchedFullTxs(FetchedFullTxs<ST, SCT>),
+    FetchedTxs(FetchedTxs<SCT>),
+    FetchedFullTxs(FetchedFullTxs<SCT>),
     FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),
     AdvanceEpoch(Option<ValidatorData>),

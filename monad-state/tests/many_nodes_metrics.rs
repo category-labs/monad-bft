@@ -39,7 +39,7 @@ fn many_nodes_metrics() {
 
     create_and_run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,

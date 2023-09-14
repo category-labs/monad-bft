@@ -2,9 +2,7 @@ use monad_consensus::messages::{
     consensus_message::ConsensusMessage, message::RequestBlockSyncMessage,
 };
 use monad_consensus_state::command::{ConsensusCommand, FetchedBlock};
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::{PeerId, RouterTarget};
 use monad_types::{BlockId, NodeId};
 use monad_validator::validator_set::ValidatorSetType;
@@ -14,10 +12,9 @@ pub struct BlockSyncState {
     round_robin_validator_selector: usize,
 }
 
-pub trait BlockSyncProcess<ST, SC, VT>
+pub trait BlockSyncProcess<SCT, VT>
 where
-    ST: MessageSignature,
-    SC: SignatureCollection,
+    SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
     fn new() -> Self;
@@ -26,19 +23,18 @@ where
         &mut self,
         blockid: BlockId,
         validators: &VT,
-    ) -> (RouterTarget, ConsensusMessage<ST, SC>);
+    ) -> (RouterTarget, ConsensusMessage<SCT>);
 
     fn handle_request_block_sync_message(
         &mut self,
         author: NodeId,
         s: RequestBlockSyncMessage,
-    ) -> Vec<ConsensusCommand<ST, SC>>;
+    ) -> Vec<ConsensusCommand<SCT>>;
 }
 
-impl<ST, SC, VT> BlockSyncProcess<ST, SC, VT> for BlockSyncState
+impl<SCT, VT> BlockSyncProcess<SCT, VT> for BlockSyncState
 where
-    ST: MessageSignature,
-    SC: SignatureCollection,
+    SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
     fn new() -> Self {
@@ -51,7 +47,7 @@ where
         &mut self,
         blockid: BlockId,
         validators: &VT,
-    ) -> (RouterTarget, ConsensusMessage<ST, SC>) {
+    ) -> (RouterTarget, ConsensusMessage<SCT>) {
         let target = RouterTarget::PointToPoint(PeerId(
             validators.get_list()[self.round_robin_validator_selector % validators.len()].0,
         ));
@@ -65,7 +61,7 @@ where
         &mut self,
         author: NodeId,
         s: RequestBlockSyncMessage,
-    ) -> Vec<ConsensusCommand<ST, SC>> {
+    ) -> Vec<ConsensusCommand<SCT>> {
         vec![ConsensusCommand::LedgerFetch(
             s.block_id,
             Box::new(move |block| FetchedBlock {
@@ -90,13 +86,13 @@ mod test {
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use crate::{BlockSyncProcess, BlockSyncState};
-    type ST = NopSignature;
-    type SC = MultiSig<ST>;
-    type VT = ValidatorSet;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
+    type ValidatorSetT = ValidatorSet;
 
     fn verify_target_and_message(
         target: &RouterTarget,
-        message: &ConsensusMessage<ST, SC>,
+        message: &ConsensusMessage<SignatureCollectionType>,
         desired_pubkey: PubKey,
         desired_block_id: BlockId,
     ) {
@@ -118,10 +114,11 @@ mod test {
 
     #[test]
     fn test_request_block_sync_basic_functionality() {
-        let mut process: BlockSyncState = BlockSyncProcess::<ST, SC, VT>::new();
-        let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
+        let mut process: BlockSyncState =
+            BlockSyncProcess::<SignatureCollectionType, ValidatorSetT>::new();
+        let (_, _, valset, _) = create_keys_w_validators::<SignatureCollectionType>(4);
 
-        let (target, message): (RouterTarget, ConsensusMessage<ST, SC>) =
+        let (target, message): (RouterTarget, ConsensusMessage<SignatureCollectionType>) =
             process.request_block_sync(BlockId(Hash([0x00_u8; 32])), &valset);
 
         verify_target_and_message(
@@ -134,10 +131,11 @@ mod test {
 
     #[test]
     fn test_request_block_sync_round_robin() {
-        let mut process: BlockSyncState = BlockSyncProcess::<ST, SC, VT>::new();
-        let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
+        let mut process: BlockSyncState =
+            BlockSyncProcess::<SignatureCollectionType, ValidatorSetT>::new();
+        let (_, _, valset, _) = create_keys_w_validators::<SignatureCollectionType>(4);
 
-        let (mut target, mut message): (RouterTarget, ConsensusMessage<ST, SC>) =
+        let (mut target, mut message): (RouterTarget, ConsensusMessage<SignatureCollectionType>) =
             process.request_block_sync(BlockId(Hash([0x00_u8; 32])), &valset);
         for i in 0..15 {
             verify_target_and_message(
@@ -152,16 +150,19 @@ mod test {
 
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
-        let mut process: BlockSyncState = BlockSyncProcess::<ST, SC, VT>::new();
+        let mut process: BlockSyncState =
+            BlockSyncProcess::<SignatureCollectionType, ValidatorSetT>::new();
         let keypair = get_key(6);
-        let command: Vec<ConsensusCommand<ST, SC>> =
-            <BlockSyncState as BlockSyncProcess<ST, SC, VT>>::handle_request_block_sync_message(
-                &mut process,
-                NodeId(keypair.pubkey()),
-                RequestBlockSyncMessage {
-                    block_id: BlockId(Hash([0x00_u8; 32])),
-                },
-            );
+        let command: Vec<ConsensusCommand<SignatureCollectionType>> = <BlockSyncState as BlockSyncProcess<
+            SignatureCollectionType,
+            ValidatorSetT,
+        >>::handle_request_block_sync_message(
+            &mut process,
+            NodeId(keypair.pubkey()),
+            RequestBlockSyncMessage {
+                block_id: BlockId(Hash([0x00_u8; 32])),
+            },
+        );
         assert_eq!(command.len(), 1);
         let res = command
             .iter()

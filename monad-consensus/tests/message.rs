@@ -7,7 +7,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    timeout::{HighQcRound, HighQcRoundSigTuple, TimeoutCertificate, TimeoutInfo},
+    timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
@@ -16,8 +16,103 @@ use monad_testutil::signing::*;
 use monad_types::*;
 use sha2::Digest;
 use test_case::test_case;
+use zerocopy::AsBytes;
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
+
+#[test]
+fn timeout_digest() {
+    let ti = TimeoutInfo {
+        round: Round(10),
+        high_qc: QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+            QcInfo {
+                vote: VoteInfo {
+                    id: BlockId(Hash([0x00_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x00_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: 0,
+                },
+                ledger_commit: Default::default(),
+            },
+            MockSignatures::with_pubkeys(&[]),
+        ),
+    };
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(ti.round);
+    hasher.update(ti.high_qc.info.vote.round);
+    let h1 = Hash(hasher.finalize_reset().into());
+
+    let h2 = ti.timeout_digest::<Sha256Hash>();
+
+    assert_eq!(h1, h2);
+}
+
+#[test]
+fn timeout_info_hash() {
+    let ti = TimeoutInfo {
+        round: Round(10),
+        high_qc: QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+            QcInfo {
+                vote: VoteInfo {
+                    id: BlockId(Hash([0x00_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x00_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: 0,
+                },
+                ledger_commit: Default::default(),
+            },
+            MockSignatures::with_pubkeys(&[]),
+        ),
+    };
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(ti.round.0.as_bytes());
+    hasher.update(ti.high_qc.info.vote.id.0.as_bytes());
+    hasher.update(ti.high_qc.get_hash());
+    let h1 = Hash(hasher.finalize().into());
+
+    let h2 = Sha256Hash::hash_object(&ti);
+
+    assert_eq!(h1, h2);
+}
+
+#[test]
+fn timeout_hash() {
+    let ti = TimeoutInfo {
+        round: Round(10),
+        high_qc: QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+            QcInfo {
+                vote: VoteInfo {
+                    id: BlockId(Hash([0x00_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x00_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: 0,
+                },
+                ledger_commit: Default::default(),
+            },
+            MockSignatures::with_pubkeys(&[]),
+        ),
+    };
+
+    let tmo = Timeout {
+        tminfo: ti,
+        last_round_tc: None,
+    };
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(tmo.tminfo.round.0.as_bytes());
+    hasher.update(tmo.tminfo.high_qc.info.vote.id.0.as_bytes());
+    hasher.update(tmo.tminfo.high_qc.get_hash());
+    let h1 = Hash(hasher.finalize().into());
+
+    let h2 = Sha256Hash::hash_object(&tmo);
+
+    assert_eq!(h1, h2);
+}
 
 #[test]
 fn timeout_msg_hash() {
@@ -38,17 +133,32 @@ fn timeout_msg_hash() {
         ),
     };
 
-    let tm: TimeoutMessage<SecpSignature, MockSignatures> = TimeoutMessage {
+    let tmo = Timeout {
         tminfo: ti,
         last_round_tc: None,
     };
 
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(tm.tminfo.round);
-    hasher.update(tm.tminfo.high_qc.info.vote.round);
-    let h1: Hash = Hash(hasher.finalize_reset().into());
+    let cert_key = get_certificate_key::<MockSignatures>(7);
 
-    let h2 = Sha256Hash::hash_object(&tm);
+    let tmo_msg = TimeoutMessage::new::<Sha256Hash>(tmo, &cert_key);
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(tmo_msg.timeout.tminfo.round.0.as_bytes());
+    hasher.update(tmo_msg.timeout.tminfo.high_qc.info.vote.id.0.as_bytes());
+    hasher.update(tmo_msg.timeout.tminfo.high_qc.get_hash());
+    unsafe {
+        let sig_bytes = std::mem::transmute::<
+            <SignatureCollectionType as SignatureCollection>::SignatureType,
+            [u8; std::mem::size_of::<
+                <SignatureCollectionType as SignatureCollection>::SignatureType,
+            >()],
+        >(tmo_msg.sig);
+        hasher.update(sig_bytes);
+    }
+
+    let h1 = Hash(hasher.finalize().into());
+
+    let h2 = Sha256Hash::hash_object(&tmo_msg);
 
     assert_eq!(h1, h2);
 }
@@ -88,7 +198,7 @@ fn proposal_msg_hash() {
         &qc,
     );
 
-    let proposal: ProposalMessage<SecpSignature, MockSignatures> = ProposalMessage {
+    let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
         block: block.clone(),
         last_round_tc: None,
     };
@@ -110,9 +220,9 @@ fn max_high_qc() {
     .map(|x| {
         let msg = Sha256Hash::hash_object(x);
         let keypair = get_key(0);
-        HighQcRoundSigTuple {
+        HighQcRoundSigColTuple {
             high_qc_round: *x,
-            author_signature: keypair.sign(msg.as_ref()),
+            sigs: keypair.sign(msg.as_ref()),
         }
     })
     .collect();

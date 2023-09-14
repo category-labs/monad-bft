@@ -26,7 +26,7 @@ fn two_nodes() {
 
     create_and_run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,
@@ -64,7 +64,7 @@ fn two_nodes_quic() {
 
     create_and_run_nodes::<
         MonadState<
-            ConsensusState<NopSignature, MultiSig<NopSignature>, MockValidator, StateRoot>,
+            ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
             ValidatorSet,
