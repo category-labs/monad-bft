@@ -4,6 +4,7 @@ use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
@@ -30,6 +31,7 @@ fn random_latency_test(seed: u64) {
             ValidatorSet,
             SimpleRoundRobin,
             BlockSyncState,
+            Sha256Hash,
         >,
         NopSignature,
         MultiSig<NopSignature>,
@@ -79,6 +81,7 @@ fn delayed_message_test(seed: u64) {
             ValidatorSet,
             SimpleRoundRobin,
             BlockSyncState,
+            Sha256Hash,
         >,
         NopSignature,
         MultiSig<NopSignature>,

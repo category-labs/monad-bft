@@ -4,6 +4,7 @@ use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
@@ -72,6 +73,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             ValidatorSet,
             SimpleRoundRobin,
             BlockSyncState,
+            Sha256Hash,
         >,
         NopSignature,
         MultiSig<NopSignature>,

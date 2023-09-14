@@ -4,6 +4,7 @@ use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     bls::BlsSignatureCollection, payload::StateRoot, transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
@@ -31,6 +32,7 @@ fn two_nodes_bls() {
             ValidatorSet,
             SimpleRoundRobin,
             BlockSyncState,
+            Sha256Hash,
         >,
         SignatureType,
         SignatureCollectionType,

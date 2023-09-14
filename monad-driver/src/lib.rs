@@ -42,6 +42,7 @@ mod tests {
         ValidatorSet,
         SimpleRoundRobin,
         BlockSyncState,
+        Sha256Hash,
     >;
     type PersistenceLoggerType = MockWALogger<<S as State>::Event>;
 

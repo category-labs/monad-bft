@@ -58,6 +58,7 @@ type MonadState = monad_state::MonadState<
     ValidatorSet,
     SimpleRoundRobin,
     BlockSyncState,
+    HasherType,
 >;
 type MonadConfig = <MonadState as State>::Config;
 

@@ -4,7 +4,7 @@ use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::BlockType, multi_sig::MultiSig, payload::NopStateRoot,
-    transaction_validator::MockValidator,
+    transaction_validator::MockValidator, validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
@@ -20,6 +20,7 @@ use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::Valid
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
 
+type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
@@ -81,6 +82,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             ValidatorSet,
             SimpleRoundRobin,
             BlockSyncState,
+            HasherType,
         >,
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
@@ -164,6 +166,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             ValidatorSet,
             SimpleRoundRobin,
             BlockSyncState,
+            HasherType,
         >,
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,

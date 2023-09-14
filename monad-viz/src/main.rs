@@ -28,6 +28,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     payload::NopStateRoot,
     transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
@@ -45,6 +46,7 @@ use monad_wal::{
 };
 use replay_graph::{RepConfig, ReplayNodesSimulation};
 
+type HasherType = Sha256Hash;
 type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
@@ -68,6 +70,7 @@ type MS = MonadState<
     ValidatorSet,
     SimpleRoundRobin,
     BlockSyncState,
+    HasherType,
 >;
 type MM = <MS as State>::Message;
 type ME = <MS as State>::Event;
@@ -162,6 +165,7 @@ impl Application for Viz {
                         ValidatorSet,
                         SimpleRoundRobin,
                         BlockSyncState,
+                        HasherType,
                     >,
                     _,
                 >::new(config, replay_events)
@@ -197,6 +201,7 @@ impl Application for Viz {
                         ValidatorSet,
                         SimpleRoundRobin,
                         BlockSyncState,
+                        HasherType,
                     >,
                     NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
                     _,

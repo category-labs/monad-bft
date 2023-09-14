@@ -4,6 +4,7 @@ use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{
@@ -27,6 +28,7 @@ type MS = MonadState<
     ValidatorSet,
     SimpleRoundRobin,
     BlockSyncState,
+    Sha256Hash,
 >;
 type MM = <MS as State>::Message;
 type ME = <MS as State>::Event;
