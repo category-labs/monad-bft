@@ -1,0 +1,44 @@
+name: Benchmark Regression Check
+
+on: 
+  pull_request:
+    branches: [master]
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest-32
+    permissions:
+      pull-requests: write
+      contents: write
+      packages: read
+      actions: read
+
+    steps:
+      # Check out pull request branch
+      - uses: actions/checkout@v3
+        with:
+          path: pr
+      # Check out base branch
+      - uses: actions/checkout@v3
+        with:
+          ref: master
+          path: master
+
+      # Run benchmark on master
+      - name: Run benchmark on master
+        run: cd master && cargo bench -- --output-format bencher | tee bench.txt
+
+      # Run benchmark on PR
+      - name: Run benchmark on PR
+        run: cd pr && cargo bench -- --output-format bencher | tee bench.txt
+
+      - name: Compare benchmarks
+        uses: openpgpjs/github-action-pull-request-benchmark@v1
+        with:
+          name: 'BenchmarkCompare'
+          tool: 'cargo'
+          pr-benchmark-file-path: pr/bench.txt
+          base-benchmark-file-path: master/bench.txt
+          comment-always: true
+          fail-on-alert: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}

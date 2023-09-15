@@ -18,7 +18,7 @@ use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::Valid
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("two nodes", |b| b.iter(two_nodes));
+    c.bench_function("two_nodes", |b| b.iter(two_nodes));
 }
 
 criterion_group!(benches, criterion_benchmark);
