@@ -22,3 +22,4 @@ simple-xml-builder = "1.1.0"
 [[bin]]
 name = "randomized-tests"
 path = "src/main.rs"
+bench = false

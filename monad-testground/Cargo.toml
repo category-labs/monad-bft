@@ -3,6 +3,10 @@ name = "monad-testground"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "monad-testground"
+bench = false
+
 [dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus-state = { path = "../monad-consensus-state" }
