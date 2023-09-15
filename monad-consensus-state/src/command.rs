@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncMessage, ProposalMessage},
+    },
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{
@@ -12,7 +15,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
 };
-use monad_executor::RouterTarget;
+use monad_executor::{PeerId, RouterTarget};
 use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
 
 use crate::manager::InFlightBlockSync;
@@ -117,4 +120,21 @@ pub struct FetchedBlock<SCT> {
     pub requester: NodeId,
     pub block_id: BlockId,
     pub block: Option<Block<SCT>>,
+}
+
+impl<S: MessageSignature, SCT: SignatureCollection> From<FetchedBlock<SCT>>
+    for ConsensusCommand<S, SCT>
+{
+    fn from(fetched_b: FetchedBlock<SCT>) -> Self {
+        let FetchedBlock {
+            requester,
+            block_id,
+            block,
+        } = fetched_b;
+        let pid = PeerId(requester.0);
+        ConsensusCommand::Publish {
+            target: RouterTarget::PointToPoint(pid),
+            message: ConsensusMessage::BlockSync(BlockSyncMessage { block_id, block }),
+        }
+    }
 }

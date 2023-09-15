@@ -4,10 +4,7 @@ use message::MessageState;
 use monad_block_sync::{BlockRetrievalResult, BlockSyncProcess};
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
-    messages::{
-        consensus_message::ConsensusMessage,
-        message::{BlockSyncMessage, ProposalMessage},
-    },
+    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
     pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
 };
@@ -434,18 +431,7 @@ where
                         cmds
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
-                        let mut cmds = vec![ConsensusCommand::LedgerFetchReset];
-                        let m = BlockSyncMessage {
-                            block_id: fetched_b.block_id,
-                            block: fetched_b.block,
-                        };
-
-                        cmds.push(ConsensusCommand::Publish {
-                            target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
-                            message: ConsensusMessage::BlockSync(m),
-                        });
-
-                        cmds
+                        vec![ConsensusCommand::LedgerFetchReset, fetched_b.into()]
                     }
                     ConsensusEvent::Message {
                         sender,
@@ -491,13 +477,8 @@ where
                                     msg,
                                     &self.validator_set,
                                 ) {
-                                    BlockRetrievalResult::Failed((peer, message)) => {
-                                        vec![
-                                            (ConsensusCommand::Publish {
-                                                target: RouterTarget::PointToPoint(peer),
-                                                message,
-                                            }),
-                                        ]
+                                    BlockRetrievalResult::Failed(retry_cmd) => {
+                                        vec![retry_cmd]
                                     }
                                     BlockRetrievalResult::Success(block) => {
                                         self.consensus.handle_block_sync(block)
