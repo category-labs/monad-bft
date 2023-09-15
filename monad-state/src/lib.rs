@@ -12,7 +12,7 @@ use monad_consensus::{
     validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand, FetchedBlock, FetchedFullTxs, FetchedTxs},
+    command::{Checkpoint, ConfirmedTxsValid, ConsensusCommand, FetchedBlock, FetchedTxs},
     ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -415,21 +415,18 @@ where
 
                         cmds
                     }
-                    ConsensusEvent::FetchedFullTxs(fetched_txs) => {
-                        let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
+                    ConsensusEvent::ConfirmedTxsValid(fetched_txs) => {
+                        let mut cmds = vec![ConsensusCommand::ConfirmTxsValidReset];
 
-                        if let Some(txns) = fetched_txs.txns {
-                            cmds.extend(
-                                self.consensus
-                                    .handle_proposal_message_full::<HasherType, _, _>(
-                                        fetched_txs.author,
-                                        fetched_txs.p,
-                                        txns,
-                                        &self.validator_set,
-                                        &self.leader_election,
-                                    ),
-                            );
-                        }
+                        cmds.extend(
+                            self.consensus
+                                .handle_proposal_message_after_validating_txs::<HasherType, _, _>(
+                                    fetched_txs.author,
+                                    fetched_txs.p,
+                                    &self.validator_set,
+                                    &self.leader_election,
+                                ),
+                        );
 
                         cmds
                     }
@@ -542,19 +539,19 @@ where
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }
-                        ConsensusCommand::FetchFullTxs(txs, cb) => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullTxs(
+                        ConsensusCommand::ConfirmTxsValid(txs, cb) => {
+                            cmds.push(Command::MempoolCommand(MempoolCommand::ConfirmTxsValid(
                                 txs,
-                                Box::new(|full_txs| {
-                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedFullTxs(cb(
-                                        full_txs,
-                                    )))
+                                Box::new(|| {
+                                    Self::Event::ConsensusEvent(ConsensusEvent::ConfirmedTxsValid(
+                                        cb(),
+                                    ))
                                 }),
                             )))
                         }
-                        ConsensusCommand::FetchFullTxsReset => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullReset))
-                        }
+                        ConsensusCommand::ConfirmTxsValidReset => cmds.push(
+                            Command::MempoolCommand(MempoolCommand::ConfirmTxsValidReset),
+                        ),
 
                         ConsensusCommand::RequestSync { blockid } => {
                             let (target, message) = self
@@ -605,7 +602,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     },
     Timeout(PacemakerTimerExpire),
     FetchedTxs(FetchedTxs<ST, SCT>),
-    FetchedFullTxs(FetchedFullTxs<ST, SCT>),
+    ConfirmedTxsValid(ConfirmedTxsValid<ST, SCT>),
     FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),
     AdvanceEpoch(Option<ValidatorData>),
@@ -625,11 +622,10 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
             ConsensusEvent::FetchedTxs(p) => p.fmt(f),
-            ConsensusEvent::FetchedFullTxs(p) => f
+            ConsensusEvent::ConfirmedTxsValid(p) => f
                 .debug_struct("FetchedFullTxs")
                 .field("author", &p.author)
                 .field("proposal", &p.p)
-                .field("txns", &p.txns)
                 .finish(),
             ConsensusEvent::FetchedBlock(b) => f
                 .debug_struct("FetchedBlock")

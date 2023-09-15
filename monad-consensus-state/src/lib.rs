@@ -1,6 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
-use log::{debug, warn};
+use log::debug;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
@@ -14,7 +14,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
+    payload::{StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
@@ -29,7 +29,7 @@ use monad_types::{BlockId, Hash, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use tracing::trace;
 
-use crate::command::{ConsensusCommand, FetchedFullTxs, FetchedTxs};
+use crate::command::{ConfirmedTxsValid, ConsensusCommand, FetchedTxs};
 
 pub mod command;
 pub mod wrapper;
@@ -87,11 +87,14 @@ where
         p: ProposalMessage<ST, SCT>,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
 
-    fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_proposal_message_after_validating_txs<
+        H: Hasher,
+        VT: ValidatorSetType,
+        LT: LeaderElection,
+    >(
         &mut self,
         author: NodeId,
         p: ProposalMessage<ST, SCT>,
-        txns: FullTransactionList,
         validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>;
@@ -187,9 +190,9 @@ where
         if p.block.payload.txns.0.is_empty() {
             debug!("Received empty block: block={:?}", p.block);
             inc_count!(rx_empty_block);
-            return vec![ConsensusCommand::FetchFullTxs(
+            return vec![ConsensusCommand::ConfirmTxsValid(
                 TransactionList::default(),
-                Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+                Box::new(move || ConfirmedTxsValid { author, p }),
             )];
         }
 
@@ -215,32 +218,28 @@ where
                     p.block.payload.txns
                 );
                 inc_count!(rx_proposal);
-                vec![ConsensusCommand::FetchFullTxs(
+                vec![ConsensusCommand::ConfirmTxsValid(
                     p.block.payload.txns.clone(),
-                    Box::new(move |txns| FetchedFullTxs { author, p, txns }),
+                    Box::new(move || ConfirmedTxsValid { author, p }),
                 )]
             }
         }
     }
 
-    fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_proposal_message_after_validating_txs<
+        H: Hasher,
+        VT: ValidatorSetType,
+        LT: LeaderElection,
+    >(
         &mut self,
         author: NodeId,
         p: ProposalMessage<ST, SCT>,
-        txns: FullTransactionList,
         validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         debug!("Fetched full proposal: {:?}", p);
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
-
-        if !self.transaction_validator.validate(&txns) {
-            warn!("Transaction validation failed");
-            debug!("failed txns: {:?}", txns);
-            inc_count!(failed_txn_validation);
-            return cmds;
-        }
 
         let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
         cmds.extend(process_certificate_cmds);
@@ -600,10 +599,7 @@ mod test {
         ledger::LedgerCommitInfo,
         message_signature::MessageSignature,
         multi_sig::MultiSig,
-        payload::{
-            ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
-            TransactionList,
-        },
+        payload::{ExecutionArtifacts, NopStateRoot, StateRootValidator, TransactionList},
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::TimeoutInfo,
@@ -783,10 +779,9 @@ mod test {
         // check no vote commands result from receiving the proposal for round 1
 
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -821,10 +816,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -851,10 +845,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -892,10 +885,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p7.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -924,10 +916,9 @@ mod test {
                 ExecutionArtifacts::zero(),
             );
             let (author, _, verified_message) = p.clone().destructure();
-            let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
                 author,
                 verified_message,
-                FullTransactionList(Vec::new()),
                 &valset,
                 &election,
             );
@@ -980,10 +971,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.clone().destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1000,10 +990,9 @@ mod test {
 
         // send duplicate of p1, expect it to be ignored and no output commands
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1037,10 +1026,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1068,10 +1056,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1112,10 +1099,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_fut.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1127,13 +1113,14 @@ mod test {
         let mut cmds = Vec::new();
         for i in &perms {
             let (author, _, verified_message) = missing_proposals[*i].clone().destructure();
-            cmds.extend(state.handle_proposal_message_full::<Sha256Hash, _, _>(
-                author,
-                verified_message,
-                FullTransactionList(Vec::new()),
-                &valset,
-                &election,
-            ));
+            cmds.extend(
+                state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
+                    author,
+                    verified_message,
+                    &valset,
+                    &election,
+                ),
+            );
         }
 
         let _self_id = PeerId(state.nodeid.0);
@@ -1165,13 +1152,14 @@ mod test {
                     target: RouterTarget::PointToPoint(_self_id),
                     message: ConsensusMessage::Proposal(m),
                 } => {
-                    proposals.extend(state.handle_proposal_message_full::<Sha256Hash, _, _>(
-                        m.block.author,
-                        m.clone(),
-                        FullTransactionList(Vec::new()),
-                        &valset,
-                        &election,
-                    ));
+                    proposals.extend(
+                        state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
+                            m.block.author,
+                            m.clone(),
+                            &valset,
+                            &election,
+                        ),
+                    );
                 }
                 _ => more_proposals = false,
             }
@@ -1191,10 +1179,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_last.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1227,10 +1214,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let p1_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p1_cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1264,10 +1250,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1307,10 +1292,9 @@ mod test {
         );
         let (author, _, verified_message) = p3.destructure();
 
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1340,10 +1324,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1359,10 +1342,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1418,10 +1400,9 @@ mod test {
         assert_eq!(p3.block.qc.info.vote.round, Round(1));
         assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
-        let p3_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p3_cmds = state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1486,10 +1467,9 @@ mod test {
 
         let (author, _, verified_message) = cp1.destructure();
         let block_1 = verified_message.block.clone();
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1504,10 +1484,9 @@ mod test {
             })
             .collect::<Vec<_>>()[0];
 
-        let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds3 = third_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1522,10 +1501,9 @@ mod test {
             })
             .collect::<Vec<_>>()[0];
 
-        let cmds4 = fourth_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds4 = fourth_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1541,10 +1519,9 @@ mod test {
             .collect::<Vec<_>>()[0];
 
         let (author, _, verified_message) = mp1.destructure();
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1594,10 +1571,9 @@ mod test {
         );
         let (author_2, _, verified_message_2) = cp2.destructure();
         let block_2 = verified_message_2.block.clone();
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1619,10 +1595,9 @@ mod test {
         assert!(sync_bid == block_1.get_id());
 
         // first_state has the correct block in its blocktree, so it should not request anything
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1649,17 +1624,15 @@ mod test {
         let (author, _, verified_message) = cp3.destructure();
         let block_3 = verified_message.block.clone();
 
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1693,10 +1666,9 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp4.destructure();
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1711,10 +1683,9 @@ mod test {
         });
         assert!(res.is_none());
 
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1736,10 +1707,9 @@ mod test {
         // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
         // feeding third_state with a proposal from round 4 should trigger a recursive behaviour to ask for blocks
 
-        let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds3 = third_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );
@@ -1801,10 +1771,9 @@ mod test {
         assert!(res.is_none());
 
         //arrival of proposal should also prevent block_sync_request from modifying the tree
-        let cmds2 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = third_state.handle_proposal_message_after_validating_txs::<Sha256Hash, _, _>(
             author_2,
             verified_message_2,
-            FullTransactionList(Vec::new()),
             &valset,
             &election,
         );

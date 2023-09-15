@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use monad_consensus_types::payload::{FullTransactionList, TransactionList};
+use monad_consensus_types::payload::TransactionList;
 use monad_types::{Deserializable, Serializable};
 
 use super::{
@@ -455,7 +455,7 @@ where
 
 pub struct MockMempool<E> {
     fetch_txs_state: Option<Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>>,
-    fetch_full_txs_state: Option<Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>>,
+    confirm_txs_valid_state: Option<Box<dyn (FnOnce() -> E) + Send + Sync>>,
     waker: Option<Waker>,
 }
 
@@ -463,7 +463,7 @@ impl<E> Default for MockMempool<E> {
     fn default() -> Self {
         Self {
             fetch_txs_state: None,
-            fetch_full_txs_state: None,
+            confirm_txs_valid_state: None,
             waker: None,
         }
     }
@@ -483,14 +483,14 @@ impl<E> Executor for MockMempool<E> {
                 }
                 MempoolCommand::FetchReset => {
                     self.fetch_txs_state = None;
-                    wake = self.fetch_full_txs_state.is_some();
+                    wake = self.confirm_txs_valid_state.is_some();
                 }
-                MempoolCommand::FetchFullTxs(_, cb) => {
-                    self.fetch_full_txs_state = Some(cb);
+                MempoolCommand::ConfirmTxsValid(_, cb) => {
+                    self.confirm_txs_valid_state = Some(cb);
                     wake = true;
                 }
-                MempoolCommand::FetchFullReset => {
-                    self.fetch_full_txs_state = None;
+                MempoolCommand::ConfirmTxsValidReset => {
+                    self.confirm_txs_valid_state = None;
                     wake = self.fetch_txs_state.is_some();
                 }
             }
@@ -517,8 +517,8 @@ where
             return Poll::Ready(Some(cb(TransactionList(Vec::new()))));
         }
 
-        if let Some(cb) = this.fetch_full_txs_state.take() {
-            return Poll::Ready(Some(cb(Some(FullTransactionList(Vec::new())))));
+        if let Some(cb) = this.confirm_txs_valid_state.take() {
+            return Poll::Ready(Some(cb()));
         }
 
         self.waker = Some(cx.waker().clone());
@@ -530,7 +530,7 @@ impl<E> MockableExecutor for MockMempool<E> {
     type Event = E;
 
     fn ready(&self) -> bool {
-        self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
+        self.fetch_txs_state.is_some() || self.confirm_txs_valid_state.is_some()
     }
 }
 

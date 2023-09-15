@@ -1,8 +1,7 @@
 use monad_consensus::pacemaker::PacemakerTimerExpire;
 use monad_consensus_state::command::FetchedBlock;
 use monad_consensus_types::{
-    message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionList},
+    message_signature::MessageSignature, payload::TransactionList,
     signature_collection::SignatureCollection,
 };
 use monad_proto::{
@@ -10,7 +9,7 @@ use monad_proto::{
     proto::{event::*, pacemaker::ProtoPacemakerTimerExpire},
 };
 
-use crate::{ConsensusEvent, FetchedFullTxs, FetchedTxs, MonadEvent};
+use crate::{ConfirmedTxsValid, ConsensusEvent, FetchedTxs, MonadEvent};
 
 impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
     for ProtoConsensusEvent
@@ -39,15 +38,10 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
             }
-            ConsensusEvent::FetchedFullTxs(fetched_full) => {
-                proto_consensus_event::Event::FetchedFullTxs(ProtoFetchedFullTxs {
-                    author: Some((&fetched_full.author).into()),
-                    p: Some((&fetched_full.p).into()),
-                    full_txs: fetched_full
-                        .txns
-                        .as_ref()
-                        .map(|txns| txns.0.clone())
-                        .unwrap_or_default(),
+            ConsensusEvent::ConfirmedTxsValid(confirmed_txs_valid) => {
+                proto_consensus_event::Event::ConfirmedTxsValid(ProtoConfirmedTxsValid {
+                    author: Some((&confirmed_txs_valid.author).into()),
+                    p: Some((&confirmed_txs_valid.p).into()),
                 })
             }
             ConsensusEvent::FetchedBlock(fetched_block) => {
@@ -137,21 +131,20 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                     txns: TransactionList(fetched_txs.tx_hashes),
                 })
             }
-            Some(proto_consensus_event::Event::FetchedFullTxs(fetched_full_txs)) => {
-                ConsensusEvent::FetchedFullTxs(FetchedFullTxs {
-                    author: fetched_full_txs
+            Some(proto_consensus_event::Event::ConfirmedTxsValid(confirmed_txs_valid)) => {
+                ConsensusEvent::ConfirmedTxsValid(ConfirmedTxsValid {
+                    author: confirmed_txs_valid
                         .author
                         .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_full_txs.author".to_owned(),
+                            "ConsensusEvent::confirmed_txs_valid.author".to_owned(),
                         ))?
                         .try_into()?,
-                    p: fetched_full_txs
+                    p: confirmed_txs_valid
                         .p
                         .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_full_txs.p".to_owned(),
+                            "ConsensusEvent::confirmed_txs_valid.p".to_owned(),
                         ))?
                         .try_into()?,
-                    txns: Some(FullTransactionList(fetched_full_txs.full_txs)),
                 })
             }
             Some(proto_consensus_event::Event::FetchedBlock(fetched_block)) => {

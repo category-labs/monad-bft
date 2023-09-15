@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use monad_consensus_types::payload::{FullTransactionList, TransactionList};
+use monad_consensus_types::payload::TransactionList;
 use monad_mempool_controller::{Controller, ControllerConfig};
 use monad_mempool_messenger::MessengerError;
 use thiserror::Error;
@@ -33,12 +33,12 @@ enum ControllerTaskError {
 #[derive(Debug)]
 enum ControllerTaskCommand {
     FetchTxs(usize),
-    FetchFullTxs(TransactionList),
+    ConfirmTxsValid(TransactionList),
 }
 
 enum ControllerTaskResult {
     FetchTxs(TransactionList),
-    FetchFullTxs(Option<FullTransactionList>),
+    ConfirmTxsValid(bool),
 }
 
 pub struct MonadMempool<E> {
@@ -47,7 +47,7 @@ pub struct MonadMempool<E> {
     controller_task_rx: mpsc::Receiver<ControllerTaskResult>,
 
     fetch_txs_state: Option<Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>>,
-    fetch_full_txs_state: Option<Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>>,
+    confirm_txs_valid_state: Option<Box<dyn (FnOnce() -> E) + Send + Sync>>,
 }
 
 impl<E> Default for MonadMempool<E>
@@ -75,7 +75,7 @@ where
             controller_task_rx,
 
             fetch_txs_state: None,
-            fetch_full_txs_state: None,
+            confirm_txs_valid_state: None,
         }
     }
 
@@ -100,11 +100,9 @@ where
                             tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal)))
                                 .await?;
                         }
-                        ControllerTaskCommand::FetchFullTxs(txs) => {
-                            let full_txs = controller.fetch_full_txs(txs.0).await;
-
-                            tx.send(ControllerTaskResult::FetchFullTxs(
-                                full_txs.map(FullTransactionList),
+                        ControllerTaskCommand::ConfirmTxsValid(txs) => {
+                            tx.send(ControllerTaskResult::ConfirmTxsValid(
+                                controller.confirm_txs_valid(txs.0).await
                             ))
                             .await?;
                         }
@@ -139,12 +137,12 @@ impl<E> Executor for MonadMempool<E> {
                     self.fetch_txs_state = None;
                     task_command = None;
                 }
-                MempoolCommand::FetchFullTxs(txs, cb) => {
-                    self.fetch_full_txs_state = Some(cb);
-                    task_command = Some(ControllerTaskCommand::FetchFullTxs(txs));
+                MempoolCommand::ConfirmTxsValid(txs, cb) => {
+                    self.confirm_txs_valid_state = Some(cb);
+                    task_command = Some(ControllerTaskCommand::ConfirmTxsValid(txs));
                 }
-                MempoolCommand::FetchFullReset => {
-                    self.fetch_full_txs_state = None;
+                MempoolCommand::ConfirmTxsValidReset => {
+                    self.confirm_txs_valid_state = None;
                     task_command = None;
                 }
             }
@@ -178,9 +176,11 @@ where
                         return Poll::Ready(Some(cb(txs)));
                     }
                 }
-                ControllerTaskResult::FetchFullTxs(full_txs) => {
-                    if let Some(cb) = this.fetch_full_txs_state.take() {
-                        return Poll::Ready(Some(cb(full_txs)));
+                ControllerTaskResult::ConfirmTxsValid(full_txs) => {
+                    if let Some(cb) = this.confirm_txs_valid_state.take() {
+                        if full_txs {
+                            return Poll::Ready(Some(cb()));
+                        }
                     }
                 }
             }

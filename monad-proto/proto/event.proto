@@ -34,10 +34,9 @@ message ProtoFetchedTxs {
   monad_proto.basic.ProtoHash state_root_hash = 7;
 }
 
-message ProtoFetchedFullTxs {
+message ProtoConfirmedTxsValid {
   monad_proto.basic.ProtoNodeId author = 1;
   monad_proto.message.ProtoProposalMessage p = 2;
-  bytes full_txs = 3;
 }
 
 message ProtoFetchedBlock {
@@ -65,7 +64,7 @@ message ProtoConsensusEvent {
     ProtoMessageWithSender message = 1;
     monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
-    ProtoFetchedFullTxs fetched_full_txs = 4;
+    ProtoConfirmedTxsValid confirmed_txs_valid = 4;
     ProtoAdvanceEpochEvent advance_epoch = 5;
     ProtoLoadEpochEvent load_epoch = 6;
     ProtoFetchedBlock fetched_block = 7;

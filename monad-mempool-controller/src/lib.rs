@@ -299,7 +299,17 @@ impl Controller {
         .to_vec()
     }
 
-    pub async fn fetch_full_txs(&self, txs: Vec<u8>) -> Option<Vec<u8>> {
+    pub async fn confirm_txs_valid(&self, txs: Vec<u8>) -> bool {
+        let txs = decode_list::<Vec<u8>>(&txs);
+
+        self.pool.lock().await.confirm_txs_valid(
+            txs.into_iter()
+                .map(ethers::types::Bytes::from)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    pub async fn drain_txs(&self, txs: Vec<u8>) -> Option<Vec<u8>> {
         let txs = decode_list::<Vec<u8>>(&txs);
 
         let full_txs = self.pool.lock().await.fetch_full_txs(

@@ -5,11 +5,8 @@ use monad_consensus::{
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{
-    block::Block,
-    message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionList},
-    quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
+    block::Block, message_signature::MessageSignature, payload::TransactionList,
+    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
 };
 use monad_executor::RouterTarget;
@@ -30,11 +27,11 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
         Box<dyn (FnOnce(TransactionList) -> FetchedTxs<ST, SCT>) + Send + Sync>,
     ),
     FetchTxsReset,
-    FetchFullTxs(
+    ConfirmTxsValid(
         TransactionList,
-        Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<ST, SCT>) + Send + Sync>,
+        Box<dyn (FnOnce() -> ConfirmedTxsValid<ST, SCT>) + Send + Sync>,
     ),
-    FetchFullTxsReset,
+    ConfirmTxsValidReset,
     LedgerCommit(Vec<Block<SCT>>),
     RequestSync {
         blockid: BlockId,
@@ -94,10 +91,9 @@ pub struct FetchedTxs<ST, SCT> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedFullTxs<ST, SCT> {
+pub struct ConfirmedTxsValid<ST, SCT> {
     pub author: NodeId,
     pub p: ProposalMessage<ST, SCT>,
-    pub txns: Option<FullTransactionList>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

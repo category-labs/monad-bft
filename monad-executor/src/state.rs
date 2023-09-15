@@ -1,9 +1,6 @@
 use std::hash::Hash;
 
-use monad_consensus_types::{
-    block::BlockType,
-    payload::{FullTransactionList, TransactionList},
-};
+use monad_consensus_types::{block::BlockType, payload::TransactionList};
 use monad_crypto::secp256k1::PubKey;
 use monad_types::{BlockId, Hash as ConsensusHash};
 
@@ -49,11 +46,8 @@ pub enum MempoolCommand<E> {
     // TODO create test to demonstrate faulty behavior if written improperly
     FetchTxs(usize, Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>),
     FetchReset,
-    FetchFullTxs(
-        TransactionList,
-        Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>,
-    ),
-    FetchFullReset,
+    ConfirmTxsValid(TransactionList, Box<dyn (FnOnce() -> E) + Send + Sync>),
+    ConfirmTxsValidReset,
 }
 
 pub enum LedgerCommand<B, E> {

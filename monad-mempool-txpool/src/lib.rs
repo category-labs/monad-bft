@@ -157,6 +157,16 @@ impl Pool {
         txs.into_iter().map(|tx| tx.hash).collect()
     }
 
+    pub fn confirm_txs_valid(&self, txs: Vec<Bytes>) -> bool {
+        for tx in txs {
+            if !self.map.contains_key(&tx) {
+                return false;
+            }
+        }
+
+        true
+    }
+
     pub fn fetch_full_txs(&mut self, txs: Vec<Bytes>) -> Option<Vec<Bytes>> {
         let mut full_txs = Vec::new();
 
