@@ -5,7 +5,7 @@ use monad_consensus_types::{
     payload::{FullTransactionList, TransactionList},
 };
 use monad_crypto::secp256k1::PubKey;
-use monad_types::{BlockId, Hash as ConsensusHash};
+use monad_types::{BlockId, Hash as ConsensusHash, NodeId};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
@@ -13,6 +13,12 @@ pub struct PeerId(pub PubKey);
 impl std::fmt::Debug for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl From<&NodeId> for PeerId {
+    fn from(id: &NodeId) -> Self {
+        PeerId(id.0)
     }
 }
 

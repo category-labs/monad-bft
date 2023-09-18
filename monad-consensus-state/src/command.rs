@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncMessage, ProposalMessage},
+    },
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{
@@ -11,8 +14,10 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
     timeout::TimeoutCertificate,
 };
-use monad_executor::RouterTarget;
+use monad_executor::{PeerId, RouterTarget};
 use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
+
+use crate::blocksync::InFlightBlockSync;
 
 pub enum ConsensusCommand<SCT: SignatureCollection> {
     Publish {
@@ -36,7 +41,8 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     FetchFullTxsReset,
     LedgerCommit(Vec<Block<SCT>>),
     RequestSync {
-        blockid: BlockId,
+        peer: NodeId,
+        block_id: BlockId,
     },
     LedgerFetch(
         BlockId,
@@ -71,6 +77,15 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
     }
 }
 
+impl<SCT: SignatureCollection> From<&InFlightBlockSync<SCT>> for ConsensusCommand<SCT> {
+    fn from(sync: &InFlightBlockSync<SCT>) -> Self {
+        ConsensusCommand::RequestSync {
+            peer: sync.req_target,
+            block_id: sync.qc.info.vote.id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkpoint<SCT> {
     block: Block<SCT>,
@@ -101,5 +116,24 @@ pub struct FetchedFullTxs<SCT> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedBlock<SCT> {
     pub requester: NodeId,
+    pub block_id: BlockId,
     pub block: Option<Block<SCT>>,
+}
+
+impl<SCT: SignatureCollection> From<FetchedBlock<SCT>> for ConsensusCommand<SCT> {
+    fn from(fetched_b: FetchedBlock<SCT>) -> Self {
+        let FetchedBlock {
+            requester,
+            block_id,
+            block,
+        } = fetched_b;
+        let pid = PeerId(requester.0);
+        ConsensusCommand::Publish {
+            target: RouterTarget::PointToPoint(pid),
+            message: ConsensusMessage::BlockSync(match block {
+                Some(b) => BlockSyncMessage::BlockFound(b),
+                None => BlockSyncMessage::NotAvailable(block_id),
+            }),
+        }
+    }
 }

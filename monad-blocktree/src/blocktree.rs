@@ -2,6 +2,7 @@ use std::{collections::HashMap, fmt, result::Result as StdResult};
 
 use monad_consensus_types::{
     block::{Block, BlockType},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
@@ -258,11 +259,32 @@ impl<T: SignatureCollection> BlockTree<T> {
         }
     }
 
-    pub fn get_missing_ancestor(&self, b: &BlockId) -> Option<BlockId> {
-        let mut bid = b;
+    pub fn get_missing_ancestor(&self, qc: &QuorumCertificate<T>) -> Option<QuorumCertificate<T>> {
+        match self.root {
+            RootKind::Rooted(b) => {
+                if self
+                    .tree
+                    .get(&b)
+                    .expect("Rooted blocktree doesn't have the corresponding root block")
+                    .get_block()
+                    .round
+                    >= qc.info.vote.round
+                {
+                    return None;
+                }
+            }
+            RootKind::Unrooted(r) => {
+                if r >= qc.info.vote.round {
+                    return None;
+                }
+            }
+        };
+
+        let mut bid = &qc.info.vote.id;
+        let mut current_qc = qc;
         loop {
             let Some(i) = self.tree.get(bid) else {
-                return Some(*bid);
+                return Some(current_qc.clone());
             };
             if self.root_match(i) {
                 return None;
@@ -271,6 +293,7 @@ impl<T: SignatureCollection> BlockTree<T> {
                 return None;
             };
             bid = parent_id;
+            current_qc = &i.block.qc;
         }
     }
 
@@ -1482,6 +1505,13 @@ mod test {
 
     #[test]
     fn test_get_missing_ancestor() {
+        // Initial blocktree
+        //        g
+        //        |
+        //        b1
+        //  |  -  |  -  |
+        //  b2    b3    b4
+
         let payload = Payload {
             txns: TransactionList(vec![]),
             header: ExecutionArtifacts::zero(),
@@ -1575,30 +1605,30 @@ mod test {
         );
 
         let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
-        assert!(blocktree.get_missing_ancestor(&g.get_id()).is_none()); // root naturally don't have missing ancestor
-        assert!(blocktree.get_missing_ancestor(&b1.get_id()).unwrap() == b1.get_id());
+        assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree.add(b2.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b2.get_id()).unwrap() == b1.get_id());
+        assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree.add(b3.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b3.get_id()).unwrap() == b1.get_id());
+        assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree.add(b4.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b4.get_id()).unwrap() == b1.get_id());
+        assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b4.qc);
 
         assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b1.get_id()).is_none());
-        assert!(blocktree.get_missing_ancestor(&b2.get_id()).is_none());
-        assert!(blocktree.get_missing_ancestor(&b3.get_id()).is_none());
-        assert!(blocktree.get_missing_ancestor(&b4.get_id()).is_none());
+        assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b4.qc).is_none());
 
         blocktree.prune(&b1.get_id()).unwrap();
-        assert!(blocktree.get_missing_ancestor(&g.get_id()).unwrap() == g.get_id());
+        assert!(blocktree.get_missing_ancestor(&g.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b4.qc).is_none());
 
-        assert!(blocktree.get_missing_ancestor(&b1.get_id()).is_none());
-        assert!(blocktree.get_missing_ancestor(&b2.get_id()).is_none());
-        assert!(blocktree.get_missing_ancestor(&b3.get_id()).is_none());
-        assert!(blocktree.get_missing_ancestor(&b4.get_id()).is_none());
+        assert!(blocktree.size() == 4);
     }
 }

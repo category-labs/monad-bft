@@ -336,7 +336,9 @@ where
             &self.author_signature,
         )?;
 
-        verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &self.obj.block.qc)?;
+        if let BlockSyncMessage::BlockFound(b) = &self.obj {
+            verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &b.qc)?;
+        }
 
         let result = Verified {
             author: NodeId(author),

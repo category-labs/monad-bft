@@ -6,7 +6,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncMessage, ProposalMessage},
+        message::{ProposalMessage, RequestBlockSyncMessage},
     },
     pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
@@ -432,15 +432,7 @@ where
                         cmds
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
-                        let mut cmds = vec![ConsensusCommand::LedgerFetchReset];
-                        if let Some(b) = fetched_b.block {
-                            let m = BlockSyncMessage { block: b };
-                            cmds.push(ConsensusCommand::Publish {
-                                target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
-                                message: ConsensusMessage::BlockSync(m),
-                            })
-                        }
-                        cmds
+                        vec![ConsensusCommand::LedgerFetchReset, fetched_b.into()]
                     }
                     ConsensusEvent::Message {
                         sender,
@@ -481,7 +473,8 @@ where
                                 .block_sync
                                 .handle_request_block_sync_message(author, msg),
                             ConsensusMessage::BlockSync(msg) => {
-                                self.consensus.handle_block_sync_message(msg)
+                                self.consensus
+                                    .handle_block_sync(author, msg, &self.validator_set)
                             }
                         }
                     }
@@ -554,11 +547,13 @@ where
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullReset))
                         }
 
-                        ConsensusCommand::RequestSync { blockid } => {
-                            let (target, message) = self
-                                .block_sync
-                                .request_block_sync(blockid, &self.validator_set);
-                            cmds.push(prepare_router_message(target, message));
+                        ConsensusCommand::RequestSync { peer, block_id } => {
+                            cmds.push(prepare_router_message(
+                                RouterTarget::PointToPoint((&peer).into()),
+                                ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
+                                    block_id,
+                                }),
+                            ));
                         }
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))

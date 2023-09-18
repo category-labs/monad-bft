@@ -53,6 +53,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
             ConsensusEvent::FetchedBlock(fetched_block) => {
                 proto_consensus_event::Event::FetchedBlock(ProtoFetchedBlock {
                     requester: Some((&fetched_block.requester).into()),
+                    block_id: Some((&fetched_block.block_id).into()),
                     block: fetched_block.block.as_ref().map(|b| b.into()),
                 })
             }
@@ -158,6 +159,12 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                 ConsensusEvent::FetchedBlock(FetchedBlock {
                     requester: fetched_block
                         .requester
+                        .ok_or(ProtoError::MissingRequiredField(
+                            "ConsensusEvent::fetched_block.requester".to_owned(),
+                        ))?
+                        .try_into()?,
+                    block_id: fetched_block
+                        .block_id
                         .ok_or(ProtoError::MissingRequiredField(
                             "ConsensusEvent::fetched_block.requester".to_owned(),
                         ))?

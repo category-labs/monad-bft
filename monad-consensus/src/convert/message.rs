@@ -126,9 +126,16 @@ impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
 
 impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMessage {
     fn from(value: &BlockSyncMessage<SCT>) -> Self {
-        ProtoBlockSyncMessage {
-            block: Some((&value.block).into()),
-        }
+        return Self {
+            oneof_message: Some(match value.deref() {
+                BlockSyncMessage::BlockFound(b) => {
+                    proto_block_sync_message::OneofMessage::BlockFound(b.into())
+                }
+                BlockSyncMessage::NotAvailable(bid) => {
+                    proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
+                }
+            }),
+        };
     }
 }
 
@@ -136,13 +143,16 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncMessa
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
-        Ok(Self {
-            block: value
-                .block
-                .ok_or(Self::Error::MissingRequiredField(
-                    "BlockSyncMessage.block_id".to_owned(),
-                ))?
-                .try_into()?,
+        Ok(match value.oneof_message {
+            Some(proto_block_sync_message::OneofMessage::BlockFound(b)) => {
+                BlockSyncMessage::BlockFound(b.try_into()?)
+            }
+            Some(proto_block_sync_message::OneofMessage::NotAvailable(bid)) => {
+                BlockSyncMessage::NotAvailable(bid.try_into()?)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "BlockSyncMessage.oneofmessage".to_owned(),
+            ))?,
         })
     }
 }

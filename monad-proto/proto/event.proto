@@ -42,7 +42,8 @@ message ProtoFetchedFullTxs {
 
 message ProtoFetchedBlock {
   monad_proto.basic.ProtoNodeId requester = 1;
-  monad_proto.block.ProtoBlock block = 2;
+  monad_proto.basic.ProtoBlockId block_id = 2;
+  optional monad_proto.block.ProtoBlock block = 3;
 }
 
 message ProtoAdvanceEpochEvent {
