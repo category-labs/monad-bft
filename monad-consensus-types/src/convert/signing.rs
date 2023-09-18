@@ -67,9 +67,7 @@ pub fn proto_to_signature_collection<SCT: SignatureCollection>(
     proto: ProtoSignatureCollection,
 ) -> Result<SCT, ProtoError> {
     SCT::deserialize(&proto.data).map_err(|e| match e {
-        SignatureCollectionError::DeserializeError(e) => {
-            ProtoError::DeserializeError(format!("{}", e))
-        }
+        SignatureCollectionError::DeserializeError(e) => ProtoError::DeserializeError(e),
         _ => panic!("invalid err type during deserialization"),
     })
 }
