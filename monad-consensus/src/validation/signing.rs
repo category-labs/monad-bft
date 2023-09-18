@@ -336,12 +336,12 @@ where
             &self.author_signature,
         )?;
 
-        verify_certificates::<S, H, _, _>(
-            validators,
-            validator_mapping,
-            &(None),
-            &self.obj.block.qc,
-        )?;
+        if let Some(b) = &self.obj.block {
+            if self.obj.block_id != b.get_id() {
+                return Err(Error::InvalidBlock);
+            }
+            verify_certificates::<S, H, _, _>(validators, validator_mapping, &(None), &b.qc)?;
+        }
 
         let result = Verified {
             author: NodeId(author),

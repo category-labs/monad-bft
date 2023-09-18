@@ -15,6 +15,8 @@ use monad_consensus_types::{
 use monad_executor::RouterTarget;
 use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
 
+use crate::manager::InFlightBlockSync;
+
 pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     Publish {
         target: RouterTarget,
@@ -37,7 +39,8 @@ pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     FetchFullTxsReset,
     LedgerCommit(Vec<Block<SCT>>),
     RequestSync {
-        blockid: BlockId,
+        peer: NodeId,
+        block_id: BlockId,
     },
     LedgerFetch(
         BlockId,
@@ -73,6 +76,17 @@ impl<S: MessageSignature, SC: SignatureCollection> From<PacemakerCommand<S, SC>>
     }
 }
 
+impl<S: MessageSignature, SCT: SignatureCollection> From<&InFlightBlockSync<SCT>>
+    for ConsensusCommand<S, SCT>
+{
+    fn from(sync: &InFlightBlockSync<SCT>) -> Self {
+        ConsensusCommand::RequestSync {
+            peer: sync.req_target,
+            block_id: sync.qc.info.vote.id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkpoint<SCT> {
     block: Block<SCT>,
@@ -103,5 +117,6 @@ pub struct FetchedFullTxs<ST, SCT> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchedBlock<SCT> {
     pub requester: NodeId,
+    pub block_id: BlockId,
     pub block: Option<Block<SCT>>,
 }

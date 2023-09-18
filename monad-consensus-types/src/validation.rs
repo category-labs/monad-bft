@@ -17,6 +17,8 @@ pub enum Error {
     InsufficientStake,
     /// Seq num in block proposal must be 1 higher than in the QC
     InvalidSeqNum,
+    /// Block retrieved doesn't match with the block_id requested (block sync)
+    InvalidBlock,
 }
 
 pub trait Hashable {
