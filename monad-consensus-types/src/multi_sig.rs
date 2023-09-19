@@ -56,13 +56,13 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
                             "Pubkey mismatch NodeId={:?} sig={:?} expected={:?} recovered={:?}",
                             node_id, sig, *pubkey, pubkey_recovered,
                         );
-                        invalid_sigs.push(sig);
+                        invalid_sigs.push((node_id, sig));
                         continue;
                     }
 
                     if sig.verify(msg, pubkey).is_err() {
                         warn!("Invalid sig NodeId={:?} sig={:?} ", node_id, sig);
-                        invalid_sigs.push(sig);
+                        invalid_sigs.push((node_id, sig));
                         continue;
                     }
 
@@ -83,7 +83,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
                         "Failed to recover pubkey NodeId={:?} sig={:?}",
                         node_id, sig
                     );
-                    invalid_sigs.push(sig);
+                    invalid_sigs.push((node_id, sig));
                 };
             } else {
                 external_sigs.push((node_id, sig));
@@ -95,7 +95,9 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         }
 
         if !invalid_sigs.is_empty() {
-            return Err(SignatureCollectionError::InvalidSignatures(invalid_sigs));
+            return Err(SignatureCollectionError::InvalidSignaturesCreate(
+                invalid_sigs,
+            ));
         }
 
         Ok(MultiSig {
@@ -146,7 +148,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         invalid_sigs.extend(verified_unvalidated_sigs.values());
 
         if !invalid_sigs.is_empty() {
-            return Err(SignatureCollectionError::InvalidSignatures(
+            return Err(SignatureCollectionError::InvalidSignaturesVerify(
                 verified_unvalidated_sigs.into_values().collect::<Vec<_>>(),
             ));
         }
@@ -258,15 +260,12 @@ mod test {
 
         assert!(matches!(
             sigcol_err,
-            SignatureCollectionError::InvalidSignatures(_)
+            SignatureCollectionError::InvalidSignaturesCreate(_)
         ));
 
         match sigcol_err {
-            SignatureCollectionError::InvalidSignatures(sigs) => {
-                let expected_set = invalid_sigs
-                    .into_iter()
-                    .map(|(_node_id, sig)| sig)
-                    .collect::<HashSet<_>>();
+            SignatureCollectionError::InvalidSignaturesCreate(sigs) => {
+                let expected_set = invalid_sigs.into_iter().collect::<HashSet<_>>();
                 let test_set = sigs.into_iter().collect::<HashSet<_>>();
 
                 assert_eq!(expected_set, test_set);
@@ -295,7 +294,7 @@ mod test {
 
         assert_eq!(
             err,
-            SignatureCollectionError::InvalidSignatures(vec![invalid_sig])
+            SignatureCollectionError::InvalidSignaturesVerify(vec![invalid_sig])
         );
     }
 
@@ -323,7 +322,7 @@ mod test {
 
         assert_eq!(
             sig_col.verify(&valmap, msg_hash.as_ref()).unwrap_err(),
-            SignatureCollectionError::InvalidSignatures(vec![sig])
+            SignatureCollectionError::InvalidSignaturesVerify(vec![sig])
         );
     }
 }

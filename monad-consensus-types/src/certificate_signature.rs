@@ -15,7 +15,7 @@ pub trait CertificateKeyPair: Send + Sized + Sync + 'static {
 }
 
 pub trait CertificateSignature:
-    Copy + Clone + Eq + Hashable + Send + Sync + std::fmt::Debug + 'static
+    Copy + Clone + Eq + Hashable + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static
 {
     type KeyPairType: CertificateKeyPair;
     type Error: std::error::Error + Send + Sync;

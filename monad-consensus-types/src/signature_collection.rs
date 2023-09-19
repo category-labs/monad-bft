@@ -18,8 +18,8 @@ pub enum SignatureCollectionError<S> {
     NodeIdNotInMapping(Vec<(NodeId, S)>),
     // only possible for non-deterministic signature
     ConflictingSignatures((NodeId, S, S)),
-    // verification error
-    InvalidSignatures(Vec<S>),
+    InvalidSignaturesCreate(Vec<(NodeId, S)>),
+    InvalidSignaturesVerify(Vec<S>),
     DeserializeError(String),
 }
 
@@ -35,8 +35,11 @@ impl<S: CertificateSignature> std::fmt::Display for SignatureCollectionError<S> 
                     "Conflicting signatures from {node_id:?}\ns1: {s1:?}\ns2: {s2:?}"
                 )
             }
-            SignatureCollectionError::InvalidSignatures(sig) => {
-                write!(f, "Invalid signature ({sig:?})")
+            SignatureCollectionError::InvalidSignaturesCreate(sig) => {
+                write!(f, "Invalid signature on create: ({sig:?})")
+            }
+            SignatureCollectionError::InvalidSignaturesVerify(sig) => {
+                write!(f, "Invalid signature on verify: ({sig:?})")
             }
             SignatureCollectionError::DeserializeError(err) => {
                 write!(f, "Deserialization error {:?}", err)
@@ -142,6 +145,42 @@ mod test {
 
         let sigcol = T::new(sigs, &valmap, msg_hash.as_ref());
         assert!(sigcol.is_ok());
+    });
+
+    test_all_signature_collection!(test_creation_steal_signature, |num_keys| {
+        if num_keys <= 1 {
+            // skip test because we can't "steal" others signature
+            return;
+        }
+        let (voting_keys, valmap) = setup_sigcol_test::<T>(num_keys);
+
+        let msg_hash = Hash([129_u8; 32]);
+
+        let mut sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter().skip(1));
+
+        // the first voter steals the signature of the second voter
+        let first_voter_node_id = voting_keys[0].0;
+        let invalid_sig = sigs.first().unwrap().1;
+        sigs.push((first_voter_node_id, invalid_sig));
+
+        let sigcol_err = T::new(sigs, &valmap, msg_hash.as_ref());
+        assert!(matches!(
+            sigcol_err,
+            Err(SignatureCollectionError::InvalidSignaturesCreate(_))
+        ));
+
+        match sigcol_err.unwrap_err() {
+            SignatureCollectionError::InvalidSignaturesCreate(sigs) => {
+                let expected_set = vec![(first_voter_node_id, invalid_sig)]
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+
+                let test_set = sigs.into_iter().collect::<HashSet<_>>();
+
+                assert_eq!(expected_set, test_set);
+            }
+            _ => unreachable!(),
+        }
     });
 
     test_all_signature_collection!(test_num_signatures, |num_keys| {

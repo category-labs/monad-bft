@@ -68,7 +68,7 @@ impl AggregationTree {
         &self,
         validator_mapping: &ValidatorMapping<BlsKeyPair>,
         msg: &[u8],
-    ) -> Result<BlsSignatureCollection, Vec<BlsSignature>> {
+    ) -> Result<BlsSignatureCollection, Vec<(NodeId, BlsSignature)>> {
         // verify the certificate, if invalid, search the binary tree for invalid sig
         let mut unverified_certs = VecDeque::new();
         unverified_certs.push_back(0_usize);
@@ -81,7 +81,17 @@ impl AggregationTree {
                 Ok(_) => {}
                 Err(_) => {
                     if 2 * cert_idx + 1 >= self.nodes.len() {
-                        invalid_sig.push(cert.sig.as_signature());
+                        let signer_idx = cert
+                            .signers
+                            .first_one()
+                            .expect("signer should be one-hot encoded");
+                        let (node_id, _) = validator_mapping
+                            .map
+                            .iter()
+                            .nth(signer_idx)
+                            .expect("signer idx in range");
+
+                        invalid_sig.push((*node_id, cert.sig.as_signature()));
                     } else {
                         unverified_certs.push_back(cert_idx * 2 + 1);
                         unverified_certs.push_back(cert_idx * 2 + 2);
@@ -180,7 +190,7 @@ impl SignatureCollection for BlsSignatureCollection {
         );
 
         tree.verify(validator_mapping, msg)
-            .map_err(SignatureCollectionError::InvalidSignatures)
+            .map_err(SignatureCollectionError::InvalidSignaturesCreate)
     }
 
     fn get_hash<H: Hasher>(&self) -> Hash {
@@ -209,9 +219,9 @@ impl SignatureCollection for BlsSignatureCollection {
         }
 
         if self.sig.fast_verify(msg, &aggpk).is_err() {
-            return Err(SignatureCollectionError::InvalidSignatures(vec![self
-                .sig
-                .as_signature()]));
+            return Err(SignatureCollectionError::InvalidSignaturesVerify(vec![
+                self.sig.as_signature(),
+            ]));
         }
         Ok(signers)
     }
@@ -396,16 +406,13 @@ mod test {
         let sig_col_err = SignatureCollectionType::new(sigs, &valmap, msg).unwrap_err();
         assert!(matches!(
             sig_col_err,
-            SignatureCollectionError::InvalidSignatures(_)
+            SignatureCollectionError::InvalidSignaturesCreate(_)
         ));
 
         match sig_col_err {
-            SignatureCollectionError::InvalidSignatures(sigs) => {
+            SignatureCollectionError::InvalidSignaturesCreate(sigs) => {
                 let test_set = sigs.into_iter().collect::<HashSet<_>>();
-                let invalid_set = invalid_sigs
-                    .into_iter()
-                    .map(|(_node_id, sig)| sig)
-                    .collect::<HashSet<_>>();
+                let invalid_set = invalid_sigs.into_iter().collect::<HashSet<_>>();
 
                 assert_eq!(test_set, invalid_set);
             }
