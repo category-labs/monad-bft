@@ -5,7 +5,9 @@ use std::{
 
 use monad_crypto::secp256k1::PubKey;
 
-use crate::{Command, LedgerCommand, Message, PeerId, RouterCommand, RouterTarget, State};
+use crate::{
+    Command, Identifiable, LedgerCommand, Message, PeerId, RouterCommand, RouterTarget, State,
+};
 
 pub struct PendingMsg<S>
 where

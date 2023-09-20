@@ -155,11 +155,15 @@ pub trait State: Sized {
     ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>;
 }
 
-pub trait Message: Clone {
+pub trait Message: Identifiable + Clone {
     type Event;
+
+    // TODO PeerId -> &PeerId
+    fn event(self, from: PeerId) -> Self::Event;
+}
+
+pub trait Identifiable {
     type Id: Eq + Hash + Clone;
 
     fn id(&self) -> Self::Id;
-    // TODO PeerId -> &PeerId
-    fn event(self, from: PeerId) -> Self::Event;
 }

@@ -2,7 +2,7 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
-    use monad_executor::{Message, State};
+    use monad_executor::{Identifiable, Message, State};
     use monad_testutil::block::MockBlock;
     use monad_types::{Deserializable, Serializable};
     use monad_wal::{
@@ -50,13 +50,16 @@ mod test {
     #[derive(Clone)]
     struct MockMessage;
 
-    impl Message for MockMessage {
-        type Event = TestEvent;
+    impl Identifiable for MockMessage {
         type Id = i32;
 
         fn id(&self) -> Self::Id {
             0
         }
+    }
+
+    impl Message for MockMessage {
+        type Event = TestEvent;
 
         fn event(self, _from: monad_executor::PeerId) -> Self::Event {
             TestEvent { data: 0 }

@@ -6,7 +6,7 @@ use monad_executor::{
     mock_swarm::{Node, Nodes},
     timed_event::TimedEvent,
     transformer::Pipeline,
-    Message, PeerId,
+    Identifiable, PeerId,
 };
 use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
@@ -147,7 +147,7 @@ where
 {
     type State = S;
     type Message = RS::Serialized;
-    type MessageId = <S::Message as Message>::Id;
+    type MessageId = <S::Message as Identifiable>::Id;
     type Event = S::Event;
     type NodeId = PeerId;
 

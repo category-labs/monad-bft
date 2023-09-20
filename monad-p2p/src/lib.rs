@@ -311,7 +311,7 @@ mod tests {
     };
 
     use futures::StreamExt;
-    use monad_executor::Message;
+    use monad_executor::{Identifiable, Message};
     use monad_types::{Deserializable, Serializable};
 
     use crate::Service;
@@ -324,14 +324,16 @@ mod tests {
         Message(monad_executor::PeerId, TestMessage),
     }
 
-    impl Message for TestMessage {
-        type Event = TestEvent;
-
+    impl Identifiable for TestMessage {
         type Id = u64;
 
         fn id(&self) -> Self::Id {
             self.0
         }
+    }
+
+    impl Message for TestMessage {
+        type Event = TestEvent;
 
         fn event(self, from: monad_executor::PeerId) -> Self::Event {
             Self::Event::Message(from, self)

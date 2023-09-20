@@ -17,8 +17,8 @@ use super::{
     state_root_hash::MockStateRootHash,
 };
 use crate::{
-    state::PeerId, Command, Executor, MempoolCommand, Message, RouterCommand, RouterTarget, State,
-    TimerCommand,
+    state::PeerId, Command, Executor, Identifiable, MempoolCommand, Message, RouterCommand,
+    RouterTarget, State, TimerCommand,
 };
 
 #[derive(Debug)]
@@ -793,13 +793,16 @@ mod tests {
         }
     }
 
-    impl Message for SimpleChainMessage {
-        type Event = SimpleChainEvent;
+    impl Identifiable for SimpleChainMessage {
         type Id = u64;
 
         fn id(&self) -> Self::Id {
             self.round
         }
+    }
+
+    impl Message for SimpleChainMessage {
+        type Event = SimpleChainEvent;
 
         fn event(self, from: PeerId) -> Self::Event {
             Self::Event::Vote {

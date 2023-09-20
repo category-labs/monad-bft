@@ -125,7 +125,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use monad_executor::{Message, PeerId, RouterTarget};
+    use monad_executor::{Identifiable, Message, PeerId, RouterTarget};
     use monad_testutil::signing::node_id;
     use monad_types::Round;
 
@@ -134,13 +134,16 @@ mod tests {
     #[derive(Debug, PartialEq, Eq, Hash, Clone)]
     struct TestMessage;
 
-    impl Message for TestMessage {
-        type Event = TestMessage;
+    impl Identifiable for TestMessage {
         type Id = TestMessage;
 
         fn id(&self) -> Self::Id {
             self.clone()
         }
+    }
+
+    impl Message for TestMessage {
+        type Event = TestMessage;
 
         fn event(self, _from: PeerId) -> Self::Event {
             unreachable!()

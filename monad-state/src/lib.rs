@@ -29,8 +29,8 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
-    CheckpointCommand, Command, LedgerCommand, MempoolCommand, Message, PeerId, RouterCommand,
-    RouterTarget, State, StateRootHashCommand, TimerCommand,
+    CheckpointCommand, Command, Identifiable, LedgerCommand, MempoolCommand, Message, PeerId,
+    RouterCommand, RouterTarget, State, StateRootHashCommand, TimerCommand,
 };
 use monad_types::{Epoch, Hash, NodeId, Stake};
 use monad_validator::{
@@ -252,17 +252,24 @@ impl<ST, SCT: SignatureCollection> AsRef<MonadMessage<ST, SCT>> for VerifiedMona
     }
 }
 
+impl<ST, SCT> Identifiable for MonadMessage<ST, SCT>
+where
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+{
+    type Id = ST;
+
+    fn id(&self) -> Self::Id {
+        *self.0.author_signature()
+    }
+}
+
 impl<ST, SCT> Message for MonadMessage<ST, SCT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
     type Event = MonadEvent<ST, SCT>;
-    type Id = ST;
-
-    fn id(&self) -> Self::Id {
-        *self.0.author_signature()
-    }
 
     fn event(self, from: PeerId) -> Self::Event {
         // MUST assert that output is valid and came from the `from` PeerId

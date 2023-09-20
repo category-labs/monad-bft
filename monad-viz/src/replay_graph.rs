@@ -6,7 +6,9 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, Message, PeerId, State};
+use monad_executor::{
+    replay_nodes::ReplayNodes, timed_event::TimedEvent, Identifiable, PeerId, State,
+};
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::{Deserializable, NodeId, Serializable};
@@ -144,7 +146,7 @@ where
 {
     type State = S;
     type Message = S::Message;
-    type MessageId = <S::Message as Message>::Id;
+    type MessageId = <S::Message as Identifiable>::Id;
     type Event = S::Event;
     type NodeId = PeerId;
 
