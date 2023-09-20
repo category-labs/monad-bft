@@ -435,9 +435,9 @@ where
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
                         let mut cmds = vec![ConsensusCommand::LedgerFetchReset];
-                        let m = BlockSyncMessage {
-                            block_id: fetched_b.block_id,
-                            block: fetched_b.block,
+                        let m = match fetched_b.block {
+                            Some(b) => BlockSyncMessage::BlockFound(b),
+                            None => BlockSyncMessage::NotAvailable(fetched_b.block_id),
                         };
 
                         cmds.push(ConsensusCommand::Publish {

@@ -15,7 +15,7 @@ use monad_consensus_types::{
 use monad_executor::RouterTarget;
 use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
 
-use crate::manager::InFlightBlockSync;
+use crate::blocksync::InFlightBlockSync;
 
 pub enum ConsensusCommand<ST, SCT: SignatureCollection> {
     Publish {

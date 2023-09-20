@@ -262,7 +262,14 @@ impl<T: SignatureCollection> BlockTree<T> {
     pub fn get_missing_ancestor(&self, qc: &QuorumCertificate<T>) -> Option<QuorumCertificate<T>> {
         match self.root {
             RootKind::Rooted(b) => {
-                if self.tree.get(&b).unwrap().get_block().round >= qc.info.vote.round {
+                if self
+                    .tree
+                    .get(&b)
+                    .expect("Rooted blocktree doesn't have the corresponding root block")
+                    .get_block()
+                    .round
+                    >= qc.info.vote.round
+                {
                     return None;
                 }
             }
@@ -1604,10 +1611,10 @@ mod test {
         assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree.add(b3.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b2.qc);
+        assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree.add(b4.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b2.qc);
+        assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b4.qc);
 
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());

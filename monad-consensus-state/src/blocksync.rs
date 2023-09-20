@@ -2,7 +2,9 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use monad_consensus::messages::message::BlockSyncMessage;
 use monad_consensus_types::{
-    block::Block, message_signature::MessageSignature, quorum_certificate::QuorumCertificate,
+    block::{Block, BlockType},
+    message_signature::MessageSignature,
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
@@ -65,12 +67,13 @@ where
         qc: &QuorumCertificate<SCT>,
         validator_set: &VT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
+        assert!(validator_set.len() > 0);
         let id = &qc.info.vote.id;
         match self.requests.entry(*id) {
             Entry::Occupied(_) => vec![],
             Entry::Vacant(entry) => {
                 inc_count!(block_sync_request);
-                let peer = validator_set.get_list()[DEFAULT_AUTHOR_INDEX];
+                let peer = validator_set.get_list()[DEFAULT_AUTHOR_INDEX % validator_set.len()];
                 let req = InFlightBlockSync::new(peer, qc.clone());
                 let req_cmd = vec![(&req).into()];
                 entry.insert(req);
@@ -85,10 +88,10 @@ where
         msg: BlockSyncMessage<SCT>,
         validator_set: &VT,
     ) -> BlockSyncResult<ST, SCT> {
-        let BlockSyncMessage {
-            block_id: bid,
-            block: maybe_b,
-        } = msg;
+        let bid = match &msg {
+            BlockSyncMessage::BlockFound(b) => b.get_id(),
+            BlockSyncMessage::NotAvailable(bid) => *bid,
+        };
         if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
             let InFlightBlockSync {
                 req_target,
@@ -101,13 +104,13 @@ where
                 return BlockSyncResult::IllegalResponse;
             }
 
-            match maybe_b {
-                Some(block) => {
+            match msg {
+                BlockSyncMessage::BlockFound(block) => {
                     entry.remove_entry();
                     // block retrieve successful
                     BlockSyncResult::Success(block)
                 }
-                None => {
+                BlockSyncMessage::NotAvailable(_) => {
                     // block retrieve failed, re-request
                     *retry_cnt += 1;
 

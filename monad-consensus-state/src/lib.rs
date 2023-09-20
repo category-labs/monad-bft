@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use log::{debug, warn};
-use manager::BlockSyncManager;
 use monad_blocktree::blocktree::{BlockTree, RootKind};
 use monad_consensus::{
     messages::{
@@ -13,7 +12,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockType},
     message_signature::MessageSignature,
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
@@ -31,12 +30,12 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 use tracing::trace;
 
 use crate::{
+    blocksync::{BlockSyncManager, BlockSyncResult},
     command::{ConsensusCommand, FetchedFullTxs, FetchedTxs},
-    manager::BlockSyncResult,
 };
 
+pub mod blocksync;
 pub mod command;
-pub mod manager;
 pub mod wrapper;
 
 pub struct ConsensusState<ST, SCT: SignatureCollection, TV, SVT> {
@@ -282,9 +281,9 @@ where
         self.pending_block_tree
             .add(p.block.clone())
             .expect("Failed to add block to blocktree");
-        if let Some(bid) = self.pending_block_tree.get_missing_ancestor(&p.block.qc) {
-            debug!("Block sync request: blockid={:?}", bid);
-            cmds.extend(self.request_sync::<VT>(bid, validators));
+        if let Some(qc) = self.pending_block_tree.get_missing_ancestor(&p.block.qc) {
+            debug!("Block sync request: blockid={:?}", qc);
+            cmds.extend(self.request_sync::<VT>(qc, validators));
         }
 
         if p.block.round != round || author != leader || p.block.author != leader {
@@ -430,13 +429,14 @@ where
         validators: &VT,
     ) -> Vec<ConsensusCommand<ST, SCT>> {
         let mut cmds = vec![];
-        // debug!("Block sync response: bid={:?}", bid);
-        inc_count!(block_sync_response);
+
         match self
             .block_sync_manager
             .handle_retrieval(&author, msg, validators)
         {
             BlockSyncResult::Success(block) => {
+                debug!("Block sync response: bid={:?}", block.get_id());
+                inc_count!(block_sync_response);
                 if self.pending_block_tree.is_valid(&block) {
                     // check if this block will extend into root
                     if let Some(qc) = self.pending_block_tree.get_missing_ancestor(&block.qc) {
@@ -1750,10 +1750,7 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(res.is_some());
 
-        let msg = BlockSyncMessage {
-            block_id: block_1.get_id(),
-            block: Some(block_1),
-        };
+        let msg = BlockSyncMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
         second_state.handle_block_sync(req_target, msg, &valset);
 
@@ -1834,10 +1831,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let mal_sync = BlockSyncMessage {
-            block_id: block_2.get_id(),
-            block: None,
-        };
+        let mal_sync = BlockSyncMessage::NotAvailable(block_2.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
         let cmds3 = third_state.handle_block_sync(author_2, mal_sync, &valset);
 
@@ -1853,10 +1847,7 @@ mod test {
         });
         assert!(res.is_none());
 
-        let sync = BlockSyncMessage {
-            block_id: block_3.get_id(),
-            block: Some(block_3),
-        };
+        let sync = BlockSyncMessage::BlockFound(block_3);
 
         let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), &valset);
 
@@ -1912,10 +1903,7 @@ mod test {
         });
         assert!(res.is_none());
 
-        let sync = BlockSyncMessage {
-            block_id: block_2.get_id(),
-            block: Some(block_2),
-        };
+        let sync = BlockSyncMessage::BlockFound(block_2);
         // request sync which did not arrive in time should be ignored.
         let cmds3 = third_state.handle_block_sync(*peer_2, sync, &valset);
 

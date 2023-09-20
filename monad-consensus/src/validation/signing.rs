@@ -336,10 +336,7 @@ where
             &self.author_signature,
         )?;
 
-        if let Some(b) = &self.obj.block {
-            if self.obj.block_id != b.get_id() {
-                return Err(Error::InvalidBlock);
-            }
+        if let BlockSyncMessage::BlockFound(b) = &self.obj {
             verify_certificates::<S, H, _, _>(validators, validator_mapping, &(None), &b.qc)?;
         }
 
