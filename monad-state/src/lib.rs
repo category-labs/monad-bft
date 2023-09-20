@@ -6,7 +6,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage},
+        message::{ProposalMessage, RequestBlockSyncMessage},
     },
     pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
@@ -434,18 +434,7 @@ where
                         cmds
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
-                        let mut cmds = vec![ConsensusCommand::LedgerFetchReset];
-                        let m = match fetched_b.block {
-                            Some(b) => BlockSyncMessage::BlockFound(b),
-                            None => BlockSyncMessage::NotAvailable(fetched_b.block_id),
-                        };
-
-                        cmds.push(ConsensusCommand::Publish {
-                            target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
-                            message: ConsensusMessage::BlockSync(m),
-                        });
-
-                        cmds
+                        vec![ConsensusCommand::LedgerFetchReset, fetched_b.into()]
                     }
                     ConsensusEvent::Message {
                         sender,
