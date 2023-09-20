@@ -12,8 +12,7 @@ use monad_validator::validator_set::ValidatorSetType;
 
 use crate::command::ConsensusCommand;
 
-const DEFAULT_AUTHOR_INDEX: usize = 0;
-const DEFAULT_RETRY: usize = 0;
+const DEFAULT_PEER_INDEX: usize = 0;
 
 #[derive(Debug, Clone)]
 pub struct InFlightBlockSync<SCT> {
@@ -28,10 +27,10 @@ pub enum BlockSyncResult<SCT: SignatureCollection> {
 }
 
 impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
-    pub fn new(req_target: NodeId, qc: QuorumCertificate<SCT>) -> Self {
+    pub fn new(req_target: NodeId, retry_cnt: usize, qc: QuorumCertificate<SCT>) -> Self {
         Self {
             req_target,
-            retry_cnt: DEFAULT_RETRY,
+            retry_cnt,
             qc,
         }
     }
@@ -40,24 +39,31 @@ impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
 #[derive(Debug, Clone)]
 pub struct BlockSyncManager<SCT> {
     requests: HashMap<BlockId, InFlightBlockSync<SCT>>,
+    id: NodeId,
 }
 
-impl<SCT> Default for BlockSyncManager<SCT>
-where
-    SCT: SignatureCollection,
-{
-    fn default() -> Self {
-        Self::new()
+fn choose_peer(my_id: NodeId, peers: &[NodeId], mut cnt: usize) -> (NodeId, usize) {
+    assert!(peers.len() > 1 || (peers.len() == 1 && peers[0] != my_id));
+
+    let mut peer;
+    loop {
+        peer = peers[(cnt) % peers.len()];
+        if peer != my_id {
+            break;
+        }
+        cnt += 1;
     }
+    (peer, cnt)
 }
 
 impl<SCT> BlockSyncManager<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn new() -> Self {
+    pub fn new(id: NodeId) -> Self {
         Self {
             requests: HashMap::new(),
+            id,
         }
     }
 
@@ -72,9 +78,9 @@ where
             Entry::Occupied(_) => vec![],
             Entry::Vacant(entry) => {
                 inc_count!(block_sync_request);
-                // TODO: Avoid requesting to yourself
-                let peer = validator_set.get_list()[DEFAULT_AUTHOR_INDEX % validator_set.len()];
-                let req = InFlightBlockSync::new(peer, qc.clone());
+                let (peer, cnt) =
+                    choose_peer(self.id, validator_set.get_list(), DEFAULT_PEER_INDEX);
+                let req = InFlightBlockSync::new(peer, cnt, qc.clone());
                 let req_cmd = vec![(&req).into()];
                 entry.insert(req);
                 req_cmd
@@ -112,10 +118,9 @@ where
                 }
                 BlockSyncMessage::NotAvailable(_) => {
                     // block retrieve failed, re-request
-                    *retry_cnt += 1;
-
-                    // TODO: Avoid requesting to yourself
-                    *req_target = validator_set.get_list()[(*retry_cnt) % validator_set.len()];
+                    let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt);
+                    *req_target = peer;
+                    *retry_cnt = cnt;
                     BlockSyncResult::Failed(ConsensusCommand::RequestSync {
                         peer: *req_target,
                         block_id: bid,
@@ -193,7 +198,8 @@ mod test {
 
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
-        let mut manager = BlockSyncManager::<SC>::default();
+        let keypair = get_key(6);
+        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()));
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
 
         let qc = &QC::new::<Sha256Hash>(
@@ -254,7 +260,8 @@ mod test {
 
     #[test]
     fn test_handle_retrieval() {
-        let mut manager = BlockSyncManager::<SC>::default();
+        let keypair = get_key(6);
+        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()));
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
 
         // first qc
@@ -334,8 +341,6 @@ mod test {
 
         assert!(peer_3 == valset.get_list()[0]);
         assert!(bid == qc_3.info.vote.id);
-
-        let keypair = get_key(6);
 
         let payload = Payload {
             txns: TransactionList(vec![]),
@@ -492,5 +497,58 @@ mod test {
         };
 
         assert!(b == block_2);
+    }
+
+    #[test]
+    fn test_never_request_to_self() {
+        let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
+        let my_id = valset.get_list()[0];
+        let mut manager = BlockSyncManager::<SC>::new(my_id);
+
+        let qc = &QC::new::<Sha256Hash>(
+            QcInfo {
+                vote: VoteInfo {
+                    id: BlockId(Hash([0x01_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x02_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: 0,
+                },
+                ledger_commit: LedgerCommitInfo::default(),
+            },
+            MockSignatures::with_pubkeys(&[]),
+        );
+
+        let cmds = manager.request::<VT>(qc, &valset);
+
+        assert!(cmds.len() == 1);
+        let (peer, bid) = match cmds[0] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+        // should have skipped self
+        assert!(peer == valset.get_list()[1]);
+        assert!(bid == qc.info.vote.id);
+
+        let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
+
+        for _ in 0..100 {
+            let BlockSyncResult::<SC>::Failed(retry_command) =
+                manager.handle_retrieval(&peer, msg_failed.clone(), &valset)
+            else {
+                panic!("illegal response is processed");
+            };
+
+            let ConsensusCommand::RequestSync {
+                peer,
+                block_id: bid,
+            } = retry_command
+            else {
+                panic!("RequestSync is not produced")
+            };
+
+            assert_ne!(peer, my_id);
+            assert_eq!(bid, qc.info.vote.id);
+        }
     }
 }

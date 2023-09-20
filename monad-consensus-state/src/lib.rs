@@ -175,7 +175,7 @@ where
             config,
 
             transaction_validator,
-            block_sync_manager: BlockSyncManager::new(),
+            block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey)),
             keypair,
             cert_keypair,
         }
