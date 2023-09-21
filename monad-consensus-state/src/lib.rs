@@ -2229,7 +2229,6 @@ mod test {
         // similarly, if the rest of the node decided to vote it could create qc and cause update as well.
         let mut election = SpyRoundRobin::default();
         let (first_state, states) = states.split_first_mut().unwrap();
-        let mut i = 0;
         for state in states.iter_mut() {
             let mut spy = SpyRoundRobin::default();
             let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
@@ -2262,7 +2261,6 @@ mod test {
                 &valmap,
                 &mut election,
             );
-            i += 1;
         }
 
         assert_eq!(election.qc_info.len(), 1);
