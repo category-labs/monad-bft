@@ -16,3 +16,7 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 
 quinn-proto = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+rand_chacha = { workspace = true }

@@ -11,7 +11,7 @@ use monad_mock_swarm::{
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_quic::{
-    gossip::{MockGossip, MockGossipConfig},
+    gossip::mock::{MockGossip, MockGossipConfig},
     QuicRouterScheduler, QuicRouterSchedulerConfig,
 };
 use monad_state::{MonadMessage, MonadState};

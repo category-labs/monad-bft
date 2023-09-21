@@ -53,6 +53,7 @@ const SERVER_NAME: &str = "MONAD";
 
 impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
     type Config = QuicRouterSchedulerConfig<G::Config>;
+    type MessageId = G::MessageId;
     type M = Vec<u8>;
     type Serialized = Vec<u8>;
 
@@ -131,7 +132,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         message: Self::Serialized,
     ) {
         if from == self.me {
-            self.gossip.handle_gossip_message(from, &message);
+            self.gossip.handle_gossip_message(time, from, &message);
             self.poll_gossip(time);
         } else if let Some(maybe_event) = self.endpoint.handle(
             self.zero_instant + time,
@@ -188,9 +189,21 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         }
     }
 
-    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM) {
+    fn outbound<OM: Into<Self::M>>(
+        &mut self,
+        time: Duration,
+        to: RouterTarget,
+        message: OM,
+    ) -> Self::MessageId {
         let message = message.into();
-        self.gossip.send(to, &message);
+        let message_id = self.gossip.send(time, to, &message);
+        self.poll_gossip(time);
+
+        message_id
+    }
+
+    fn forget_outbound(&mut self, time: Duration, to: RouterTarget, id: Self::MessageId) {
+        self.gossip.forget(time, to, id);
         self.poll_gossip(time);
     }
 
@@ -229,6 +242,11 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
                     self.poll_connection(timeout_tick, &connection_handle);
                     self.poll_gossip(timeout_tick);
                 }
+                QuicEventType::GossipTimeout => {
+                    let gossip_tick = self.gossip.peek_tick().expect("invariant broken");
+                    assert_eq!(min_tick, gossip_tick);
+                    self.poll_gossip(gossip_tick);
+                }
             }
         }
         None
@@ -236,16 +254,24 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
 }
 
 enum QuicEventType {
+    GossipTimeout,
     Timeout,
     Event,
 }
 
 impl<G: Gossip> QuicRouterScheduler<G> {
     fn peek_event(&self) -> Option<(Duration, QuicEventType)> {
-        self.timeouts
-            .peek_tick()
-            .map(|tick| (tick, QuicEventType::Timeout))
-            .into_iter()
+        std::iter::empty()
+            .chain(
+                self.gossip
+                    .peek_tick()
+                    .map(|tick| (tick, QuicEventType::GossipTimeout)),
+            )
+            .chain(
+                self.timeouts
+                    .peek_tick()
+                    .map(|tick| (tick, QuicEventType::Timeout)),
+            )
             .chain(
                 self.pending_events
                     .first_key_value()
@@ -349,8 +375,11 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                             while let Ok(Some(chunk)) = chunks.next(
                                 10_000, // TODO ?
                             ) {
-                                self.gossip
-                                    .handle_gossip_message(*remote_peer_id, &chunk.bytes);
+                                self.gossip.handle_gossip_message(
+                                    time,
+                                    *remote_peer_id,
+                                    &chunk.bytes,
+                                );
                             }
                             let _should_transmit = chunks.finalize();
                         }
@@ -364,8 +393,11 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                             while let Ok(Some(chunk)) = chunks.next(
                                 10_000, // TODO ?
                             ) {
-                                self.gossip
-                                    .handle_gossip_message(*remote_peer_id, &chunk.bytes);
+                                self.gossip.handle_gossip_message(
+                                    time,
+                                    *remote_peer_id,
+                                    &chunk.bytes,
+                                );
                             }
                             let _should_transmit = chunks.finalize();
                         }
@@ -381,7 +413,7 @@ impl<G: Gossip> QuicRouterScheduler<G> {
     }
 
     fn poll_gossip(&mut self, time: Duration) {
-        while let Some(event) = self.gossip.poll() {
+        while let Some(event) = self.gossip.poll(time) {
             match event {
                 GossipEvent::Send(peer_id, gossip_message) => {
                     if peer_id == self.me {

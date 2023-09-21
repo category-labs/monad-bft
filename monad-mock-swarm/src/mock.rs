@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     marker::Unpin,
     ops::DerefMut,
     pin::Pin,
@@ -31,15 +31,25 @@ pub enum RouterEvent<M, Serialized> {
     Tx(PeerId, Serialized),
 }
 
+/// RouterScheduler describes HOW gossip messages get delivered
 pub trait RouterScheduler {
     type Config;
+    /// transport-level message type - usually will be bytes
     type M;
+    type MessageId;
     type Serialized;
 
     fn new(config: Self::Config) -> Self;
 
     fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized);
-    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM);
+    #[must_use]
+    fn outbound<OM: Into<Self::M>>(
+        &mut self,
+        time: Duration,
+        to: RouterTarget,
+        message: OM,
+    ) -> Self::MessageId;
+    fn forget_outbound(&mut self, time: Duration, to: RouterTarget, id: Self::MessageId);
 
     fn peek_tick(&self) -> Option<Duration>;
     fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>>;
@@ -61,6 +71,7 @@ where
 {
     type Config = NoSerRouterConfig;
     type M = M;
+    type MessageId = ();
     type Serialized = M;
 
     fn new(config: NoSerRouterConfig) -> Self {
@@ -106,6 +117,17 @@ where
         }
     }
 
+    fn forget_outbound(&mut self, time: Duration, _to: RouterTarget, _id: ()) {
+        assert!(
+            time >= self
+                .events
+                .back()
+                .map(|(time, _)| *time)
+                .unwrap_or(Duration::ZERO)
+        );
+        // we don't do anything, because NoSerRouterScheduler doesn't retransmit
+    }
+
     fn peek_tick(&self) -> Option<Duration> {
         self.events.front().map(|(tick, _)| *tick)
     }
@@ -133,6 +155,7 @@ where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
+    RS: RouterScheduler,
     ME: MockableExecutor,
 {
     mempool: ME,
@@ -145,6 +168,7 @@ where
     timer: Option<TimerEvent<S::Event>>,
 
     router: RS,
+    message_pool: HashMap<(RouterTarget, <S::Message as Identifiable>::Id), RS::MessageId>,
 }
 
 pub struct TimerEvent<E> {
@@ -215,6 +239,7 @@ where
             timer: None,
 
             router,
+            message_pool: Default::default(),
         }
     }
 
@@ -323,10 +348,22 @@ where
 
         for (target, message) in to_publish {
             let id = message.as_ref().id();
-            if to_unpublish.contains(&(target, id)) {
+            let key = (target, id);
+            if to_unpublish.contains(&key) {
                 continue;
             }
-            self.router.outbound(self.tick, target, message.serialize());
+            let router_message_id = self.router.outbound(self.tick, target, message.serialize());
+            self.message_pool.insert(key, router_message_id);
+        }
+
+        for (target, message_id) in to_unpublish {
+            self.router.forget_outbound(
+                self.tick,
+                target,
+                self.message_pool
+                    .remove(&(target, message_id))
+                    .expect("unpublish called on message that was never published"),
+            );
         }
     }
 }
@@ -404,6 +441,7 @@ where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
+    RS: RouterScheduler,
     ME: MockableExecutor,
 {
     pub fn ledger(&self) -> &MockLedger<S::Block, S::Event> {
