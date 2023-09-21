@@ -2,16 +2,32 @@ use std::{error::Error, time::Duration};
 
 use monad_executor_glue::{PeerId, RouterTarget};
 
+mod convert;
 pub mod mock;
+pub mod parent;
 #[cfg(test)]
 mod testutil;
 
-pub enum GossipEvent {
+pub enum GossipEvent<GM> {
     /// Send gossip_message to peer
-    Send(PeerId, Vec<u8>), // send gossip_message
+    Send(PeerId, GM), // send gossip_message
 
     /// Emit app_message to executor (NOTE: not gossip_message)
     Emit(PeerId, Vec<u8>),
+}
+
+impl<GM> GossipEvent<GM> {
+    fn map<U, F>(self, f: F) -> GossipEvent<U>
+    where
+        F: FnOnce(GM) -> U,
+    {
+        match self {
+            GossipEvent::Send(peer_id, gossip_message) => {
+                GossipEvent::Send(peer_id, f(gossip_message))
+            }
+            GossipEvent::Emit(peer_id, message) => GossipEvent::Emit(peer_id, message),
+        }
+    }
 }
 
 /// Gossip describes WHAT gossip messages get delivered (given application-level messages)
@@ -28,12 +44,15 @@ pub trait Gossip {
     type MessageId;
 
     fn new(config: Self::Config) -> Self;
+    fn message_id(message: &[u8]) -> Self::MessageId;
+
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) -> Self::MessageId;
     fn forget(&mut self, time: Duration, to: RouterTarget, message_id: Self::MessageId);
     fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]);
+    fn ack_message(&mut self, time: Duration, source: PeerId, message_id: Self::MessageId);
 
     fn peek_tick(&self) -> Option<Duration>;
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent>;
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>>;
 }
 
 // placeholder

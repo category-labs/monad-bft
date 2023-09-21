@@ -57,6 +57,14 @@ impl<G: Gossip> Swarm<G> {
             .forget(self.current_tick, to, message_id)
     }
 
+    pub fn ack_message(&mut self, from: &PeerId, source: PeerId, message_id: G::MessageId) {
+        self.nodes
+            .get_mut(from)
+            .expect("peer doesn't exist")
+            .0
+            .ack_message(self.current_tick, source, message_id)
+    }
+
     pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, PeerId)> {
         self.nodes
             .iter()
@@ -102,7 +110,7 @@ impl<G: Gossip> Swarm<G> {
 
                             for (scheduled_tick, message) in scheduled_messages {
                                 self.pending_inbound_messages.push(Reverse((
-                                    scheduled_tick,
+                                    tick + scheduled_tick,
                                     self.seq_no,
                                     message,
                                 )));
@@ -171,6 +179,7 @@ pub(crate) fn test_broadcast<G: Gossip>(
     }
 
     while let Some((tick, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
+        swarm.ack_message(&rx_peer, tx_peer, G::message_id(&message));
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
         if pending_messages.is_empty() {
             for (peer, target, message_id) in forget {
@@ -208,6 +217,7 @@ pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, m
     }
 
     while let Some((tick, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
+        swarm.ack_message(&rx_peer, tx_peer, G::message_id(&message));
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
         if pending_messages.is_empty() {
             for (peer, target, message_id) in forget {

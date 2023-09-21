@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package monad_proto.gossip;
+
+message ProtoParentMessage {
+  oneof type {
+    bytes primary = 1;
+    bytes backup = 2;
+  }
+}

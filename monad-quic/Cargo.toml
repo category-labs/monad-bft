@@ -14,9 +14,15 @@ bench = false
 monad-crypto = { path = "../monad-crypto", features = ["rustls"] }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-executor = { path = "../monad-executor" }
+monad-proto = { path = "../monad-proto" }
+monad-types = { path = "../monad-types" }
 
 quinn-proto = { workspace = true }
+
+prost = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+sha2 = { workspace = true }

@@ -17,7 +17,7 @@ pub struct MockGossip {
     config: MockGossipConfig,
 
     read_buffers: HashMap<PeerId, VecDeque<u8>>,
-    events: VecDeque<GossipEvent>,
+    events: VecDeque<GossipEvent<Vec<u8>>>,
     current_tick: Duration,
 }
 
@@ -38,6 +38,8 @@ impl Gossip for MockGossip {
         }
     }
 
+    fn message_id(_message: &[u8]) -> Self::MessageId {}
+
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
         self.current_tick = time;
         let mut gossip_message = Vec::from((message.len() as MessageLenType).to_le_bytes());
@@ -56,6 +58,10 @@ impl Gossip for MockGossip {
     }
     fn forget(&mut self, _time: Duration, _to: RouterTarget, _message: ()) {
         // empty because MockGossip doesn't support retry anyways
+    }
+
+    fn ack_message(&mut self, _time: Duration, _source: PeerId, _message_id: Self::MessageId) {
+        // empty because no message_pool
     }
 
     fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
@@ -99,7 +105,7 @@ impl Gossip for MockGossip {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }

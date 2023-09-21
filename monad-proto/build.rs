@@ -6,6 +6,7 @@ fn main() {
                 "proto/basic.proto",
                 "proto/block.proto",
                 "proto/event.proto",
+                "proto/gossip.proto",
                 "proto/ledger.proto",
                 "proto/message.proto",
                 "proto/pacemaker.proto",
