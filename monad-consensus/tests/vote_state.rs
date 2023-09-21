@@ -96,7 +96,8 @@ fn test_votes(num_nodes: u32) {
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
-        let qc = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+        let (qc, cmds) = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+        assert!(cmds.is_empty());
         qcs.push(qc);
     }
     let valid_qc: Vec<&Option<QuorumCertificate<SignatureCollectionType>>> =
@@ -121,7 +122,8 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
     for k in 0..num_rounds {
         for i in 0..num_nodes {
             let v = &votes[i as usize];
-            let qc = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+            let (qc, cmds) = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+            assert!(cmds.is_empty());
             qcs.push(qc);
         }
 
@@ -148,7 +150,8 @@ fn test_minority(num_nodes: u32) {
 
     for i in 0..majority - 1 {
         let v = &votes[i as usize];
-        let qc = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+        let (qc, cmds) = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+        assert!(cmds.is_empty());
         qcs.push(qc);
     }
 

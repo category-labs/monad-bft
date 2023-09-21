@@ -6,6 +6,7 @@ use monad_consensus::{
         message::{BlockSyncMessage, ProposalMessage},
     },
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
+    vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
     block::{Block, FullBlock, UnverifiedFullBlock},
@@ -84,6 +85,12 @@ impl<SCT: SignatureCollection> From<&InFlightBlockSync<SCT>> for ConsensusComman
             peer: sync.req_target,
             block_id: sync.qc.info.vote.id,
         }
+    }
+}
+
+impl<SCT: SignatureCollection> From<VoteStateCommand> for ConsensusCommand<SCT> {
+    fn from(value: VoteStateCommand) -> Self {
+        todo!()
     }
 }
 

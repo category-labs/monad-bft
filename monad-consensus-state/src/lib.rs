@@ -349,11 +349,12 @@ where
         }
         inc_count!(vote_received);
 
-        let qc: Option<QuorumCertificate<SCT>> =
+        let mut cmds = Vec::new();
+        let (qc, vote_state_cmds) =
             self.vote_state
                 .process_vote::<H, _>(&author, &vote_msg, validators, validator_mapping);
+        cmds.extend(vote_state_cmds.into_iter().map(Into::into));
 
-        let mut cmds = Vec::new();
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);

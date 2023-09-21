@@ -90,7 +90,6 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
             entry.1.push((*node_id, *sig));
         }
         let mut high_qc_rounds = Vec::new();
-
         for (high_qc_round, (tminfo_digest, sigs)) in sigs.into_iter() {
             let sct = SCT::new(sigs, validator_mapping, tminfo_digest.as_ref())?;
             high_qc_rounds.push(HighQcRoundSigColTuple::<SCT> {
