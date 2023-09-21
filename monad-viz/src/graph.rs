@@ -192,7 +192,7 @@ where
             self.reset();
         }
         assert!(tick >= self.current_tick);
-        while self.nodes.step_until(tick).is_some() {}
+        while self.nodes.step_until(tick, usize::MAX).is_some() {}
         self.current_tick = tick;
     }
 }

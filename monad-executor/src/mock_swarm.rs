@@ -240,12 +240,21 @@ where
     }
 
     pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
-        self.step_until(Duration::MAX)
+        self.step_until(Duration::MAX, usize::MAX)
     }
 
-    pub fn step_until(&mut self, until: Duration) -> Option<(Duration, PeerId, S::Event)> {
+    pub fn step_until(
+        &mut self,
+        until: Duration,
+        until_block: usize,
+    ) -> Option<(Duration, PeerId, S::Event)> {
         while let Some((tick, _event_type, id)) = self.peek_event() {
-            if tick > until {
+            if tick > until
+                || self
+                    .states()
+                    .values()
+                    .any(|node| node.executor.ledger().get_blocks().len() > until_block)
+            {
                 break;
             }
 
@@ -273,7 +282,8 @@ where
         None
     }
 
-    pub fn batch_step_until(&mut self, until: Duration) {
+    pub fn batch_step_until(&mut self, until: Duration, until_block: usize) -> Duration {
+        let mut end_tick = Duration::from_nanos(0);
         while let Some(tick) = {
             self.peek_event().map(|(min_tick, _, id)| {
                 let min_unsafe_tick = min_tick
@@ -287,9 +297,16 @@ where
                 min_unsafe_tick - Duration::from_nanos(1)
             })
         } {
-            if tick > until {
+            if tick > until
+                || self
+                    .states()
+                    .values()
+                    .any(|node| node.executor.ledger().get_blocks().len() > until_block)
+            {
+                end_tick = tick;
                 break;
             }
+
             let mut emitted_messages = Vec::new();
 
             emitted_messages.par_extend(self.states.par_iter_mut().flat_map_iter(|(_id, node)| {
@@ -306,6 +323,7 @@ where
                     .push(Reverse((sched_tick, message)));
             }
         }
+        end_tick
     }
 
     pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, P, LGR, ME>> {

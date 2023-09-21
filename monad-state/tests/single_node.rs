@@ -15,7 +15,7 @@ use monad_quic::{
     QuicRouterScheduler, QuicRouterSchedulerConfig,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::create_and_run_nodes;
+use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -49,11 +49,14 @@ fn two_nodes() {
         vec![GenericTransformer::Latency::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >(LatencyTransformer(Duration::from_millis(1)))],
-        false,
-        2,
-        Duration::from_millis(2),
-        Duration::from_secs(10),
-        1024,
+        SwarmTestConfig {
+            num_nodes: 2,
+            consensus_delta: Duration::from_millis(2),
+            parallelize: false,
+            until: Duration::from_secs(10),
+            until_block: usize::MAX,
+            expected_block: 1024,
+        },
     );
 }
 
@@ -91,10 +94,13 @@ fn two_nodes_quic() {
         vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
             Duration::from_millis(1),
         ))],
-        false,
-        2,
-        Duration::from_millis(10),
-        Duration::from_secs(10),
-        256,
+        SwarmTestConfig {
+            num_nodes: 2,
+            consensus_delta: Duration::from_millis(10),
+            parallelize: false,
+            until: Duration::from_secs(10),
+            until_block: usize::MAX,
+            expected_block: 256,
+        },
     );
 }

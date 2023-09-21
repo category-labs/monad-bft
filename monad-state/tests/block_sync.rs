@@ -74,6 +74,7 @@ fn black_out() {
         ],
         false,
         Duration::from_secs(4),
+        usize::MAX,
         20,
     );
 }
@@ -131,6 +132,7 @@ fn extreme_delay() {
         ],
         false,
         Duration::from_secs(4),
+        usize::MAX,
         20,
     );
 }

@@ -11,7 +11,7 @@ use monad_executor::{
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::create_and_run_nodes;
+use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_tracing_counter::{
     counter::{CounterLayer, MetricFilter},
     counter_status,
@@ -64,11 +64,14 @@ fn many_nodes_metrics() {
         >::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
-        false,
-        100,
-        Duration::from_millis(2),
-        Duration::from_secs(4),
-        1024,
+        SwarmTestConfig {
+            num_nodes: 100,
+            consensus_delta: Duration::from_millis(2),
+            parallelize: false,
+            until: Duration::from_secs(4),
+            until_block: usize::MAX,
+            expected_block: 1024,
+        },
     );
 
     counter_status!();

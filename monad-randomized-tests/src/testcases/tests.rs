@@ -15,7 +15,7 @@ use monad_executor::{
     PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until};
+use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -48,11 +48,14 @@ fn random_latency_test(seed: u64) {
         vec![GenericTransformer::RandLatency(
             RandLatencyTransformer::new(seed, 330),
         )],
-        false,
-        4,
-        Duration::from_millis(250),
-        Duration::from_secs(10),
-        2048,
+        SwarmTestConfig {
+            num_nodes: 4,
+            consensus_delta: Duration::from_millis(250),
+            parallelize: false,
+            until: Duration::from_secs(10),
+            until_block: usize::MAX,
+            expected_block: 2048,
+        },
     );
 }
 
@@ -105,6 +108,7 @@ fn delayed_message_test(seed: u64) {
         ],
         false,
         Duration::from_secs(2),
+        usize::MAX,
         20,
     );
 }

@@ -15,7 +15,7 @@ use monad_quic::{
     QuicRouterScheduler, QuicRouterSchedulerConfig,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::create_and_run_nodes;
+use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -49,11 +49,14 @@ fn many_nodes() {
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
-        true,
-        100,
-        Duration::from_millis(2),
-        Duration::from_secs(4),
-        1024,
+        SwarmTestConfig {
+            num_nodes: 100,
+            consensus_delta: Duration::from_millis(2),
+            parallelize: true,
+            until: Duration::from_secs(4),
+            until_block: usize::MAX,
+            expected_block: 1024,
+        },
     );
 }
 
@@ -91,10 +94,13 @@ fn many_nodes_quic() {
         vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
             Duration::from_millis(1),
         ))],
-        true,
-        40,
-        Duration::from_millis(10),
-        Duration::from_secs(4),
-        10,
+        SwarmTestConfig {
+            num_nodes: 40,
+            consensus_delta: Duration::from_millis(10),
+            parallelize: true,
+            until: Duration::from_secs(4),
+            until_block: usize::MAX,
+            expected_block: 10,
+        },
     );
 }

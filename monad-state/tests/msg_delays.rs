@@ -11,7 +11,7 @@ use monad_executor::{
     transformer::{GenericTransformer, XorLatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::create_and_run_nodes;
+use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -45,10 +45,13 @@ fn two_nodes() {
         vec![GenericTransformer::XorLatency(XorLatencyTransformer(
             Duration::from_millis(u8::MAX as u64),
         ))],
-        false,
-        4,
-        Duration::from_millis(101),
-        Duration::from_secs(60),
-        40,
+        SwarmTestConfig {
+            num_nodes: 4,
+            consensus_delta: Duration::from_millis(101),
+            parallelize: false,
+            until: Duration::from_secs(60),
+            until_block: usize::MAX,
+            expected_block: 40,
+        },
     );
 }

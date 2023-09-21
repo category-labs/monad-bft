@@ -20,6 +20,16 @@ use monad_wal::PersistenceLogger;
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
+pub struct SwarmTestConfig {
+    pub num_nodes: u16,
+    pub consensus_delta: Duration,
+
+    pub parallelize: bool,
+    pub until: Duration,
+    pub until_block: usize,
+    pub expected_block: u32,
+}
+
 pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
     tvt: TVT,
     num_nodes: u16,
@@ -94,14 +104,9 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
     pipeline: P,
-    parallelize: bool,
-
-    num_nodes: u16,
-    delta: Duration,
-
-    until: Duration,
-    min_ledger_len: u32,
-) where
+    swarm_config: SwarmTestConfig,
+) -> Duration
+where
     S: State<Config = MonadConfig<SCT, TVT>>,
     ST: MessageSignature,
     SCT: SignatureCollection,
@@ -126,16 +131,18 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     LGR::Config: Clone,
     TVT: TransactionValidator,
 {
-    let (peers, state_configs) = get_configs::<ST, SCT, TVT>(tvt, num_nodes, delta);
+    let (peers, state_configs) =
+        get_configs::<ST, SCT, TVT>(tvt, swarm_config.num_nodes, swarm_config.consensus_delta);
     run_nodes_until::<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
         peers,
         state_configs,
         router_scheduler_config,
         logger_config,
         pipeline,
-        parallelize,
-        until,
-        min_ledger_len,
+        swarm_config.parallelize,
+        swarm_config.until,
+        swarm_config.until_block,
+        swarm_config.expected_block,
     )
 }
 
@@ -148,8 +155,10 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     parallelize: bool,
 
     until: Duration,
+    until_block: usize,
     min_ledger_len: u32,
-) where
+) -> Duration
+where
     S: State<Config = MonadConfig<SCT, TVT>>,
     ST: MessageSignature,
     SCT: SignatureCollection,
@@ -194,10 +203,22 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
             .collect(),
     );
 
+    let mut max_tick = Duration::from_nanos(0);
     if parallelize {
-        nodes.batch_step_until(until);
+        max_tick = nodes.batch_step_until(until, until_block);
     } else {
-        while nodes.step_until(until).is_some() {}
+        loop {
+            match nodes.step_until(until, until_block) {
+                Some((tick, _, _)) => {
+                    assert!(tick >= max_tick);
+                    max_tick = tick;
+                    continue;
+                }
+                None => {
+                    break;
+                }
+            }
+        }
     }
 
     node_ledger_verification(
@@ -208,4 +229,6 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
             .collect(),
         min_ledger_len,
     );
+
+    max_tick
 }

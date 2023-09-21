@@ -11,7 +11,7 @@ use monad_executor::{
     transformer::GenericTransformer,
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::create_and_run_nodes;
+use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -84,10 +84,13 @@ fn nodes_with_random_latency(seed: u64) {
         >::RandLatency(RandLatencyTransformer::new(
             seed, 330,
         ))],
-        false,
-        4,
-        Duration::from_millis(250),
-        Duration::from_secs(60 * 60),
-        2048,
+        SwarmTestConfig {
+            num_nodes: 4,
+            consensus_delta: Duration::from_millis(250),
+            parallelize: false,
+            until: Duration::from_secs(60 * 60),
+            until_block: usize::MAX,
+            expected_block: 2048,
+        },
     );
 }

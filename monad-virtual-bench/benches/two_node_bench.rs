@@ -12,30 +12,10 @@ use monad_executor::{
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
-use monad_tracing_counter::{
-    counter::{CounterLayer, MetricFilter},
-    counter_status,
-};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
-use tracing_core::LevelFilter;
-use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 
-#[test]
-fn two_nodes() {
-    let fmt_layer = tracing_subscriber::fmt::layer();
-    let counter_layer = CounterLayer::new();
-
-    let subscriber = Registry::default()
-        .with(
-            fmt_layer
-                .with_filter(MetricFilter {})
-                .with_filter(Targets::new().with_default(LevelFilter::INFO)),
-        )
-        .with(counter_layer);
-
-    tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
-
+fn two_nodes() -> u128 {
     create_and_run_nodes::<
         MonadState<
             ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
@@ -67,9 +47,11 @@ fn two_nodes() {
             consensus_delta: Duration::from_millis(2),
             parallelize: false,
             until: Duration::from_secs(10),
-            until_block: usize::MAX,
+            until_block: 1024,
             expected_block: 1024,
         },
-    );
-    counter_status!();
+    )
+    .as_millis()
 }
+
+monad_virtual_bench::virtual_bench_main! {two_nodes}
