@@ -8,7 +8,7 @@ use monad_consensus::{
     pacemaker::{PacemakerCommand, PacemakerTimerExpire},
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, FullBlock, UnverifiedFullBlock},
     payload::{FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
@@ -39,7 +39,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
         Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<SCT>) + Send + Sync>,
     ),
     FetchFullTxsReset,
-    LedgerCommit(Vec<Block<SCT>>),
+    LedgerCommit(Vec<FullBlock<SCT>>),
     RequestSync {
         peer: NodeId,
         block_id: BlockId,
@@ -47,13 +47,13 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     LedgerFetch(
         NodeId,
         BlockId,
-        Box<dyn (FnOnce(Option<Block<SCT>>) -> FetchedBlock<SCT>) + Send + Sync>,
+        Box<dyn (FnOnce(Option<UnverifiedFullBlock<SCT>>) -> FetchedBlock<SCT>) + Send + Sync>,
     ),
     LedgerFetchReset(NodeId, BlockId),
     /// Checkpoints periodically can upload/backup the ledger and garbage clean
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
-    StateRootHash(Block<SCT>),
+    StateRootHash(FullBlock<SCT>),
     // TODO add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
@@ -118,7 +118,11 @@ pub struct FetchedFullTxs<SCT> {
 pub struct FetchedBlock<SCT> {
     pub requester: NodeId,
     pub block_id: BlockId,
-    pub block: Option<Block<SCT>>,
+
+    // FetchedBlock results should only be used to send block data to peers
+    // over the network so we should unverify it before sending to consensus
+    // to prevent it from being used for anything else
+    pub unverified_full_block: Option<UnverifiedFullBlock<SCT>>,
 }
 
 impl<SCT: SignatureCollection> From<FetchedBlock<SCT>> for ConsensusCommand<SCT> {
@@ -126,12 +130,12 @@ impl<SCT: SignatureCollection> From<FetchedBlock<SCT>> for ConsensusCommand<SCT>
         let FetchedBlock {
             requester,
             block_id,
-            block,
+            unverified_full_block,
         } = fetched_b;
-        let pid = PeerId(requester.0);
+
         ConsensusCommand::Publish {
-            target: RouterTarget::PointToPoint(pid),
-            message: ConsensusMessage::BlockSync(match block {
+            target: RouterTarget::PointToPoint(PeerId(requester.0)),
+            message: ConsensusMessage::BlockSync(match unverified_full_block {
                 Some(b) => BlockSyncMessage::BlockFound(b),
                 None => BlockSyncMessage::NotAvailable(block_id),
             }),

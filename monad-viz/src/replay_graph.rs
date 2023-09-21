@@ -15,7 +15,7 @@ use monad_types::{Deserializable, NodeId, Serializable};
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
-    SignatureCollectionType, MS,
+    SignatureCollectionType, TransactionValidatorType, MS,
 };
 
 #[derive(Debug, Clone)]
@@ -36,10 +36,12 @@ impl ReplayConfig<MS> for RepConfig {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            voting_keys.iter(),
-            &validator_mapping,
-        );
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<Sha256Hash, SignatureCollectionType, TransactionValidatorType>(
+                voting_keys.iter(),
+                &validator_mapping,
+                &TransactionValidatorType::default(),
+            );
 
         let state_configs = keys
             .into_iter()

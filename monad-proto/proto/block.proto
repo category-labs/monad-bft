@@ -30,3 +30,8 @@ message ProtoBlock {
   ProtoPayload payload = 3;
   monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 4;
 }
+
+message ProtoUnverifiedFullBlock {
+  ProtoBlock block = 1;
+  bytes full_txs = 2;
+}

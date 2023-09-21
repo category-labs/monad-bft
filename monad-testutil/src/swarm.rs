@@ -3,7 +3,8 @@ use std::time::Duration;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
-    signature_collection::SignatureCollection, validation::Sha256Hash,
+    signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
+    validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
@@ -19,7 +20,7 @@ use monad_wal::PersistenceLogger;
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
-pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
+pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
     tvt: TVT,
     num_nodes: u16,
     delta: Duration,
@@ -34,7 +35,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Clone>(
         .collect::<Vec<_>>();
 
     let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, SCT>(voting_keys.iter(), &validator_mapping);
+        get_genesis_config::<Sha256Hash, SCT, TVT>(voting_keys.iter(), &validator_mapping, &tvt);
 
     let state_configs = keys
         .into_iter()
@@ -123,7 +124,7 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
     LGR::Config: Clone,
-    TVT: Clone,
+    TVT: TransactionValidator,
 {
     let (peers, state_configs) = get_configs::<ST, SCT, TVT>(tvt, num_nodes, delta);
     run_nodes_until::<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(

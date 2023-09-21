@@ -21,7 +21,7 @@ message ProtoRequestBlockSyncMessage {
 
 message ProtoBlockSyncMessage {
   oneof OneofMessage {
-    monad_proto.block.ProtoBlock block_found = 1;
+    monad_proto.block.ProtoUnverifiedFullBlock block_found = 1;
     monad_proto.basic.ProtoBlockId not_available = 2;
   }
 }

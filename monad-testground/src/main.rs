@@ -5,11 +5,11 @@ use futures_util::{FutureExt, StreamExt};
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockType, FullBlock},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, NopStateRoot, Payload, TransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, NopStateRoot, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
@@ -66,7 +66,7 @@ pub struct Config {
     )>,
     pub delta: Duration,
     pub consensus_config: ConsensusConfig,
-    pub genesis_block: Block<SignatureCollectionType>,
+    pub genesis_block: FullBlock<SignatureCollectionType>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SignatureCollectionType,
 }
@@ -227,17 +227,22 @@ fn testnet(
         let genesis_txn = TransactionList::default();
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
-        Block::new::<HasherType>(
-            // FIXME init from genesis config, don't use random key
-            NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
-            Round(0),
-            &Payload {
-                txns: genesis_txn,
-                header: genesis_execution_header,
-                seq_num: 0,
-            },
-            &genesis_prime_qc,
+        FullBlock::from_block(
+            Block::new::<HasherType>(
+                // FIXME init from genesis config, don't use random key
+                NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
+                Round(0),
+                &Payload {
+                    txns: genesis_txn,
+                    header: genesis_execution_header,
+                    seq_num: 0,
+                },
+                &genesis_prime_qc,
+            ),
+            FullTransactionList::default(),
+            &TransactionValidatorType::default(),
         )
+        .unwrap()
     };
     let genesis_signatures = {
         let genesis_lci =

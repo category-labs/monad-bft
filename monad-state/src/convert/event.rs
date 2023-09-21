@@ -54,7 +54,10 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                 proto_consensus_event::Event::FetchedBlock(ProtoFetchedBlock {
                     requester: Some((&fetched_block.requester).into()),
                     block_id: Some((&fetched_block.block_id).into()),
-                    block: fetched_block.block.as_ref().map(|b| b.into()),
+                    unverified_full_block: fetched_block
+                        .unverified_full_block
+                        .as_ref()
+                        .map(|b| b.into()),
                 })
             }
             ConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
@@ -169,11 +172,11 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                             "ConsensusEvent::fetched_block.requester".to_owned(),
                         ))?
                         .try_into()?,
-                    block: Some(
+                    unverified_full_block: Some(
                         fetched_block
-                            .block
+                            .unverified_full_block
                             .ok_or(ProtoError::MissingRequiredField(
-                                "ConsensusEvent::fetched_block.block".to_owned(),
+                                "ConsensusEvent::fetched_block.unverified_full_block".to_owned(),
                             ))?
                             .try_into()?,
                     ),

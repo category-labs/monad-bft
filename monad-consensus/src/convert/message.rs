@@ -126,7 +126,7 @@ impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
 
 impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMessage {
     fn from(value: &BlockSyncMessage<SCT>) -> Self {
-        return Self {
+        Self {
             oneof_message: Some(match value.deref() {
                 BlockSyncMessage::BlockFound(b) => {
                     proto_block_sync_message::OneofMessage::BlockFound(b.into())
@@ -135,7 +135,7 @@ impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMe
                     proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
                 }
             }),
-        };
+        }
     }
 }
 

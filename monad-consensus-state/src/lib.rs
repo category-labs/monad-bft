@@ -12,7 +12,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockType, FullBlock},
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -72,7 +72,7 @@ where
     fn new(
         transaction_validator: Self::TransactionValidatorType,
         my_pubkey: PubKey,
-        genesis_block: Block<SCT>,
+        genesis_block: FullBlock<SCT>,
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
         config: ConsensusConfig,
@@ -155,7 +155,7 @@ where
     fn new(
         transaction_validator: Self::TransactionValidatorType,
         my_pubkey: PubKey,
-        genesis_block: Block<SCT>,
+        genesis_block: FullBlock<SCT>,
         genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
         config: ConsensusConfig,
@@ -252,20 +252,13 @@ where
         &mut self,
         author: NodeId,
         p: ProposalMessage<SCT>,
-        txns: FullTransactionList,
+        full_txs: FullTransactionList,
         validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Fetched full proposal: {:?}", p);
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
-
-        if !self.transaction_validator.validate(&txns) {
-            warn!("Transaction validation failed");
-            debug!("failed txns: {:?}", txns);
-            inc_count!(failed_txn_validation);
-            return cmds;
-        }
 
         let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
         cmds.extend(process_certificate_cmds);
@@ -284,28 +277,46 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = election.get_leader(round, validators.get_list());
 
+        let Some(full_block) =
+            FullBlock::from_block(p.block, full_txs, &self.transaction_validator)
+        else {
+            warn!("Transaction validation failed");
+            inc_count!(failed_txn_validation);
+            return cmds;
+        };
+
         self.pending_block_tree
-            .add(p.block.clone())
+            .add(full_block.clone())
             .expect("Failed to add block to blocktree");
-        if let Some(qc) = self.pending_block_tree.get_missing_ancestor(&p.block.qc) {
+        if let Some(qc) = self
+            .pending_block_tree
+            .get_missing_ancestor(&full_block.get_block().qc)
+        {
             debug!("Block sync request: blockid={:?}", qc);
             cmds.extend(self.request_sync::<VT>(qc, validators));
         }
 
-        if p.block.round != round || author != leader || p.block.author != leader {
+        if full_block.get_round() != round || author != leader || full_block.get_author() != leader
+        {
             debug!(
                 "Invalid proposal: expected-round={:?} \
                 round={:?} \
                 expected-leader={:?} \
                 author={:?} \
                 block-author={:?}",
-                round, p.block.round, leader, author, p.block.author
+                round,
+                full_block.get_round(),
+                leader,
+                author,
+                full_block.get_author()
             );
             inc_count!(invalid_proposal_round_leader);
             return cmds;
         }
 
-        let vote = self.safety.make_vote::<SCT, H>(&p.block, &p.last_round_tc);
+        let vote = self
+            .safety
+            .make_vote::<SCT, H>(full_block.get_block(), &p.last_round_tc);
 
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new::<H>(v, &self.cert_keypair);
@@ -444,20 +455,25 @@ where
     ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = vec![];
 
-        match self
-            .block_sync_manager
-            .handle_retrieval(&author, msg, validators)
-        {
-            BlockSyncResult::Success(block) => {
-                debug!("Block sync response: bid={:?}", block.get_id());
+        match self.block_sync_manager.handle_retrieval(
+            &author,
+            msg,
+            validators,
+            &self.transaction_validator,
+        ) {
+            BlockSyncResult::Success(full_block) => {
+                debug!("Block sync response: bid={:?}", full_block.get_id());
                 inc_count!(block_sync_response);
-                if self.pending_block_tree.is_valid(&block) {
+                if self.pending_block_tree.is_valid(&full_block) {
                     // check if this block will extend into root
-                    if let Some(qc) = self.pending_block_tree.get_missing_ancestor(&block.qc) {
+                    if let Some(qc) = self
+                        .pending_block_tree
+                        .get_missing_ancestor(&full_block.get_block().qc)
+                    {
                         cmds.extend(self.request_sync(qc, validators));
                     }
                     self.pending_block_tree
-                        .add(block)
+                        .add(full_block)
                         .expect("failed to add block to tree during block sync");
                 }
             }
@@ -532,8 +548,7 @@ where
                 .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
 
             if let Some(b) = blocks_to_commit.last() {
-                self.state_root_validator
-                    .remove_old_roots(b.payload.seq_num);
+                self.state_root_validator.remove_old_roots(b.get_seq_num());
             }
 
             debug!(
@@ -671,7 +686,7 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::BlockType,
+        block::{BlockType, UnverifiedFullBlock},
         certificate_signature::CertificateKeyPair,
         ledger::LedgerCommitInfo,
         message_signature::MessageSignature,
@@ -683,7 +698,7 @@ mod test {
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{Timeout, TimeoutInfo},
-        transaction_validator::MockValidator,
+        transaction_validator::{MockValidator, TransactionValidator},
         validation::Sha256Hash,
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
@@ -708,8 +723,14 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
     type StateRootValidatorType = NopStateRoot;
+    type TransactionValidatorType = MockValidator;
 
-    fn setup<ST: MessageSignature, SCT: SignatureCollection, SVT: StateRootValidator>(
+    fn setup<
+        ST: MessageSignature,
+        SCT: SignatureCollection,
+        SVT: StateRootValidator,
+        TVT: TransactionValidator,
+    >(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
@@ -725,8 +746,11 @@ mod test {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SCT>(voting_keys.iter(), &valmap);
+        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT, TVT>(
+            voting_keys.iter(),
+            &valmap,
+            &TVT::default(),
+        );
 
         let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
             genesis_vote_info(genesis_block.get_id()),
@@ -769,8 +793,12 @@ mod test {
     #[traced_test]
     #[test_log::test]
     fn lock_qc_high() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<NopSignature, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            NopSignature,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
@@ -840,8 +868,12 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -868,7 +900,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -887,8 +919,12 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen =
@@ -907,7 +943,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -937,7 +973,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -978,7 +1014,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -988,8 +1024,12 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1010,7 +1050,7 @@ mod test {
             let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
                 author,
                 verified_message,
-                FullTransactionList(Vec::new()),
+                FullTransactionList::default(),
                 &valset,
                 &election,
             );
@@ -1049,8 +1089,12 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen =
@@ -1069,7 +1113,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1089,7 +1133,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1106,8 +1150,12 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1126,7 +1174,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1157,7 +1205,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1201,7 +1249,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1216,7 +1264,7 @@ mod test {
             cmds.extend(state.handle_proposal_message_full::<Sha256Hash, _, _>(
                 author,
                 verified_message,
-                FullTransactionList(Vec::new()),
+                FullTransactionList::default(),
                 &valset,
                 &election,
             ));
@@ -1254,7 +1302,7 @@ mod test {
                     proposals.extend(state.handle_proposal_message_full::<Sha256Hash, _, _>(
                         m.block.author,
                         m.clone(),
-                        FullTransactionList(Vec::new()),
+                        FullTransactionList::default(),
                         &valset,
                         &election,
                     ));
@@ -1280,7 +1328,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1296,8 +1344,12 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1316,7 +1368,7 @@ mod test {
         let p1_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1353,7 +1405,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1396,7 +1448,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1408,8 +1460,12 @@ mod test {
 
     #[test]
     fn test_commit_rule_non_consecutive() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1428,7 +1484,7 @@ mod test {
         state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1447,7 +1503,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1506,7 +1562,7 @@ mod test {
         let p3_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1535,8 +1591,12 @@ mod test {
     // not incorrectly committed
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -1558,7 +1618,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            Default::default(),
+            TransactionList::default(),
             ExecutionArtifacts::zero(),
         );
         let mp1 = mal_proposal_gen.next_proposal(
@@ -1572,11 +1632,14 @@ mod test {
         );
 
         let (author, _, verified_message) = cp1.destructure();
-        let block_1 = verified_message.block.clone();
+        let block_1 = UnverifiedFullBlock {
+            block: verified_message.block.clone(),
+            full_txs: FullTransactionList::default(),
+        };
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1594,7 +1657,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1612,7 +1675,7 @@ mod test {
         let cmds4 = fourth_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1631,7 +1694,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1680,11 +1743,14 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author_2, _, verified_message_2) = cp2.destructure();
-        let block_2 = verified_message_2.block.clone();
+        let block_2 = UnverifiedFullBlock {
+            block: verified_message_2.block.clone(),
+            full_txs: FullTransactionList::default(),
+        };
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1704,13 +1770,13 @@ mod test {
         }
         .unwrap();
 
-        assert!(sync_bid == block_1.get_id());
+        assert!(sync_bid == block_1.block.get_id());
 
         // first_state has the correct block in its blocktree, so it should not request anything
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1736,19 +1802,22 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp3.destructure();
-        let block_3 = verified_message.block.clone();
+        let block_3 = UnverifiedFullBlock {
+            block: verified_message.block.clone(),
+            full_txs: FullTransactionList::default(),
+        };
 
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1786,7 +1855,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1805,7 +1874,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1830,7 +1899,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );
@@ -1849,7 +1918,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let mal_sync = BlockSyncMessage::NotAvailable(block_2.get_id());
+        let mal_sync = BlockSyncMessage::NotAvailable(block_2.block.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
         let cmds3 = third_state.handle_block_sync(author_2, mal_sync, &valset);
 
@@ -1905,7 +1974,7 @@ mod test {
         let cmds2 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author_2,
             verified_message_2,
-            FullTransactionList(Vec::new()),
+            FullTransactionList::default(),
             &valset,
             &election,
         );

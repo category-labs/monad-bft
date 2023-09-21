@@ -23,7 +23,10 @@ use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_vali
 use monad_types::NodeId;
 use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
-use crate::{graph::SimulationConfig, PersistenceLoggerType, Rsc, SignatureCollectionType, MM, MS};
+use crate::{
+    graph::SimulationConfig, PersistenceLoggerType, Rsc, SignatureCollectionType,
+    TransactionValidatorType, MM, MS,
+};
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
@@ -76,10 +79,12 @@ impl
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            voting_keys.iter(),
-            &validator_mapping,
-        );
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<Sha256Hash, SignatureCollectionType, TransactionValidatorType>(
+                voting_keys.iter(),
+                &validator_mapping,
+                &TransactionValidatorType::default(),
+            );
 
         let state_configs = keys
             .into_iter()

@@ -7,8 +7,8 @@ use monad_proto::{
 };
 
 use crate::{
-    block::Block,
-    payload::{Bloom, ExecutionArtifacts, Gas, Payload, TransactionList},
+    block::{Block, FullBlock, UnverifiedFullBlock},
+    payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, TransactionList},
     signature_collection::SignatureCollection,
     validation::Sha256Hash,
 };
@@ -70,6 +70,40 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 ))?
                 .try_into()?,
         ))
+    }
+}
+
+impl<SCT: SignatureCollection> From<&UnverifiedFullBlock<SCT>> for ProtoUnverifiedFullBlock {
+    fn from(value: &UnverifiedFullBlock<SCT>) -> Self {
+        Self {
+            block: Some((&value.block).into()),
+            full_txs: value.full_txs.0.clone(),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoUnverifiedFullBlock> for UnverifiedFullBlock<SCT> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoUnverifiedFullBlock) -> Result<Self, Self::Error> {
+        Ok(Self {
+            block: value
+                .block
+                .ok_or(Self::Error::MissingRequiredField(
+                    "UnverifiedFullBlock<AggregateSignatures>.block".to_owned(),
+                ))?
+                .try_into()?,
+            full_txs: FullTransactionList(value.full_txs),
+        })
+    }
+}
+
+impl<SCT: SignatureCollection> From<&FullBlock<SCT>> for ProtoUnverifiedFullBlock {
+    fn from(value: &FullBlock<SCT>) -> Self {
+        Self {
+            block: Some(value.get_block().into()),
+            full_txs: value.get_full_txs().0.clone(),
+        }
     }
 }
 

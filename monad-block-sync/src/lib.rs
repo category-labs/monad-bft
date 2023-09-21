@@ -37,10 +37,10 @@ where
         vec![ConsensusCommand::LedgerFetch(
             author,
             s.block_id,
-            Box::new(move |block| FetchedBlock {
+            Box::new(move |unverified_full_block| FetchedBlock {
                 requester: author,
                 block_id: s.block_id,
-                block,
+                unverified_full_block,
             }),
         )]
     }

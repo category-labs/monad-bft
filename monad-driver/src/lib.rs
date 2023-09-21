@@ -110,10 +110,14 @@ mod tests {
             .map(|(key, certkey, _, _)| (key.pubkey(), certkey.pubkey()))
             .collect::<Vec<_>>();
 
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SignatureCollectionType>(
-            voting_keys.iter(),
-            &validator_mapping,
-        );
+        let transaction_validator = TransactionValidatorType::default();
+
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<Sha256Hash, SignatureCollectionType, TransactionValidatorType>(
+                voting_keys.iter(),
+                &validator_mapping,
+                &transaction_validator,
+            );
 
         let state_configs = node_configs
             .into_iter()
@@ -122,7 +126,7 @@ mod tests {
                 (
                     exec,
                     MonadConfig {
-                        transaction_validator: TransactionValidatorType {},
+                        transaction_validator,
                         key,
                         certkey,
                         validators: config_validators.clone(),

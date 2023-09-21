@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
+use clap::error::ErrorKind;
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockType, FullBlock},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, Payload, TransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::SignatureCollection,
     validation::Hasher,
@@ -12,7 +13,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_types::{NodeId, Round};
 
-use crate::{error::NodeSetupError, HasherType, SignatureCollectionType};
+use crate::{error::NodeSetupError, HasherType, SignatureCollectionType, TransactionValidatorType};
 
 mod config;
 use config::GenesisConfig;
@@ -20,7 +21,7 @@ use config::GenesisConfig;
 use self::config::GenesisSignatureConfig;
 
 pub struct GenesisState {
-    pub genesis_block: Block<SignatureCollectionType>,
+    pub genesis_block: FullBlock<SignatureCollectionType>,
     pub genesis_signatures: SignatureCollectionType,
     pub genesis_vote_info: VoteInfo,
 }
@@ -32,7 +33,7 @@ impl GenesisState {
     ) -> Result<Self, NodeSetupError> {
         let config: GenesisConfig = toml::from_str(&std::fs::read_to_string(genesis_config_path)?)?;
 
-        let genesis_block = build_genesis_block(config.author);
+        let genesis_block = build_genesis_block(config.author)?;
 
         let genesis_vote_info = genesis_vote_info(genesis_block.get_id());
 
@@ -47,27 +48,38 @@ impl GenesisState {
     }
 }
 
-fn build_genesis_block(author: PubKey) -> Block<SignatureCollectionType> {
+fn build_genesis_block(
+    author: PubKey,
+) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
     // TODO: Deserialize transactions from GenesisConfig
-    let genesis_txn = TransactionList::default();
+    let (genesis_txs, genesis_full_txs) =
+        (TransactionList::default(), FullTransactionList::default());
 
     let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
     let genesis_execution_header = ExecutionArtifacts::zero();
 
-    Block::new::<HasherType>(
-        NodeId(author),
-        Round(0),
-        &Payload {
-            txns: genesis_txn,
-            header: genesis_execution_header,
-            seq_num: 0,
-        },
-        &genesis_prime_qc,
+    FullBlock::from_block(
+        Block::new::<HasherType>(
+            NodeId(author),
+            Round(0),
+            &Payload {
+                txns: genesis_txs,
+                header: genesis_execution_header,
+                seq_num: 0,
+            },
+            &genesis_prime_qc,
+        ),
+        genesis_full_txs,
+        &TransactionValidatorType::default(),
     )
+    .ok_or_else(|| NodeSetupError::Custom {
+        kind: ErrorKind::ValueValidation,
+        msg: "genesis_full_txs does not match genesis_txs".to_string(),
+    })
 }
 
 fn build_genesis_signatures(
-    genesis_block: &Block<SignatureCollectionType>,
+    genesis_block: &FullBlock<SignatureCollectionType>,
     signatures: Vec<GenesisSignatureConfig>,
     val_mapping: &ValidatorMapping<KeyPair>,
 ) -> Result<SignatureCollectionType, NodeSetupError> {

@@ -2,14 +2,15 @@ use std::{collections::HashSet, marker::PhantomData};
 
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockType, FullBlock},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, Payload, TransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
+    transaction_validator::TransactionValidator,
     validation::{Hashable, Hasher, Sha256Hash},
     voting::ValidatorMapping,
 };
@@ -138,13 +139,15 @@ pub fn create_certificate_keys<SCT: SignatureCollection>(
     res
 }
 
-pub fn get_genesis_config<'k, H, SCT>(
+pub fn get_genesis_config<'k, H, SCT, TVT>(
     keys: impl Iterator<Item = &'k (NodeId, &'k SignatureCollectionKeyPairType<SCT>)>,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-) -> (Block<SCT>, SCT)
+    tvt: &TVT,
+) -> (FullBlock<SCT>, SCT)
 where
     H: Hasher,
     SCT: SignatureCollection,
+    TVT: TransactionValidator,
 {
     let genesis_txn = TransactionList::default();
     let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc::<H>();
@@ -170,7 +173,10 @@ where
     }
 
     let sigs = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
-    (genesis_block, sigs)
+    (
+        FullBlock::from_block(genesis_block, FullTransactionList::default(), tvt).unwrap(),
+        sigs,
+    )
 }
 
 pub struct TestSigner<S> {

@@ -24,7 +24,7 @@ use iced::{
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockType, FullBlock},
     multi_sig::MultiSig,
     payload::NopStateRoot,
     transaction_validator::MockValidator,
@@ -298,7 +298,7 @@ impl Application for Viz {
 
 fn draw_ledger(
     frame: &mut Frame,
-    ledger: &Vec<Block<MultiSig<NopSignature>>>,
+    ledger: &Vec<FullBlock<MultiSig<NopSignature>>>,
     idx: usize,
     x: &f32,
     y: &f32,

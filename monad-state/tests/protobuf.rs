@@ -10,6 +10,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     payload::ExecutionArtifacts,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
+    transaction_validator::MockValidator,
     validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
@@ -87,7 +88,11 @@ fn test_consensus_message_event_proposal_bls() {
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
     let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, BlsSignatureCollection>(voting_keys.iter(), &valmap);
+        get_genesis_config::<Sha256Hash, BlsSignatureCollection, MockValidator>(
+            voting_keys.iter(),
+            &valmap,
+            &MockValidator::default(),
+        );
     let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,

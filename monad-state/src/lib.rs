@@ -16,7 +16,7 @@ use monad_consensus_state::{
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, FullBlock},
     certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload},
@@ -291,7 +291,7 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
 
     pub delta: Duration,
     pub consensus_config: ConsensusConfig,
-    pub genesis_block: Block<SCT>,
+    pub genesis_block: FullBlock<SCT>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SCT,
 }
@@ -309,7 +309,7 @@ where
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
-    type Block = Block<SCT>;
+    type Block = FullBlock<SCT>;
     type Checkpoint = Checkpoint<SCT>;
 
     fn init(
@@ -575,9 +575,9 @@ where
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetch(
                                 n_id,
                                 b_id,
-                                Box::new(|block: Option<Block<_>>| {
+                                Box::new(|full_block: Option<FullBlock<_>>| {
                                     Self::Event::ConsensusEvent(ConsensusEvent::FetchedBlock(cb(
-                                        block,
+                                        full_block.map(|b| b.into()),
                                     )))
                                 }),
                             )))
@@ -590,9 +590,9 @@ where
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
                         ),
-                        ConsensusCommand::StateRootHash(block) => cmds.push(
+                        ConsensusCommand::StateRootHash(full_block) => cmds.push(
                             Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(
-                                block,
+                                full_block,
                                 Box::new(|s, h| {
                                     Self::Event::ConsensusEvent(ConsensusEvent::StateUpdate((s, h)))
                                 }),
@@ -600,6 +600,7 @@ where
                         ),
                     }
                 }
+
                 cmds
             }
         }
@@ -642,7 +643,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .finish(),
             ConsensusEvent::FetchedBlock(b) => f
                 .debug_struct("FetchedBlock")
-                .field("block", &b.block)
+                .field("unverified_full_block", &b.unverified_full_block)
                 .finish(),
             ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
             ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),

@@ -2,9 +2,10 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use monad_consensus::messages::message::BlockSyncMessage;
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockType, FullBlock},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
+    transaction_validator::TransactionValidator,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId};
@@ -21,7 +22,7 @@ pub struct InFlightBlockSync<SCT> {
     pub qc: QuorumCertificate<SCT>, // qc responsible for this event
 }
 pub enum BlockSyncResult<SCT: SignatureCollection> {
-    Success(Block<SCT>),           // retrieved
+    Success(FullBlock<SCT>),       // retrieved and validated
     Failed(ConsensusCommand<SCT>), // unable to retrieve
     IllegalResponse,               // never requested from this peer or never requested
 }
@@ -88,14 +89,15 @@ where
         }
     }
 
-    pub fn handle_retrieval<VT: ValidatorSetType>(
+    pub fn handle_retrieval<VT: ValidatorSetType, TV: TransactionValidator>(
         &mut self,
         author: &NodeId,
         msg: BlockSyncMessage<SCT>,
         validator_set: &VT,
+        transaction_validator: &TV,
     ) -> BlockSyncResult<SCT> {
         let bid = match &msg {
-            BlockSyncMessage::BlockFound(b) => b.get_id(),
+            BlockSyncMessage::BlockFound(b) => b.block.get_id(),
             BlockSyncMessage::NotAvailable(bid) => *bid,
         };
         if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
@@ -111,22 +113,26 @@ where
             }
 
             match msg {
-                BlockSyncMessage::BlockFound(block) => {
-                    entry.remove_entry();
-                    // block retrieve successful
-                    BlockSyncResult::Success(block)
+                BlockSyncMessage::BlockFound(unverified_full_block) => {
+                    if let Some(full_block) =
+                        FullBlock::try_from_unverified(unverified_full_block, transaction_validator)
+                    {
+                        // block retrieve and validate successful
+                        entry.remove_entry();
+                        return BlockSyncResult::Success(full_block);
+                    }
                 }
-                BlockSyncMessage::NotAvailable(_) => {
-                    // block retrieve failed, re-request
-                    let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt);
-                    *req_target = peer;
-                    *retry_cnt = cnt;
-                    BlockSyncResult::Failed(ConsensusCommand::RequestSync {
-                        peer: *req_target,
-                        block_id: bid,
-                    })
-                }
-            }
+                BlockSyncMessage::NotAvailable(_) => {}
+            };
+
+            // block retrieve failed, re-request
+            let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt);
+            *req_target = peer;
+            *retry_cnt = cnt;
+            BlockSyncResult::Failed(ConsensusCommand::RequestSync {
+                peer: *req_target,
+                block_id: bid,
+            })
         } else {
             BlockSyncResult::IllegalResponse
         }
@@ -138,10 +144,11 @@ mod test {
     use core::panic;
 
     use monad_consensus_types::{
-        block::Block,
+        block::{Block, UnverifiedFullBlock},
         ledger::LedgerCommitInfo,
-        payload::{ExecutionArtifacts, Payload, TransactionList},
+        payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
         quorum_certificate::{QcInfo, QuorumCertificate},
+        transaction_validator::MockValidator,
         validation::{Hasher, Sha256Hash},
         voting::VoteInfo,
     };
@@ -157,6 +164,7 @@ mod test {
     type SC = MockSignatures;
     type VT = ValidatorSet;
     type QC = QuorumCertificate<SC>;
+    type TV = MockValidator;
 
     struct FakeHasher1();
 
@@ -261,6 +269,7 @@ mod test {
         let keypair = get_key(6);
         let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()));
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
+        let transaction_validator = TV::default();
 
         // first qc
         let qc_1 = &QC::new::<Sha256Hash>(
@@ -341,7 +350,7 @@ mod test {
         assert!(bid == qc_3.info.vote.id);
 
         let payload = Payload {
-            txns: TransactionList(vec![]),
+            txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
         };
@@ -405,34 +414,52 @@ mod test {
 
         let msg_no_block_1 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x01_u8; 32])));
 
-        let msg_with_block_1 = BlockSyncMessage::<SC>::BlockFound(block_1.clone());
+        let msg_with_block_1 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+            block: block_1.clone(),
+            full_txs: FullTransactionList::default(),
+        });
 
         let msg_no_block_2 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x02_u8; 32])));
 
-        let msg_with_block_2 = BlockSyncMessage::<SC>::BlockFound(block_2.clone());
+        let msg_with_block_2 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+            block: block_2.clone(),
+            full_txs: FullTransactionList::default(),
+        });
 
         let msg_no_block_3 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x03_u8; 32])));
 
-        let msg_with_block_3 = BlockSyncMessage::<SC>::BlockFound(block_3.clone());
+        let msg_with_block_3 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+            block: block_3.clone(),
+            full_txs: FullTransactionList::default(),
+        });
 
         // arbitrary response should be rejected
-        let BlockSyncResult::<SC>::IllegalResponse =
-            manager.handle_retrieval(&NodeId(keypair.pubkey()), msg_no_block_1, &valset)
-        else {
+        let BlockSyncResult::<SC>::IllegalResponse = manager.handle_retrieval(
+            &NodeId(keypair.pubkey()),
+            msg_no_block_1,
+            &valset,
+            &transaction_validator,
+        ) else {
             panic!("illegal response is processed");
         };
 
         // valid message from invalid individual should still get dropped
 
-        let BlockSyncResult::<SC>::IllegalResponse =
-            manager.handle_retrieval(&NodeId(keypair.pubkey()), msg_with_block_2.clone(), &valset)
-        else {
+        let BlockSyncResult::<SC>::IllegalResponse = manager.handle_retrieval(
+            &NodeId(keypair.pubkey()),
+            msg_with_block_2.clone(),
+            &valset,
+            &transaction_validator,
+        ) else {
             panic!("illegal response is processed");
         };
 
-        let BlockSyncResult::<SC>::Failed(retry_command) =
-            manager.handle_retrieval(&peer_2, msg_no_block_2.clone(), &valset)
-        else {
+        let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_retrieval(
+            &peer_2,
+            msg_no_block_2.clone(),
+            &valset,
+            &transaction_validator,
+        ) else {
             panic!("illegal response is processed");
         };
 
@@ -445,13 +472,13 @@ mod test {
         };
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(&peer_1, msg_with_block_1, &valset)
+            manager.handle_retrieval(&peer_1, msg_with_block_1, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
 
         let BlockSyncResult::<SC>::Failed(retry_command) =
-            manager.handle_retrieval(&peer_3, msg_no_block_3, &valset)
+            manager.handle_retrieval(&peer_3, msg_no_block_3, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -464,10 +491,10 @@ mod test {
             panic!("retry didn't create a publish command");
         };
 
-        assert!(b == block_1);
+        assert!(b.get_block() == &block_1);
 
         let BlockSyncResult::<SC>::Failed(retry_command) =
-            manager.handle_retrieval(&peer_2, msg_no_block_2, &valset)
+            manager.handle_retrieval(&peer_2, msg_no_block_2, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -481,20 +508,20 @@ mod test {
         };
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(&peer_3, msg_with_block_3, &valset)
+            manager.handle_retrieval(&peer_3, msg_with_block_3, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
 
-        assert!(b == block_3);
+        assert!(b.get_block() == &block_3);
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(&peer_2, msg_with_block_2, &valset)
+            manager.handle_retrieval(&peer_2, msg_with_block_2, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
 
-        assert!(b == block_2);
+        assert!(b.get_block() == &block_2);
     }
 
     #[test]
@@ -530,10 +557,15 @@ mod test {
 
         let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
 
+        let transaction_validator = TV::default();
+
         for _ in 0..100 {
-            let BlockSyncResult::<SC>::Failed(retry_command) =
-                manager.handle_retrieval(&peer, msg_failed.clone(), &valset)
-            else {
+            let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_retrieval(
+                &peer,
+                msg_failed.clone(),
+                &valset,
+                &transaction_validator,
+            ) else {
                 panic!("illegal response is processed");
             };
 

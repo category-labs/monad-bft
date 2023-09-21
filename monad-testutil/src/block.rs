@@ -20,19 +20,30 @@ pub struct MockBlock {
 impl Default for MockBlock {
     fn default() -> Self {
         MockBlock {
-            block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
-            parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+            block_id: BlockId(Hash([0x00_u8; 32])),
+            parent_block_id: BlockId(Hash([0x01_u8; 32])),
         }
     }
 }
 
 impl BlockType for MockBlock {
-    fn get_id(&self) -> monad_types::BlockId {
+    fn get_id(&self) -> BlockId {
         self.block_id
     }
-    fn get_parent_id(&self) -> monad_types::BlockId {
+    fn get_round(&self) -> Round {
+        Round(1)
+    }
+    fn get_author(&self) -> NodeId {
+        unimplemented!()
+    }
+
+    fn get_parent_id(&self) -> BlockId {
         self.parent_block_id
     }
+    fn get_parent_round(&self) -> Round {
+        Round(0)
+    }
+
     fn get_seq_num(&self) -> u64 {
         0
     }

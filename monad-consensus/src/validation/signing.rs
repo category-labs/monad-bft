@@ -337,7 +337,7 @@ where
         )?;
 
         if let BlockSyncMessage::BlockFound(b) = &self.obj {
-            verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &b.qc)?;
+            verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &b.block.qc)?;
         }
 
         let result = Verified {
