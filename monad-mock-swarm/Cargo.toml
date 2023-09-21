@@ -34,6 +34,7 @@ monad-consensus-state = { path = "../monad-consensus-state", features = [
     "monad_test",
 ] }
 monad-executor = { path = "../monad-executor", features = ["monad_test"] }
+monad-gossip = { path = "../monad-gossip" }
 monad-quic = { path = "../monad-quic" }
 monad-state = { path = "../monad-state", features = ["monad_test"] }
 monad-testutil = { path = "../monad-testutil" }

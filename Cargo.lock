@@ -4494,6 +4494,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-gossip"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "monad-executor-glue",
+ "monad-mock-swarm",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+]
+
+[[package]]
 name = "monad-mempool-controller"
 version = "0.1.0"
 dependencies = [
@@ -4591,6 +4602,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-gossip",
  "monad-quic",
  "monad-state",
  "monad-testutil",
@@ -4673,6 +4685,7 @@ version = "0.1.0"
 dependencies = [
  "monad-crypto",
  "monad-executor-glue",
+ "monad-gossip",
  "monad-mock-swarm",
  "quinn-proto 0.11.0",
 ]

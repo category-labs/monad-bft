@@ -11,6 +11,7 @@ members = [
     "monad-eth-types",
     "monad-executor",
     "monad-executor-glue",
+    "monad-gossip",
     "monad-mempool-controller",
     "monad-mempool-ipc",
     "monad-mempool-messenger",

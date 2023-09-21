@@ -6,14 +6,12 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
+use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{GenericTransformer, LatencyTransformer},
 };
-use monad_quic::{
-    gossip::{MockGossip, MockGossipConfig},
-    QuicRouterScheduler, QuicRouterSchedulerConfig,
-};
+use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};

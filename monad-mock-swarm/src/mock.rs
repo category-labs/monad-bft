@@ -34,8 +34,10 @@ pub enum RouterEvent<M, Serialized> {
     Tx(PeerId, Serialized),
 }
 
+/// RouterScheduler describes HOW gossip messages get delivered
 pub trait RouterScheduler {
     type Config;
+    /// transport-level message type - usually will be bytes
     type M;
     type Serialized;
 
