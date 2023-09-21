@@ -13,6 +13,7 @@ monad-blocktree = { path = "../monad-blocktree" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-election = { path = "../monad-election" }
 monad-executor = { path = "../monad-executor" }
 monad-types = { path = "../monad-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }

@@ -8,6 +8,7 @@ members = [
     "monad-consensus-types",
     "monad-crypto",
     "monad-driver",
+    "monad-election",
     "monad-executor",
     "monad-mempool-checker",
     "monad-mempool-controller",

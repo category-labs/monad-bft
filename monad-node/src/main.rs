@@ -13,6 +13,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::SecpSignature;
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::{
         checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool,
@@ -23,7 +24,7 @@ use monad_executor::{
 use monad_mempool_controller::ControllerConfig;
 use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSet;
 use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -125,6 +126,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         genesis_block: node_state.genesis.genesis_block,
         genesis_vote_info: node_state.genesis.genesis_vote_info,
         genesis_signatures: node_state.genesis.genesis_signatures,
+        leader_election: SimpleRoundRobin {},
     });
 
     executor.exec(init_commands);

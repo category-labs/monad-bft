@@ -7,6 +7,7 @@ use monad_consensus_types::{
     transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::SecpSignature;
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
@@ -16,7 +17,7 @@ use monad_executor::{
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSet;
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
 

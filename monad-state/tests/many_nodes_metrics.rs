@@ -6,6 +6,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{GenericTransformer, LatencyTransformer},
@@ -16,7 +17,7 @@ use monad_tracing_counter::{
     counter::{CounterLayer, MetricFilter},
     counter_status,
 };
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSet;
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};

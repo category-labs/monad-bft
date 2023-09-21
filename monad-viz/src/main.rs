@@ -30,6 +30,7 @@ use monad_consensus_types::{
     transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
     timed_event::TimedEvent,
@@ -39,7 +40,7 @@ use monad_executor::{
     PeerId, State,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSet;
 use monad_wal::{
     mock::MockWALogger,
     wal::{WALogger, WALoggerConfig},

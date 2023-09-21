@@ -36,6 +36,9 @@ pub trait ValidatorSetType {
         Self: Sized;
     fn get_members(&self) -> &HashMap<NodeId, Stake>;
     fn get_list(&self) -> &Vec<NodeId>;
+    fn get_total_stake(&self) -> Stake;
+    fn get_stake(&self, addr: &NodeId) -> Stake;
+    fn get_stakes(&self) -> &Vec<Stake>;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
     fn is_member(&self, addr: &NodeId) -> bool;
@@ -52,6 +55,7 @@ pub struct ValidatorData(pub Vec<(NodeId, Stake)>);
 pub struct ValidatorSet {
     validators: HashMap<NodeId, Stake>,
     validator_list: Vec<NodeId>,
+    stake_list: Vec<Stake>,
     total_stake: Stake,
 }
 
@@ -95,24 +99,28 @@ impl TryFrom<ProtoValidatorSetData> for ValidatorData {
 }
 
 impl ValidatorSetType for ValidatorSet {
-    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self> {
+    fn new(mut validators: Vec<(NodeId, Stake)>) -> Result<Self> {
         let mut vmap = HashMap::new();
-        let mut vlist = Vec::new();
+        let mut vlist = vec![];
+        let mut slist = vec![];
+
+        validators.sort();
+
         for (node_id, stake) in validators.into_iter() {
             let entry = vmap.entry(node_id).or_insert(stake);
             if *entry != stake {
                 return Err(ValidatorSetError::DuplicateValidator(node_id));
             }
             vlist.push(node_id);
+            slist.push(stake);
         }
-
-        vlist.sort();
 
         let total_stake: Stake = vmap.values().copied().sum();
 
         Ok(ValidatorSet {
             validators: vmap,
             validator_list: vlist,
+            stake_list: slist,
             total_stake,
         })
     }
@@ -123,6 +131,22 @@ impl ValidatorSetType for ValidatorSet {
 
     fn get_list(&self) -> &Vec<NodeId> {
         &self.validator_list
+    }
+
+    fn get_stakes(&self) -> &Vec<Stake> {
+        &self.stake_list
+    }
+
+    fn get_total_stake(&self) -> Stake {
+        self.total_stake
+    }
+
+    fn get_stake(&self, addr: &NodeId) -> Stake {
+        if let Some(stake) = self.validators.get(addr) {
+            *stake
+        } else {
+            Stake(0)
+        }
     }
 
     fn len(&self) -> usize {
@@ -168,6 +192,7 @@ mod test {
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
+    use rand::{seq::SliceRandom, thread_rng};
 
     use super::ValidatorSet;
     use crate::validator_set::ValidatorSetType;
@@ -226,5 +251,29 @@ mod test {
         let vs = ValidatorSet::new(validators).unwrap();
         assert!(!vs.has_honest_vote(&[v1.0]));
         assert!(vs.has_honest_vote(&[v2.0]));
+    }
+
+    #[test]
+    fn test_sorted() {
+        let mut keypairs = create_keys(1000);
+        keypairs.sort_by(|a, b| NodeId(a.pubkey()).cmp(&NodeId(b.pubkey())));
+        let mut validators = vec![];
+        for (i, keypair) in keypairs.iter().enumerate() {
+            validators.push((
+                NodeId(keypair.pubkey()),
+                // just a semi-random number
+                Stake((((i + 1) * 123123) as i64) % 552),
+            ));
+        }
+
+        // should be irrelevant, we always sort.
+        let mut rng = thread_rng();
+        validators.shuffle(&mut rng);
+
+        let vs = ValidatorSet::new(validators).unwrap();
+        for (i, keypair) in keypairs.iter().enumerate() {
+            assert_eq!(vs.get_list()[i], NodeId(keypair.pubkey()));
+            assert_eq!(vs.get_stakes()[i], Stake((((i + 1) * 123123) as i64) % 552));
+        }
     }
 }

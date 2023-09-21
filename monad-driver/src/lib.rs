@@ -12,6 +12,7 @@ mod tests {
         validation::Sha256Hash, voting::ValidatorMapping,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_election::simple_round_robin::SimpleRoundRobin;
     use monad_executor::{
         executor::{checkpoint::MockCheckpoint, ledger::MockLedger, mock::MockMempool},
         Executor, State,
@@ -19,7 +20,7 @@ mod tests {
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
     use monad_types::NodeId;
-    use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+    use monad_validator::validator_set::ValidatorSet;
     use monad_wal::{
         mock::{MockWALogger, MockWALoggerConfig},
         PersistenceLogger,
@@ -139,6 +140,7 @@ mod tests {
                         genesis_block: genesis_block.clone(),
                         genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                         genesis_signatures: genesis_sigs.clone(),
+                        leader_election: SimpleRoundRobin {},
                     },
                     PersistenceLoggerType::new(logger_config).unwrap(),
                 )

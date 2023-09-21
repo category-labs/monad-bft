@@ -6,6 +6,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     replay_nodes::ReplayNodes, timed_event::TimedEvent, Identifiable, PeerId, State,
 };
@@ -64,6 +65,7 @@ impl ReplayConfig<MS> for RepConfig {
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                 genesis_signatures: genesis_sigs.clone(),
+                leader_election: SimpleRoundRobin {},
             })
             .collect::<Vec<_>>();
         pubkeys.into_iter().zip(state_configs).collect::<Vec<_>>()

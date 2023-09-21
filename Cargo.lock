@@ -4690,6 +4690,7 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-testutil",
  "monad-tracing-counter",
@@ -4750,6 +4751,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-p2p",
  "monad-state",
@@ -4759,6 +4761,18 @@ dependencies = [
  "monad-wal",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "monad-election"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-testutil",
+ "monad-types",
+ "monad-validator",
+ "test-case",
 ]
 
 [[package]]
@@ -4868,6 +4882,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-mempool-controller",
  "monad-p2p",
@@ -4926,6 +4941,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-state",
  "monad-testutil",
@@ -4946,6 +4962,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-proto",
  "monad-quic",
@@ -4976,6 +4993,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-p2p",
  "monad-state",
@@ -5001,6 +5019,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-state",
  "monad-types",
@@ -5032,11 +5051,11 @@ dependencies = [
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
- "log",
  "monad-crypto",
  "monad-proto",
  "monad-testutil",
  "monad-types",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -5051,6 +5070,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-election",
  "monad-executor",
  "monad-state",
  "monad-testutil",

@@ -28,15 +28,13 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_election::leader_election::LeaderElection;
 use monad_executor::{
     CheckpointCommand, Command, Identifiable, LedgerCommand, MempoolCommand, Message, PeerId,
     RouterCommand, RouterTarget, State, StateRootHashCommand, TimerCommand,
 };
 use monad_types::{Epoch, Hash, NodeId, Stake};
-use monad_validator::{
-    leader_election::LeaderElection,
-    validator_set::{ValidatorData, ValidatorSetType},
-};
+use monad_validator::validator_set::{ValidatorData, ValidatorSetType};
 use ref_cast::RefCast;
 
 pub mod convert;
@@ -283,7 +281,7 @@ where
     }
 }
 
-pub struct MonadConfig<SCT: SignatureCollection, TV> {
+pub struct MonadConfig<SCT: SignatureCollection, TV, LT> {
     pub transaction_validator: TV,
     pub validators: Vec<(PubKey, SignatureCollectionPubKeyType<SCT>)>,
     pub key: KeyPair,
@@ -294,6 +292,7 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub genesis_block: FullBlock<SCT>,
     pub genesis_vote_info: VoteInfo,
     pub genesis_signatures: SCT,
+    pub leader_election: LT,
 }
 
 impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
@@ -305,7 +304,7 @@ where
     LT: LeaderElection,
     BST: BlockSyncProcess<SCT, VT>,
 {
-    type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
+    type Config = MonadConfig<SCT, CT::TransactionValidatorType, LT>;
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
@@ -334,7 +333,6 @@ where
         // create the initial validator set
         let val_set = VT::new(staking_list.clone()).expect("initial validator set init failed");
         let val_mapping = ValidatorMapping::new(voting_identities);
-        let election = LT::new();
 
         let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
             config.genesis_vote_info,
@@ -352,7 +350,7 @@ where
             validator_set: val_set,
             validator_mapping: val_mapping,
             upcoming_validator_set: None,
-            leader_election: election,
+            leader_election: config.leader_election,
             epoch: Epoch(0),
             consensus: CT::new(
                 config.transaction_validator,
@@ -431,7 +429,8 @@ where
                                         fetched_txs.p,
                                         txns,
                                         &self.validator_set,
-                                        &self.leader_election,
+                                        &self.validator_mapping,
+                                        &mut self.leader_election,
                                     ),
                             );
                         }
@@ -470,7 +469,7 @@ where
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
-                                    &self.leader_election,
+                                    &mut self.leader_election,
                                 )
                             }
                             ConsensusMessage::Timeout(msg) => {
@@ -479,7 +478,7 @@ where
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
-                                    &self.leader_election,
+                                    &mut self.leader_election,
                                 )
                             }
                             ConsensusMessage::RequestBlockSync(msg) => self

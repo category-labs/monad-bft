@@ -1,5 +1,5 @@
 [package]
-name = "monad-validator"
+name = "monad-election"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,12 +9,13 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
-
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-validator = { path = "../monad-validator" }
 
 [dev-dependencies]
 monad-crypto = { path = "../monad-crypto" }
 monad-testutil = { path = "../monad-testutil" }
+monad-consensus-types = { path = "../monad-consensus-types" }
 
-rand = {workspace = true}
+test-case = { workspace = true }

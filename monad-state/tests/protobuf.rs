@@ -15,6 +15,7 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_state::{
     convert::interface::{deserialize_event, serialize_event},
     ConsensusEvent, MonadEvent,
@@ -25,7 +26,6 @@ use monad_testutil::{
     validators::create_keys_w_validators,
 };
 use monad_types::{BlockId, Hash, NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin};
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
 
@@ -97,7 +97,7 @@ fn test_consensus_message_event_proposal_bls() {
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
     );
-    let election = SimpleRoundRobin::new();
+    let election = SimpleRoundRobin {};
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
         ProposalGen::new(genesis_qc);
 

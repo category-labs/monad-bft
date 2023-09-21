@@ -6,6 +6,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
@@ -16,7 +17,7 @@ use monad_executor::{
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, run_nodes_until};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::validator_set::ValidatorSet;
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 /**

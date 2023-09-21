@@ -22,10 +22,11 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_election::leader_election::{ElectionInfo, LeaderElection};
 use monad_executor::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Hash, NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_validator::validator_set::ValidatorSetType;
 use tracing::trace;
 
 use crate::{
@@ -103,7 +104,8 @@ where
         p: ProposalMessage<SCT>,
         txns: FullTransactionList,
         validators: &VT,
-        election: &LT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &mut LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_vote_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
@@ -112,7 +114,7 @@ where
         v: VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
+        election: &mut LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_timeout_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
@@ -121,7 +123,7 @@ where
         tm: TimeoutMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
+        election: &mut LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_block_sync<VT: ValidatorSetType>(
@@ -254,13 +256,19 @@ where
         p: ProposalMessage<SCT>,
         full_txs: FullTransactionList,
         validators: &VT,
-        election: &LT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &mut LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Fetched full proposal: {:?}", p);
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
+        let process_certificate_cmds = self.process_certificate_qc::<H, LT, VT>(
+            &p.block.qc,
+            election,
+            validators,
+            validator_mapping,
+        );
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -273,9 +281,6 @@ where
                 .into_iter();
             cmds.extend(advance_round_cmds);
         }
-
-        let round = self.pacemaker.get_current_round();
-        let leader = election.get_leader(round, validators.get_list());
 
         let Some(full_block) =
             FullBlock::from_block(p.block, full_txs, &self.transaction_validator)
@@ -295,6 +300,15 @@ where
             debug!("Block sync request: blockid={:?}", qc);
             cmds.extend(self.request_sync::<VT>(qc, validators));
         }
+
+        let round = self.pacemaker.get_current_round();
+        let Some(leader) = election.get_leader(round, validators) else {
+            debug!(
+                "Leader detected, but lack information to determine: expected-round={:?}",
+                round,
+            );
+            return cmds;
+        };
 
         if full_block.get_round() != round || author != leader || full_block.get_author() != leader
         {
@@ -321,7 +335,16 @@ where
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new::<H>(v, &self.cert_keypair);
 
-            let next_leader = election.get_leader(round + Round(1), validators.get_list());
+            let potential_leader = election.get_leader(round + Round(1), validators);
+
+            let Some(next_leader) = potential_leader else {
+                debug!(
+                    "Leader detected, but lack information to determine: expected-round={:?}",
+                    round + Round(1)
+                );
+                return cmds;
+            };
+
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
                 message: ConsensusMessage::Vote(vote_msg),
@@ -340,7 +363,7 @@ where
         vote_msg: VoteMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
+        election: &mut LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Vote Message: {:?}", vote_msg);
         if vote_msg.vote.vote_info.round < self.pacemaker.get_current_round() {
@@ -358,12 +381,17 @@ where
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);
-            cmds.extend(self.process_certificate_qc(&qc));
+            cmds.extend(self.process_certificate_qc::<H, LT, VT>(
+                &qc,
+                election,
+                validators,
+                validator_mapping,
+            ));
 
-            if self.nodeid
-                == election.get_leader(self.pacemaker.get_current_round(), validators.get_list())
-            {
-                cmds.extend(self.process_new_round_event(None));
+            if let Some(id) = election.get_leader(self.pacemaker.get_current_round(), validators) {
+                if id == self.nodeid {
+                    cmds.extend(self.process_new_round_event(None));
+                }
             }
         }
         cmds
@@ -375,7 +403,7 @@ where
         tmo_msg: TimeoutMessage<SCT>,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
+        election: &mut LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         let tm = &tmo_msg.timeout;
         let mut cmds = Vec::new();
@@ -387,7 +415,12 @@ where
         debug!("Remote timeout msg: {:?}", tm);
         inc_count!(remote_timeout_msg);
 
-        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc);
+        let process_certificate_cmds = self.process_certificate_qc::<H, LT, VT>(
+            &tm.tminfo.high_qc,
+            election,
+            validators,
+            validator_mapping,
+        );
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
@@ -428,10 +461,10 @@ where
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
-            if self.nodeid
-                == election.get_leader(self.pacemaker.get_current_round(), validators.get_list())
-            {
-                cmds.extend(self.process_new_round_event(Some(tc)));
+            if let Some(id) = election.get_leader(self.pacemaker.get_current_round(), validators) {
+                if id == self.nodeid {
+                    cmds.extend(self.process_new_round_event(Some(tc)));
+                }
             }
         }
 
@@ -529,7 +562,12 @@ where
     // block tree
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
-    pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<SCT>> {
+    pub fn process_qc<H: Hasher, LT: LeaderElection, VT: ValidatorSetType>(
+        &mut self,
+        qc: &QuorumCertificate<SCT>,
+        election: &mut LT,
+        validator_map: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    ) -> Vec<ConsensusCommand<SCT>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
             inc_count!(process_old_qc);
             return Vec::new();
@@ -563,6 +601,10 @@ where
                         .iter()
                         .map(|b| ConsensusCommand::StateRootHash(b.clone())),
                 );
+                election.submit_election_info::<H, SCT, VT>(ElectionInfo::Commits::<SCT, VT>(
+                    &blocks_to_commit,
+                    validator_map,
+                ));
                 cmds.push(ConsensusCommand::DrainTxs(
                     blocks_to_commit
                         .iter()
@@ -576,12 +618,21 @@ where
     }
 
     #[must_use]
-    fn process_certificate_qc(
+    fn process_certificate_qc<H: Hasher, LT: LeaderElection, VT: ValidatorSetType>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        election: &mut LT,
+        validators: &VT,
+        validator_map: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = Vec::new();
-        cmds.extend(self.process_qc(qc));
+        cmds.extend(self.process_qc::<H, LT, VT>(qc, election, validator_map));
+        // submit leader election related information
+        election.submit_election_info::<H, SCT, VT>(ElectionInfo::QC(
+            qc,
+            self.pacemaker.get_current_round(),
+            validators,
+        ));
 
         cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
         cmds
@@ -706,10 +757,14 @@ mod test {
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{Timeout, TimeoutInfo},
         transaction_validator::{MockValidator, TransactionValidator},
-        validation::Sha256Hash,
+        validation::{Hasher, Sha256Hash},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{secp256k1::KeyPair, NopSignature};
+    use monad_election::{
+        leader_election::{ElectionInfo, LeaderElection},
+        simple_round_robin::SimpleRoundRobin,
+    };
     use monad_executor::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
@@ -717,10 +772,7 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, Hash, NodeId, Round};
-    use monad_validator::{
-        leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
-        validator_set::ValidatorSet,
-    };
+    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
     use tracing_test::traced_test;
 
     use crate::{
@@ -731,7 +783,44 @@ mod test {
     type SignatureCollectionType = MultiSig<NopSignature>;
     type StateRootValidatorType = NopStateRoot;
     type TransactionValidatorType = MockValidator;
+    struct SpyRoundRobin {
+        core: SimpleRoundRobin,
+        qc_info: Vec<(Hash, Round)>,
+        block_info: Vec<BlockId>,
+    }
 
+    impl Default for SpyRoundRobin {
+        fn default() -> Self {
+            Self {
+                core: SimpleRoundRobin {},
+                qc_info: vec![],
+                block_info: vec![],
+            }
+        }
+    }
+
+    impl LeaderElection for SpyRoundRobin {
+        fn get_leader<VT>(&self, round: Round, valset: &VT) -> Option<NodeId>
+        where
+            VT: ValidatorSetType,
+        {
+            self.core.get_leader(round, valset)
+        }
+
+        fn submit_election_info<H, SCT, VT>(&mut self, info: ElectionInfo<SCT, VT>)
+        where
+            H: Hasher,
+            SCT: SignatureCollection,
+            VT: ValidatorSetType,
+        {
+            match info {
+                ElectionInfo::QC(qc, round, _) => self.qc_info.push((qc.get_hash(), round)),
+                ElectionInfo::Commits(blocks, _) => {
+                    self.block_info.extend(blocks.iter().map(|b| b.get_id()))
+                }
+            }
+        }
+    }
     fn setup<
         ST: MessageSignature,
         SCT: SignatureCollection,
@@ -806,7 +895,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.info.vote.round, Round(0));
@@ -838,14 +927,14 @@ mod test {
             *v1,
             &valset,
             &valmap,
-            &election,
+            &mut election,
         );
         state.handle_vote_message::<Sha256Hash, _, _>(
             *v2.author(),
             *v2,
             &valset,
             &valmap,
-            &election,
+            &mut election,
         );
 
         // less than 2f+1, so expect not locked
@@ -856,7 +945,7 @@ mod test {
             *v3,
             &valset,
             &valmap,
-            &election,
+            &mut election,
         );
         assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
 
@@ -881,7 +970,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
         let p1 = propgen.next_proposal(
@@ -909,7 +998,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -932,7 +1022,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let state = &mut states[0];
         let mut propgen =
             ProposalGen::<SignatureType, SignatureCollectionType>::new(state.high_qc.clone());
@@ -952,7 +1042,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -982,7 +1073,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -1023,7 +1115,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         assert_eq!(state.pacemaker.get_current_round(), Round(7));
@@ -1037,7 +1130,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
@@ -1059,7 +1152,8 @@ mod test {
                 verified_message,
                 FullTransactionList::default(),
                 &valset,
-                &election,
+                &valmap,
+                &mut election,
             );
             let result = cmds.iter().find(|&c| {
                 matches!(
@@ -1090,7 +1184,13 @@ mod test {
         let signed_byzantine_tm: Verified<SignatureType, _> =
             Verified::new::<Sha256Hash>(byzantine_tmo_msg, &keys[1]);
         let (author, _signature, tm) = signed_byzantine_tm.destructure();
-        state.handle_timeout_message::<Sha256Hash, _, _>(author, tm, &valset, &valmap, &election);
+        state.handle_timeout_message::<Sha256Hash, _, _>(
+            author,
+            tm,
+            &valset,
+            &valmap,
+            &mut election,
+        );
         // FIXME: what are we expecting here?
     }
 
@@ -1102,7 +1202,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let state = &mut states[0];
         let mut propgen =
             ProposalGen::<SignatureType, SignatureCollectionType>::new(state.high_qc.clone());
@@ -1122,7 +1222,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -1142,7 +1243,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         assert!(cmds.is_empty());
     }
@@ -1163,7 +1265,8 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
+
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
@@ -1183,7 +1286,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -1214,7 +1318,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -1258,7 +1363,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         // confirm the size of the pending_block_tree (genesis, p1, p2, p_fut)
@@ -1273,7 +1379,8 @@ mod test {
                 verified_message,
                 FullTransactionList::default(),
                 &valset,
-                &election,
+                &valmap,
+                &mut election,
             ));
         }
 
@@ -1311,7 +1418,8 @@ mod test {
                         m.clone(),
                         FullTransactionList::default(),
                         &valset,
-                        &election,
+                        &valmap,
+                        &mut election,
                     ));
                 }
                 _ => more_proposals = false,
@@ -1337,7 +1445,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         assert_eq!(state.pending_block_tree.size(), 3);
@@ -1357,7 +1466,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
@@ -1377,7 +1486,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         let p1_votes = p1_cmds
@@ -1414,7 +1524,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         let lc = p2_cmds
@@ -1457,7 +1568,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let lc = p2_cmds
             .iter()
@@ -1473,7 +1585,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
 
@@ -1493,7 +1605,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         // round 2 proposal
@@ -1512,7 +1625,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         let p2_votes = p2_cmds
@@ -1571,7 +1685,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         let p3_votes = p3_cmds
@@ -1604,7 +1719,7 @@ mod test {
             StateRootValidatorType,
             TransactionValidatorType,
         >(4);
-        let election = SimpleRoundRobin::new();
+        let mut election = SimpleRoundRobin {};
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -1648,7 +1763,8 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let p1_votes = cmds1
             .into_iter()
@@ -1666,7 +1782,8 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let p3_votes = cmds3
             .into_iter()
@@ -1684,7 +1801,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let p4_votes = cmds4
             .into_iter()
@@ -1703,7 +1821,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let p2_votes = cmds2
             .into_iter()
@@ -1730,7 +1849,7 @@ mod test {
                 *v,
                 &valset,
                 &valmap,
-                &election,
+                &mut election,
             );
         }
 
@@ -1759,7 +1878,8 @@ mod test {
             verified_message_2.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let res = cmds2.into_iter().find(|c| {
             matches!(
@@ -1785,7 +1905,8 @@ mod test {
             verified_message_2.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let res = cmds1.into_iter().find(|c| {
             matches!(
@@ -1819,14 +1940,16 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         // second_state has the malicious block in the blocktree, so it will not be able to
@@ -1864,7 +1987,8 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         // new block added should allow path_to_root properly, thus no more request sync
         let res = cmds2.iter().clone().find(|c| {
@@ -1883,7 +2007,8 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         // second_state has the correct blocks, so expect to see a commit
@@ -1908,7 +2033,8 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
@@ -1983,7 +2109,8 @@ mod test {
             verified_message_2,
             FullTransactionList::default(),
             &valset,
-            &election,
+            &valmap,
+            &mut election,
         );
         assert_eq!(third_state.pending_block_tree.size(), 5);
         let res = cmds2.into_iter().find(|c| {
@@ -2012,5 +2139,134 @@ mod test {
             )
         });
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_leader_election_receives_info() {
+        let num_states = 4;
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(num_states as u32);
+        let mut election = SpyRoundRobin::default();
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+
+        for i in 0..10 {
+            let cp = proposal_gen.next_proposal(
+                &keys,
+                &certkeys,
+                &valset,
+                &election,
+                &valmap,
+                Default::default(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, msg) = cp.destructure();
+            // when proposal is being observed, its expected that the election will receive the qc info
+            for state in states.iter_mut() {
+                state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                    author,
+                    msg.clone(),
+                    FullTransactionList::default(),
+                    &valset,
+                    &valmap,
+                    &mut election,
+                );
+            }
+            assert_eq!(election.qc_info.len(), num_states * (i + 1));
+            if i >= 2 {
+                assert_eq!(election.block_info.len(), num_states * (i - 1));
+            } else {
+                assert_eq!(election.block_info.len(), 0);
+            }
+        }
+
+        // observing vote message should also trigger
+        let cp = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author, _, msg) = cp.destructure();
+
+        // vote observed a unique high qc, sending it to a neighbour should trigger its submission process
+        let mut election = SpyRoundRobin::default();
+
+        let cmds = states[0].handle_timeout_expiry::<Sha256Hash>(PacemakerTimerExpire);
+        let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PacemakerCommand::Broadcast(TimeoutMessage {
+                    timeout: tmo,
+                    sig: _,
+                }) => Some(tmo),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(tmo.len(), 1);
+        assert_eq!(tmo[0].tminfo.round, Round(10));
+        let peer = states[1].nodeid;
+        let timeout_msg = TimeoutMessage::new::<Sha256Hash>(tmo[0].clone(), &certkeys[1]);
+        states[0].handle_timeout_message::<Sha256Hash, _, _>(
+            peer,
+            timeout_msg,
+            &valset,
+            &valmap,
+            &mut election,
+        );
+
+        assert_eq!(election.qc_info.len(), 1);
+        assert_eq!(election.block_info.len(), 0);
+
+        // similarly, if the rest of the node decided to vote it could create qc and cause update as well.
+        let mut election = SpyRoundRobin::default();
+        let (first_state, states) = states.split_first_mut().unwrap();
+        let mut i = 0;
+        for state in states.iter_mut() {
+            let mut spy = SpyRoundRobin::default();
+            let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                author,
+                msg.clone(),
+                FullTransactionList(Vec::new()),
+                &valset,
+                &valmap,
+                &mut spy,
+            );
+            assert_eq!(spy.qc_info.len(), 1);
+            assert_eq!(spy.block_info.len(), 1);
+
+            let v: Vec<VoteMessage<SignatureCollectionType>> = cmds
+                .into_iter()
+                .filter_map(|c| match c {
+                    ConsensusCommand::Publish {
+                        target: RouterTarget::PointToPoint(_),
+                        message: ConsensusMessage::Vote(vote),
+                    } => Some(vote),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(v.len(), 1);
+            let peer = state.nodeid;
+            first_state.handle_vote_message::<Sha256Hash, _, _>(
+                peer,
+                v[0],
+                &valset,
+                &valmap,
+                &mut election,
+            );
+            i += 1;
+        }
+
+        assert_eq!(election.qc_info.len(), 1);
+        // missed the commit of the previous round + new qc observe and another block is committed
+        assert_eq!(election.block_info.len(), 2);
     }
 }

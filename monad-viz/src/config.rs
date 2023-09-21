@@ -11,6 +11,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
     transformer::{
@@ -108,6 +109,7 @@ impl
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
                 genesis_signatures: genesis_sigs.clone(),
+                leader_election: SimpleRoundRobin {},
             })
             .collect::<Vec<_>>();
 

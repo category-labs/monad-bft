@@ -7,6 +7,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_election::simple_round_robin::SimpleRoundRobin;
 use monad_executor::{
     executor::mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes},
@@ -24,7 +25,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     tvt: TVT,
     num_nodes: u16,
     delta: Duration,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT, SimpleRoundRobin>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
@@ -58,6 +59,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
             genesis_signatures: genesis_sigs.clone(),
+            leader_election: SimpleRoundRobin {},
         })
         .collect::<Vec<_>>();
 
@@ -102,7 +104,7 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     until: Duration,
     min_ledger_len: u32,
 ) where
-    S: State<Config = MonadConfig<SCT, TVT>>,
+    S: State<Config = MonadConfig<SCT, TVT, SimpleRoundRobin>>,
     ST: MessageSignature,
     SCT: SignatureCollection,
 
@@ -141,7 +143,7 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
 
 pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     pubkeys: Vec<PubKey>,
-    state_configs: Vec<MonadConfig<SCT, TVT>>,
+    state_configs: Vec<MonadConfig<SCT, TVT, SimpleRoundRobin>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
     pipeline: P,
@@ -150,7 +152,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     until: Duration,
     min_ledger_len: u32,
 ) where
-    S: State<Config = MonadConfig<SCT, TVT>>,
+    S: State<Config = MonadConfig<SCT, TVT, SimpleRoundRobin>>,
     ST: MessageSignature,
     SCT: SignatureCollection,
 

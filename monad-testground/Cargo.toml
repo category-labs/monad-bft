@@ -12,6 +12,7 @@ monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
+monad-election = { path = "../monad-election" }
 monad-executor = { path = "../monad-executor", features = ["tokio"] }
 monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
 monad-state = { path = "../monad-state" }

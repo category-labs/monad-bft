@@ -17,9 +17,9 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::KeyPair;
+use monad_election::leader_election::LeaderElection;
 use monad_types::{NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
-
+use monad_validator::validator_set::ValidatorSetType;
 pub struct ProposalGen<ST, SCT> {
     round: Round,
     seq_num: u64,
@@ -66,7 +66,13 @@ where
 
         let leader_key = keys
             .iter()
-            .find(|k| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
+            .find(|k| {
+                k.pubkey()
+                    == election
+                        .get_leader(self.round, valset)
+                        .expect("leader not available")
+                        .0
+            })
             .expect("key not in valset");
 
         let block = Block::new::<Sha256Hash>(
