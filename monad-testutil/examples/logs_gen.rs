@@ -10,8 +10,8 @@ use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
-    transformer::{Pipeline, Transformer, TransformerPipeline},
-    xfmr_pipe, PeerId, State,
+    transformer::{Pipeline, Transformer},
+    PeerId, State,
 };
 use monad_state::{MonadEvent, MonadState};
 use monad_testutil::swarm::get_configs;
@@ -90,9 +90,9 @@ fn main() {
         4,
         10,
         Duration::from_millis(101),
-        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
+        vec![Transformer::Latency(LatencyTransformer(
             Duration::from_millis(100),
-        ))),
+        ))],
     );
     println!("Logs Generated!");
 }

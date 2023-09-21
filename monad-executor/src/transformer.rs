@@ -1,10 +1,4 @@
-use std::{
-    collections::HashSet,
-    fmt::Debug,
-    mem,
-    ops::{Index, IndexMut},
-    time::Duration,
-};
+use std::{collections::HashSet, fmt::Debug, mem, time::Duration};
 
 use rand::{prelude::SliceRandom, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
@@ -32,6 +26,10 @@ pub trait Transform<M> {
     // TODO smallvec? resulting Vec will almost always be len 1
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M>;
 
+    fn min_external_delay(&self) -> Option<Duration> {
+        None
+    }
+
     fn boxed(self) -> Box<dyn Transform<M>>
     where
         Self: Sized + 'static,
@@ -46,6 +44,10 @@ pub struct LatencyTransformer(pub Duration);
 impl<M> Transform<M> for LatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         TransformerStream::Continue(vec![(self.0, message)])
+    }
+
+    fn min_external_delay(&self) -> Option<Duration> {
+        Some(self.0)
     }
 }
 
@@ -234,6 +236,26 @@ impl<M> Transform<M> for Transformer<M> {
             Transformer::Replay(t) => t.transform(message),
         }
     }
+
+    fn min_external_delay(&self) -> Option<Duration> {
+        match self {
+            Transformer::Latency(t) => <LatencyTransformer as Transform<M>>::min_external_delay(t),
+            Transformer::XorLatency(t) => {
+                <XorLatencyTransformer as Transform<M>>::min_external_delay(t)
+            }
+            Transformer::RandLatency(t) => {
+                <RandLatencyTransformer as Transform<M>>::min_external_delay(t)
+            }
+            Transformer::Partition(t) => {
+                <PartitionTransformer as Transform<M>>::min_external_delay(t)
+            }
+            Transformer::Drop(t) => <DropTransformer as Transform<M>>::min_external_delay(t),
+            Transformer::Periodic(t) => {
+                <PeriodicTransformer as Transform<M>>::min_external_delay(t)
+            }
+            Transformer::Replay(t) => t.min_external_delay(),
+        }
+    }
 }
 
 /**
@@ -250,45 +272,17 @@ pub trait Pipeline<M> {
     /// min_external_delay MUST be > 0
     fn min_external_delay(&self) -> Duration;
 }
-#[derive(Clone, Debug)]
-pub struct TransformerPipeline<M> {
-    transformers: Vec<Transformer<M>>,
-}
-
-impl<M> TransformerPipeline<M> {
-    pub fn new(transformers: Vec<Transformer<M>>) -> Self {
-        TransformerPipeline { transformers }
-    }
-}
-
-#[macro_export]
-macro_rules! xfmr_pipe {
-    ($($x:expr),+) => {
-        TransformerPipeline::new(vec![$($x), *])
-    };
-}
-
-impl<M> Index<usize> for TransformerPipeline<M> {
-    type Output = Transformer<M>;
-    fn index(&self, i: usize) -> &Self::Output {
-        assert!(i < self.transformers.len());
-        &self.transformers[i]
-    }
-}
-
-impl<M> IndexMut<usize> for TransformerPipeline<M> {
-    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        assert!(i < self.transformers.len());
-        &mut self.transformers[i]
-    }
-}
+pub type TransformerPipeline<M> = Vec<Transformer<M>>;
 
 // unlike regular transformer, pipeline's job is simply organizing various form of transformer and feed them through
-impl<M> Pipeline<M> for TransformerPipeline<M> {
+impl<T, M> Pipeline<M> for Vec<T>
+where
+    T: Transform<M>,
+{
     fn process(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         let mut complete_message = vec![];
         let mut remain_message = vec![(Duration::ZERO, message)];
-        for layer in &mut self.transformers {
+        for layer in self {
             let mut new_round_message = vec![];
             for (base_duration, message) in remain_message {
                 match (*layer).transform(message) {
@@ -315,34 +309,27 @@ impl<M> Pipeline<M> for TransformerPipeline<M> {
     }
 
     fn len(&self) -> usize {
-        self.transformers.len()
+        self.len()
     }
 
     fn is_empty(&self) -> bool {
-        self.transformers.len() == 0
+        self.is_empty()
     }
 
     fn min_external_delay(&self) -> Duration {
-        let delay = self
-            .transformers
-            .iter()
-            .map_while(|transformer| match transformer {
-                Transformer::Latency(LatencyTransformer(delay)) => Some(delay),
-                _ => None,
-            })
-            .sum();
+        let delay = self.iter().map_while(T::min_external_delay).sum();
         assert!(delay > Duration::ZERO, "min_external_delay must be > 0");
         delay
     }
 }
-#[cfg(test)]
 
+#[cfg(test)]
 mod test {
     use std::{collections::HashSet, time::Duration};
 
     use monad_testutil::signing::create_keys;
 
-    use super::{LatencyTransformer, Pipeline, Transform, Transformer, TransformerPipeline};
+    use super::{LatencyTransformer, Pipeline, Transform, Transformer};
     use crate::{
         mock_swarm::LinkMessage,
         transformer::{
@@ -524,8 +511,8 @@ mod test {
 
     #[test]
     fn test_pipeline_basic_flow() {
-        let mut pipe = xfmr_pipe![Transformer::Latency(LatencyTransformer(
-            Duration::from_millis(30)
+        let mut pipe = vec![Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(30),
         ))];
 
         let mock_message = get_mock_message();
@@ -542,14 +529,14 @@ mod test {
         let mut peers = HashSet::new();
         peers.insert(PeerId(keys[0].pubkey()));
 
-        let mut pipe = xfmr_pipe![
+        let mut pipe = vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
             Transformer::Partition(PartitionTransformer(peers)),
             Transformer::Periodic(PeriodicTransformer::new(
                 Duration::from_millis(2),
-                Duration::from_millis(7)
+                Duration::from_millis(7),
             )),
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(30)))
+            Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
         ];
         for idx in 0..1000 {
             let mut mock_message = get_mock_message();

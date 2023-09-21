@@ -34,7 +34,7 @@ use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
     timed_event::TimedEvent,
     transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
-    xfmr_pipe, PeerId, State,
+    PeerId, State,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
@@ -172,10 +172,10 @@ impl Application for Viz {
                 num_nodes: 4,
                 delta: Duration::from_millis(101),
                 max_tick: Duration::from_secs_f32(4.0),
-                pipeline: xfmr_pipe!(
+                pipeline: vec![
                     Transformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-                    Transformer::XorLatency(XorLatencyTransformer(Duration::from_millis(20)))
-                ),
+                    Transformer::XorLatency(XorLatencyTransformer(Duration::from_millis(20))),
+                ],
             };
             let simulation = {
                 NodesSimulation::<

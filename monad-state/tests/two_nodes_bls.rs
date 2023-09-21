@@ -8,8 +8,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    transformer::{LatencyTransformer, Transformer, TransformerPipeline},
-    xfmr_pipe,
+    transformer::{LatencyTransformer, Transformer},
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::create_and_run_nodes;
@@ -46,9 +45,9 @@ fn two_nodes_bls() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        xfmr_pipe!(Transformer::Latency::<
+        vec![Transformer::Latency::<
             MonadMessage<SignatureType, SignatureCollectionType>,
-        >(LatencyTransformer(Duration::from_millis(1)))),
+        >(LatencyTransformer(Duration::from_millis(1)))],
         false,
         2,
         Duration::from_millis(2),

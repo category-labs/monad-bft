@@ -9,8 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
-        DropTransformer, LatencyTransformer, PartitionTransformer, PeriodicTransformer,
-        Transformer, TransformerPipeline,
+        DropTransformer, LatencyTransformer, PartitionTransformer, PeriodicTransformer, Transformer,
     },
     PeerId,
 };
@@ -63,7 +62,7 @@ fn black_out() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        TransformerPipeline::new(vec![
+        vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
             Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
             Transformer::Periodic(PeriodicTransformer::new(
@@ -71,7 +70,7 @@ fn black_out() {
                 Duration::from_secs(2),
             )),
             Transformer::Drop(DropTransformer()),
-        ]),
+        ],
         false,
         Duration::from_secs(4),
         20,
@@ -120,7 +119,7 @@ fn extreme_delay() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        TransformerPipeline::new(vec![
+        vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
             Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
             Transformer::Periodic(PeriodicTransformer::new(
@@ -128,7 +127,7 @@ fn extreme_delay() {
                 Duration::from_secs(2),
             )),
             Transformer::Latency(LatencyTransformer(Duration::from_millis(400))),
-        ]),
+        ],
         false,
         Duration::from_secs(4),
         20,

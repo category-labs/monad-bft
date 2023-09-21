@@ -8,8 +8,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    transformer::{LatencyTransformer, Transformer, TransformerPipeline},
-    xfmr_pipe,
+    transformer::{LatencyTransformer, Transformer},
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::create_and_run_nodes;
@@ -60,11 +59,11 @@ fn many_nodes_metrics() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        xfmr_pipe!(Transformer::<
+        vec![Transformer::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >::Latency(LatencyTransformer(
-            Duration::from_millis(1)
-        ))),
+            Duration::from_millis(1),
+        ))],
         false,
         100,
         Duration::from_millis(2),

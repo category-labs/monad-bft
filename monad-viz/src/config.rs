@@ -13,9 +13,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
-    transformer::{
-        LatencyTransformer, Pipeline, Transformer, TransformerPipeline, XorLatencyTransformer,
-    },
+    transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
     PeerId, State,
 };
 use monad_state::MonadConfig;

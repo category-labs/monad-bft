@@ -9,8 +9,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    transformer::{LatencyTransformer, Transformer, TransformerPipeline},
-    xfmr_pipe,
+    transformer::{LatencyTransformer, Transformer},
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::create_and_run_nodes;
@@ -48,9 +47,9 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        xfmr_pipe!(Transformer::Latency(LatencyTransformer(
-            Duration::from_millis(1)
-        ))),
+        vec![Transformer::Latency(LatencyTransformer(
+            Duration::from_millis(1),
+        ))],
         false,
         2,
         Duration::from_millis(2),

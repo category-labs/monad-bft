@@ -145,7 +145,6 @@ mod test {
         validation::{Hasher, Sha256Hash},
         voting::VoteInfo,
     };
-    use monad_crypto::NopSignature;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
@@ -155,7 +154,6 @@ mod test {
 
     use super::BlockSyncManager;
     use crate::{command::ConsensusCommand, BlockSyncMessage, BlockSyncResult};
-    type ST = NopSignature;
     type SC = MockSignatures;
     type VT = ValidatorSet;
     type QC = QuorumCertificate<SC>;

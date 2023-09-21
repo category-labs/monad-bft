@@ -10,9 +10,9 @@ use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         LatencyTransformer, PartitionTransformer, ReplayTransformer, Transformer,
-        TransformerPipeline, TransformerReplayOrder,
+        TransformerReplayOrder,
     },
-    xfmr_pipe, PeerId,
+    PeerId,
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, run_nodes_until};
@@ -88,14 +88,14 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        xfmr_pipe!(
+        vec![
             Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             Transformer::Partition(PartitionTransformer(filter_peers)),
             Transformer::Replay(ReplayTransformer::new(
                 Duration::from_millis(500),
-                direction
-            ))
-        ),
+                direction,
+            )),
+        ],
         false,
         Duration::from_secs(1),
         20,
