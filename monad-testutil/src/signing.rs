@@ -69,10 +69,10 @@ impl SignatureCollection for MockSignatures {
         Ok(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)).collect())
     }
 
-    fn get_participants(
+    fn get_participants<F: Fn() -> Hash>(
         &self,
-        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
-        _msg: &[u8],
+        _: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        _: F,
     ) -> HashSet<NodeId> {
         HashSet::from_iter(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)))
     }

@@ -74,10 +74,10 @@ pub trait SignatureCollection:
      * Get participants doesn't verify the validity of the certificate,
      * but retrieve any valid nodeId participated given a validator mapping.
      */
-    fn get_participants(
+    fn get_participants<F: Fn() -> Hash>(
         &self,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
-        msg: &[u8],
+        get_msg: F,
     ) -> HashSet<NodeId>;
     // TODO: deprecate this function: only used by tests
     fn num_signatures(&self) -> usize;
@@ -259,7 +259,7 @@ mod test {
         let sigs = get_sigs::<T>(msg_hash.as_ref(), voting_keys.iter());
         let sigcol = T::new(sigs, &valmap, msg_hash.as_ref()).unwrap();
 
-        let signers = sigcol.get_participants(&valmap, msg_hash.as_ref());
+        let signers = sigcol.get_participants(&valmap, || msg_hash);
 
         let expected_set = valmap.map.into_keys().collect::<HashSet<_>>();
         assert_eq!(signers, expected_set);

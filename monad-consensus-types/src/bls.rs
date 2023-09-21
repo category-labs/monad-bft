@@ -226,10 +226,10 @@ impl SignatureCollection for BlsSignatureCollection {
         Ok(signers)
     }
 
-    fn get_participants(
+    fn get_participants<F: Fn() -> Hash>(
         &self,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
-        _msg: &[u8],
+        _: F,
     ) -> HashSet<NodeId> {
         assert_eq!(self.signers.len(), validator_mapping.map.len());
 

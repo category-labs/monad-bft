@@ -155,16 +155,17 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         Ok(node_ids)
     }
 
-    fn get_participants(
+    fn get_participants<F: Fn() -> Hash>(
         &self,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
-        msg: &[u8],
+        get_msg: F,
     ) -> HashSet<NodeId> {
         let mut node_ids = HashSet::new();
         let mut pub_keys = HashSet::new();
+        let msg = get_msg();
 
         for sig in self.sigs.iter() {
-            if let Ok(pubkey) = sig.recover_pubkey(msg) {
+            if let Ok(pubkey) = sig.recover_pubkey(msg.as_ref()) {
                 pub_keys.insert(pubkey);
             }
         }

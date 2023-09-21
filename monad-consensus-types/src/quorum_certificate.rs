@@ -140,7 +140,9 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     ) -> HashSet<NodeId> {
         // TODO, consider caching this qc_msg hash in qc for performance in future
         let qc_msg = H::hash_object(&self.info.ledger_commit);
-        self.signatures
-            .get_participants(validator_mapping, qc_msg.as_ref())
+
+        self.signatures.get_participants(validator_mapping, || {
+            H::hash_object(&self.info.ledger_commit)
+        })
     }
 }
