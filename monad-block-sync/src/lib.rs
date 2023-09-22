@@ -35,6 +35,7 @@ where
         s: RequestBlockSyncMessage,
     ) -> Vec<ConsensusCommand<SCT>> {
         vec![ConsensusCommand::LedgerFetch(
+            author,
             s.block_id,
             Box::new(move |block| FetchedBlock {
                 requester: author,
@@ -78,7 +79,7 @@ mod test {
         assert_eq!(command.len(), 1);
         let res = command
             .iter()
-            .find(|c| matches!(c, ConsensusCommand::LedgerFetch(_, _)));
+            .find(|c| matches!(c, ConsensusCommand::LedgerFetch(_, _, _)));
         assert!(res.is_some());
     }
 }

@@ -439,7 +439,13 @@ where
                         cmds
                     }
                     ConsensusEvent::FetchedBlock(fetched_b) => {
-                        vec![ConsensusCommand::LedgerFetchReset, fetched_b.into()]
+                        vec![
+                            ConsensusCommand::LedgerFetchReset(
+                                fetched_b.requester,
+                                fetched_b.block_id,
+                            ),
+                            fetched_b.into(),
+                        ]
                     }
                     ConsensusEvent::Message {
                         sender,
@@ -565,8 +571,9 @@ where
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))
                         }
-                        ConsensusCommand::LedgerFetch(b_id, cb) => {
+                        ConsensusCommand::LedgerFetch(n_id, b_id, cb) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetch(
+                                n_id,
                                 b_id,
                                 Box::new(|block: Option<Block<_>>| {
                                     Self::Event::ConsensusEvent(ConsensusEvent::FetchedBlock(cb(
@@ -575,8 +582,10 @@ where
                                 }),
                             )))
                         }
-                        ConsensusCommand::LedgerFetchReset => {
-                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetchReset))
+                        ConsensusCommand::LedgerFetchReset(node_id, block_id) => {
+                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetchReset(
+                                node_id, block_id,
+                            )))
                         }
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),

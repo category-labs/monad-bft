@@ -45,10 +45,11 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
         block_id: BlockId,
     },
     LedgerFetch(
+        NodeId,
         BlockId,
         Box<dyn (FnOnce(Option<Block<SCT>>) -> FetchedBlock<SCT>) + Send + Sync>,
     ),
-    LedgerFetchReset,
+    LedgerFetchReset(NodeId, BlockId),
     /// Checkpoints periodically can upload/backup the ledger and garbage clean
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),

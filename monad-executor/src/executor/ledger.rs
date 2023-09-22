@@ -8,14 +8,15 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::block::BlockType;
-use monad_types::BlockId;
+use monad_types::{BlockId, NodeId};
+use tracing::warn;
 
 use crate::{Executor, LedgerCommand};
 
 pub struct MockLedger<O: BlockType, E> {
     blockchain: Vec<O>,
     block_index: HashMap<BlockId, usize>,
-    ledger_fetch_cb: Option<(BlockId, Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>)>,
+    ledger_fetches: HashMap<(NodeId, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
 }
 
@@ -24,7 +25,7 @@ impl<O: BlockType, E> Default for MockLedger<O, E> {
         Self {
             blockchain: Vec::new(),
             block_index: HashMap::new(),
-            ledger_fetch_cb: None,
+            ledger_fetches: HashMap::default(),
             waker: None,
         }
     }
@@ -34,8 +35,6 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
     type Command = LedgerCommand<O, E>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut wake = false;
-
         for command in commands {
             match command {
                 LedgerCommand::LedgerCommit(blocks) => {
@@ -45,17 +44,24 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
                         self.blockchain.push(block);
                     }
                 }
-                LedgerCommand::LedgerFetch(block_id, cb) => {
-                    self.ledger_fetch_cb = Some((block_id, cb));
-                    wake = true;
+                LedgerCommand::LedgerFetch(node_id, block_id, cb) => {
+                    if self
+                        .ledger_fetches
+                        .insert((node_id, block_id), cb)
+                        .is_some()
+                    {
+                        warn!(
+                            "MockLedger received duplicate fetch from {:?} for block {:?}",
+                            node_id, block_id
+                        );
+                    }
                 }
-                LedgerCommand::LedgerFetchReset => {
-                    self.ledger_fetch_cb = None;
-                    wake = false;
+                LedgerCommand::LedgerFetchReset(node_id, block_id) => {
+                    self.ledger_fetches.remove(&(node_id, block_id));
                 }
             }
         }
-        if wake {
+        if self.ready() {
             if let Some(waker) = self.waker.take() {
                 waker.wake()
             };
@@ -72,7 +78,9 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if let Some((block_id, cb)) = this.ledger_fetch_cb.take() {
+        if let Some((node_id, block_id)) = this.ledger_fetches.keys().next().cloned() {
+            let cb = this.ledger_fetches.remove(&(node_id, block_id)).unwrap();
+
             return Poll::Ready(Some(cb({
                 this.block_index
                     .get(&block_id)
@@ -90,7 +98,7 @@ where
     O: BlockType,
 {
     pub fn ready(&self) -> bool {
-        self.ledger_fetch_cb.is_some()
+        !self.ledger_fetches.is_empty()
     }
     pub fn get_blocks(&self) -> &Vec<O> {
         &self.blockchain
@@ -99,7 +107,7 @@ where
 #[cfg(test)]
 mod tests {
     use futures::{FutureExt, StreamExt};
-    use monad_testutil::block::MockBlock;
+    use monad_testutil::{block::MockBlock, signing::get_key};
 
     use crate::{executor::ledger::MockLedger, Executor, LedgerCommand};
 
@@ -120,6 +128,7 @@ mod tests {
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
+            monad_types::NodeId(get_key(0).pubkey()),
             monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent { block }),
         )]);
@@ -161,6 +170,7 @@ mod tests {
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
+            monad_types::NodeId(get_key(0).pubkey()),
             monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent { block }),
         )]);
@@ -178,6 +188,7 @@ mod tests {
 
         // similarly, calling retrieve again always be viable
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
+            monad_types::NodeId(get_key(0).pubkey()),
             monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent { block }),
         )]);
@@ -219,6 +230,7 @@ mod tests {
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
+            monad_types::NodeId(get_key(0).pubkey()),
             monad_types::BlockId(monad_types::Hash([0x10_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent { block }),
         )]);
