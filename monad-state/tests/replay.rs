@@ -11,7 +11,7 @@ use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
-    transformer::{LatencyTransformer, Transformer, XorLatencyTransformer},
+    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer},
     PeerId,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
@@ -61,7 +61,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
-                vec![Transformer::XorLatency(XorLatencyTransformer(
+                vec![GenericTransformer::XorLatency(XorLatencyTransformer(
                     Duration::from_millis(u8::MAX as u64),
                 ))],
             )
@@ -143,7 +143,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
-                vec![Transformer::Latency(LatencyTransformer(
+                vec![GenericTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(1),
                 ))],
             )

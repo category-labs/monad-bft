@@ -9,7 +9,8 @@ use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
-        DropTransformer, LatencyTransformer, PartitionTransformer, PeriodicTransformer, Transformer,
+        DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
+        PeriodicTransformer,
     },
     PeerId,
 };
@@ -63,13 +64,13 @@ fn black_out() {
         },
         MockWALoggerConfig,
         vec![
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
-            Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
-            Transformer::Periodic(PeriodicTransformer::new(
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
+            GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
+            GenericTransformer::Periodic(PeriodicTransformer::new(
                 Duration::from_secs(1),
                 Duration::from_secs(2),
             )),
-            Transformer::Drop(DropTransformer()),
+            GenericTransformer::Drop(DropTransformer()),
         ],
         false,
         Duration::from_secs(4),
@@ -120,13 +121,13 @@ fn extreme_delay() {
         },
         MockWALoggerConfig,
         vec![
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
-            Transformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
-            Transformer::Periodic(PeriodicTransformer::new(
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
+            GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
+            GenericTransformer::Periodic(PeriodicTransformer::new(
                 Duration::from_secs(1),
                 Duration::from_secs(2),
             )),
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(400))),
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(400))),
         ],
         false,
         Duration::from_secs(4),

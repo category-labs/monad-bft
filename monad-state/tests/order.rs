@@ -9,7 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
-        LatencyTransformer, PartitionTransformer, ReplayTransformer, Transformer,
+        GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
         TransformerReplayOrder,
     },
     PeerId,
@@ -89,9 +89,9 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         },
         MockWALoggerConfig,
         vec![
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            Transformer::Partition(PartitionTransformer(filter_peers)),
-            Transformer::Replay(ReplayTransformer::new(
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::Partition(PartitionTransformer(filter_peers)),
+            GenericTransformer::Replay(ReplayTransformer::new(
                 Duration::from_millis(500),
                 direction,
             )),

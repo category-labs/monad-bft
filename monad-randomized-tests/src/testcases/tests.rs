@@ -9,8 +9,8 @@ use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
-        LatencyTransformer, PartitionTransformer, RandLatencyTransformer, ReplayTransformer,
-        Transformer, TransformerReplayOrder,
+        GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
+        ReplayTransformer, TransformerReplayOrder,
     },
     PeerId,
 };
@@ -45,9 +45,9 @@ fn random_latency_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![Transformer::RandLatency(RandLatencyTransformer::new(
-            seed, 330,
-        ))],
+        vec![GenericTransformer::RandLatency(
+            RandLatencyTransformer::new(seed, 330),
+        )],
         false,
         4,
         Duration::from_millis(250),
@@ -96,9 +96,9 @@ fn delayed_message_test(seed: u64) {
         },
         MockWALoggerConfig,
         vec![
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            Transformer::Partition(PartitionTransformer(filter_peers)),
-            Transformer::Replay(ReplayTransformer::new(
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::Partition(PartitionTransformer(filter_peers)),
+            GenericTransformer::Replay(ReplayTransformer::new(
                 Duration::from_secs(1),
                 TransformerReplayOrder::Random(seed),
             )),

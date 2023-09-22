@@ -33,7 +33,9 @@ use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
     timed_event::TimedEvent,
-    transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
+    transformer::{
+        GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
+    },
     PeerId, State,
 };
 use monad_state::{MonadEvent, MonadMessage, MonadState};
@@ -72,7 +74,7 @@ type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
 type Sim = NodesSimulation<
     MS,
     NoSerRouterScheduler<MM>,
-    TransformerPipeline<MM>,
+    GenericTransformerPipeline<MM>,
     PersistenceLoggerType,
     SimConfig,
     MockMempool<ME>,
@@ -173,8 +175,10 @@ impl Application for Viz {
                 delta: Duration::from_millis(101),
                 max_tick: Duration::from_secs_f32(4.0),
                 pipeline: vec![
-                    Transformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-                    Transformer::XorLatency(XorLatencyTransformer(Duration::from_millis(20))),
+                    GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
+                    GenericTransformer::XorLatency(XorLatencyTransformer(Duration::from_millis(
+                        20,
+                    ))),
                 ],
             };
             let simulation = {

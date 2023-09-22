@@ -10,7 +10,7 @@ use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     timed_event::TimedEvent,
-    transformer::{Pipeline, Transformer},
+    transformer::{GenericTransformer, Pipeline},
     PeerId, State,
 };
 use monad_state::{MonadEvent, MonadState};
@@ -90,7 +90,7 @@ fn main() {
         4,
         10,
         Duration::from_millis(101),
-        vec![Transformer::Latency(LatencyTransformer(
+        vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(100),
         ))],
     );

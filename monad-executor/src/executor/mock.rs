@@ -551,7 +551,7 @@ mod tests {
     use crate::{
         mock_swarm::Nodes,
         state::{Command, Executor, PeerId, RouterCommand, State, TimerCommand},
-        transformer::{LatencyTransformer, Transformer},
+        transformer::{GenericTransformer, LatencyTransformer},
         Message,
     };
 
@@ -836,7 +836,7 @@ mod tests {
                     NoSerRouterConfig {
                         all_peers: pubkeys.iter().copied().collect(),
                     },
-                    vec![Transformer::Latency(LatencyTransformer(
+                    vec![GenericTransformer::Latency(LatencyTransformer(
                         Duration::from_millis(50),
                     ))],
                 )

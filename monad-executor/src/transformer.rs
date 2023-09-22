@@ -20,7 +20,7 @@ pub enum TransformerStream<M> {
     Complete(Vec<StreamMessage<M>>),
 }
 
-pub trait Transform<M> {
+pub trait Transformer<M> {
     #[must_use]
     /// note that the output Duration should be a delay, not an absolute time
     // TODO smallvec? resulting Vec will almost always be len 1
@@ -30,7 +30,7 @@ pub trait Transform<M> {
         None
     }
 
-    fn boxed(self) -> Box<dyn Transform<M>>
+    fn boxed(self) -> Box<dyn Transformer<M>>
     where
         Self: Sized + 'static,
     {
@@ -41,7 +41,7 @@ pub trait Transform<M> {
 /// adds constant latency
 #[derive(Clone, Debug)]
 pub struct LatencyTransformer(pub Duration);
-impl<M> Transform<M> for LatencyTransformer {
+impl<M> Transformer<M> for LatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         TransformerStream::Continue(vec![(self.0, message)])
     }
@@ -54,7 +54,7 @@ impl<M> Transform<M> for LatencyTransformer {
 /// adds constant latency (parametrizable cap) to each link determined by xor(peer_id_1, peer_id_2)
 #[derive(Clone, Debug)]
 pub struct XorLatencyTransformer(pub Duration);
-impl<M> Transform<M> for XorLatencyTransformer {
+impl<M> Transformer<M> for XorLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         let mut ck: u8 = 0;
         for b in message.from.0.bytes() {
@@ -89,7 +89,7 @@ impl RandLatencyTransformer {
     }
 }
 
-impl<M> Transform<M> for RandLatencyTransformer {
+impl<M> Transformer<M> for RandLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         TransformerStream::Continue(vec![(self.next_latency(), message)])
     }
@@ -97,7 +97,7 @@ impl<M> Transform<M> for RandLatencyTransformer {
 #[derive(Clone)]
 pub struct PartitionTransformer(pub HashSet<PeerId>);
 
-impl<M> Transform<M> for PartitionTransformer {
+impl<M> Transformer<M> for PartitionTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         if self.0.contains(&message.from) || self.0.contains(&message.to) {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
@@ -119,7 +119,7 @@ impl Debug for PartitionTransformer {
 
 pub struct DropTransformer();
 
-impl<M> Transform<M> for DropTransformer {
+impl<M> Transformer<M> for DropTransformer {
     fn transform(&mut self, _: LinkMessage<M>) -> TransformerStream<M> {
         TransformerStream::Complete(vec![])
     }
@@ -139,7 +139,7 @@ impl PeriodicTransformer {
     }
 }
 
-impl<M> Transform<M> for PeriodicTransformer {
+impl<M> Transformer<M> for PeriodicTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         if message.from_tick < self.start || message.from_tick >= self.end {
             TransformerStream::Complete(vec![(Duration::ZERO, message)])
@@ -181,7 +181,7 @@ impl<M> Debug for ReplayTransformer<M> {
     }
 }
 
-impl<M> Transform<M> for ReplayTransformer<M> {
+impl<M> Transformer<M> for ReplayTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         if message.from_tick >= self.end {
             if self.filtered_msgs.is_empty() {
@@ -214,7 +214,7 @@ impl<M> Transform<M> for ReplayTransformer<M> {
 }
 
 #[derive(Debug, Clone)]
-pub enum Transformer<M> {
+pub enum GenericTransformer<M> {
     Latency(LatencyTransformer),
     XorLatency(XorLatencyTransformer),
     RandLatency(RandLatencyTransformer),
@@ -224,36 +224,40 @@ pub enum Transformer<M> {
     Replay(ReplayTransformer<M>),
 }
 
-impl<M> Transform<M> for Transformer<M> {
+impl<M> Transformer<M> for GenericTransformer<M> {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         match self {
-            Transformer::Latency(t) => t.transform(message),
-            Transformer::XorLatency(t) => t.transform(message),
-            Transformer::RandLatency(t) => t.transform(message),
-            Transformer::Partition(t) => t.transform(message),
-            Transformer::Drop(t) => t.transform(message),
-            Transformer::Periodic(t) => t.transform(message),
-            Transformer::Replay(t) => t.transform(message),
+            GenericTransformer::Latency(t) => t.transform(message),
+            GenericTransformer::XorLatency(t) => t.transform(message),
+            GenericTransformer::RandLatency(t) => t.transform(message),
+            GenericTransformer::Partition(t) => t.transform(message),
+            GenericTransformer::Drop(t) => t.transform(message),
+            GenericTransformer::Periodic(t) => t.transform(message),
+            GenericTransformer::Replay(t) => t.transform(message),
         }
     }
 
     fn min_external_delay(&self) -> Option<Duration> {
         match self {
-            Transformer::Latency(t) => <LatencyTransformer as Transform<M>>::min_external_delay(t),
-            Transformer::XorLatency(t) => {
-                <XorLatencyTransformer as Transform<M>>::min_external_delay(t)
+            GenericTransformer::Latency(t) => {
+                <LatencyTransformer as Transformer<M>>::min_external_delay(t)
             }
-            Transformer::RandLatency(t) => {
-                <RandLatencyTransformer as Transform<M>>::min_external_delay(t)
+            GenericTransformer::XorLatency(t) => {
+                <XorLatencyTransformer as Transformer<M>>::min_external_delay(t)
             }
-            Transformer::Partition(t) => {
-                <PartitionTransformer as Transform<M>>::min_external_delay(t)
+            GenericTransformer::RandLatency(t) => {
+                <RandLatencyTransformer as Transformer<M>>::min_external_delay(t)
             }
-            Transformer::Drop(t) => <DropTransformer as Transform<M>>::min_external_delay(t),
-            Transformer::Periodic(t) => {
-                <PeriodicTransformer as Transform<M>>::min_external_delay(t)
+            GenericTransformer::Partition(t) => {
+                <PartitionTransformer as Transformer<M>>::min_external_delay(t)
             }
-            Transformer::Replay(t) => t.min_external_delay(),
+            GenericTransformer::Drop(t) => {
+                <DropTransformer as Transformer<M>>::min_external_delay(t)
+            }
+            GenericTransformer::Periodic(t) => {
+                <PeriodicTransformer as Transformer<M>>::min_external_delay(t)
+            }
+            GenericTransformer::Replay(t) => t.min_external_delay(),
         }
     }
 }
@@ -272,12 +276,13 @@ pub trait Pipeline<M> {
     /// min_external_delay MUST be > 0
     fn min_external_delay(&self) -> Duration;
 }
-pub type TransformerPipeline<M> = Vec<Transformer<M>>;
+
+pub type GenericTransformerPipeline<M> = Vec<GenericTransformer<M>>;
 
 // unlike regular transformer, pipeline's job is simply organizing various form of transformer and feed them through
 impl<T, M> Pipeline<M> for Vec<T>
 where
-    T: Transform<M>,
+    T: Transformer<M>,
 {
     fn process(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
         let mut complete_message = vec![];
@@ -329,7 +334,7 @@ mod test {
 
     use monad_testutil::signing::create_keys;
 
-    use super::{LatencyTransformer, Pipeline, Transform, Transformer};
+    use super::{GenericTransformer, LatencyTransformer, Pipeline, Transformer};
     use crate::{
         mock_swarm::LinkMessage,
         transformer::{
@@ -511,9 +516,7 @@ mod test {
 
     #[test]
     fn test_pipeline_basic_flow() {
-        let mut pipe = vec![Transformer::Latency(LatencyTransformer(
-            Duration::from_millis(30),
-        ))];
+        let mut pipe = vec![LatencyTransformer(Duration::from_millis(30))];
 
         let mock_message = get_mock_message();
         // try to feed some message through, only some basic latency should be added to everything
@@ -530,13 +533,13 @@ mod test {
         peers.insert(PeerId(keys[0].pubkey()));
 
         let mut pipe = vec![
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
-            Transformer::Partition(PartitionTransformer(peers)),
-            Transformer::Periodic(PeriodicTransformer::new(
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(30))),
+            GenericTransformer::Partition(PartitionTransformer(peers)),
+            GenericTransformer::Periodic(PeriodicTransformer::new(
                 Duration::from_millis(2),
                 Duration::from_millis(7),
             )),
-            Transformer::Latency(LatencyTransformer(Duration::from_millis(30))),
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(30))),
         ];
         for idx in 0..1000 {
             let mut mock_message = get_mock_message();

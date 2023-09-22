@@ -8,7 +8,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    transformer::{LatencyTransformer, Transformer},
+    transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_quic::{
     gossip::{MockGossip, MockGossipConfig},
@@ -46,7 +46,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![Transformer::Latency::<
+        vec![GenericTransformer::Latency::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >(LatencyTransformer(Duration::from_millis(1)))],
         false,
@@ -88,7 +88,7 @@ fn two_nodes_quic() {
             gossip_config: MockGossipConfig { all_peers },
         },
         MockWALoggerConfig,
-        vec![Transformer::Latency::<Vec<u8>>(LatencyTransformer(
+        vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
             Duration::from_millis(1),
         ))],
         false,

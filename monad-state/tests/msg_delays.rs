@@ -8,7 +8,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{
     executor::mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
-    transformer::{Transformer, XorLatencyTransformer},
+    transformer::{GenericTransformer, XorLatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::create_and_run_nodes;
@@ -42,7 +42,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![Transformer::XorLatency(XorLatencyTransformer(
+        vec![GenericTransformer::XorLatency(XorLatencyTransformer(
             Duration::from_millis(u8::MAX as u64),
         ))],
         false,

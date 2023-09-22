@@ -13,7 +13,9 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_executor::{
     executor::mock::NoSerRouterScheduler,
-    transformer::{LatencyTransformer, Transformer, TransformerPipeline, XorLatencyTransformer},
+    transformer::{
+        GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
+    },
     PeerId, State,
 };
 use monad_state::MonadConfig;
@@ -28,7 +30,7 @@ pub struct SimConfig {
     pub num_nodes: u32,
     pub delta: Duration,
     pub max_tick: Duration,
-    pub pipeline: TransformerPipeline<MM>,
+    pub pipeline: GenericTransformerPipeline<MM>,
 }
 
 impl SimConfig {
@@ -48,8 +50,13 @@ impl SimConfig {
     }
 }
 
-impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, PersistenceLoggerType>
-    for SimConfig
+impl
+    SimulationConfig<
+        MS,
+        NoSerRouterScheduler<MM>,
+        GenericTransformerPipeline<MM>,
+        PersistenceLoggerType,
+    > for SimConfig
 {
     fn nodes(
         &self,
@@ -58,7 +65,7 @@ impl SimulationConfig<MS, NoSerRouterScheduler<MM>, TransformerPipeline<MM>, Per
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
         Rsc,
-        TransformerPipeline<MM>,
+        GenericTransformerPipeline<MM>,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) =
             create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
@@ -181,7 +188,7 @@ where
         for idx in 0..self.config.pipeline.len() {
             let layer = &self.config.pipeline[idx];
             let element = match layer {
-                Transformer::Latency(LatencyTransformer(latency)) => Column::new()
+                GenericTransformer::Latency(LatencyTransformer(latency)) => Column::new()
                     .push(Text::new(format!(
                         "({}) Latency Transformer: {}ms",
                         idx,
@@ -192,13 +199,13 @@ where
                         latency.as_millis() as u32,
                         move |l_ms: u32| {
                             let mut config = self.config.clone();
-                            config.pipeline[idx] = Transformer::Latency(LatencyTransformer(
+                            config.pipeline[idx] = GenericTransformer::Latency(LatencyTransformer(
                                 Duration::from_millis(l_ms.into()),
                             ));
                             config
                         },
                     )),
-                Transformer::XorLatency(XorLatencyTransformer(latency)) => Column::new()
+                GenericTransformer::XorLatency(XorLatencyTransformer(latency)) => Column::new()
                     .push(Text::new(format!(
                         "({}) XorLatency Transformer: {}ms",
                         idx,
@@ -209,9 +216,9 @@ where
                         latency.as_millis() as u32,
                         move |l_ms| {
                             let mut config = self.config.clone();
-                            config.pipeline[idx] = Transformer::XorLatency(XorLatencyTransformer(
-                                Duration::from_millis(l_ms.into()),
-                            ));
+                            config.pipeline[idx] = GenericTransformer::XorLatency(
+                                XorLatencyTransformer(Duration::from_millis(l_ms.into())),
+                            );
                             config
                         },
                     )),
