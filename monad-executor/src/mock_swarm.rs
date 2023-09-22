@@ -16,7 +16,7 @@ use crate::{
     transformer::Pipeline,
     Executor, PeerId, State,
 };
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkMessage<M> {
     pub from: PeerId,
     pub to: PeerId,

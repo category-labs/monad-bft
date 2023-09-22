@@ -1,7 +1,12 @@
-use std::{collections::HashSet, fmt::Debug, mem, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    fmt::Debug,
+    mem,
+    time::Duration,
+};
 
 use rand::{prelude::SliceRandom, Rng};
-use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
+use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 use crate::{mock_swarm::LinkMessage, PeerId};
 
@@ -262,6 +267,125 @@ impl<M> Transformer<M> for GenericTransformer<M> {
     }
 }
 
+pub type GenericTransformerPipeline<M> = Vec<GenericTransformer<M>>;
+
+#[derive(Debug, Clone)]
+pub struct BytesSplitterTransformer {
+    rng: ChaCha20Rng,
+    buffers: BTreeMap<PeerId, VecDeque<LinkMessage<Vec<u8>>>>,
+}
+
+impl Default for BytesSplitterTransformer {
+    fn default() -> Self {
+        Self {
+            rng: ChaCha20Rng::from_seed([0_u8; 32]),
+            buffers: Default::default(),
+        }
+    }
+}
+
+impl BytesSplitterTransformer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Transformer<Vec<u8>> for BytesSplitterTransformer {
+    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+        let entry = self.buffers.entry(message.to).or_default();
+        entry.push_back(message);
+
+        let split_idx = self.rng.gen_range(0..entry.len());
+
+        let mut base_message = entry
+            .drain(0..split_idx)
+            .reduce(|mut base_message, mut merge_message| {
+                base_message.message.append(&mut merge_message.message);
+                base_message
+            })
+            .unwrap_or({
+                let split_message = entry
+                    .front()
+                    .expect("must be at least 1 element (split_idx)");
+                LinkMessage {
+                    from: split_message.from,
+                    to: split_message.to,
+                    from_tick: split_message.from_tick,
+                    message: Vec::new(),
+                }
+            });
+        let split_message = entry
+            .front_mut()
+            .expect("must be at least 1 element (split_idx)");
+
+        let message_split_idx = self.rng.gen_range(1..=split_message.message.len());
+        base_message
+            .message
+            .extend(split_message.message.drain(0..message_split_idx));
+
+        if split_message.message.is_empty() {
+            entry.pop_front();
+        }
+
+        TransformerStream::Continue(vec![(Duration::ZERO, base_message)])
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum BytesTransformer {
+    Latency(LatencyTransformer),
+    XorLatency(XorLatencyTransformer),
+    RandLatency(RandLatencyTransformer),
+    Partition(PartitionTransformer),
+    Drop(DropTransformer),
+    Periodic(PeriodicTransformer),
+    Replay(ReplayTransformer<Vec<u8>>),
+
+    BytesSplitter(BytesSplitterTransformer),
+}
+
+impl Transformer<Vec<u8>> for BytesTransformer {
+    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+        match self {
+            BytesTransformer::Latency(t) => t.transform(message),
+            BytesTransformer::XorLatency(t) => t.transform(message),
+            BytesTransformer::RandLatency(t) => t.transform(message),
+            BytesTransformer::Partition(t) => t.transform(message),
+            BytesTransformer::Drop(t) => t.transform(message),
+            BytesTransformer::Periodic(t) => t.transform(message),
+            BytesTransformer::Replay(t) => t.transform(message),
+            BytesTransformer::BytesSplitter(t) => t.transform(message),
+        }
+    }
+
+    fn min_external_delay(&self) -> Option<Duration> {
+        match self {
+            BytesTransformer::Latency(t) => {
+                <LatencyTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+            }
+            BytesTransformer::XorLatency(t) => {
+                <XorLatencyTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+            }
+            BytesTransformer::RandLatency(t) => {
+                <RandLatencyTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+            }
+            BytesTransformer::Partition(t) => {
+                <PartitionTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+            }
+            BytesTransformer::Drop(t) => {
+                <DropTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+            }
+            BytesTransformer::Periodic(t) => {
+                <PeriodicTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+            }
+            BytesTransformer::Replay(t) => t.min_external_delay(),
+            BytesTransformer::BytesSplitter(t) => t.min_external_delay(),
+        }
+    }
+}
+
+pub type BytesTransformerPipeline = Vec<BytesTransformer>;
+
 /**
  * pipeline consist of transformers that goes through all the output
  * you can also use multiple pipelines to filter target for unique needs
@@ -276,8 +400,6 @@ pub trait Pipeline<M> {
     /// min_external_delay MUST be > 0
     fn min_external_delay(&self) -> Duration;
 }
-
-pub type GenericTransformerPipeline<M> = Vec<GenericTransformer<M>>;
 
 // unlike regular transformer, pipeline's job is simply organizing various form of transformer and feed them through
 impl<T, M> Pipeline<M> for Vec<T>
@@ -330,16 +452,18 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashSet, time::Duration};
+    use std::{cmp::max, collections::HashSet, time::Duration};
 
     use monad_testutil::signing::create_keys;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     use super::{GenericTransformer, LatencyTransformer, Pipeline, Transformer};
     use crate::{
         mock_swarm::LinkMessage,
         transformer::{
-            DropTransformer, PartitionTransformer, PeriodicTransformer, RandLatencyTransformer,
-            ReplayTransformer, TransformerStream, XorLatencyTransformer,
+            BytesSplitterTransformer, DropTransformer, PartitionTransformer, PeriodicTransformer,
+            RandLatencyTransformer, ReplayTransformer, TransformerStream, XorLatencyTransformer,
         },
         PeerId,
     };
@@ -425,9 +549,6 @@ mod test {
 
     #[test]
     fn test_drop_transformer() {
-        let keys = create_keys(2);
-        let mut peers = HashSet::new();
-        peers.insert(PeerId(keys[0].pubkey()));
         let mut t = DropTransformer();
         let m = get_mock_message();
         let TransformerStream::Complete(c) = t.transform(m) else {
@@ -438,9 +559,6 @@ mod test {
 
     #[test]
     fn test_periodic_transformer() {
-        let keys = create_keys(2);
-        let mut peers = HashSet::new();
-        peers.insert(PeerId(keys[0].pubkey()));
         let mut t = PeriodicTransformer::new(Duration::from_millis(2), Duration::from_millis(7));
         for idx in 0..2 {
             let mut m = get_mock_message();
@@ -476,9 +594,6 @@ mod test {
 
     #[test]
     fn test_replay_transformer() {
-        let keys = create_keys(2);
-        let mut peers = HashSet::new();
-        peers.insert(PeerId(keys[0].pubkey()));
         // we are mostly interested in the burst behaviur of replay
         let mut t = ReplayTransformer::new(
             Duration::from_millis(6),
@@ -512,6 +627,46 @@ mod test {
             };
             assert_eq!(c.len(), 1);
         }
+    }
+
+    #[test]
+    fn test_bytes_splitter_transformer() {
+        let keys = create_keys(2);
+
+        let mut t = BytesSplitterTransformer::new();
+
+        let mut sent_stream = Vec::new();
+        let mut received_stream = Vec::new();
+        let mut max_received_message_len = 0;
+
+        let mut rng = ChaCha20Rng::from_seed([0_u8; 32]);
+
+        const MESSAGE_LEN: usize = 32;
+        const NUM_MESSAGES_SENT: u64 = 100;
+
+        for idx in 0..NUM_MESSAGES_SENT {
+            let bytes: Vec<u8> = (0..MESSAGE_LEN).map(|_| rng.gen()).collect();
+            sent_stream.extend(bytes.iter().copied());
+            let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
+                from: PeerId(keys[0].pubkey()),
+                to: PeerId(keys[1].pubkey()),
+                message: bytes,
+                from_tick: Duration::from_millis(idx),
+            }) else {
+                panic!("bytes_splitter_transformer returned wrong type")
+            };
+            for (_, message) in &mut c {
+                max_received_message_len = max(max_received_message_len, message.message.len());
+                received_stream.append(&mut message.message);
+            }
+        }
+
+        assert!(max_received_message_len > MESSAGE_LEN);
+        assert!(!received_stream.is_empty());
+        assert!(sent_stream
+            .into_iter()
+            .zip(received_stream.into_iter())
+            .all(|(sent_byte, received_byte)| sent_byte == received_byte));
     }
 
     #[test]
