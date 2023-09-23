@@ -126,7 +126,7 @@ where
             };
 
             // block retrieve failed, re-request
-            let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt);
+            let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt + 1);
             *req_target = peer;
             *retry_cnt = cnt;
             BlockSyncResult::Failed(ConsensusCommand::RequestSync {
@@ -547,38 +547,44 @@ mod test {
         let cmds = manager.request::<VT>(qc, &valset);
 
         assert!(cmds.len() == 1);
-        let (peer, bid) = match cmds[0] {
+        let (mut peer, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
         // should have skipped self
         assert!(peer == valset.get_list()[1]);
         assert!(bid == qc.info.vote.id);
-
-        let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
-
         let transaction_validator = TV::default();
+        let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
+        for _ in 0..10 {
+            for i in 2..31 {
+                let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_retrieval(
+                    &peer,
+                    msg_failed.clone(),
+                    &valset,
+                    &transaction_validator,
+                ) else {
+                    panic!("illegal response is processed");
+                };
 
-        for _ in 0..100 {
-            let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_retrieval(
-                &peer,
-                msg_failed.clone(),
-                &valset,
-                &transaction_validator,
-            ) else {
-                panic!("illegal response is processed");
-            };
+                let ConsensusCommand::RequestSync {
+                    peer: p,
+                    block_id: bid,
+                } = retry_command
+                else {
+                    panic!("RequestSync is not produced")
+                };
 
-            let ConsensusCommand::RequestSync {
-                peer,
-                block_id: bid,
-            } = retry_command
-            else {
-                panic!("RequestSync is not produced")
-            };
+                peer = p;
 
-            assert_ne!(peer, my_id);
-            assert_eq!(bid, qc.info.vote.id);
+                if i % valset.len() == 0 {
+                    assert_eq!(peer, valset.get_list()[1]);
+                    assert_eq!(bid, qc.info.vote.id);
+                } else {
+                    assert_eq!(peer, valset.get_list()[i % valset.len()]);
+                    assert_eq!(bid, qc.info.vote.id);
+                }
+            }
         }
     }
 }
