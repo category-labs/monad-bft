@@ -320,6 +320,17 @@ impl Controller {
         })
     }
 
+    pub async fn drain_txs(&self, drain_txs: Vec<u8>) {
+        let drain_txs = decode_list::<Vec<u8>>(&drain_txs);
+
+        self.pool.lock().await.remove_tx_hashes(
+            drain_txs
+                .into_iter()
+                .map(ethers::types::Bytes::from)
+                .collect::<Vec<_>>(),
+        )
+    }
+
     fn calculate_batch_hash(txs: &[EthTx]) -> H256 {
         let tx_hashes: Vec<u8> = txs.iter().flat_map(|tx| tx.hash.clone()).collect();
 

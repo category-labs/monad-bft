@@ -563,6 +563,12 @@ where
                         .iter()
                         .map(|b| ConsensusCommand::StateRootHash(b.clone())),
                 );
+                cmds.push(ConsensusCommand::DrainTxs(
+                    blocks_to_commit
+                        .iter()
+                        .map(|b| b.get_block().payload.txns.clone())
+                        .collect(),
+                ));
                 cmds.push(ConsensusCommand::<SCT>::LedgerCommit(blocks_to_commit));
             }
         }

@@ -60,6 +60,7 @@ pub enum MempoolCommand<E> {
         Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>,
     ),
     FetchFullReset,
+    DrainTxs(Vec<TransactionList>),
 }
 
 pub enum LedgerCommand<B, E> {

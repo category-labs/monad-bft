@@ -40,6 +40,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
         Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<SCT>) + Send + Sync>,
     ),
     FetchFullTxsReset,
+    DrainTxs(Vec<TransactionList>),
     LedgerCommit(Vec<FullBlock<SCT>>),
     RequestSync {
         peer: NodeId,

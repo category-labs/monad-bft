@@ -39,6 +39,7 @@ jobs:
           -A clippy::type_complexity
           -A clippy::int_plus_one
           -A clippy::uninlined-format-args
+          -A clippy::enum-variant-names
       - name: Lint unused deps
         run: cargo clippy --all-features -- -D unused_crate_dependencies
       - name: Check

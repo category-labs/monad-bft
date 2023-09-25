@@ -559,6 +559,9 @@ where
                         ConsensusCommand::FetchFullTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullReset))
                         }
+                        ConsensusCommand::DrainTxs(txs) => {
+                            cmds.push(Command::MempoolCommand(MempoolCommand::DrainTxs(txs)))
+                        }
 
                         ConsensusCommand::RequestSync { peer, block_id } => {
                             cmds.push(prepare_router_message(

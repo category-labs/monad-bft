@@ -477,7 +477,7 @@ impl<E> Executor for MockMempool<E> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(max_num_txs, cb) => {
+                MempoolCommand::FetchTxs(_, cb) => {
                     self.fetch_txs_state = Some(cb);
                     wake = true;
                 }
@@ -493,6 +493,7 @@ impl<E> Executor for MockMempool<E> {
                     self.fetch_full_txs_state = None;
                     wake = self.fetch_txs_state.is_some();
                 }
+                MempoolCommand::DrainTxs(_) => {}
             }
         }
 

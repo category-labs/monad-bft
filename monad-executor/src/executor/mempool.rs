@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{Executor, MempoolCommand};
 
-const DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE: usize = 2048;
+const DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE: usize = 64;
 
 #[derive(Error, Debug)]
 enum ControllerTaskError {
@@ -34,6 +34,7 @@ enum ControllerTaskError {
 enum ControllerTaskCommand {
     FetchTxs(usize),
     FetchFullTxs(TransactionList),
+    DrainTxs(Vec<TransactionList>),
 }
 
 enum ControllerTaskResult {
@@ -108,6 +109,11 @@ where
                             ))
                             .await?;
                         }
+                        ControllerTaskCommand::DrainTxs(drain_txs) => {
+                            for txs in drain_txs {
+                                controller.drain_txs(txs.0).await;
+                            }
+                        }
                     }
                 }
 
@@ -127,31 +133,40 @@ impl<E> Executor for MonadMempool<E> {
     type Command = MempoolCommand<E>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut task_command = None;
+        let mut fetch_txs_command = None;
+        let mut fetch_full_txs_command = None;
+        let mut drain_txs_command = None;
 
         for command in commands {
             match command {
                 MempoolCommand::FetchTxs(num_max_txs, cb) => {
                     self.fetch_txs_state = Some(cb);
-                    task_command = Some(ControllerTaskCommand::FetchTxs(num_max_txs));
+                    fetch_txs_command = Some(ControllerTaskCommand::FetchTxs(num_max_txs));
                 }
                 MempoolCommand::FetchReset => {
                     self.fetch_txs_state = None;
-                    task_command = None;
+                    fetch_txs_command = None;
                 }
                 MempoolCommand::FetchFullTxs(txs, cb) => {
                     self.fetch_full_txs_state = Some(cb);
-                    task_command = Some(ControllerTaskCommand::FetchFullTxs(txs));
+                    fetch_full_txs_command = Some(ControllerTaskCommand::FetchFullTxs(txs));
                 }
                 MempoolCommand::FetchFullReset => {
                     self.fetch_full_txs_state = None;
-                    task_command = None;
+                    fetch_full_txs_command = None;
+                }
+                MempoolCommand::DrainTxs(drain_txs) => {
+                    drain_txs_command = Some(ControllerTaskCommand::DrainTxs(drain_txs));
                 }
             }
         }
 
-        if let Some(command) = task_command {
-            self.controller_task_tx.try_send(command).unwrap();
+        for cmd in fetch_txs_command
+            .into_iter()
+            .chain(fetch_full_txs_command)
+            .chain(drain_txs_command)
+        {
+            self.controller_task_tx.try_send(cmd).unwrap();
         }
     }
 }
