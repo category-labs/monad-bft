@@ -6,7 +6,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{ProposalMessage, RequestBlockSyncMessage},
+        message::{BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage},
     },
     pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
@@ -482,9 +482,23 @@ where
                                     &self.leader_election,
                                 )
                             }
-                            ConsensusMessage::RequestBlockSync(msg) => self
-                                .block_sync
-                                .handle_request_block_sync_message(author, msg),
+                            ConsensusMessage::RequestBlockSync(msg) => {
+                                if let Some(block) =
+                                    self.consensus.fetch_uncommitted_block(&msg.block_id)
+                                {
+                                    // retrieve if currently cached in pending block tree
+                                    vec![ConsensusCommand::Publish {
+                                        target: RouterTarget::PointToPoint((&author).into()),
+                                        message: ConsensusMessage::BlockSync(
+                                            BlockSyncMessage::BlockFound(block.clone().into()),
+                                        ),
+                                    }]
+                                } else {
+                                    // else ask ledger
+                                    self.block_sync
+                                        .handle_request_block_sync_message(author, msg)
+                                }
+                            }
                             ConsensusMessage::BlockSync(msg) => {
                                 self.consensus
                                     .handle_block_sync(author, msg, &self.validator_set)

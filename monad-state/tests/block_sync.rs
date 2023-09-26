@@ -38,7 +38,7 @@ mod test {
         let mut filter_peers: HashSet<PeerId> = HashSet::new();
         filter_peers.insert(first_node);
 
-        println!("delayed node ID: {:?}", first_node);
+        println!("blackout node ID: {:?}", first_node);
 
         run_nodes_until::<
             MonadState<

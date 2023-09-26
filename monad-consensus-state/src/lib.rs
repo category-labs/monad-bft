@@ -137,6 +137,8 @@ where
 
     fn get_keypair(&self) -> &KeyPair;
 
+    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>>;
+
     fn request_sync<VT: ValidatorSetType>(
         &mut self,
         qc: QuorumCertificate<SCT>,
@@ -484,6 +486,13 @@ where
             }
         }
         cmds
+    }
+
+    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>> {
+        self.pending_block_tree
+            .tree()
+            .get(bid)
+            .map(|btree_block| btree_block.get_block())
     }
 
     fn request_sync<VT: ValidatorSetType>(
@@ -2012,5 +2021,121 @@ mod test {
             )
         });
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_fetch_uncommitted_block() {
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(4);
+        let election = SimpleRoundRobin::new();
+        let (first_state, xs) = states.split_first_mut().unwrap();
+
+        let mut correct_proposal_gen =
+            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
+        let mut branch_off_proposal_gen =
+            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
+
+        let cp1 = correct_proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList::default(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp1.destructure();
+        let block_1 = UnverifiedFullBlock {
+            block: verified_message.block.clone(),
+            full_txs: FullTransactionList::default(),
+        };
+        let bid_correct = block_1.block.get_id();
+        // requesting a block that's doesn't exists should yield None
+        assert_eq!(first_state.fetch_uncommitted_block(&bid_correct), None);
+        // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
+        first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+        let full_block = first_state.fetch_uncommitted_block(&bid_correct).unwrap();
+        assert_eq!(full_block.get_id(), bid_correct);
+
+        // you can also receive a branch, which would cause pending block tree retrieval to also be valid
+        let bp1 = branch_off_proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList(vec![13, 32]),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = bp1.destructure();
+        let block_1 = UnverifiedFullBlock {
+            block: verified_message.block.clone(),
+            full_txs: FullTransactionList::default(),
+        };
+        let bid_branch = block_1.block.get_id();
+        assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
+
+        first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+        let full_block = first_state.fetch_uncommitted_block(&bid_branch).unwrap();
+        assert_eq!(full_block.get_id(), bid_branch);
+
+        // if a certain commit is triggered, then fetching block would fail
+        for i in 0..3 {
+            let cp = correct_proposal_gen.next_proposal(
+                &keys,
+                &certkeys,
+                &valset,
+                &election,
+                &valmap,
+                TransactionList::default(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            let block = UnverifiedFullBlock {
+                block: verified_message.block.clone(),
+                full_txs: FullTransactionList::default(),
+            };
+            let bid = block.block.get_id();
+            // requesting a block that's doesn't exists should yield None
+            assert_eq!(first_state.fetch_uncommitted_block(&bid), None);
+            // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
+
+            first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                author,
+                verified_message,
+                FullTransactionList::default(),
+                &valset,
+                &election,
+            );
+            let full_block = first_state.fetch_uncommitted_block(&bid).unwrap();
+            assert_eq!(full_block.get_id(), bid);
+            // first prune remove the blocks that are branches
+            if i == 1 {
+                assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
+                assert!(first_state.fetch_uncommitted_block(&bid_correct).is_some());
+            } else if i == 2 {
+                assert_eq!(first_state.fetch_uncommitted_block(&bid_correct), None);
+                assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
+            }
+        }
     }
 }
