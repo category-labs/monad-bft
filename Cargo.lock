@@ -4772,6 +4772,8 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "test-case",
 ]
 

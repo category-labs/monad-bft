@@ -13,6 +13,9 @@ monad-types = { path = "../monad-types" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-validator = { path = "../monad-validator" }
 
+rand_chacha = { workspace = true }
+rand = {workspace = true}
+
 [dev-dependencies]
 monad-crypto = { path = "../monad-crypto" }
 monad-testutil = { path = "../monad-testutil" }
