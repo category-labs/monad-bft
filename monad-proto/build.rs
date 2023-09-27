@@ -8,7 +8,6 @@ fn main() {
                 "proto/event.proto",
                 "proto/ledger.proto",
                 "proto/message.proto",
-                "proto/pacemaker.proto",
                 "proto/quorum_certificate.proto",
                 "proto/signing.proto",
                 "proto/timeout.proto",

@@ -6,9 +6,9 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    pacemaker::PacemakerTimerExpire,
     validation::signing::Unverified,
 };
+use monad_consensus_state::command::TimeoutEvent;
 use monad_consensus_types::{
     certificate_signature::CertificateSignature,
     ledger::LedgerCommitInfo,
@@ -239,7 +239,7 @@ fn bench_timeout(c: &mut Criterion) {
 
 fn bench_local_timeout(c: &mut Criterion) {
     let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>> =
-        MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(PacemakerTimerExpire {}));
+        MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(TimeoutEvent::Pacemaker));
 
     let mut bencher = MonadEventBencher::new(event);
 

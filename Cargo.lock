@@ -5080,6 +5080,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "monad-consensus",
+ "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",

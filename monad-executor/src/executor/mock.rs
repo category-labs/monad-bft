@@ -399,13 +399,13 @@ where
 }
 
 pub struct MockTimer<E> {
-    event: Option<E>,
+    event: VecDeque<E>, // MockTimer isn't actually a timer
     waker: Option<Waker>,
 }
 impl<E> Default for MockTimer<E> {
     fn default() -> Self {
         Self {
-            event: None,
+            event: VecDeque::new(),
             waker: None,
         }
     }
@@ -415,18 +415,15 @@ impl<E> Executor for MockTimer<E> {
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
         for command in commands {
-            self.event = match command {
+            match command {
                 TimerCommand::Schedule {
                     duration: _,
                     on_timeout,
                 } => {
                     wake = true;
-                    Some(on_timeout)
+                    self.event.push_back(on_timeout);
                 }
-                TimerCommand::ScheduleReset => {
-                    wake = false;
-                    None
-                }
+                TimerCommand::ScheduleReset(_) => {}
             }
         }
 
@@ -444,7 +441,7 @@ where
     type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
-        if let Some(event) = this.event.take() {
+        if let Some(event) = this.event.pop_front() {
             return Poll::Ready(Some(event));
         }
 

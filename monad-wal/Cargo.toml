@@ -14,6 +14,7 @@ monad-types = { path = "../monad-types" }
 [dev-dependencies]
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
+monad-consensus-state = { path = "../monad-consensus-state" }
 monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-state = { path = "../monad-state" }

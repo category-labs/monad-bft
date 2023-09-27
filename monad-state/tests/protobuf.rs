@@ -1,8 +1,8 @@
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::VoteMessage},
-    pacemaker::PacemakerTimerExpire,
     validation::signing::Unverified,
 };
+use monad_consensus_state::command::TimeoutEvent;
 use monad_consensus_types::{
     block::BlockType,
     bls::BlsSignatureCollection,
@@ -32,7 +32,7 @@ type SignatureCollectionType = MultiSig<SecpSignature>;
 #[test]
 fn test_consensus_timeout_event() {
     let event = MonadEvent::ConsensusEvent(
-        ConsensusEvent::<SecpSignature, SignatureCollectionType>::Timeout(PacemakerTimerExpire {}),
+        ConsensusEvent::<SecpSignature, SignatureCollectionType>::Timeout(TimeoutEvent::Pacemaker),
     );
 
     let buf = serialize_event(&event);

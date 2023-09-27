@@ -1,14 +1,10 @@
-use monad_consensus::pacemaker::PacemakerTimerExpire;
-use monad_consensus_state::command::FetchedBlock;
+use monad_consensus_state::command::{FetchedBlock, TimeoutEvent};
 use monad_consensus_types::{
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionList},
     signature_collection::SignatureCollection,
 };
-use monad_proto::{
-    error::ProtoError,
-    proto::{event::*, pacemaker::ProtoPacemakerTimerExpire},
-};
+use monad_proto::{error::ProtoError, proto::event::*};
 
 use crate::{ConsensusEvent, FetchedFullTxs, FetchedTxs, MonadEvent};
 
@@ -24,9 +20,24 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                 sender: Some(sender.into()),
                 unverified_message: Some(unverified_message.into()),
             }),
-            ConsensusEvent::Timeout(_tmo) => {
-                proto_consensus_event::Event::Timeout(ProtoPacemakerTimerExpire {})
-            }
+            ConsensusEvent::Timeout(tmo_event) => match tmo_event {
+                &TimeoutEvent::Pacemaker => {
+                    proto_consensus_event::Event::Timeout(ProtoScheduleTimeout {
+                        event: Some(proto_schedule_timeout::Event::PacemakerTmo(
+                            ProtoPaceMakerTimeout {},
+                        )),
+                    })
+                }
+                &TimeoutEvent::BlockSyncTimerExpire(bid) => {
+                    proto_consensus_event::Event::Timeout(ProtoScheduleTimeout {
+                        event: Some(proto_schedule_timeout::Event::BlocksyncTmo(
+                            ProtoBlockSyncTimeout {
+                                block_id: Some((&bid).into()),
+                            },
+                        )),
+                    })
+                }
+            },
             ConsensusEvent::FetchedTxs(fetched) => {
                 proto_consensus_event::Event::FetchedTxs(ProtoFetchedTxs {
                     node_id: Some((&fetched.node_id).into()),
@@ -104,8 +115,23 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                     ))?
                     .try_into()?,
             },
-            Some(proto_consensus_event::Event::Timeout(_msg)) => {
-                ConsensusEvent::Timeout(PacemakerTimerExpire)
+            Some(proto_consensus_event::Event::Timeout(tmo)) => {
+                ConsensusEvent::Timeout(match tmo.event {
+                    Some(proto_schedule_timeout::Event::PacemakerTmo(_)) => TimeoutEvent::Pacemaker,
+                    Some(proto_schedule_timeout::Event::BlocksyncTmo(bsync_tmo)) => {
+                        TimeoutEvent::BlockSyncTimerExpire(
+                            bsync_tmo
+                                .block_id
+                                .ok_or(ProtoError::MissingRequiredField(
+                                    "ConsensusEvent::Timeout.bsync_tmo.block_id".to_owned(),
+                                ))?
+                                .try_into()?,
+                        )
+                    }
+                    None => Err(ProtoError::MissingRequiredField(
+                        "ConsensusEvent.event".to_owned(),
+                    ))?,
+                })
             }
             Some(proto_consensus_event::Event::FetchedTxs(fetched_txs)) => {
                 ConsensusEvent::FetchedTxs(FetchedTxs {

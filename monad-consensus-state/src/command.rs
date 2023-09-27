@@ -20,6 +20,11 @@ use monad_types::{BlockId, Epoch, Hash, NodeId, Round};
 
 use crate::blocksync::InFlightBlockSync;
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum TimeoutEvent {
+    Pacemaker,
+    BlockSyncTimerExpire(BlockId),
+}
 pub enum ConsensusCommand<SCT: SignatureCollection> {
     Publish {
         target: RouterTarget,
@@ -27,9 +32,9 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     },
     Schedule {
         duration: Duration,
-        on_timeout: PacemakerTimerExpire,
+        on_timeout: TimeoutEvent,
     },
-    ScheduleReset,
+    ScheduleReset(TimeoutEvent),
     FetchTxs(
         usize,
         Box<dyn (FnOnce(TransactionList) -> FetchedTxs<SCT>) + Send + Sync>,
@@ -68,14 +73,13 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
                 target: RouterTarget::Broadcast,
                 message: ConsensusMessage::Timeout(message),
             },
-            PacemakerCommand::Schedule {
+            PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
                 duration,
-                on_timeout,
-            } => ConsensusCommand::Schedule {
-                duration,
-                on_timeout,
+                on_timeout: TimeoutEvent::Pacemaker,
             },
-            PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
+            PacemakerCommand::ScheduleReset => {
+                ConsensusCommand::ScheduleReset(TimeoutEvent::Pacemaker)
+            }
         }
     }
 }

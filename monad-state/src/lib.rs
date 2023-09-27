@@ -8,11 +8,12 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{ProposalMessage, RequestBlockSyncMessage},
     },
-    pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand, FetchedBlock, FetchedFullTxs, FetchedTxs},
+    command::{
+        Checkpoint, ConsensusCommand, FetchedBlock, FetchedFullTxs, FetchedTxs, TimeoutEvent,
+    },
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -368,7 +369,7 @@ where
         };
 
         let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
-            PacemakerTimerExpire,
+            TimeoutEvent::Pacemaker,
         )));
 
         (monad_state, init_cmds)
@@ -381,12 +382,18 @@ where
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
-                    ConsensusEvent::Timeout(pacemaker_expire) => self
-                        .consensus
-                        .handle_timeout_expiry::<HasherType>(pacemaker_expire)
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
+                    ConsensusEvent::Timeout(tmo_event) => match tmo_event {
+                        TimeoutEvent::Pacemaker => self
+                            .consensus
+                            .handle_timeout_expiry::<HasherType>()
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                        TimeoutEvent::BlockSyncTimerExpire(bid) => self
+                            .consensus
+                            .handle_block_sync_tmo(bid, &self.validator_set),
+                    },
+
                     ConsensusEvent::FetchedTxs(fetched) => {
                         assert_eq!(fetched.node_id, self.consensus.get_nodeid());
 
@@ -532,8 +539,8 @@ where
                                 on_timeout,
                             )),
                         })),
-                        ConsensusCommand::ScheduleReset => {
-                            cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset))
+                        ConsensusCommand::ScheduleReset(event) => {
+                            cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset(event)))
                         }
                         ConsensusCommand::FetchTxs(max_txns, cb) => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchTxs(
@@ -616,7 +623,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         sender: PubKey,
         unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
     },
-    Timeout(PacemakerTimerExpire),
+    Timeout(TimeoutEvent),
     FetchedTxs(FetchedTxs<SCT>),
     FetchedFullTxs(FetchedFullTxs<SCT>),
     FetchedBlock(FetchedBlock<SCT>),

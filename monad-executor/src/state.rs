@@ -45,7 +45,7 @@ pub enum TimerCommand<E> {
         duration: std::time::Duration,
         on_timeout: E,
     },
-    ScheduleReset,
+    ScheduleReset(E),
 }
 
 pub enum MempoolCommand<E> {
