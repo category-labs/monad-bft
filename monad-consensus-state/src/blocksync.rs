@@ -1,5 +1,6 @@
 use std::collections::{hash_map::Entry, HashMap};
 
+use log::debug;
 use monad_consensus::messages::message::BlockSyncMessage;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
@@ -78,6 +79,7 @@ where
         match self.requests.entry(*id) {
             Entry::Occupied(_) => vec![],
             Entry::Vacant(entry) => {
+                debug!("Block sync request: blockid={:?}", qc);
                 inc_count!(block_sync_request);
                 let (peer, cnt) =
                     choose_peer(self.id, validator_set.get_list(), DEFAULT_PEER_INDEX);

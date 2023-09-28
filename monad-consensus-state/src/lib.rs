@@ -262,7 +262,7 @@ where
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc);
+        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc, validators);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -290,13 +290,6 @@ where
         self.pending_block_tree
             .add(full_block.clone())
             .expect("Failed to add block to blocktree");
-        if let Some(qc) = self
-            .pending_block_tree
-            .get_missing_ancestor(&full_block.get_block().qc)
-        {
-            debug!("Block sync request: blockid={:?}", qc);
-            cmds.extend(self.request_sync::<VT>(qc, validators));
-        }
 
         if full_block.get_round() != round || author != leader || full_block.get_author() != leader
         {
@@ -360,7 +353,7 @@ where
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);
-            cmds.extend(self.process_certificate_qc(&qc));
+            cmds.extend(self.process_certificate_qc(&qc, validators));
 
             if self.nodeid
                 == election.get_leader(self.pacemaker.get_current_round(), validators.get_list())
@@ -389,7 +382,7 @@ where
         debug!("Remote timeout msg: {:?}", tm);
         inc_count!(remote_timeout_msg);
 
-        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc);
+        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc, validators);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
@@ -585,14 +578,18 @@ where
     }
 
     #[must_use]
-    fn process_certificate_qc(
+    fn process_certificate_qc<VT: ValidatorSetType>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
         cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
+
+        // block sync
+        cmds.extend(self.get_blocks_if_missing(qc, validators));
         cmds
     }
 
@@ -683,6 +680,18 @@ where
             ConsensusAction::Abstain
         }
     }
+
+    fn get_blocks_if_missing<VT: ValidatorSetType>(
+        &mut self,
+        qc: &QuorumCertificate<SCT>,
+        validators: &VT,
+    ) -> Vec<ConsensusCommand<SCT>> {
+        if let Some(qc) = self.pending_block_tree.get_missing_ancestor(qc) {
+            self.request_sync::<VT>(qc, validators)
+        } else {
+            vec![]
+        }
+    }
 }
 
 pub enum ConsensusAction {
@@ -722,14 +731,16 @@ mod test {
     use monad_executor::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
-        signing::{create_certificate_keys, create_keys, get_genesis_config},
+        signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, Hash, NodeId, Round};
     use monad_validator::{
-        leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
-        validator_set::ValidatorSet,
+        leader_election::LeaderElection,
+        simple_round_robin::SimpleRoundRobin,
+        validator_set::{ValidatorSet, ValidatorSetType},
     };
+    use test_case::test_case;
     use tracing_test::traced_test;
 
     use crate::{
@@ -1728,21 +1739,45 @@ mod test {
         assert_eq!(p1_votes.vote, p3_votes.vote);
         assert_eq!(p1_votes.vote, p4_votes.vote);
         assert_ne!(p1_votes.vote, p2_votes.vote);
-
         let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
-
-        // Deliver all the votes to second_state, who is the leader for the next round
+        // temp sub with a key that doesn't exists.
+        let mut routing_target = NodeId(get_key(100).pubkey());
+        // We Collected 4 votes, 3 of which are valid, 1 of which is not caused by byzantine leader.
+        // First 3 (including a false vote) submitted would not cause a qc to form
+        // but the last vote would cause a qc to form locally at second_state, thus causing
+        // second state to realize its missing a block.
         for i in 0..4 {
             let v = Verified::<NopSignature, VoteMessage<_>>::new::<Sha256Hash>(votes[i], &keys[i]);
-            second_state.handle_vote_message::<Sha256Hash, _, _>(
+            let cmds2 = second_state.handle_vote_message::<Sha256Hash, _, _>(
                 *v.author(),
                 *v,
                 &valset,
                 &valmap,
                 &election,
             );
+            let res = cmds2.into_iter().find(|c| {
+                matches!(
+                    c,
+                    ConsensusCommand::RequestSync {
+                        peer: NodeId(_),
+                        block_id: BlockId(_)
+                    },
+                )
+            });
+            if i < 3 {
+                assert!(res.is_none());
+            } else {
+                assert!(res.is_some());
+                let (target, sync_bid) = match res.unwrap() {
+                    ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                    _ => None,
+                }
+                .unwrap();
+                assert!(sync_bid == block_1.block.get_id());
+                routing_target = target;
+            }
         }
-
+        assert_ne!(routing_target, NodeId(get_key(100).pubkey()));
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
         assert_eq!(second_state.high_qc.info.vote, votes[0].vote.vote_info);
 
@@ -1763,30 +1798,13 @@ mod test {
             block: verified_message_2.block.clone(),
             full_txs: FullTransactionList::default(),
         };
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
             author_2,
             verified_message_2.clone(),
             FullTransactionList::default(),
             &valset,
             &election,
         );
-        let res = cmds2.into_iter().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_)
-                },
-            )
-        });
-        assert!(res.is_some());
-        let (req_target, sync_bid) = match res.unwrap() {
-            ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
-            _ => None,
-        }
-        .unwrap();
-
-        assert!(sync_bid == block_1.block.get_id());
 
         // first_state has the correct block in its blocktree, so it should not request anything
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
@@ -1855,7 +1873,7 @@ mod test {
 
         let msg = BlockSyncMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
-        second_state.handle_block_sync(req_target, msg, &valset);
+        second_state.handle_block_sync(routing_target, msg, &valset);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
@@ -2105,7 +2123,7 @@ mod test {
                 &valset,
                 &election,
                 &valmap,
-                TransactionList::default(),
+                Default::default(),
                 ExecutionArtifacts::zero(),
             );
 
@@ -2137,5 +2155,270 @@ mod test {
                 assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
             }
         }
+    }
+
+    #[test_case(4; "4 participants")]
+    #[test_case(5; "5 participants")]
+    #[test_case(6; "6 participants")]
+    #[test_case(7; "7 participants")]
+    #[test_case(100; "100 participants")]
+    #[test_case(523; "523 participants")]
+    fn test_observing_qc_through_votes(num_state: usize) {
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(num_state as u32);
+
+        let election = SimpleRoundRobin::new();
+        let mut correct_proposal_gen =
+            ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+
+        for i in 0..8 {
+            let cp = correct_proposal_gen.next_proposal(
+                &keys,
+                &certkeys,
+                &valset,
+                &election,
+                &valmap,
+                Default::default(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for state in states.iter_mut() {
+                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList(Vec::new()),
+                    &valset,
+                    &election,
+                );
+                let bsync_reqest = cmds.iter().find(|&c| {
+                    matches!(
+                        c,
+                        ConsensusCommand::RequestSync {
+                            peer: NodeId(_),
+                            block_id: BlockId(_)
+                        }
+                    )
+                });
+                // observing a qc that link to root should not trigger anything
+                assert!(bsync_reqest.is_none());
+                assert_eq!(state.get_current_round(), Round(i + 1))
+            }
+        }
+        for state in states.iter() {
+            assert_eq!(state.get_current_round(), Round(8));
+        }
+        let next_leader = election.get_leader(Round(10), valset.get_list());
+        let mut leader_index = 0;
+        // test when observing a qc through vote message, and qc points to a block that doesn't exists yet
+        let cp = correct_proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author, _, verified_message) = cp.destructure();
+        let mut votes = vec![];
+        for (i, state) in states.iter_mut().enumerate() {
+            if state.nodeid != next_leader {
+                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList(Vec::new()),
+                    &valset,
+                    &election,
+                );
+
+                let v: Vec<VoteMessage<SignatureCollectionType>> = cmds
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::Publish {
+                            target: RouterTarget::PointToPoint(peer),
+                            message: ConsensusMessage::Vote(vote),
+                        } => {
+                            if peer == (&next_leader).into() {
+                                Some(vote)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(v.len(), 1);
+                votes.push((state.nodeid, v[0]));
+            } else {
+                leader_index = i;
+            }
+        }
+        for (i, (author, v)) in votes.iter().enumerate() {
+            let cmds = states[leader_index]
+                .handle_vote_message::<Sha256Hash, _, _>(*author, *v, &valset, &valmap, &election);
+            if i == (num_state * 2 / 3) {
+                let req: Vec<(NodeId, BlockId)> = cmds
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(req.len(), 1);
+                assert_eq!(req[0].1, verified_message.block.get_id());
+            } else {
+                let req: Vec<_> = cmds
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(req.len(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_observe_qc_through_tmo() {
+        let num_state = 5;
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(num_state as u32);
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut blocks = vec![];
+        for _ in 0..4 {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &valset,
+                &election,
+                &valmap,
+                Default::default(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for state in states.iter_mut().skip(1) {
+                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList(Vec::new()),
+                    &valset,
+                    &election,
+                );
+                let bsync_reqest = cmds.iter().find(|&c| {
+                    matches!(
+                        c,
+                        ConsensusCommand::RequestSync {
+                            peer: NodeId(_),
+                            block_id: BlockId(_)
+                        }
+                    )
+                });
+                // observing a qc that link to root should not trigger anything
+                assert!(bsync_reqest.is_none());
+            }
+            blocks.push(verified_message.block);
+        }
+
+        // now timeout someone
+        let cmds = states[1].handle_timeout_expiry::<Sha256Hash>(PacemakerTimerExpire);
+        let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PacemakerCommand::Broadcast(TimeoutMessage {
+                    timeout: tmo,
+                    sig: _,
+                }) => Some(tmo),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(tmo.len(), 1);
+        assert_eq!(tmo[0].tminfo.round, Round(4));
+        let author = states[1].nodeid;
+        let timeout_msg = TimeoutMessage::new::<Sha256Hash>(tmo[0].clone(), &certkeys[1]);
+        let cmds = states[0].handle_timeout_message::<Sha256Hash, _, _>(
+            author,
+            timeout_msg,
+            &valset,
+            &valmap,
+            &election,
+        );
+
+        let req: Vec<(NodeId, BlockId)> = cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(req.len(), 1);
+        assert_eq!(req[0].1, blocks[2].get_id());
+    }
+
+    #[test]
+    fn test_observe_qc_through_proposal() {
+        let num_state = 5;
+        let (keys, certkeys, valset, valmap, mut states) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            StateRootValidatorType,
+            TransactionValidatorType,
+        >(num_state as u32);
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut blocks = vec![];
+        for _ in 0..4 {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &valset,
+                &election,
+                &valmap,
+                Default::default(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (_, _, verified_message) = cp.destructure();
+            blocks.push(verified_message.block);
+        }
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        let cmds = states[1].handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+        let req: Vec<(NodeId, BlockId)> = cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(req.len(), 1);
+        assert_eq!(req[0].1, blocks[3].get_id());
     }
 }
