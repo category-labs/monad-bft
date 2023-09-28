@@ -12,6 +12,7 @@ use monad_consensus_types::{
     payload::{FullTransactionList, TransactionList},
     signature_collection::SignatureCollection,
 };
+use monad_eth_types::EthTransactionList;
 use monad_executor::Executor;
 use monad_executor_glue::{MempoolCommand, MonadEvent};
 use monad_mempool_controller::{Controller, ControllerConfig};
@@ -96,7 +97,7 @@ where
         mut rx: mpsc::Receiver<ControllerTaskCommand>,
         config: ControllerConfig,
     ) -> Result<(), ControllerTaskError> {
-        let mut controller = Controller::new(&config).await?;
+        let mut controller = Controller::new(config).await?;
 
         loop {
             tokio::select! {
@@ -107,22 +108,43 @@ where
 
                     match task {
                         ControllerTaskCommand::FetchTxs(num_max_txs, pending_txs) => {
-                            let proposal = controller.create_proposal(num_max_txs, pending_txs.into_iter().map(|txs| txs.0).collect()).await;
+                            let Ok(pending_txs) = pending_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.0)).collect::<Result<Vec<_>, _>>() else {
+                                // TODO: warn
+                                continue;
+                            };
 
-                            tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal)))
+                            let proposal = controller.create_proposal(num_max_txs, pending_txs).await;
+
+                            tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal.rlp_encode())))
                                 .await?;
                         }
                         ControllerTaskCommand::FetchFullTxs(txs) => {
-                            let full_txs = controller.fetch_full_txs(txs.0).await;
+                            let txs = match EthTransactionList::rlp_decode(txs.0) {
+                                Ok(txs) => txs,
+                                Err(_) => {
+                                    // TODO: warn
+                                    continue;
+                                }
+                            };
+
+                            let full_txs = controller.fetch_full_txs(txs).await;
 
                             tx.send(ControllerTaskResult::FetchFullTxs(
-                                full_txs.map(FullTransactionList),
+                                full_txs.map(|full_txs| FullTransactionList(full_txs.rlp_encode())),
                             ))
                             .await?;
                         }
                         ControllerTaskCommand::DrainTxs(drain_txs) => {
+                            let drain_txs = match drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.0)).collect::<Result<Vec<EthTransactionList>, _>>() {
+                                Ok(drain_txs) => drain_txs,
+                                Err(_) => {
+                                    // TODO: warn
+                                    continue;
+                                }
+                            };
+
                             for txs in drain_txs {
-                                controller.drain_txs(txs.0).await;
+                                controller.drain_txs(txs).await;
                             }
                         }
                     }

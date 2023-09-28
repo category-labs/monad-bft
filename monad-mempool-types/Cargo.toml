@@ -8,12 +8,8 @@ edition = "2021"
 [lib]
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-prost = { workspace = true }
-prost-types = { workspace = true }
+monad-mempool-proto = { path = "../monad-mempool-proto" }
 
-[build-dependencies]
-prost-build = { workspace = true }
-protobuf-src = { workspace = true }
+reth-primitives = { workspace = true }
+reth-rlp = { workspace = true }

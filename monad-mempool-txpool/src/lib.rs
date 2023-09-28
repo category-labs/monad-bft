@@ -1,66 +1,28 @@
 use std::{
     collections::{BinaryHeap, HashMap, HashSet},
-    mem,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
-use ethers::{types::Bytes, utils::keccak256};
-use monad_mempool_types::tx::EthTx;
-use thiserror::Error;
+use monad_eth_types::{EthFullTransactionList, EthTransactionList};
+use reth_primitives::{TransactionSignedEcRecovered, TxHash};
 
-#[derive(Error, Debug)]
-pub enum PoolError {
-    #[error("Transaction already exists in pool")]
-    DuplicateTransactionError,
-}
+mod config;
+pub use config::PoolConfig;
 
-#[derive(PartialEq, Eq, Clone)]
-struct EthTxItem {
-    hash: Bytes,
-    // Lower number is higher priority
-    priority: i64,
-    timestamp: Duration,
-}
+mod error;
+use error::PoolError;
 
-impl PartialOrd for EthTxItem {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for EthTxItem {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering because BinaryHeap is a max heap
-        (other.priority, other.timestamp).cmp(&(self.priority, self.timestamp))
-    }
-}
-
-pub struct PoolConfig {
-    ttl_duration: Duration,
-}
-
-impl Default for PoolConfig {
-    fn default() -> Self {
-        Self {
-            ttl_duration: Duration::from_secs(120),
-        }
-    }
-}
-
-impl PoolConfig {
-    pub fn new(ttl_duration: Duration) -> Self {
-        Self { ttl_duration }
-    }
-}
+mod item;
+use item::PoolTxHash;
 
 pub struct Pool {
-    map: HashMap<Bytes, Bytes>,
-    pq: BinaryHeap<EthTxItem>,
+    map: HashMap<TxHash, TransactionSignedEcRecovered>,
+    pq: BinaryHeap<PoolTxHash>,
     ttl_duration: Duration,
 }
 
 impl Pool {
-    pub fn new(config: &PoolConfig) -> Self {
+    pub fn new(config: PoolConfig) -> Self {
         Self {
             map: HashMap::new(),
             pq: BinaryHeap::new(),
@@ -70,50 +32,37 @@ impl Pool {
 
     /// Removes a Vec of transactions from the pool by hash.
     /// Hashes that do not exist are skipped.
-    pub fn remove_tx_hashes(&mut self, tx_hashes: Vec<Bytes>) {
-        for tx_hash in &tx_hashes {
+    pub fn remove_tx_hashes(&mut self, tx_hashes: EthTransactionList) {
+        for tx_hash in &tx_hashes.0 {
             self.map.remove(tx_hash);
         }
 
-        #[allow(clippy::mutable_key_type)]
-        let set = tx_hashes.into_iter().collect::<HashSet<_>>();
-        self.pq = self
-            .pq
-            .drain()
-            .filter(|tx| !set.contains(&tx.hash))
-            .collect()
-    }
+        let set = tx_hashes.0.into_iter().collect::<HashSet<TxHash>>();
 
-    /// Removes a Vec of transactions from the pool using the full transaction.
-    /// Transactions that do not exist are skipped.
-    pub fn remove_txs(&mut self, txs: Vec<Bytes>) {
-        let tx_hashes = txs
-            .into_iter()
-            .map(|tx| keccak256(tx).into())
-            .collect::<Vec<_>>();
-
-        self.remove_tx_hashes(tx_hashes);
+        self.pq.retain(|tx| !set.contains(&tx.hash));
     }
 
     /// Inserts a transaction into the pool with a given priority.
     /// Only validated transactions should be inserted.
-    pub(crate) fn insert_with_priority(
+    fn insert_with_priority(
         &mut self,
-        mut tx: EthTx,
+        tx: TransactionSignedEcRecovered,
+        timestamp: SystemTime,
         priority: i64,
     ) -> Result<(), PoolError> {
-        let hash: Bytes = mem::take(&mut tx.hash).into();
+        let hash = tx.hash();
 
+        // TODO: try_insert when stable
         if self.map.contains_key(&hash) {
             return Err(PoolError::DuplicateTransactionError);
         }
 
-        self.map.insert(hash.clone(), tx.rlpdata.into());
+        assert!(self.map.insert(hash, tx).is_none());
 
-        self.pq.push(EthTxItem {
+        self.pq.push(PoolTxHash {
             hash,
             priority,
-            timestamp: Pool::get_current_epoch(),
+            timestamp,
         });
 
         Ok(())
@@ -121,36 +70,57 @@ impl Pool {
 
     /// Inserts a transaction into the pool.
     /// Only validated transactions should be inserted.
-    pub fn insert(&mut self, tx: EthTx) -> Result<(), PoolError> {
-        let priority = Self::determine_tx_priority(&tx.hash.clone().into());
+    pub fn insert(
+        &mut self,
+        tx: TransactionSignedEcRecovered,
+        timestamp: SystemTime,
+    ) -> Result<(), PoolError> {
+        let priority = Self::determine_tx_priority(&tx);
 
-        self.insert_with_priority(tx, priority)
+        self.insert_with_priority(tx, timestamp, priority)
     }
 
-    fn determine_tx_priority(_: &Bytes) -> i64 {
+    fn determine_tx_priority(_tx: &TransactionSignedEcRecovered) -> i64 {
         // TODOs
         0
     }
 
-    /// Returns a Vec of transactions to be included in a block proposal.
+    /// Returns a list of transaction hashes to be included in a block proposal.
     /// The highest priority transactions are returned, up to the block limit.
-    pub fn create_proposal(&mut self, tx_limit: usize, pending_txs: Vec<Vec<u8>>) -> Vec<Bytes> {
-        let pending_txs: HashSet<Vec<u8>> = pending_txs.into_iter().collect();
+    pub fn create_proposal(
+        &mut self,
+        tx_limit: usize,
+        pending_txs: Vec<EthTransactionList>,
+    ) -> EthTransactionList {
+        let pending_txs: HashSet<TxHash> = pending_txs.into_iter().flat_map(|tx| tx.0).collect();
 
         let mut txs = Vec::new();
         let mut dupe_txs = Vec::default();
 
-        while txs.len() < tx_limit && !self.pq.is_empty() {
-            let tx = self.pq.pop().unwrap();
+        let now = SystemTime::now();
+
+        loop {
+            if txs.len() >= tx_limit {
+                break;
+            }
+
+            let Some(tx) = self.pq.pop() else {
+                break;
+            };
 
             if !self.map.contains_key(&tx.hash) {
                 continue;
             }
-            if Self::get_current_epoch() - tx.timestamp > self.ttl_duration {
+
+            let Some(tx_expiration_time) = tx.timestamp.checked_add(self.ttl_duration) else {
+                continue;
+            };
+
+            if tx_expiration_time < now {
                 continue;
             }
 
-            if pending_txs.contains(&Into::<Vec<u8>>::into(tx.hash.0.clone())) {
+            if pending_txs.contains(&tx.hash) {
                 dupe_txs.push(tx);
             } else {
                 txs.push(tx);
@@ -165,83 +135,47 @@ impl Pool {
             self.pq.push(tx);
         }
 
-        txs.into_iter().map(|tx| tx.hash).collect()
+        EthTransactionList(txs.into_iter().map(|tx| tx.hash).collect())
     }
 
-    pub fn fetch_full_txs(&mut self, txs: Vec<Bytes>) -> Option<Vec<Bytes>> {
+    /// Returns the list of full transactions which correspond to a list of transaction hashes.
+    pub fn fetch_full_txs(&mut self, txs: EthTransactionList) -> Option<EthFullTransactionList> {
         let mut full_txs = Vec::new();
 
-        for tx in txs {
+        for tx in txs.0 {
             full_txs.push(self.map.get(&tx)?.clone());
         }
 
-        Some(full_txs)
-    }
-
-    fn get_current_epoch() -> Duration {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
+        Some(EthFullTransactionList(full_txs))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use ethers::{
-        signers::LocalWallet,
-        types::{transaction::eip2718::TypedTransaction, Address, Bytes, TransactionRequest},
-    };
-    use monad_mempool_types::tx::EthTx;
-    use oorandom::Rand32;
+    use std::time::SystemTime;
+
+    use monad_eth_types::EthTransactionList;
+    use monad_mempool_testutil::create_signed_eth_txs;
+    use reth_primitives::TxHash;
 
     use super::{Pool, PoolConfig};
-
-    const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
-
-    fn create_eth_txs(seed: u64, count: u16) -> Vec<EthTx> {
-        let wallet = LOCAL_TEST_KEY.parse::<LocalWallet>().unwrap();
-
-        create_txs(seed, count)
-            .into_iter()
-            .map(|tx| {
-                let signature = wallet.sign_transaction_sync(&tx).unwrap();
-
-                EthTx {
-                    hash: tx.hash(&signature).as_bytes().to_vec(),
-                    rlpdata: tx.rlp_signed(&signature).to_vec(),
-                }
-            })
-            .collect()
-    }
-
-    fn create_txs(seed: u64, count: u16) -> Vec<TypedTransaction> {
-        let mut rng = Rand32::new(seed);
-
-        (0..count)
-            .map(|_| {
-                TransactionRequest::new()
-                    .to("0xc582768697b4a6798f286a03A2A774c8743163BB"
-                        .parse::<Address>()
-                        .unwrap())
-                    .gas(21337)
-                    .gas_price(42)
-                    .value(rng.rand_u32())
-                    .nonce(0)
-                    .into()
-            })
-            .collect()
-    }
 
     #[test]
     fn test_pool() {
         const TX_BATCH_SIZE: usize = 10;
 
-        let mut pool = Pool::new(&PoolConfig::new(std::time::Duration::from_secs(120)));
+        let mut pool = Pool::new(PoolConfig::new(std::time::Duration::from_secs(120)));
 
         // Create 2 batches of transactions + 1 extra tx, with the second batch having a higher priority
-        let mut txs = create_eth_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
+        let mut txs = create_signed_eth_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
 
         for (index, tx) in txs.iter().take(TX_BATCH_SIZE).enumerate() {
-            pool.insert_with_priority(tx.clone(), (TX_BATCH_SIZE + index) as i64)
-                .unwrap();
+            pool.insert_with_priority(
+                tx.clone(),
+                SystemTime::now(),
+                (TX_BATCH_SIZE + index) as i64,
+            )
+            .unwrap();
         }
 
         for (index, tx) in txs
@@ -250,11 +184,13 @@ mod test {
             .take(TX_BATCH_SIZE)
             .enumerate()
         {
-            pool.insert_with_priority(tx.clone(), index as i64).unwrap();
+            pool.insert_with_priority(tx.clone(), SystemTime::now(), index as i64)
+                .unwrap();
         }
 
         pool.insert_with_priority(
             txs.get_mut(TX_BATCH_SIZE * 2).unwrap().clone(),
+            SystemTime::now(),
             (TX_BATCH_SIZE * 2) as i64,
         )
         .unwrap();
@@ -262,79 +198,104 @@ mod test {
         let proposal = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         let expected_proposal = txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]
             .iter()
-            .map(|tx| tx.hash.clone().into())
-            .collect::<Vec<Bytes>>();
+            .map(|tx| tx.hash)
+            .collect::<Vec<TxHash>>();
 
-        assert_eq!(proposal.len(), TX_BATCH_SIZE);
-        assert_eq!(proposal, expected_proposal);
-        pool.remove_tx_hashes(proposal);
+        assert_eq!(proposal.0.len(), TX_BATCH_SIZE);
+        assert_eq!(proposal.0, expected_proposal);
+
+        let fetched_txs = pool.fetch_full_txs(proposal.clone()).unwrap();
+        assert_eq!(fetched_txs.0, txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]);
+
+        pool.remove_tx_hashes(proposal.clone());
+
+        for tx in proposal.0 {
+            assert!(pool.fetch_full_txs(EthTransactionList(vec![tx])).is_none());
+        }
 
         let proposal2 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         let expected_proposal2 = txs[0..TX_BATCH_SIZE]
             .iter()
-            .map(|tx| tx.hash.clone().into())
-            .collect::<Vec<Bytes>>();
+            .map(|tx| tx.hash)
+            .collect::<Vec<TxHash>>();
 
-        assert_eq!(proposal2.len(), TX_BATCH_SIZE);
-        assert_eq!(proposal2, expected_proposal2);
+        assert_eq!(proposal2.0.len(), TX_BATCH_SIZE);
+        assert_eq!(proposal2.0, expected_proposal2);
+
+        let fetched_txs2 = pool.fetch_full_txs(proposal2.clone()).unwrap();
+        assert_eq!(fetched_txs2.0, txs[0..TX_BATCH_SIZE]);
+
+        for tx in proposal2.0.clone() {
+            assert!(pool.fetch_full_txs(EthTransactionList(vec![tx])).is_some());
+        }
 
         // Simulate a failed proposal, doesn't get removed
 
         let proposal3 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
-        assert_eq!(proposal3.len(), TX_BATCH_SIZE);
-        assert_eq!(proposal3, expected_proposal2);
+        assert_eq!(proposal3.0.len(), TX_BATCH_SIZE);
+        assert_eq!(proposal3.0, expected_proposal2);
         pool.remove_tx_hashes(proposal3);
 
+        for tx in proposal2.0 {
+            assert!(pool.fetch_full_txs(EthTransactionList(vec![tx])).is_none());
+        }
+
         let proposal3 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
-        assert_eq!(proposal3.len(), 1);
-        assert_eq!(
-            proposal3[0],
-            Bytes::from(txs[TX_BATCH_SIZE * 2].hash.clone())
-        );
+        assert_eq!(proposal3.0.len(), 1);
+        assert_eq!(proposal3.0[0], TxHash::from(txs[TX_BATCH_SIZE * 2].hash));
         pool.remove_tx_hashes(proposal3);
 
         let proposal4 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
-        assert_eq!(proposal4.len(), 0);
+        assert_eq!(proposal4.0.len(), 0);
     }
 
     #[test]
     fn test_create_proposal_non_empty_pending_txs() {
-        let mut pool = Pool::new(&PoolConfig {
+        let mut pool = Pool::new(PoolConfig {
             ttl_duration: std::time::Duration::from_secs(120),
         });
 
-        let [tx1, tx2] = &create_eth_txs(0, 2)[..] else {
+        let [tx1, tx2] = &create_signed_eth_txs(0, 2)[..] else {
             panic!();
         };
 
-        pool.insert(tx1.to_owned()).unwrap();
+        pool.insert(tx1.to_owned(), SystemTime::now()).unwrap();
 
         assert_eq!(
             pool.create_proposal(10, vec![]),
-            vec![tx1]
-                .into_iter()
-                .map(|tx| tx.hash.clone().into())
-                .collect::<Vec<Bytes>>()
+            EthTransactionList(
+                vec![tx1]
+                    .into_iter()
+                    .map(|tx| tx.hash)
+                    .collect::<Vec<TxHash>>()
+            )
         );
 
-        assert!(pool.create_proposal(10, vec![tx1.hash.clone()]).is_empty());
+        assert!(pool
+            .create_proposal(10, vec![EthTransactionList(vec![tx1.hash])])
+            .0
+            .is_empty());
 
-        pool.insert(tx2.to_owned()).unwrap();
+        pool.insert(tx2.to_owned(), SystemTime::now()).unwrap();
 
         assert_eq!(
             pool.create_proposal(10, vec![]),
-            vec![tx1, tx2]
-                .into_iter()
-                .map(|tx| tx.hash.clone().into())
-                .collect::<Vec<Bytes>>()
+            EthTransactionList(
+                vec![tx1, tx2]
+                    .into_iter()
+                    .map(|tx| tx.hash)
+                    .collect::<Vec<TxHash>>()
+            )
         );
 
         assert_eq!(
-            pool.create_proposal(10, vec![tx2.hash.clone()]),
-            vec![tx1]
-                .into_iter()
-                .map(|tx| tx.hash.clone().into())
-                .collect::<Vec<Bytes>>()
+            pool.create_proposal(10, vec![EthTransactionList(vec![tx2.hash])]),
+            EthTransactionList(
+                vec![tx1]
+                    .into_iter()
+                    .map(|tx| tx.hash)
+                    .collect::<Vec<TxHash>>()
+            )
         );
     }
 }

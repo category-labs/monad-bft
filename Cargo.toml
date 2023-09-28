@@ -8,12 +8,14 @@ members = [
     "monad-consensus-types",
     "monad-crypto",
     "monad-driver",
+    "monad-eth-types",
     "monad-executor",
     "monad-executor-glue",
-    "monad-mempool-checker",
     "monad-mempool-controller",
     "monad-mempool-ipc",
     "monad-mempool-messenger",
+    "monad-mempool-proto",
+    "monad-mempool-testutil",
     "monad-mempool-txpool",
     "monad-mempool-types",
     "monad-mock-swarm",
@@ -44,22 +46,22 @@ debug = true
 [workspace.dependencies]
 libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
 libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
+reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
+reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 
 async-trait = "0.1"
 bitvec = "1.0.1"
-blst = "0.3.10"
-bytes = "1.4.0"
+blst = "0.3.11"
+bytes = "1.5.0"
 clap = "4.2"
 criterion = "0.4.0"
 env_logger = "0.10"
-ethers = "2.0.9"
 futures = "0.3"
 futures-util = "0.3"
 hex = "0.4.3"
 itertools = "0.10.5"
 log = "0.4"
 multihash = "0.17"
-oorandom = "11.1.3"
 opentelemetry = "0.19"
 opentelemetry_api = "0.19"
 opentelemetry-otlp = "0.12"

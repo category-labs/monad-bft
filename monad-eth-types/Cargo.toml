@@ -1,5 +1,5 @@
 [package]
-name = "monad-mempool-ipc"
+name = "monad-eth-types"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,8 +9,5 @@ edition = "2021"
 bench = false
 
 [dependencies]
-futures = { workspace = true }
-rand = { workspace = true }
 reth-primitives = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-tokio-util = { workspace = true, features = ["codec"] }
+reth-rlp = { workspace = true }

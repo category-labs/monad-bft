@@ -8,21 +8,21 @@ edition = "2021"
 [lib]
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-monad-mempool-checker = { path = "../monad-mempool-checker" }
+monad-eth-types = { path = "../monad-eth-types" }
+monad-mempool-ipc = { path = "../monad-mempool-ipc" }
 monad-mempool-messenger = { path = "../monad-mempool-messenger" }
+monad-mempool-proto = { path = "../monad-mempool-proto" }
 monad-mempool-txpool = { path = "../monad-mempool-txpool" }
 monad-mempool-types = { path = "../monad-mempool-types" }
-monad-mempool-ipc = { path = "../monad-mempool-ipc" }
 
-ethers = { workspace = true }
 futures = { workspace = true }
+reth-primitives = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-oorandom = { workspace = true }
+monad-mempool-testutil = { path = "../monad-mempool-testutil" }
+
 tempfile = { workspace = true }

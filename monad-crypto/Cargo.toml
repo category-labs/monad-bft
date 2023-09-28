@@ -12,9 +12,7 @@ bench = false
 monad-proto = { path = "../monad-proto" }
 
 blst = { workspace = true }
-libp2p-identity = { workspace = true, features = [
-    "secp256k1",
-], optional = true }
+libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }
 multihash = { workspace = true, features = ["identity"], optional = true }
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 sha2 = { workspace = true }
@@ -22,7 +20,7 @@ zerocopy = { workspace = true }
 zeroize = { workspace = true }
 
 rcgen = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["dangerous_configuration"] }
 
 [dev-dependencies]
 hex = { workspace = true }

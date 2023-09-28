@@ -1,7 +1,7 @@
 mod gossipsub;
 
 use libp2p::identity::Keypair;
-use monad_mempool_types::tx::EthTxBatch;
+use monad_mempool_proto::tx::UnverifiedEthTxBatch;
 use thiserror::Error;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::event;
@@ -20,6 +20,7 @@ pub enum MessengerError {
     IpcReceiverBindError(std::io::Error),
 }
 
+#[derive(Clone)]
 pub struct MessengerConfig {
     local_key: Keypair,
     port: u16,
@@ -47,26 +48,28 @@ impl MessengerConfig {
 }
 
 pub struct Messenger {
-    sender: mpsc::Sender<EthTxBatch>,
-    receiver: mpsc::Receiver<EthTxBatch>,
+    sender: mpsc::Sender<UnverifiedEthTxBatch>,
+    receiver: mpsc::Receiver<UnverifiedEthTxBatch>,
 
     gossipsub_listen_handle: JoinHandle<()>,
 }
 
 impl Messenger {
-    pub async fn new(config: &MessengerConfig, wait_for_peers: u8) -> Result<Self, MessengerError> {
+    pub async fn new(config: MessengerConfig, wait_for_peers: u8) -> Result<Self, MessengerError> {
         let (gossipsub_listen_handle, sender, receiver, mut connected_rx) =
             gossipsub::start_gossipsub(
-                config.local_key.clone(),
+                config.local_key,
                 config.port,
                 GOSSIP_SUB_DEFAULT_BUFFER_SIZE,
             )
             .map_err(|_| MessengerError::GossipSubStartError)?;
 
-        event! {tracing::Level::INFO, "Messenger started, waiting for {} peer(s)...", wait_for_peers};
+        if wait_for_peers != 0 {
+            event! {tracing::Level::INFO, "Messenger started, waiting for {} peer(s)...", wait_for_peers};
 
-        for _ in 0..wait_for_peers {
-            connected_rx.recv().await;
+            for _ in 0..wait_for_peers {
+                connected_rx.recv().await;
+            }
         }
 
         event! {tracing::Level::INFO, "Messenger connected to {} peer(s)" , wait_for_peers};
@@ -79,11 +82,11 @@ impl Messenger {
         })
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<EthTxBatch> {
+    pub fn get_sender(&self) -> mpsc::Sender<UnverifiedEthTxBatch> {
         self.sender.clone()
     }
 
-    pub async fn recv(&mut self) -> Option<EthTxBatch> {
+    pub async fn recv(&mut self) -> Option<UnverifiedEthTxBatch> {
         self.receiver.recv().await
     }
 }
@@ -96,7 +99,11 @@ impl Drop for Messenger {
 
 #[cfg(test)]
 mod test {
-    use monad_mempool_types::tx::{EthTx, EthTxBatch};
+    use std::time::SystemTime;
+
+    use monad_mempool_proto::tx::UnverifiedEthTxBatch;
+    use monad_mempool_types::EthTxBatch;
+    use reth_primitives::TransactionSignedEcRecovered;
     use tokio::time::{timeout, Duration};
 
     use super::{Messenger, MessengerConfig};
@@ -105,32 +112,21 @@ mod test {
 
     #[tokio::test]
     async fn test_messenger() {
-        let mut receiver1 = Messenger::new(&MessengerConfig::default(), 0)
-            .await
-            .unwrap();
-        let mut receiver2 = Messenger::new(&MessengerConfig::default(), 0)
-            .await
-            .unwrap();
-        let head = Messenger::new(&MessengerConfig::default(), 2)
-            .await
-            .unwrap();
+        let mut receiver1 = Messenger::new(MessengerConfig::default(), 0).await.unwrap();
+        let mut receiver2 = Messenger::new(MessengerConfig::default(), 0).await.unwrap();
+        let head = Messenger::new(MessengerConfig::default(), 2).await.unwrap();
 
         let batches = (0..1)
-            .map(|i| {
-                let tx = EthTx {
-                    hash: format!("hash{i}").as_bytes().to_vec(),
-                    rlpdata: format!("rlpdata{i}").as_bytes().to_vec(),
-                };
-                EthTxBatch {
-                    hash: format!("batchhash{i}").as_bytes().to_vec(),
-                    txs: vec![tx],
-                    time: Some(std::time::SystemTime::now().into()),
-                    numtx: 1,
-                }
+            .map(|_| {
+                Into::<UnverifiedEthTxBatch>::into(EthTxBatch {
+                    txs: vec![TransactionSignedEcRecovered::default()],
+                    time: SystemTime::now(),
+                })
             })
             .collect::<Vec<_>>();
 
         let sender = head.get_sender();
+
         for i in &batches {
             sender.send(i.clone()).await.unwrap();
         }

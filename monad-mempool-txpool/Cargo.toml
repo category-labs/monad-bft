@@ -8,13 +8,17 @@ edition = "2021"
 [lib]
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-monad-mempool-types = { path = "../monad-mempool-types" }
+monad-eth-types = { path = "../monad-eth-types" }
 
-ethers = { workspace = true }
+reth-primitives = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-oorandom = { workspace = true }
+monad-mempool-testutil = { path = "../monad-mempool-testutil" }
+
+criterion = { workspace = true }
+
+[[bench]]
+name = "pool"
+harness = false

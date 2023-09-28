@@ -1,6 +1,5 @@
 use std::{
     future::Future,
-    mem,
     ops::DerefMut,
     path::PathBuf,
     sync::Arc,
@@ -8,19 +7,14 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use ethers::{
-    types::H256,
-    utils::{
-        hash_message,
-        rlp::{decode_list, encode_list},
-    },
-};
 use futures::{FutureExt, Stream, StreamExt};
-use monad_mempool_checker::{Checker, CheckerConfig};
+use monad_eth_types::{EthFullTransactionList, EthTransactionList};
 use monad_mempool_ipc::{generate_uds_path, MempoolTxIpcReceiver};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
+use monad_mempool_proto::tx::UnverifiedEthTxBatch;
 use monad_mempool_txpool::{Pool, PoolConfig};
-use monad_mempool_types::tx::{EthTx, EthTxBatch};
+use monad_mempool_types::EthTxBatch;
+use reth_primitives::TransactionSignedEcRecovered;
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, Mutex},
@@ -40,8 +34,8 @@ pub enum ControllerError {
     MessengerError(MessengerError),
 }
 
+#[derive(Clone)]
 pub struct ControllerConfig {
-    checker_config: CheckerConfig,
     messenger_config: MessengerConfig,
     pool_config: PoolConfig,
     mempool_ipc_path: PathBuf,
@@ -57,7 +51,6 @@ pub struct ControllerConfig {
 impl Default for ControllerConfig {
     fn default() -> Self {
         Self {
-            checker_config: CheckerConfig::default(),
             messenger_config: MessengerConfig::default(),
             pool_config: PoolConfig::default(),
             mempool_ipc_path: generate_uds_path().into(),
@@ -70,11 +63,6 @@ impl Default for ControllerConfig {
 }
 
 impl ControllerConfig {
-    pub fn with_checker_config(mut self, checker_config: CheckerConfig) -> Self {
-        self.checker_config = checker_config;
-        self
-    }
-
     pub fn with_messenger_config(mut self, messenger_config: MessengerConfig) -> Self {
         self.messenger_config = messenger_config;
         self
@@ -120,16 +108,16 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub async fn new(config: &ControllerConfig) -> Result<Self, MessengerError> {
-        let messenger = Messenger::new(&config.messenger_config, config.wait_for_peers).await?;
+    pub async fn new(config: ControllerConfig) -> Result<Self, MessengerError> {
+        let messenger =
+            Messenger::new(config.messenger_config.clone(), config.wait_for_peers).await?;
 
-        let checker = Checker::new(&config.checker_config);
-        let pool = Arc::new(Mutex::new(Pool::new(&config.pool_config)));
+        let pool = Arc::new(Mutex::new(Pool::new(config.pool_config.clone())));
         let pending_tx_batch = Arc::new(Mutex::new(Vec::new()));
 
         // Spawn task to broadcast transaction batches every time_threshold seconds.
         let broadcast_handle = tokio::spawn(Self::listen_broadcast(
-            config,
+            config.clone(),
             pending_tx_batch.clone(),
             messenger.get_sender(),
         ));
@@ -139,17 +127,15 @@ impl Controller {
 
         // Spawn task to receive incoming transactions over ipc (from rpc server), add them to the mempool, and broadcast them to peers.
         let listen_ipc_handle = tokio::spawn(Self::listen_ipc(
-            config,
+            config.clone(),
             tx_receiver,
-            checker.clone(),
             messenger.get_sender(),
             pool.clone(),
             pending_tx_batch,
         ));
 
         // Spawn task to receive incoming transaction batches from the messenger, taking ownership of the messenger.
-        let listen_messenger_handle =
-            tokio::spawn(Self::listen_messenger(checker, messenger, pool.clone()));
+        let listen_messenger_handle = tokio::spawn(Self::listen_messenger(messenger, pool.clone()));
 
         Ok(Self {
             pool,
@@ -161,31 +147,35 @@ impl Controller {
     }
 
     fn listen_ipc(
-        config: &ControllerConfig,
+        config: ControllerConfig,
         mut tx_receiver: MempoolTxIpcReceiver,
-        checker: Checker,
-        messenger_sender: mpsc::Sender<EthTxBatch>,
+        messenger_sender: mpsc::Sender<UnverifiedEthTxBatch>,
         pool: Arc<Mutex<Pool>>,
-        pending_tx_batch: Arc<Mutex<Vec<EthTx>>>,
+        pending_tx_batch: Arc<Mutex<Vec<TransactionSignedEcRecovered>>>,
     ) -> impl Future<Output = ()> {
         let tx_threshold = config.tx_threshold;
 
         async move {
-            while let Some(Ok(eth_tx)) = tx_receiver.next().await {
-                if let Err(e) = checker.check_eth_tx(&eth_tx) {
-                    event!(Level::ERROR, "Rejecting tx: {}", e);
-                    continue;
-                }
+            while let Some(Ok(tx)) = tx_receiver.next().await {
+                let tx = match tx.try_into_ecrecovered() {
+                    Ok(tx) => tx,
+                    Err(tx) => {
+                        event!(Level::ERROR, "Rejecting IPC tx: {:?}", tx);
+                        continue;
+                    }
+                };
 
-                if let Err(e) = pool.lock().await.insert(eth_tx.clone()) {
+                if let Err(e) = pool.lock().await.insert(tx.clone(), SystemTime::now()) {
                     event!(Level::ERROR, "Error inserting tx into pool: {}", e);
                     continue;
                 }
 
                 let new_len = {
-                    let mut lock = pending_tx_batch.lock().await;
-                    lock.push(eth_tx);
-                    lock.len()
+                    let mut pending_tx_batch = pending_tx_batch.lock().await;
+
+                    pending_tx_batch.push(tx);
+
+                    pending_tx_batch.len()
                 };
 
                 if new_len >= tx_threshold {
@@ -206,9 +196,9 @@ impl Controller {
     }
 
     fn listen_broadcast(
-        config: &ControllerConfig,
-        pending_tx_batch: Arc<Mutex<Vec<EthTx>>>,
-        messenger_sender: mpsc::Sender<EthTxBatch>,
+        config: ControllerConfig,
+        pending_tx_batch: Arc<Mutex<Vec<TransactionSignedEcRecovered>>>,
+        messenger_sender: mpsc::Sender<UnverifiedEthTxBatch>,
     ) -> impl Future<Output = ()> {
         let mut interval = tokio::time::interval(config.time_threshold);
 
@@ -224,30 +214,30 @@ impl Controller {
         }
     }
 
-    async fn listen_messenger(checker: Checker, mut messenger: Messenger, pool: Arc<Mutex<Pool>>) {
+    async fn listen_messenger(mut messenger: Messenger, pool: Arc<Mutex<Pool>>) {
         while let Some(tx_batch) = messenger.recv().await {
-            let expected_batch_hash = Self::calculate_batch_hash(&tx_batch.txs);
-
-            if expected_batch_hash.as_bytes() != tx_batch.hash.as_slice() {
-                event!(Level::ERROR, "Rejecting batch due to hash mismatch");
-                continue;
-            }
+            let tx_batch = match EthTxBatch::try_from(tx_batch) {
+                Ok(tx_batch) => tx_batch,
+                Err(err) => {
+                    event!(
+                        Level::WARN,
+                        "Failed to verify UnverifiedEthTxBatch: {}",
+                        err
+                    );
+                    continue;
+                }
+            };
 
             event!(
                 Level::INFO,
                 "Received transaction batch of size {}",
-                tx_batch.numtx
+                tx_batch.txs.len()
             );
 
             let mut pool_guard = pool.lock().await;
 
             for eth_tx in tx_batch.txs {
-                if let Err(e) = checker.check_eth_tx(&eth_tx) {
-                    event!(Level::ERROR, "Rejecting tx: {}", e);
-                    continue;
-                }
-
-                if let Err(e) = pool_guard.insert(eth_tx) {
+                if let Err(e) = pool_guard.insert(eth_tx, tx_batch.time) {
                     event!(Level::ERROR, "Could not insert tx into pool: {}", e);
                 }
             }
@@ -258,95 +248,48 @@ impl Controller {
 
     /// Creates a new EthTxBatch and broadcasts it to peers via the messenger.
     async fn broadcast_tx_batch(
-        pending_tx_batch: &Arc<Mutex<Vec<EthTx>>>,
-        messenger_sender: &mpsc::Sender<EthTxBatch>,
+        pending_tx_batch: &Arc<Mutex<Vec<TransactionSignedEcRecovered>>>,
+        messenger_sender: &mpsc::Sender<UnverifiedEthTxBatch>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Add a guard here to prevent the lock from being held across await
-        let batch: EthTxBatch = {
+        let batch: UnverifiedEthTxBatch = {
             let mut pending_tx_batch = pending_tx_batch.lock().await;
 
             if pending_tx_batch.is_empty() {
                 return Ok(());
             }
 
-            let batch_hash = Self::calculate_batch_hash(&pending_tx_batch);
-
-            EthTxBatch {
-                hash: batch_hash.as_bytes().into(),
-                numtx: pending_tx_batch.len().try_into()?,
-                txs: mem::take(&mut pending_tx_batch),
-                time: Some(SystemTime::now().into()),
-            }
+            EthTxBatch::new(std::mem::take(&mut pending_tx_batch)).into()
         };
 
-        event!(Level::INFO, ?batch.hash, "Broadcasting batch of size {}", batch.numtx);
+        event!(
+            Level::INFO,
+            "Broadcasting batch of size {}",
+            batch.txs.len()
+        );
 
         messenger_sender.send(batch).await?;
 
         Ok(())
     }
 
-    pub async fn create_proposal(&self, tx_limit: usize, pending_txs: Vec<Vec<u8>>) -> Vec<u8> {
-        let pending_txs = pending_txs
-            .into_iter()
-            .map(|txs| decode_list::<Vec<u8>>(&txs))
-            .fold(Vec::default(), |mut acc, txs| {
-                acc.extend(txs);
-                acc
-            });
-
-        let proposal = self
-            .pool
+    pub async fn create_proposal(
+        &self,
+        tx_limit: usize,
+        pending_txs: Vec<EthTransactionList>,
+    ) -> EthTransactionList {
+        self.pool
             .lock()
             .await
-            .create_proposal(tx_limit, pending_txs);
-
-        encode_list::<Vec<u8>, _>(
-            proposal
-                .into_iter()
-                .map(|b| b.0.into())
-                .collect::<Vec<Vec<u8>>>()
-                .as_slice(),
-        )
-        .to_vec()
+            .create_proposal(tx_limit, pending_txs)
     }
 
-    pub async fn fetch_full_txs(&self, txs: Vec<u8>) -> Option<Vec<u8>> {
-        let txs = decode_list::<Vec<u8>>(&txs);
-
-        let full_txs = self.pool.lock().await.fetch_full_txs(
-            txs.into_iter()
-                .map(ethers::types::Bytes::from)
-                .collect::<Vec<_>>(),
-        );
-
-        full_txs.map(|full_txs| {
-            encode_list::<Vec<u8>, _>(
-                full_txs
-                    .into_iter()
-                    .map(|b| b.0.into())
-                    .collect::<Vec<Vec<u8>>>()
-                    .as_slice(),
-            )
-            .to_vec()
-        })
+    pub async fn fetch_full_txs(&self, txs: EthTransactionList) -> Option<EthFullTransactionList> {
+        self.pool.lock().await.fetch_full_txs(txs)
     }
 
-    pub async fn drain_txs(&self, drain_txs: Vec<u8>) {
-        let drain_txs = decode_list::<Vec<u8>>(&drain_txs);
-
-        self.pool.lock().await.remove_tx_hashes(
-            drain_txs
-                .into_iter()
-                .map(ethers::types::Bytes::from)
-                .collect::<Vec<_>>(),
-        )
-    }
-
-    fn calculate_batch_hash(txs: &[EthTx]) -> H256 {
-        let tx_hashes: Vec<u8> = txs.iter().flat_map(|tx| tx.hash.clone()).collect();
-
-        hash_message(tx_hashes)
+    pub async fn drain_txs(&self, drain_txs: EthTransactionList) {
+        self.pool.lock().await.remove_tx_hashes(drain_txs)
     }
 }
 
@@ -387,14 +330,9 @@ impl Stream for Controller {
 mod test {
     use std::{path::PathBuf, time::Duration};
 
-    use ethers::{
-        signers::LocalWallet,
-        types::{transaction::eip2718::TypedTransaction, Address, TransactionRequest},
-    };
     use futures::SinkExt;
     use monad_mempool_ipc::MempoolTxIpcSender;
-    use monad_mempool_types::tx::EthTx;
-    use oorandom::Rand32;
+    use monad_mempool_testutil::create_signed_eth_txs;
     use tempfile::NamedTempFile;
 
     use crate::{Controller, ControllerConfig};
@@ -417,7 +355,7 @@ mod test {
 
             controllers.push((
                 Controller::new(
-                    &ControllerConfig::default()
+                    ControllerConfig::default()
                         .with_wait_for_peers(0)
                         .with_mempool_ipc_path(mempool_ipc_temppath.clone()),
                 )
@@ -432,9 +370,9 @@ mod test {
             .await
             .unwrap();
 
-        let hex_txs = create_eth_txs(0, NUM_TX);
+        let hex_txs = create_signed_eth_txs(0, NUM_TX);
         for hex_tx in hex_txs {
-            sender.send(hex_tx).await.unwrap();
+            sender.send(hex_tx.into()).await.unwrap();
         }
 
         // Allow time for controllers to receive the messages
@@ -448,43 +386,6 @@ mod test {
             let proposal = controller.create_proposal(NUM_TX.into(), vec![]).await;
             assert_eq!(sender_proposal, proposal);
         }
-    }
-
-    const LOCAL_TEST_KEY: &str = "046507669b0b9d460fe9d48bb34642d85da927c566312ea36ac96403f0789b69";
-
-    fn create_eth_txs(seed: u64, count: u16) -> Vec<EthTx> {
-        let wallet = LOCAL_TEST_KEY.parse::<LocalWallet>().unwrap();
-
-        create_txs(seed, count)
-            .into_iter()
-            .map(|tx| {
-                let signature = wallet.sign_transaction_sync(&tx).unwrap();
-
-                EthTx {
-                    hash: tx.hash(&signature).as_bytes().to_vec(),
-                    // priority: 0,
-                    rlpdata: tx.rlp_signed(&signature).to_vec(),
-                }
-            })
-            .collect()
-    }
-
-    fn create_txs(seed: u64, count: u16) -> Vec<TypedTransaction> {
-        let mut rng = Rand32::new(seed);
-
-        (0..count)
-            .map(|_| {
-                TransactionRequest::new()
-                    .to("0xc582768697b4a6798f286a03A2A774c8743163BB"
-                        .parse::<Address>()
-                        .unwrap())
-                    .gas(21337)
-                    .gas_price(42)
-                    .value(rng.rand_u32())
-                    .nonce(0)
-                    .into()
-            })
-            .collect()
     }
 }
 

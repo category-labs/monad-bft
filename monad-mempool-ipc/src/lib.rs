@@ -4,9 +4,8 @@ use std::{
 };
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use monad_mempool_types::tx::EthTx;
-use prost::Message;
 use rand::distributions::{Alphanumeric, DistString};
+use reth_primitives::TransactionSigned;
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
@@ -59,7 +58,7 @@ impl MempoolTxIpcSender {
     }
 }
 
-impl Sink<EthTx> for MempoolTxIpcSender {
+impl Sink<TransactionSigned> for MempoolTxIpcSender {
     type Error = std::io::Error;
 
     fn poll_ready(
@@ -69,10 +68,13 @@ impl Sink<EthTx> for MempoolTxIpcSender {
         self.writer.poll_ready_unpin(cx)
     }
 
-    fn start_send(mut self: std::pin::Pin<&mut Self>, tx: EthTx) -> Result<(), Self::Error> {
-        let buf = tx.encode_to_vec();
+    fn start_send(
+        mut self: std::pin::Pin<&mut Self>,
+        tx: TransactionSigned,
+    ) -> Result<(), Self::Error> {
+        let buf = tx.envelope_encoded();
 
-        self.writer.start_send_unpin(buf.into())
+        self.writer.start_send_unpin(buf)
     }
 
     fn poll_flush(
@@ -107,7 +109,7 @@ impl MempoolTxIpcReceiver {
 }
 
 impl Stream for MempoolTxIpcReceiver {
-    type Item = Result<EthTx, std::io::Error>;
+    type Item = Result<TransactionSigned, std::io::Error>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -141,7 +143,10 @@ impl Stream for MempoolTxIpcReceiver {
                 Err(e) => return Poll::Ready(Some(Err(e))),
             };
 
-            return Poll::Ready(Some(Ok(prost::Message::decode(bytes_mut)?)));
+            return Poll::Ready(Some(
+                TransactionSigned::decode_enveloped(reth_primitives::Bytes(bytes_mut.freeze()))
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            ));
         }
 
         Poll::Pending

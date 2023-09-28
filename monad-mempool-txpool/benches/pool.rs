@@ -1,15 +1,13 @@
 use std::{
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_mempool::{
-    pool::{Pool, PoolConfig},
-    test_util::create_priority_txs,
-    tx::PriorityTx,
-};
+use monad_mempool_testutil::create_signed_eth_txs;
+use monad_mempool_txpool::{Pool, PoolConfig};
+use reth_primitives::TransactionSignedEcRecovered;
 
 const THREAD_COUNT: u16 = 2;
 const WARMUP_TXS: u16 = 10000;
@@ -17,15 +15,15 @@ const TX_PER_THREAD: u16 = 10000;
 
 pub fn benchmark_pool(c: &mut Criterion) {
     c.bench_function("create single proposal with concurrent write/read", |b| {
-        let txs_for_threads: Vec<Vec<PriorityTx>> = (0..THREAD_COUNT)
-            .map(|i| create_priority_txs(i.into(), TX_PER_THREAD))
+        let txs_for_threads: Vec<Vec<TransactionSignedEcRecovered>> = (0..THREAD_COUNT)
+            .map(|i| create_signed_eth_txs(i.into(), TX_PER_THREAD))
             .collect();
 
         b.iter_batched(
             || {
-                let pool = Arc::new(Mutex::new(Pool::new(&PoolConfig::default())));
-                for tx in create_priority_txs(128, WARMUP_TXS) {
-                    pool.lock().unwrap().insert(tx).unwrap();
+                let pool = Arc::new(Mutex::new(Pool::new(PoolConfig::default())));
+                for tx in create_signed_eth_txs(128, WARMUP_TXS) {
+                    pool.lock().unwrap().insert(tx, SystemTime::now()).unwrap();
                 }
                 (pool, txs_for_threads.clone())
             },
@@ -36,13 +34,13 @@ pub fn benchmark_pool(c: &mut Criterion) {
                     thread::spawn(move || {
                         let mut pool = pool.lock().unwrap();
                         for tx in txs {
-                            pool.insert(tx.clone()).unwrap();
+                            pool.insert(tx.clone(), SystemTime::now()).unwrap();
                         }
                     });
                 }
 
                 let mut pool = pool.lock().unwrap();
-                let proposal = pool.create_proposal(false);
+                let proposal = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
                 pool.remove_tx_hashes(proposal);
             },
             criterion::BatchSize::SmallInput,
@@ -50,15 +48,15 @@ pub fn benchmark_pool(c: &mut Criterion) {
     });
 
     c.bench_function("create multi proposal with concurrent write/read", |b| {
-        let txs_for_threads: Vec<Vec<PriorityTx>> = (0..THREAD_COUNT)
-            .map(|i| create_priority_txs(i.into(), TX_PER_THREAD))
+        let txs_for_threads: Vec<Vec<TransactionSignedEcRecovered>> = (0..THREAD_COUNT)
+            .map(|i| create_signed_eth_txs(i.into(), TX_PER_THREAD))
             .collect();
 
         b.iter_batched(
             || {
-                let pool = Arc::new(Mutex::new(Pool::new(&PoolConfig::default())));
-                for tx in create_priority_txs(128, WARMUP_TXS) {
-                    pool.lock().unwrap().insert(tx).unwrap();
+                let pool = Arc::new(Mutex::new(Pool::new(PoolConfig::default())));
+                for tx in create_signed_eth_txs(128, WARMUP_TXS) {
+                    pool.lock().unwrap().insert(tx, SystemTime::now()).unwrap();
                 }
                 (pool, txs_for_threads.clone())
             },
@@ -69,14 +67,14 @@ pub fn benchmark_pool(c: &mut Criterion) {
                     thread::spawn(move || {
                         let mut pool = pool.lock().unwrap();
                         for tx in txs {
-                            pool.insert(tx.clone()).unwrap();
+                            pool.insert(tx.clone(), SystemTime::now()).unwrap();
                         }
                     });
                 }
 
                 {
                     let mut pool: std::sync::MutexGuard<Pool> = pool.lock().unwrap();
-                    let proposal = pool.create_proposal(false);
+                    let proposal = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
                     pool.remove_tx_hashes(proposal);
                 }
 
@@ -84,7 +82,7 @@ pub fn benchmark_pool(c: &mut Criterion) {
 
                 {
                     let mut pool: std::sync::MutexGuard<Pool> = pool.lock().unwrap();
-                    let proposal2 = pool.create_proposal(false);
+                    let proposal2 = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
                     pool.remove_tx_hashes(proposal2);
                 }
             },

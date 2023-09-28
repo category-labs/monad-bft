@@ -8,13 +8,16 @@ edition = "2021"
 [lib]
 bench = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-monad-mempool-types = { path = "../monad-mempool-types" }
+monad-mempool-proto = { path = "../monad-mempool-proto" }
 
 libp2p = { workspace = true, features = ["dns", "gossipsub", "macros", "mdns", "tcp", "tokio", "yamux", "noise", "websocket", "mplex"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+monad-mempool-types = { path = "../monad-mempool-types" }
+
+reth-primitives = { workspace = true }

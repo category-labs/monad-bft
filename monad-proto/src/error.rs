@@ -1,4 +1,5 @@
 use std::fmt;
+
 #[derive(Debug, Clone)]
 pub enum ProtoError {
     DecodeError(prost::DecodeError),
