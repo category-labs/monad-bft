@@ -332,7 +332,7 @@ where
                             cmds.push(ConsensusCommand::Publish {
                                 target: RouterTarget::Broadcast,
                                 message: ConsensusMessage::Proposal(p),
-                            })
+                            });
                         }
 
                         cmds
@@ -478,9 +478,10 @@ where
                         ConsensusCommand::ScheduleReset => {
                             cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset))
                         }
-                        ConsensusCommand::FetchTxs(max_txns, cb) => {
+                        ConsensusCommand::FetchTxs(max_txns, pending_txs, cb) => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchTxs(
                                 max_txns,
+                                pending_txs,
                                 Box::new(|txs| {
                                     MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
                                 }),

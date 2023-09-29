@@ -620,12 +620,13 @@ where
         let seq_num_qc = high_qc.info.vote.seq_num;
         let proposed_seq_num = seq_num_qc + 1;
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
-            ConsensusAction::Propose(h) => {
+            ConsensusAction::Propose(h, pending_txs) => {
                 inc_count!(creating_proposal);
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
                 vec![ConsensusCommand::FetchTxs(
                     self.config.proposal_size,
+                    pending_txs,
                     Box::new(move |txns| FetchedTxs {
                         node_id,
                         round,
@@ -650,6 +651,7 @@ where
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
                 vec![ConsensusCommand::FetchTxs(
                     0,
+                    vec![],
                     Box::new(move |_txns| FetchedTxs {
                         node_id,
                         round,
@@ -666,30 +668,30 @@ where
 
     #[must_use]
     fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: u64) -> ConsensusAction {
-        match self.pending_block_tree.root {
-            RootKind::Unrooted(_) => return ConsensusAction::Abstain,
-            RootKind::Rooted(_) => (),
-        }
-
-        if !self.pending_block_tree.tree().contains_key(parent_bid)
-            && !self.config.propose_with_missing_blocks
-        {
+        // Never propose while syncing
+        if let RootKind::Unrooted(_) = self.pending_block_tree.root {
             return ConsensusAction::Abstain;
         }
 
-        if self.config.propose_with_missing_blocks
-            || self.pending_block_tree.path_to_root(parent_bid)
-        {
-            match self
-                .state_root_validator
-                .get_next_state_root(proposed_seq_num)
-            {
-                Some(h) => ConsensusAction::Propose(h),
-                None => ConsensusAction::ProposeEmpty,
-            }
-        } else {
-            ConsensusAction::Abstain
+        // Can't propose txs without state root hash
+        let Some(h) = self
+            .state_root_validator
+            .get_next_state_root(proposed_seq_num)
+        else {
+            return ConsensusAction::ProposeEmpty;
+        };
+
+        // Always propose when there's a path to root
+        if let Some(pending_txs) = self.pending_block_tree.get_txs_on_path_to_root(parent_bid) {
+            return ConsensusAction::Propose(h, pending_txs);
         }
+
+        // Still propose but with the chance of proposing duplicate txs
+        if self.config.propose_with_missing_blocks {
+            return ConsensusAction::Propose(h, vec![]);
+        };
+
+        ConsensusAction::Abstain
     }
 
     fn get_blocks_if_missing<VT: ValidatorSetType>(
@@ -706,7 +708,7 @@ where
 }
 
 pub enum ConsensusAction {
-    Propose(Hash),
+    Propose(Hash, Vec<TransactionList>),
     ProposeEmpty,
     Abstain,
 }

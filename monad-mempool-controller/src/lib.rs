@@ -286,8 +286,20 @@ impl Controller {
         Ok(())
     }
 
-    pub async fn create_proposal(&self, tx_limit: usize) -> Vec<u8> {
-        let proposal = self.pool.lock().await.create_proposal(tx_limit);
+    pub async fn create_proposal(&self, tx_limit: usize, pending_txs: Vec<Vec<u8>>) -> Vec<u8> {
+        let pending_txs = pending_txs
+            .into_iter()
+            .map(|txs| decode_list::<Vec<u8>>(&txs))
+            .fold(Vec::default(), |mut acc, txs| {
+                acc.extend(txs);
+                acc
+            });
+
+        let proposal = self
+            .pool
+            .lock()
+            .await
+            .create_proposal(tx_limit, pending_txs);
 
         encode_list::<Vec<u8>, _>(
             proposal
@@ -428,10 +440,12 @@ mod test {
         // Allow time for controllers to receive the messages
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let sender_proposal = sender_controller.create_proposal(NUM_TX.into()).await;
+        let sender_proposal = sender_controller
+            .create_proposal(NUM_TX.into(), vec![])
+            .await;
 
         for (controller, _) in &controllers {
-            let proposal = controller.create_proposal(NUM_TX.into()).await;
+            let proposal = controller.create_proposal(NUM_TX.into(), vec![]).await;
             assert_eq!(sender_proposal, proposal);
         }
     }

@@ -28,6 +28,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     ScheduleReset,
     FetchTxs(
         usize,
+        Vec<TransactionList>,
         Box<dyn (FnOnce(TransactionList) -> FetchedTxs<SCT>) + Send + Sync>,
     ),
     FetchTxsReset,

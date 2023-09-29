@@ -490,7 +490,7 @@ impl<E> Executor for MockMempool<E> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(_, cb) => {
+                MempoolCommand::FetchTxs(_, _, cb) => {
                     self.fetch_txs_state = Some(cb);
                     wake = true;
                 }
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn test_fetch() {
         let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, Box::new(|_| {}))]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
@@ -683,8 +683,8 @@ mod tests {
     #[test]
     fn test_double_fetch() {
         let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, Box::new(|_| {}))]);
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, Box::new(|_| {}))]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
@@ -692,7 +692,7 @@ mod tests {
     #[test]
     fn test_reset() {
         let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, Box::new(|_| {}))]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
         mempool.exec(vec![MempoolCommand::FetchReset]);
         assert!(!mempool.ready());
     }
@@ -701,8 +701,8 @@ mod tests {
     fn test_inline_double_fetch() {
         let mut mempool = MockMempool::<()>::default();
         mempool.exec(vec![
-            MempoolCommand::FetchTxs(0, Box::new(|_| {})),
-            MempoolCommand::FetchTxs(0, Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
         ]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -712,7 +712,7 @@ mod tests {
     fn test_inline_reset() {
         let mut mempool = MockMempool::<()>::default();
         mempool.exec(vec![
-            MempoolCommand::FetchTxs(0, Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
             MempoolCommand::FetchReset,
         ]);
         assert!(!mempool.ready());
@@ -723,7 +723,7 @@ mod tests {
         let mut mempool = MockMempool::<()>::default();
         mempool.exec(vec![
             MempoolCommand::FetchReset,
-            MempoolCommand::FetchTxs(0, Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
         ]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn test_noop_exec() {
         let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, Box::new(|_| {}))]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
         mempool.exec(Vec::new());
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());

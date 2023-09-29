@@ -134,8 +134,11 @@ impl Pool {
 
     /// Returns a Vec of transactions to be included in a block proposal.
     /// The highest priority transactions are returned, up to the block limit.
-    pub fn create_proposal(&mut self, tx_limit: usize) -> Vec<Bytes> {
+    pub fn create_proposal(&mut self, tx_limit: usize, pending_txs: Vec<Vec<u8>>) -> Vec<Bytes> {
+        let pending_txs: HashSet<Vec<u8>> = pending_txs.into_iter().collect();
+
         let mut txs = Vec::new();
+        let mut dupe_txs = Vec::default();
 
         while txs.len() < tx_limit && !self.pq.is_empty() {
             let tx = self.pq.pop().unwrap();
@@ -147,11 +150,19 @@ impl Pool {
                 continue;
             }
 
-            txs.push(tx);
+            if pending_txs.contains(&Into::<Vec<u8>>::into(tx.hash.0.clone())) {
+                dupe_txs.push(tx);
+            } else {
+                txs.push(tx);
+            }
         }
 
         for tx in &txs {
             self.pq.push(tx.clone());
+        }
+
+        for tx in dupe_txs {
+            self.pq.push(tx);
         }
 
         txs.into_iter().map(|tx| tx.hash).collect()
@@ -248,7 +259,7 @@ mod test {
         )
         .unwrap();
 
-        let proposal = pool.create_proposal(TX_BATCH_SIZE);
+        let proposal = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         let expected_proposal = txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]
             .iter()
             .map(|tx| tx.hash.clone().into())
@@ -258,7 +269,7 @@ mod test {
         assert_eq!(proposal, expected_proposal);
         pool.remove_tx_hashes(proposal);
 
-        let proposal2 = pool.create_proposal(TX_BATCH_SIZE);
+        let proposal2 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         let expected_proposal2 = txs[0..TX_BATCH_SIZE]
             .iter()
             .map(|tx| tx.hash.clone().into())
@@ -269,12 +280,12 @@ mod test {
 
         // Simulate a failed proposal, doesn't get removed
 
-        let proposal3 = pool.create_proposal(TX_BATCH_SIZE);
+        let proposal3 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         assert_eq!(proposal3.len(), TX_BATCH_SIZE);
         assert_eq!(proposal3, expected_proposal2);
         pool.remove_tx_hashes(proposal3);
 
-        let proposal3 = pool.create_proposal(TX_BATCH_SIZE);
+        let proposal3 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         assert_eq!(proposal3.len(), 1);
         assert_eq!(
             proposal3[0],
@@ -282,7 +293,48 @@ mod test {
         );
         pool.remove_tx_hashes(proposal3);
 
-        let proposal4 = pool.create_proposal(TX_BATCH_SIZE);
+        let proposal4 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
         assert_eq!(proposal4.len(), 0);
+    }
+
+    #[test]
+    fn test_create_proposal_non_empty_pending_txs() {
+        let mut pool = Pool::new(&PoolConfig {
+            ttl_duration: std::time::Duration::from_secs(120),
+        });
+
+        let [tx1, tx2] = &create_eth_txs(0, 2)[..] else {
+            panic!();
+        };
+
+        pool.insert(tx1.to_owned()).unwrap();
+
+        assert_eq!(
+            pool.create_proposal(10, vec![]),
+            vec![tx1]
+                .into_iter()
+                .map(|tx| tx.hash.clone().into())
+                .collect::<Vec<Bytes>>()
+        );
+
+        assert!(pool.create_proposal(10, vec![tx1.hash.clone()]).is_empty());
+
+        pool.insert(tx2.to_owned()).unwrap();
+
+        assert_eq!(
+            pool.create_proposal(10, vec![]),
+            vec![tx1, tx2]
+                .into_iter()
+                .map(|tx| tx.hash.clone().into())
+                .collect::<Vec<Bytes>>()
+        );
+
+        assert_eq!(
+            pool.create_proposal(10, vec![tx2.hash.clone()]),
+            vec![tx1]
+                .into_iter()
+                .map(|tx| tx.hash.clone().into())
+                .collect::<Vec<Bytes>>()
+        );
     }
 }

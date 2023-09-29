@@ -2,6 +2,7 @@ use std::{collections::HashMap, fmt, result::Result as StdResult};
 
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
+    payload::TransactionList,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
@@ -301,17 +302,29 @@ impl<T: SignatureCollection> BlockTree<T> {
     }
 
     pub fn path_to_root(&self, b: &BlockId) -> bool {
+        self.get_txs_on_path_to_root(b).is_some()
+    }
+
+    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<TransactionList>> {
+        let mut txs = Vec::default();
+
         let mut bid = b;
+
         loop {
             let Some(i) = self.tree.get(bid) else {
-                return false;
+                return None;
             };
+
+            txs.push(i.block.get_block().payload.txns.clone());
+
             if self.root_match(i) {
-                return true;
+                return Some(txs);
             }
+
             let Some(parent_id) = &i.parent else {
-                return false;
+                return None;
             };
+
             bid = parent_id;
         }
     }
