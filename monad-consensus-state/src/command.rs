@@ -21,6 +21,10 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
         target: RouterTarget,
         message: ConsensusMessage<SCT>,
     },
+    Send {
+        target: RouterTarget,
+        message: ConsensusMessage<SCT>,
+    },
     Schedule {
         duration: Duration,
         on_timeout: PacemakerTimerExpire,

@@ -124,6 +124,9 @@ where
                     RouterCommand::Unpublish { target, id } => {
                         to_unpublish.insert((target, id));
                     }
+                    RouterCommand::Send { target, message } => {
+                        to_publish.push((target, message));
+                    }
                 },
                 _ => {}
             }

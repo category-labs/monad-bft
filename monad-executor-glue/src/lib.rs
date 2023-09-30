@@ -41,8 +41,22 @@ where
     M: Message,
 {
     // TODO add a RouterCommand for setting peer set for broadcast
-    Publish { target: RouterTarget, message: OM },
-    Unpublish { target: RouterTarget, id: M::Id },
+    /// Message is published for delivery to target and will continue to attempt
+    /// delivery until unpublished
+    Publish {
+        target: RouterTarget,
+        message: OM,
+    },
+    Unpublish {
+        target: RouterTarget,
+        id: M::Id,
+    },
+
+    /// Best-effort send to target
+    Send {
+        target: RouterTarget,
+        message: OM,
+    },
 }
 
 pub trait Message: Identifiable + Clone {

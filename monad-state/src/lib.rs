@@ -365,7 +365,7 @@ where
                                 fetched_b.requester,
                                 fetched_b.block_id,
                             ),
-                            ConsensusCommand::Publish {
+                            ConsensusCommand::Send {
                                 target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
                                 message: ConsensusMessage::BlockSync(
                                     match fetched_b.unverified_full_block {
@@ -416,7 +416,7 @@ where
                                     self.consensus.fetch_uncommitted_block(&msg.block_id)
                                 {
                                     // retrieve if currently cached in pending block tree
-                                    vec![ConsensusCommand::Publish {
+                                    vec![ConsensusCommand::Send {
                                         target: RouterTarget::PointToPoint((&author).into()),
                                         message: ConsensusMessage::BlockSync(
                                             BlockSyncMessage::BlockFound(block.clone().into()),
@@ -448,23 +448,27 @@ where
                     }
                 };
 
-                let mut prepare_router_message =
-                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
-                        let message = VerifiedMonadMessage(
-                            message.sign::<HasherType, ST>(self.consensus.get_keypair()),
-                        );
-                        let publish_action = self.message_state.send(target, message);
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: publish_action.target,
-                            message: publish_action.message,
-                        })
-                    };
-
                 let mut cmds = Vec::new();
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Publish { target, message } => {
-                            cmds.push(prepare_router_message(target, message));
+                            let message = VerifiedMonadMessage(
+                                message.sign::<HasherType, ST>(self.consensus.get_keypair()),
+                            );
+                            let publish_action = self.message_state.send(target, message);
+                            cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                                target: publish_action.target,
+                                message: publish_action.message,
+                            }));
+                        }
+                        ConsensusCommand::Send { target, message } => {
+                            let message = VerifiedMonadMessage(
+                                message.sign::<HasherType, ST>(self.consensus.get_keypair()),
+                            );
+                            cmds.push(Command::RouterCommand(RouterCommand::Send {
+                                target,
+                                message,
+                            }));
                         }
                         ConsensusCommand::Schedule {
                             duration,
@@ -507,12 +511,18 @@ where
                         }
 
                         ConsensusCommand::RequestSync { peer, block_id } => {
-                            cmds.push(prepare_router_message(
-                                RouterTarget::PointToPoint((&peer).into()),
+                            let consensus_message =
                                 ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
                                     block_id,
-                                }),
-                            ));
+                                });
+                            let message = VerifiedMonadMessage(
+                                consensus_message
+                                    .sign::<HasherType, ST>(self.consensus.get_keypair()),
+                            );
+                            cmds.push(Command::RouterCommand(RouterCommand::Send {
+                                target: (RouterTarget::PointToPoint((&peer).into())),
+                                message,
+                            }))
                         }
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))

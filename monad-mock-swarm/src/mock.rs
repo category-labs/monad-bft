@@ -281,6 +281,7 @@ where
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
+        let mut to_send = Vec::new();
 
         let (
             router_cmds,
@@ -297,6 +298,9 @@ where
                 }
                 RouterCommand::Unpublish { target, id } => {
                     to_unpublish.insert((target, id));
+                }
+                RouterCommand::Send { target, message } => {
+                    to_send.push((target, message));
                 }
             }
         }
@@ -326,6 +330,10 @@ where
             if to_unpublish.contains(&(target, id)) {
                 continue;
             }
+            self.router.outbound(self.tick, target, message.serialize());
+        }
+
+        for (target, message) in to_send {
             self.router.outbound(self.tick, target, message.serialize());
         }
     }

@@ -144,27 +144,15 @@ where
     }
 
     pub fn publish_message(&mut self, to: &monad_executor_glue::PeerId, message: OM) {
-        let to_libp2p: libp2p::PeerId = (&to.0).into();
-        if self.swarm.local_peer_id() == &to_libp2p {
-            // we need special case send to self
-            // this is because dialing to self will fail
-            self.self_events.push_back(message.into().event(*to));
-            return;
+        if let Some((to_libp2p, id, message, request_id)) = self.send_request(to, message) {
+            self.outbound_messages.insert(request_id, message);
+            self.outbound_messages_lookup
+                .insert((to_libp2p, id), request_id);
+            assert_eq!(
+                self.outbound_messages.len(),
+                self.outbound_messages_lookup.len()
+            );
         }
-        let id = message.as_ref().id();
-        let message = Arc::new(WrappedMessage::Send(message));
-        let request_id = self
-            .swarm
-            .behaviour_mut()
-            .request_response
-            .send_request(&to_libp2p, message.clone());
-        self.outbound_messages.insert(request_id, message);
-        self.outbound_messages_lookup
-            .insert((to_libp2p, id), request_id);
-        assert_eq!(
-            self.outbound_messages.len(),
-            self.outbound_messages_lookup.len()
-        );
     }
 
     pub fn unpublish_message(&mut self, to: &monad_executor_glue::PeerId, message_id: &M::Id) {
@@ -181,6 +169,33 @@ where
             self.outbound_messages.len(),
             self.outbound_messages_lookup.len()
         );
+    }
+
+    pub fn send_message(&mut self, to: &monad_executor_glue::PeerId, message: OM) {
+        self.send_request(to, message);
+    }
+
+    pub fn send_request(
+        &mut self,
+        to: &monad_executor_glue::PeerId,
+        message: OM,
+    ) -> Option<(libp2p::PeerId, M::Id, Arc<WrappedMessage<M, OM>>, RequestId)> {
+        let to_libp2p: libp2p::PeerId = (&to.0).into();
+        if self.swarm.local_peer_id() == &to_libp2p {
+            // we need special case send to self
+            // this is because dialing to self will fail
+            self.self_events.push_back(message.into().event(*to));
+            return None;
+        }
+        let id = message.as_ref().id();
+        let message = Arc::new(WrappedMessage::Send(message));
+        let request_id = self
+            .swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&to_libp2p, message.clone());
+
+        Some((to_libp2p, id, message, request_id))
     }
 }
 
@@ -213,6 +228,15 @@ where
                     };
                     for to in peers {
                         self.unpublish_message(&to, &id)
+                    }
+                }
+                RouterCommand::Send { target, message } => {
+                    let peers = match target {
+                        RouterTarget::Broadcast => self.peers.iter().copied().collect(),
+                        RouterTarget::PointToPoint(peer) => vec![peer],
+                    };
+                    for to in peers {
+                        self.send_message(&to, message.clone())
                     }
                 }
             }
@@ -423,22 +447,26 @@ mod tests {
     }
 
     #[test]
-    fn test_send_other() {
+    fn test_publish_other() {
         let mut nodes = create_random_nodes(2);
         let (peer_id_1, peer_id_2) = {
             let mut peer_ids = nodes.keys().copied();
             (peer_ids.next().unwrap(), peer_ids.next().unwrap())
         };
-        let message = TestMessage(0);
+        let message1 = TestMessage(0);
+        let message2 = TestMessage(1);
         {
             let service_1 = nodes.get_mut(&peer_id_1).unwrap();
-            service_1.publish_message(&peer_id_2, message.clone());
+            service_1.publish_message(&peer_id_2, message1.clone());
+            service_1.send_message(&peer_id_2, message2.clone());
         }
 
-        let mut expected_events: HashSet<_> =
-            vec![(peer_id_2, TestEvent::Message(peer_id_1, message))]
-                .into_iter()
-                .collect();
+        let mut expected_events: HashSet<_> = vec![
+            (peer_id_2, TestEvent::Message(peer_id_1, message1)),
+            (peer_id_2, TestEvent::Message(peer_id_1, message2)),
+        ]
+        .into_iter()
+        .collect();
 
         while !expected_events.is_empty() {
             // this future resolves to the next available event (across all nodes)
