@@ -727,7 +727,6 @@ mod test {
         block::{BlockType, UnverifiedFullBlock},
         certificate_signature::CertificateKeyPair,
         ledger::LedgerCommitInfo,
-        message_signature::MessageSignature,
         multi_sig::MultiSig,
         payload::{
             ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
@@ -765,12 +764,7 @@ mod test {
     type StateRootValidatorType = NopStateRoot;
     type TransactionValidatorType = MockValidator;
 
-    fn setup<
-        ST: MessageSignature,
-        SCT: SignatureCollection,
-        SVT: StateRootValidator,
-        TVT: TransactionValidator,
-    >(
+    fn setup<SCT: SignatureCollection, SVT: StateRootValidator, TVT: TransactionValidator>(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
@@ -833,12 +827,8 @@ mod test {
     #[traced_test]
     #[test_log::test]
     fn lock_qc_high() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            NopSignature,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
@@ -908,12 +898,8 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -959,12 +945,8 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen =
@@ -1064,12 +1046,8 @@ mod test {
 
     #[test]
     fn old_qc_in_timeout_message() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1129,12 +1107,8 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen =
@@ -1190,12 +1164,8 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1384,12 +1354,8 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1500,12 +1466,8 @@ mod test {
 
     #[test]
     fn test_commit_rule_non_consecutive() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
@@ -1631,12 +1593,8 @@ mod test {
     // not incorrectly committed
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -2056,12 +2014,8 @@ mod test {
 
     #[test]
     fn test_fetch_uncommitted_block() {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(4);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
 
@@ -2177,12 +2131,10 @@ mod test {
     #[test_case(100; "100 participants")]
     #[test_case(523; "523 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(num_state as u32);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_state as u32,
+            );
 
         let election = SimpleRoundRobin::new();
         let mut correct_proposal_gen =
@@ -2300,12 +2252,10 @@ mod test {
     #[test]
     fn test_observe_qc_through_tmo() {
         let num_state = 5;
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(num_state as u32);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_state as u32,
+            );
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];
@@ -2383,12 +2333,10 @@ mod test {
     #[test]
     fn test_observe_qc_through_proposal() {
         let num_state = 5;
-        let (keys, certkeys, valset, valmap, mut states) = setup::<
-            SignatureType,
-            SignatureCollectionType,
-            StateRootValidatorType,
-            TransactionValidatorType,
-        >(num_state as u32);
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_state as u32,
+            );
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];

@@ -443,7 +443,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -469,7 +469,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -495,7 +495,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -521,7 +521,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -547,7 +547,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -573,7 +573,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -599,7 +599,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -625,7 +625,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -723,7 +723,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -758,7 +758,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -784,7 +784,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -810,7 +810,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -863,7 +863,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -893,7 +893,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -915,7 +915,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -945,7 +945,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1000,7 +1000,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1030,7 +1030,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1076,7 +1076,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1102,7 +1102,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1128,7 +1128,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1146,7 +1146,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1164,7 +1164,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1234,7 +1234,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1260,7 +1260,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1286,7 +1286,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1312,7 +1312,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1366,7 +1366,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1392,7 +1392,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1418,7 +1418,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1444,7 +1444,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1470,7 +1470,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1496,7 +1496,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1558,7 +1558,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1584,7 +1584,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1610,7 +1610,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1655,7 +1655,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1681,7 +1681,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1707,7 +1707,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1753,7 +1753,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1779,7 +1779,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1805,7 +1805,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1823,7 +1823,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 
@@ -1841,7 +1841,7 @@ mod test {
                 ),
             ),
             FullTransactionList::default(),
-            &MockValidator::default(),
+            &MockValidator {},
         )
         .unwrap();
 

@@ -205,17 +205,9 @@ where
     if parallelize {
         max_tick = nodes.batch_step_until(until, until_block);
     } else {
-        loop {
-            match nodes.step_until(until, until_block) {
-                Some((tick, _, _)) => {
-                    assert!(tick >= max_tick);
-                    max_tick = tick;
-                    continue;
-                }
-                None => {
-                    break;
-                }
-            }
+        while let Some((tick, _, _)) = nodes.step_until(until, until_block) {
+            assert!(tick >= max_tick);
+            max_tick = tick;
         }
     }
 

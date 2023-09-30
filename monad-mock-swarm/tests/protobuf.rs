@@ -87,12 +87,11 @@ fn test_consensus_message_event_proposal_bls() {
         .map(|k| NodeId(k.pubkey()))
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, BlsSignatureCollection, MockValidator>(
-            voting_keys.iter(),
-            &valmap,
-            &MockValidator::default(),
-        );
+    let (genesis_block, genesis_sigs) = get_genesis_config::<
+        Sha256Hash,
+        BlsSignatureCollection,
+        MockValidator,
+    >(voting_keys.iter(), &valmap, &MockValidator {});
     let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
