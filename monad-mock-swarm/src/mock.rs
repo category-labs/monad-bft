@@ -139,7 +139,7 @@ where
     ledger: MockLedger<S::Block, S::Event>,
     checkpoint: MockCheckpoint<S::Checkpoint>,
     epoch: MockEpoch<ST, SCT>,
-    state_root_hash: MockStateRootHash<S::Block, S::Event>,
+    state_root_hash: MockStateRootHash<S::Block, ST, SCT>,
     tick: Duration,
 
     timer: Option<TimerEvent<S::Event>>,

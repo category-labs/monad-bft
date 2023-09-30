@@ -537,14 +537,11 @@ where
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
                         ),
-                        ConsensusCommand::StateRootHash(full_block) => cmds.push(
-                            Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(
-                                full_block,
-                                Box::new(|s, h| {
-                                    MonadEvent::ConsensusEvent(ConsensusEvent::StateUpdate((s, h)))
-                                }),
-                            )),
-                        ),
+                        ConsensusCommand::StateRootHash(full_block) => {
+                            cmds.push(Command::StateRootHashCommand(
+                                StateRootHashCommand::LedgerCommit(full_block),
+                            ))
+                        }
                     }
                 }
 

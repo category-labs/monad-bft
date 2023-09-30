@@ -102,8 +102,8 @@ pub enum CheckpointCommand<C> {
     Save(C),
 }
 
-pub enum StateRootHashCommand<B, E> {
-    LedgerCommit(B, Box<dyn (FnOnce(u64, ConsensusHash) -> E) + Send + Sync>),
+pub enum StateRootHashCommand<B> {
+    LedgerCommit(B),
 }
 
 pub enum Command<M, OM, B, C>
@@ -116,7 +116,7 @@ where
     MempoolCommand(MempoolCommand<M::Event>),
     LedgerCommand(LedgerCommand<B, M::Event>),
     CheckpointCommand(CheckpointCommand<C>),
-    StateRootHashCommand(StateRootHashCommand<B, M::Event>),
+    StateRootHashCommand(StateRootHashCommand<B>),
 }
 
 impl<M, OM, B, C> Command<M, OM, B, C>
@@ -131,7 +131,7 @@ where
         Vec<MempoolCommand<M::Event>>,
         Vec<LedgerCommand<B, M::Event>>,
         Vec<CheckpointCommand<C>>,
-        Vec<StateRootHashCommand<B, M::Event>>,
+        Vec<StateRootHashCommand<B>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
