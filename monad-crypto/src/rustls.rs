@@ -1,17 +1,24 @@
 use std::{error::Error, sync::Arc};
 
+pub use rustls::Certificate;
 use rustls::{
     client::{ServerCertVerified, ServerCertVerifier},
     server::ClientCertVerifier,
 };
 
-fn make_certificate() -> Result<(rustls::Certificate, rustls::PrivateKey), Box<dyn Error>> {
+fn make_certificate(
+    extension_content: Vec<u8>,
+) -> Result<(rustls::Certificate, rustls::PrivateKey), Box<dyn Error>> {
     let rcgen_key = rcgen::KeyPair::generate(&rcgen::PKCS_ED25519)?;
     let key = rustls::PrivateKey(rcgen_key.serialize_der());
 
     let mut params = rcgen::CertificateParams::new(Vec::new());
     params.alg = &rcgen::PKCS_ED25519;
     params.key_pair = Some(rcgen_key);
+
+    let extension =
+        rcgen::CustomExtension::from_oid_content(&[0, 1, 2, 3, 4, 5], extension_content);
+    params.custom_extensions.push(extension);
 
     let certificate =
         rustls::Certificate(rcgen::Certificate::from_params(params)?.serialize_der()?);
@@ -22,9 +29,9 @@ fn make_certificate() -> Result<(rustls::Certificate, rustls::PrivateKey), Box<d
 pub struct UnsafeTlsVerifier;
 
 impl UnsafeTlsVerifier {
-    pub fn make_server_config() -> rustls::ServerConfig {
+    pub fn make_server_config(extension_content: Vec<u8>) -> rustls::ServerConfig {
         let (certificate, cert_keypair) =
-            make_certificate().expect("making certificate should always succed");
+            make_certificate(extension_content).expect("making certificate should always succed");
         rustls::ServerConfig::builder()
             .with_safe_defaults()
             .with_client_cert_verifier(Arc::new(Self))
@@ -32,9 +39,9 @@ impl UnsafeTlsVerifier {
             .expect("building ServerConfig should always succed")
     }
 
-    pub fn make_client_config() -> rustls::ClientConfig {
+    pub fn make_client_config(extension_content: Vec<u8>) -> rustls::ClientConfig {
         let (certificate, cert_keypair) =
-            make_certificate().expect("making certificate should always succed");
+            make_certificate(extension_content).expect("making certificate should always succed");
         rustls::ClientConfig::builder()
             .with_safe_defaults()
             .with_custom_certificate_verifier(Arc::new(Self))
