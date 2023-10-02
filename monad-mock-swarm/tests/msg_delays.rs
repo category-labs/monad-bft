@@ -34,6 +34,7 @@ fn two_nodes() {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -42,9 +43,11 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::XorLatency(XorLatencyTransformer(
-            Duration::from_millis(u8::MAX as u64),
-        ))],
+        |_, _| {
+            vec![GenericTransformer::XorLatency(XorLatencyTransformer(
+                Duration::from_millis(u8::MAX as u64),
+            ))]
+        },
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(101),

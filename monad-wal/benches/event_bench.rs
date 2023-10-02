@@ -26,7 +26,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
+use monad_types::{BlockId, Hash, NodeId, Round, Serializable, TimeoutVariant};
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
     PersistenceLogger,

@@ -15,7 +15,7 @@ use monad_mock_swarm::{
     },
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{get_configs, run_nodes_until};
+use monad_testutil::swarm::{get_configs, run_nodes_until_and_verify};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -64,7 +64,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until::<
+    run_nodes_until_and_verify::<
         MonadState<
             ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
             NopSignature,
@@ -79,6 +79,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -88,14 +89,16 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![
-            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            GenericTransformer::Partition(PartitionTransformer(filter_peers)),
-            GenericTransformer::Replay(ReplayTransformer::new(
-                Duration::from_millis(500),
-                direction,
-            )),
-        ],
+        |_, _| {
+            vec![
+                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),
+                GenericTransformer::Replay(ReplayTransformer::new(
+                    Duration::from_millis(500),
+                    direction.clone(),
+                )),
+            ]
+        },
         false,
         Duration::from_secs(1),
         usize::MAX,

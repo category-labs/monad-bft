@@ -38,6 +38,7 @@ fn many_nodes() {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -46,9 +47,11 @@ fn many_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer(
-            Duration::from_millis(1),
-        ))],
+        |_, _| {
+            vec![GenericTransformer::Latency(LatencyTransformer(
+                Duration::from_millis(1),
+            ))]
+        },
         SwarmTestConfig {
             num_nodes: 100,
             consensus_delta: Duration::from_millis(2),
@@ -79,6 +82,7 @@ fn many_nodes_quic() {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -91,9 +95,11 @@ fn many_nodes_quic() {
             gossip_config: MockGossipConfig { all_peers },
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
-            Duration::from_millis(1),
-        ))],
+        |_, _| {
+            vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
+                Duration::from_millis(1),
+            ))]
+        },
         SwarmTestConfig {
             num_nodes: 40,
             consensus_delta: Duration::from_millis(10),

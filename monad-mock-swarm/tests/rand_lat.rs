@@ -71,6 +71,7 @@ fn nodes_with_random_latency(seed: u64) {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -79,11 +80,13 @@ fn nodes_with_random_latency(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >::RandLatency(RandLatencyTransformer::new(
-            seed, 330,
-        ))],
+        |_, _| {
+            vec![GenericTransformer::<
+                MonadMessage<NopSignature, MultiSig<NopSignature>>,
+            >::RandLatency(RandLatencyTransformer::new(
+                seed, 330,
+            ))]
+        },
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(250),

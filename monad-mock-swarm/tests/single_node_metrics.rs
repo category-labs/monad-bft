@@ -51,6 +51,7 @@ fn two_nodes() {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -59,9 +60,11 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer(
-            Duration::from_millis(1),
-        ))],
+        |_, _| {
+            vec![GenericTransformer::Latency(LatencyTransformer(
+                Duration::from_millis(1),
+            ))]
+        },
         SwarmTestConfig {
             num_nodes: 2,
             consensus_delta: Duration::from_millis(2),

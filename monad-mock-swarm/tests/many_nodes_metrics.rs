@@ -51,6 +51,7 @@ fn many_nodes_metrics() {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -59,11 +60,13 @@ fn many_nodes_metrics() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >::Latency(LatencyTransformer(
-            Duration::from_millis(1),
-        ))],
+        |_, _| {
+            vec![GenericTransformer::<
+                MonadMessage<NopSignature, MultiSig<NopSignature>>,
+            >::Latency(LatencyTransformer(
+                Duration::from_millis(1),
+            ))]
+        },
         SwarmTestConfig {
             num_nodes: 100,
             consensus_delta: Duration::from_millis(2),

@@ -37,6 +37,7 @@ fn two_nodes_bls() {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -45,9 +46,11 @@ fn two_nodes_bls() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency::<
-            MonadMessage<SignatureType, SignatureCollectionType>,
-        >(LatencyTransformer(Duration::from_millis(1)))],
+        |_, _| {
+            vec![GenericTransformer::Latency::<
+                MonadMessage<SignatureType, SignatureCollectionType>,
+            >(LatencyTransformer(Duration::from_millis(1)))]
+        },
         SwarmTestConfig {
             num_nodes: 2,
             consensus_delta: Duration::from_millis(2),

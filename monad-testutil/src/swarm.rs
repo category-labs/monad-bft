@@ -99,11 +99,11 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
     }
 }
 
-pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, PC, TVT, ME>(
     tvt: TVT,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
-    pipeline: P,
+    pipeline_config: PC,
     swarm_config: SwarmTestConfig,
 ) -> Duration
 where
@@ -117,7 +117,8 @@ where
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized> + Clone,
+    P: Pipeline<RS::Serialized>,
+    PC: Fn(Vec<PeerId>, PeerId) -> P,
     ME: MockableExecutor<Event = S::Event>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
@@ -132,12 +133,12 @@ where
 {
     let (peers, state_configs) =
         get_configs::<ST, SCT, TVT>(tvt, swarm_config.num_nodes, swarm_config.consensus_delta);
-    run_nodes_until::<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+    run_nodes_until_and_verify::<S, ST, SCT, RS, RSC, LGR, P, PC, TVT, ME>(
         peers,
         state_configs,
         router_scheduler_config,
         logger_config,
-        pipeline,
+        pipeline_config,
         swarm_config.parallelize,
         swarm_config.until,
         swarm_config.until_block,
@@ -145,18 +146,17 @@ where
     )
 }
 
-pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, PC, TVT, ME>(
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
-    pipeline: P,
+    pipeline_config: PC,
     parallelize: bool,
 
     until: Duration,
     until_block: usize,
-    min_ledger_len: u32,
-) -> Duration
+) -> (Nodes<S, RS, P, LGR, ME, ST, SCT>, Duration)
 where
     S: State<Config = MonadConfig<SCT, TVT>, Event = MonadEvent<ST, SCT>>,
     ST: MessageSignature + Unpin,
@@ -168,7 +168,8 @@ where
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized> + Clone,
+    P: Pipeline<RS::Serialized>,
+    PC: Fn(Vec<PeerId>, PeerId) -> P,
     ME: MockableExecutor<Event = S::Event>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
@@ -195,7 +196,10 @@ where
                         pubkeys.iter().copied().map(PeerId).collect(),
                         PeerId(pubkey),
                     ),
-                    pipeline.clone(),
+                    pipeline_config(
+                        pubkeys.iter().copied().map(PeerId).collect(),
+                        PeerId(pubkey),
+                    ),
                 )
             })
             .collect(),
@@ -219,6 +223,56 @@ where
         }
     }
 
+    (nodes, max_tick)
+}
+
+pub fn run_nodes_until_and_verify<S, ST, SCT, RS, RSC, LGR, P, PC, TVT, ME>(
+    pubkeys: Vec<PubKey>,
+    state_configs: Vec<MonadConfig<SCT, TVT>>,
+    router_scheduler_config: RSC,
+    logger_config: LGR::Config,
+    pipeline_config: PC,
+    parallelize: bool,
+
+    until: Duration,
+    until_block: usize,
+    min_ledger_len: u32,
+) -> Duration
+where
+    S: State<Config = MonadConfig<SCT, TVT>, Event = MonadEvent<ST, SCT>>,
+    ST: MessageSignature + Unpin,
+    SCT: SignatureCollection + Unpin,
+
+    RS: RouterScheduler,
+    S::Message: Deserializable<RS::M>,
+    S::OutboundMessage: Serializable<RS::M>,
+    RS::Serialized: Eq,
+
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    P: Pipeline<RS::Serialized>,
+    PC: Fn(Vec<PeerId>, PeerId) -> P,
+    ME: MockableExecutor<Event = S::Event>,
+
+    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    S::Block: PartialEq + Unpin,
+    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
+    RS::Serialized: Send,
+
+    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
+
+    LGR::Config: Clone,
+    TVT: Clone,
+{
+    let (nodes, max_tick) = run_nodes_until(
+        pubkeys,
+        state_configs,
+        router_scheduler_config,
+        logger_config,
+        pipeline_config,
+        parallelize,
+        until,
+        until_block,
+    );
     node_ledger_verification(
         &nodes
             .states()

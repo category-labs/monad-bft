@@ -15,7 +15,9 @@ use monad_mock_swarm::{
     },
 };
 use monad_state::{MonadMessage, MonadState};
-use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};
+use monad_testutil::swarm::{
+    create_and_run_nodes, get_configs, run_nodes_until_and_verify, SwarmTestConfig,
+};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -37,6 +39,7 @@ fn random_latency_test(seed: u64) {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -45,9 +48,11 @@ fn random_latency_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::RandLatency(
-            RandLatencyTransformer::new(seed, 330),
-        )],
+        |_, _| {
+            vec![GenericTransformer::RandLatency(
+                RandLatencyTransformer::new(seed, 330),
+            )]
+        },
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(250),
@@ -74,7 +79,7 @@ fn delayed_message_test(seed: u64) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until::<
+    run_nodes_until_and_verify::<
         MonadState<
             ConsensusState<MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
@@ -89,6 +94,7 @@ fn delayed_message_test(seed: u64) {
         _,
         MockWALogger<_>,
         _,
+        _,
         MockValidator,
         MockMempool<_>,
     >(
@@ -98,14 +104,16 @@ fn delayed_message_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![
-            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            GenericTransformer::Partition(PartitionTransformer(filter_peers)),
-            GenericTransformer::Replay(ReplayTransformer::new(
-                Duration::from_secs(1),
-                TransformerReplayOrder::Random(seed),
-            )),
-        ],
+        |_, _| {
+            vec![
+                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),
+                GenericTransformer::Replay(ReplayTransformer::new(
+                    Duration::from_secs(1),
+                    TransformerReplayOrder::Random(seed),
+                )),
+            ]
+        },
         false,
         Duration::from_secs(2),
         usize::MAX,

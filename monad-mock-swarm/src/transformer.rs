@@ -250,9 +250,17 @@ pub enum GenericTransformer<M> {
     Drop(DropTransformer),
     Periodic(PeriodicTransformer),
     Replay(ReplayTransformer<M>),
+    /**
+     * Loop through all provided pipeline, a message must be continued on all in order to continues
+     */
+    And(Vec<GenericTransformer<M>>),
+    Or(Vec<GenericTransformer<M>>),
 }
 
-impl<M> Transformer<M> for GenericTransformer<M> {
+impl<M> Transformer<M> for GenericTransformer<M>
+where
+    M: PartialEq + Eq + Debug + Clone,
+{
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         match self {
             GenericTransformer::Latency(t) => t.transform(message),
@@ -262,6 +270,24 @@ impl<M> Transformer<M> for GenericTransformer<M> {
             GenericTransformer::Drop(t) => t.transform(message),
             GenericTransformer::Periodic(t) => t.transform(message),
             GenericTransformer::Replay(t) => t.transform(message),
+            GenericTransformer::And(ts) => {
+                // ignores any duration passed by internal transformer
+                for t in ts {
+                    if let TransformerStream::Complete(_) = t.transform(message.clone()) {
+                        return TransformerStream::Complete(vec![(Duration::ZERO, message)]);
+                    }
+                }
+                TransformerStream::Continue(vec![(Duration::ZERO, message)])
+            }
+            GenericTransformer::Or(ts) => {
+                // ignores any duration passed by internal transformer
+                for t in ts {
+                    if let TransformerStream::Continue(_) = t.transform(message.clone()) {
+                        return TransformerStream::Continue(vec![(Duration::ZERO, message)]);
+                    }
+                }
+                TransformerStream::Complete(vec![(Duration::ZERO, message)])
+            }
         }
     }
 
@@ -286,6 +312,17 @@ impl<M> Transformer<M> for GenericTransformer<M> {
                 <PeriodicTransformer as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::Replay(t) => t.min_external_delay(),
+            GenericTransformer::And(ts) => ts
+                .into_iter()
+                .map(|t| t.min_external_delay())
+                .min()
+                .expect("empty combine"),
+            // all transformer must all agree that it should continue in order for it to continue
+            GenericTransformer::Or(ts) => ts
+                .into_iter()
+                .map(|t| t.min_external_delay())
+                .min()
+                .expect("empty combine"),
         }
     }
 }
@@ -475,6 +512,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use core::panic;
     use std::{cmp::max, collections::HashSet, time::Duration};
 
     use monad_executor_glue::PeerId;
@@ -648,6 +686,156 @@ mod test {
             };
             assert_eq!(c.len(), 1);
         }
+    }
+
+    #[test]
+    fn test_and_transformer() {
+        // happy path, merging multiple transformers that simply output boolean should be fine
+
+        let mock_message = get_mock_message();
+
+        let mut t = GenericTransformer::And(vec![
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.from]))),
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.to]))),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(5),
+                end: Duration::from_millis(40),
+            }),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(5),
+                end: Duration::from_millis(40),
+            }),
+        ]);
+
+        let TransformerStream::Continue(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
+
+        let mut t = GenericTransformer::And(vec![
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.from]))),
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.to]))),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(20),
+                end: Duration::from_millis(40),
+            }),
+            // even if part of the filer failed it should no longe continue
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(10),
+                end: Duration::from_millis(40),
+            }),
+        ]);
+
+        let TransformerStream::Complete(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
+
+        // throwing it arbitrary transformer should also be fine, it only case if the output is continue or complete
+        let mut t = GenericTransformer::And(vec![
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::XorLatency(XorLatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.to]))),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(10),
+                end: Duration::from_millis(40),
+            }),
+            // even if part of the filer failed it should no longe continue
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(9),
+                end: Duration::from_millis(40),
+            }),
+        ]);
+        let TransformerStream::Continue(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
+    }
+
+    #[test]
+    fn test_or_transformer() {
+        // happy path, merging multiple transformers that simply output boolean should be fine
+
+        let mock_message = get_mock_message();
+
+        let mut t = GenericTransformer::Or(vec![
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.from]))),
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.to]))),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(5),
+                end: Duration::from_millis(40),
+            }),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(5),
+                end: Duration::from_millis(40),
+            }),
+        ]);
+
+        let TransformerStream::Continue(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
+
+        let mut t = GenericTransformer::Or(vec![
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.from]))),
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([mock_message.to]))),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(20),
+                end: Duration::from_millis(40),
+            }),
+            // even if part of the filer failed it should still continue
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(10),
+                end: Duration::from_millis(40),
+            }),
+        ]);
+
+        let TransformerStream::Continue(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
+
+        let mut t = GenericTransformer::Or(vec![
+            GenericTransformer::Partition(PartitionTransformer(HashSet::from([]))),
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(20),
+                end: Duration::from_millis(21),
+            }),
+            // even if part of the filer failed it should still continue
+            GenericTransformer::Periodic(PeriodicTransformer {
+                start: Duration::from_millis(13),
+                end: Duration::from_millis(40),
+            }),
+        ]);
+
+        let TransformerStream::Complete(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
+
+        // throwing it arbitrary transformer should also be fine, it only case if the output is continue or complete
+        let mut t = GenericTransformer::And(vec![
+            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::XorLatency(XorLatencyTransformer(Duration::from_millis(1))),
+        ]);
+        let TransformerStream::Continue(c) = t.transform(mock_message.clone()) else {
+            panic!("or filtering failed")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, Duration::ZERO);
+        assert_eq!(c[0].1, mock_message);
     }
 
     #[test]
