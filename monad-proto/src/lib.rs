@@ -22,6 +22,5 @@ pub mod proto {
     include_proto!(block);
     include_proto!(message);
     include_proto!(event);
-    include_proto!(pacemaker);
     include_proto!(validator_set);
 }

@@ -8,7 +8,7 @@ pub trait Executor {
 
 pub trait State: Sized {
     type Config;
-    type Event: Clone;
+    type Event: Clone + PartialEq + Eq;
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
     type Message: Message<Event = Self::Event>;
     type Block: BlockType;

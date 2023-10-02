@@ -213,3 +213,9 @@ impl TryFrom<ProtoValidatorSetData> for ValidatorData {
         Ok(vlist)
     }
 }
+
+#[derive(Debug, Hash, Clone, PartialEq, Eq, Copy)]
+pub enum TimeoutVariant {
+    Pacemaker,
+    BlockSyncTimerExpire(BlockId),
+}

@@ -104,12 +104,10 @@ mod test {
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-        let first_node = PeerId(*pubkeys.first().unwrap());
-
         let filter_peers: HashSet<PeerId> =
             HashSet::from_iter(pubkeys.iter().take(black_out_cnt).map(|k| PeerId(*k)));
 
-        println!("delayed node ID: {:?}", first_node);
+        println!("delayed node ID: {:?}", filter_peers);
 
         run_nodes_until::<
             MonadState<

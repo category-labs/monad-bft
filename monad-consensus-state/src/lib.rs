@@ -7,7 +7,7 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{BlockSyncMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    pacemaker::{Pacemaker, PacemakerCommand, PacemakerTimerExpire},
+    pacemaker::{Pacemaker, PacemakerCommand},
     validation::safety::Safety,
     vote_state::VoteState,
 };
@@ -87,10 +87,7 @@ where
 
     fn blocktree(&self) -> &BlockTree<SCT>;
 
-    fn handle_timeout_expiry<H: Hasher>(
-        &mut self,
-        event: PacemakerTimerExpire,
-    ) -> Vec<PacemakerCommand<SCT>>;
+    fn handle_timeout_expiry<H: Hasher>(&mut self) -> Vec<PacemakerCommand<SCT>>;
 
     fn handle_proposal_message<H: Hasher>(
         &mut self,
@@ -129,6 +126,12 @@ where
         &mut self,
         author: NodeId,
         msg: BlockSyncMessage<SCT>,
+        validators: &VT,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    fn handle_block_sync_tmo<VT: ValidatorSetType>(
+        &mut self,
+        bid: BlockId,
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -178,23 +181,21 @@ where
             config,
 
             transaction_validator,
-            block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey)),
+            // Q: is delta * 4 a good duration? need to check what is a good value for constant
+            block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey), delta * 4),
             keypair,
             cert_keypair,
         }
     }
 
-    fn handle_timeout_expiry<H: Hasher>(
-        &mut self,
-        event: PacemakerTimerExpire,
-    ) -> Vec<PacemakerCommand<SCT>> {
+    fn handle_timeout_expiry<H: Hasher>(&mut self) -> Vec<PacemakerCommand<SCT>> {
         inc_count!(local_timeout);
         debug!(
             "local timeout: round={:?}",
             self.pacemaker.get_current_round()
         );
         self.pacemaker
-            .handle_event(&mut self.safety, &self.high_qc, event)
+            .handle_event(&mut self.safety, &self.high_qc)
             .into_iter()
             .map(|cmd| match cmd {
                 PacemakerCommand::PrepareTimeout(tmo) => {
@@ -484,7 +485,7 @@ where
                         .expect("failed to add block to tree during block sync");
                 }
             }
-            BlockSyncResult::Failed(retry_cmd) => cmds.push(retry_cmd),
+            BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
             BlockSyncResult::IllegalResponse => {
                 debug!("Block sync illegal response: author={:?}", author);
             }
@@ -497,6 +498,14 @@ where
             .tree()
             .get(bid)
             .map(|btree_block| btree_block.get_block())
+    }
+
+    fn handle_block_sync_tmo<VT: ValidatorSetType>(
+        &mut self,
+        bid: BlockId,
+        validators: &VT,
+    ) -> Vec<ConsensusCommand<SCT>> {
+        self.block_sync_manager.handle_timeout(bid, validators)
     }
 
     fn request_sync<VT: ValidatorSetType>(
@@ -720,7 +729,7 @@ mod test {
     use itertools::Itertools;
     use monad_consensus::{
         messages::message::{BlockSyncMessage, TimeoutMessage, VoteMessage},
-        pacemaker::{PacemakerCommand, PacemakerTimerExpire},
+        pacemaker::PacemakerCommand,
         validation::signing::Verified,
     };
     use monad_consensus_types::{
@@ -747,7 +756,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, NodeId, Round};
+    use monad_types::{BlockId, Hash, NodeId, Round, TimeoutVariant};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -929,10 +938,9 @@ mod test {
 
         // local timeout for state in Round 1
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
-        let _ =
-            state
-                .pacemaker
-                .handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
+        let _ = state
+            .pacemaker
+            .handle_event(&mut state.safety, &state.high_qc);
 
         // check no vote commands result from receiving the proposal for round 1
 
@@ -1567,10 +1575,9 @@ mod test {
             .is_some());
 
         // round 2 timeout
-        let pacemaker_cmds =
-            state
-                .pacemaker
-                .handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
+        let pacemaker_cmds = state
+            .pacemaker
+            .handle_event(&mut state.safety, &state.high_qc);
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
@@ -1832,7 +1839,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -1912,7 +1919,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -1957,7 +1964,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -1975,7 +1982,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -1991,7 +1998,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -2011,7 +2018,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -2031,7 +2038,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -2047,7 +2054,7 @@ mod test {
                 c,
                 ConsensusCommand::RequestSync {
                     peer: NodeId(_),
-                    block_id: BlockId(_)
+                    block_id: BlockId(_),
                 },
             )
         });
@@ -2345,7 +2352,7 @@ mod test {
         }
 
         // now timeout someone
-        let cmds = states[1].handle_timeout_expiry::<Sha256Hash>(PacemakerTimerExpire);
+        let cmds = states[1].handle_timeout_expiry::<Sha256Hash>();
         let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {

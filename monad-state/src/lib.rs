@@ -8,7 +8,6 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage},
     },
-    pacemaker::PacemakerTimerExpire,
     validation::signing::{Unverified, Verified},
 };
 use monad_consensus_state::{
@@ -33,7 +32,7 @@ use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, Identifiable, LedgerCommand, MempoolCommand,
     Message, MonadEvent, PeerId, RouterCommand, RouterTarget, StateRootHashCommand, TimerCommand,
 };
-use monad_types::{Epoch, NodeId, Stake, ValidatorData};
+use monad_types::{Epoch, NodeId, Stake, TimeoutVariant, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 
@@ -285,7 +284,7 @@ where
         };
 
         let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
-            PacemakerTimerExpire,
+            TimeoutVariant::Pacemaker,
         )));
 
         (monad_state, init_cmds)
@@ -298,12 +297,18 @@ where
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
-                    ConsensusEvent::Timeout(pacemaker_expire) => self
-                        .consensus
-                        .handle_timeout_expiry::<HasherType>(pacemaker_expire)
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
+                    ConsensusEvent::Timeout(tmo_event) => match tmo_event {
+                        TimeoutVariant::Pacemaker => self
+                            .consensus
+                            .handle_timeout_expiry::<HasherType>()
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                        TimeoutVariant::BlockSyncTimerExpire(bid) => self
+                            .consensus
+                            .handle_block_sync_tmo(bid, &self.validator_set),
+                    },
+
                     ConsensusEvent::FetchedTxs(fetched) => {
                         assert_eq!(fetched.node_id, self.consensus.get_nodeid());
 
@@ -471,13 +476,14 @@ where
                             on_timeout,
                         } => cmds.push(Command::TimerCommand(TimerCommand::Schedule {
                             duration,
-                            on_timeout: MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
-                                on_timeout,
-                            )),
+                            event: on_timeout,
+                            on_timeout: Box::new(|tmo_event| {
+                                Self::Event::ConsensusEvent(ConsensusEvent::Timeout(tmo_event))
+                            }),
                         })),
-                        ConsensusCommand::ScheduleReset => {
-                            cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset))
-                        }
+                        ConsensusCommand::ScheduleReset(on_timeout) => cmds.push(
+                            Command::TimerCommand(TimerCommand::ScheduleReset(on_timeout)),
+                        ),
                         ConsensusCommand::FetchTxs(max_txns, pending_txs, cb) => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchTxs(
                                 max_txns,

@@ -1,6 +1,10 @@
 use std::{
-    cmp::Ordering,
-    collections::{BTreeSet, HashSet, VecDeque},
+    cmp::{Ordering, Reverse},
+    collections::{
+        btree_map::OccupiedEntry, hash_map::Entry, BTreeMap, BTreeSet, BinaryHeap, HashMap,
+        HashSet, VecDeque,
+    },
+    hash::Hash,
     marker::Unpin,
     ops::DerefMut,
     pin::Pin,
@@ -19,7 +23,7 @@ use monad_executor_glue::{
     Command, Identifiable, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand,
     RouterTarget, TimerCommand,
 };
-use monad_types::{Deserializable, Serializable};
+use monad_types::{Deserializable, Serializable, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
     state_root_hash::MockStateRootHash,
@@ -142,17 +146,30 @@ where
     state_root_hash: MockStateRootHash<S::Block, S::Event>,
     tick: Duration,
 
-    timer: Option<TimerEvent<S::Event>>,
-
+    timer: HashMap<TimeoutVariant, (Duration, S::Event)>,
     router: RS,
 }
 
-pub struct TimerEvent<E> {
+#[derive(PartialEq, Eq)]
+pub struct TimerEvent {
     pub tick: Duration,
-    pub event: E,
-
+    pub event: TimeoutVariant,
     // When the event was scheduled - only used for observability
     pub scheduled_tick: Duration,
+}
+
+impl Ord for TimerEvent {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.scheduled_tick).cmp(&other.scheduled_tick)
+    }
+}
+impl PartialOrd for TimerEvent
+where
+    Self: Ord,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 pub struct SequencedPeerEvent<T> {
@@ -184,12 +201,12 @@ impl<T> Ord for SequencedPeerEvent<T> {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq)]
 enum ExecutorEventType {
     Router,
     Ledger,
     Epoch,
-    Timer,
+    Timer(TimeoutVariant),
     Mempool,
     StateRootHash,
 }
@@ -212,8 +229,7 @@ where
 
             tick: Duration::default(),
 
-            timer: None,
-
+            timer: HashMap::new(),
             router,
         }
     }
@@ -241,8 +257,9 @@ where
             )
             .chain(
                 self.timer
-                    .as_ref()
-                    .map(|TimerEvent { tick, .. }| (*tick, ExecutorEventType::Timer)),
+                    .iter()
+                    .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b))
+                    .map(|(variant, (tick, _))| (*tick, ExecutorEventType::Timer(*variant))),
             )
             .chain(
                 self.epoch
@@ -259,7 +276,7 @@ where
                     .ready()
                     .then_some((self.tick, ExecutorEventType::StateRootHash)),
             )
-            .min()
+            .min_by(|(tick_1, _), (tick_2, _)| tick_1.cmp(tick_2))
     }
 
     pub fn peek_tick(&self) -> Option<Duration> {
@@ -302,18 +319,23 @@ where
         }
         for command in timer_cmds {
             match command {
-                TimerCommand::ScheduleReset => self.timer = None,
+                TimerCommand::ScheduleReset(e) => {
+                    self.timer.remove(&e);
+                }
                 TimerCommand::Schedule {
                     duration,
+                    event,
                     on_timeout,
-                } => {
-                    self.timer = Some(TimerEvent {
-                        event: on_timeout,
-                        tick: self.tick + duration,
-
-                        scheduled_tick: self.tick,
-                    })
-                }
+                } => match self.timer.entry(event) {
+                    Entry::Occupied(mut entry) => {
+                        let (tick, e) = entry.get_mut();
+                        *tick = self.tick + duration;
+                        *e = on_timeout(event);
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert((self.tick + duration, on_timeout(event)));
+                    }
+                },
             }
         }
         self.mempool.exec(mempool_cmds);
@@ -357,7 +379,9 @@ where
                 break;
             }
             self.tick = tick;
-            let event = match event_type {
+            let event: Option<
+                MockExecutorEvent<<S as State>::Event, <RS as RouterScheduler>::Serialized>,
+            > = match event_type {
                 ExecutorEventType::Router => {
                     let maybe_router_event = self.router.step_until(tick);
 
@@ -367,18 +391,19 @@ where
                             let message =
                                 <S::Message as Deserializable<RS::M>>::deserialize(&message)
                                     .expect("all messages should deserialize in mock executor");
-                            MockExecutorEvent::Event(message.event(from))
+                            Some(MockExecutorEvent::Event(message.event(from)))
                         }
-                        Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
+                        Some(RouterEvent::Tx(to, ser)) => Some(MockExecutorEvent::Send(to, ser)),
                     }
                 }
                 ExecutorEventType::Epoch => {
                     return futures::executor::block_on(self.epoch.next())
                         .map(MockExecutorEvent::Event)
                 }
-                ExecutorEventType::Timer => {
-                    MockExecutorEvent::Event(self.timer.take().unwrap().event)
-                }
+                ExecutorEventType::Timer(variant) => self
+                    .timer
+                    .remove(&variant)
+                    .map(|(_, e)| MockExecutorEvent::Event(e)),
                 ExecutorEventType::Mempool => {
                     return futures::executor::block_on(self.mempool.next())
                         .map(MockExecutorEvent::Event)
@@ -392,7 +417,7 @@ where
                         .map(MockExecutorEvent::Event)
                 }
             };
-            return Some(event);
+            return event;
         }
 
         None
@@ -412,35 +437,38 @@ where
 }
 
 pub struct MockTimer<E> {
-    event: Option<E>,
+    event: HashMap<TimeoutVariant, (Duration, E)>, // MockTimer isn't actually a timer
     waker: Option<Waker>,
 }
 impl<E> Default for MockTimer<E> {
     fn default() -> Self {
         Self {
-            event: None,
+            event: HashMap::new(),
             waker: None,
         }
     }
 }
-impl<E> Executor for MockTimer<E> {
+impl<E> Executor for MockTimer<E>
+where
+    E: Hash + PartialEq + Eq,
+{
     type Command = TimerCommand<E>;
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
         for command in commands {
-            self.event = match command {
+            match command {
                 TimerCommand::Schedule {
-                    duration: _,
+                    duration,
+                    event,
                     on_timeout,
                 } => {
                     wake = true;
-                    Some(on_timeout)
+                    self.event.insert(event, (duration, on_timeout(event)));
                 }
-                TimerCommand::ScheduleReset => {
-                    wake = false;
-                    None
+                TimerCommand::ScheduleReset(e) => {
+                    self.event.remove(&e);
                 }
-            }
+            };
         }
 
         if wake {
@@ -457,12 +485,21 @@ where
     type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
-        if let Some(event) = this.event.take() {
-            return Poll::Ready(Some(event));
+
+        if this.event.is_empty() {
+            this.waker = Some(cx.waker().clone());
+            return Poll::Pending;
         }
 
-        this.waker = Some(cx.waker().clone());
-        Poll::Pending
+        let variant = this
+            .event
+            .iter()
+            .min_by(|(_, (a, _)), (_, (b, _))| a.cmp(b))
+            .map(|(variant, (_, _))| variant.clone())
+            .expect("There is no entry");
+
+        let (_, e) = this.event.remove(&variant).expect("variant must exists");
+        return Poll::Ready(Some(e));
     }
 }
 
@@ -550,11 +587,13 @@ impl<E> MockableExecutor for MockMempool<E> {
 
 #[cfg(test)]
 mod tests {
+    use core::panic;
     use std::time::Duration;
 
     use futures::{FutureExt, StreamExt};
     use monad_executor::Executor;
     use monad_executor_glue::TimerCommand;
+    use monad_types::{BlockId, Hash};
 
     use super::*;
 
@@ -565,7 +604,8 @@ mod tests {
 
         mock_timer.exec(vec![TimerCommand::Schedule {
             duration: Duration::ZERO,
-            on_timeout: (),
+            event: TimeoutVariant::Pacemaker,
+            on_timeout: Box::new(|_| ()),
         }]);
 
         assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
@@ -579,11 +619,13 @@ mod tests {
 
         mock_timer.exec(vec![TimerCommand::Schedule {
             duration: Duration::ZERO,
-            on_timeout: (),
+            event: TimeoutVariant::Pacemaker,
+            on_timeout: Box::new(|_| ()),
         }]);
         mock_timer.exec(vec![TimerCommand::Schedule {
             duration: Duration::ZERO,
-            on_timeout: (),
+            event: TimeoutVariant::Pacemaker,
+            on_timeout: Box::new(|_| ()),
         }]);
 
         assert_eq!(mock_timer.next().now_or_never(), Some(Some(())));
@@ -597,9 +639,10 @@ mod tests {
 
         mock_timer.exec(vec![TimerCommand::Schedule {
             duration: Duration::ZERO,
-            on_timeout: (),
+            event: TimeoutVariant::Pacemaker,
+            on_timeout: Box::new(|_| ()),
         }]);
-        mock_timer.exec(vec![TimerCommand::ScheduleReset]);
+        mock_timer.exec(vec![TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker)]);
 
         assert_eq!(mock_timer.next().now_or_never(), None);
     }
@@ -612,11 +655,13 @@ mod tests {
         mock_timer.exec(vec![
             TimerCommand::Schedule {
                 duration: Duration::ZERO,
-                on_timeout: (),
+                event: TimeoutVariant::Pacemaker,
+                on_timeout: Box::new(|_| ()),
             },
             TimerCommand::Schedule {
                 duration: Duration::ZERO,
-                on_timeout: (),
+                event: TimeoutVariant::Pacemaker,
+                on_timeout: Box::new(|_| ()),
             },
         ]);
 
@@ -632,9 +677,10 @@ mod tests {
         mock_timer.exec(vec![
             TimerCommand::Schedule {
                 duration: Duration::ZERO,
-                on_timeout: (),
+                event: TimeoutVariant::Pacemaker,
+                on_timeout: Box::new(|_| ()),
             },
-            TimerCommand::ScheduleReset,
+            TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
         ]);
 
         assert_eq!(mock_timer.next().now_or_never(), None);
@@ -646,10 +692,11 @@ mod tests {
         assert_eq!(mock_timer.next().now_or_never(), None);
 
         mock_timer.exec(vec![
-            TimerCommand::ScheduleReset,
+            TimerCommand::ScheduleReset(TimeoutVariant::Pacemaker),
             TimerCommand::Schedule {
                 duration: Duration::ZERO,
-                on_timeout: (),
+                event: TimeoutVariant::Pacemaker,
+                on_timeout: Box::new(|_| ()),
             },
         ]);
 
@@ -664,7 +711,8 @@ mod tests {
 
         mock_timer.exec(vec![TimerCommand::Schedule {
             duration: Duration::ZERO,
-            on_timeout: (),
+            event: TimeoutVariant::Pacemaker,
+            on_timeout: Box::new(|_| ()),
         }]);
         mock_timer.exec(Vec::new());
 
@@ -672,6 +720,195 @@ mod tests {
         assert_eq!(mock_timer.next().now_or_never(), None);
     }
 
+    #[test]
+    fn test_mock_timer_multi_variant() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        mock_timer.exec(vec![TimerCommand::Schedule {
+            duration: Duration::ZERO,
+            event: TimeoutVariant::Pacemaker,
+            on_timeout: Box::new(|_| TimeoutVariant::Pacemaker),
+        }]);
+
+        let mut bids = HashSet::from([
+            BlockId(Hash([0x00_u8; 32])),
+            BlockId(Hash([0x01_u8; 32])),
+            BlockId(Hash([0x02_u8; 32])),
+            BlockId(Hash([0x03_u8; 32])),
+            BlockId(Hash([0x04_u8; 32])),
+            BlockId(Hash([0x05_u8; 32])),
+            BlockId(Hash([0x06_u8; 32])),
+            BlockId(Hash([0x07_u8; 32])),
+            BlockId(Hash([0x08_u8; 32])),
+            BlockId(Hash([0x09_u8; 32])),
+        ]);
+
+        for (i, id) in bids.iter().enumerate() {
+            mock_timer.exec(vec![TimerCommand::Schedule {
+                duration: Duration::from_millis(i as u64),
+                event: TimeoutVariant::BlockSyncTimerExpire(*id),
+                on_timeout: Box::new(|tmo_var| (tmo_var)),
+            }]);
+        }
+
+        let mut regular_tmo_observed = false;
+        for _ in 0..11 {
+            match mock_timer.next().now_or_never() {
+                Some(Some(TimeoutVariant::Pacemaker)) => {
+                    if regular_tmo_observed {
+                        panic!("regular tmo observed twice");
+                    } else {
+                        regular_tmo_observed = true
+                    }
+                }
+                Some(Some(TimeoutVariant::BlockSyncTimerExpire(bid))) => {
+                    assert!(bids.remove(&bid));
+                }
+                _ => panic!("not receiving timeout"),
+            }
+        }
+
+        assert_eq!(regular_tmo_observed, true);
+        assert!(bids.is_empty());
+
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_duplicate_block_id() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        let mut bids = HashSet::from([
+            BlockId(Hash([0x00_u8; 32])),
+            BlockId(Hash([0x01_u8; 32])),
+            BlockId(Hash([0x02_u8; 32])),
+            BlockId(Hash([0x03_u8; 32])),
+            BlockId(Hash([0x04_u8; 32])),
+            BlockId(Hash([0x05_u8; 32])),
+            BlockId(Hash([0x06_u8; 32])),
+            BlockId(Hash([0x07_u8; 32])),
+            BlockId(Hash([0x08_u8; 32])),
+            BlockId(Hash([0x09_u8; 32])),
+        ]);
+
+        for _ in 0..3 {
+            for id in bids.iter() {
+                mock_timer.exec(vec![TimerCommand::Schedule {
+                    duration: Duration::ZERO,
+                    event: TimeoutVariant::BlockSyncTimerExpire(*id),
+                    on_timeout: Box::new(|tmo_var| (tmo_var)),
+                }]);
+            }
+        }
+
+        for _ in 0..10 {
+            match mock_timer.next().now_or_never() {
+                Some(Some(TimeoutVariant::BlockSyncTimerExpire(bid))) => {
+                    assert!(bids.remove(&bid));
+                }
+                _ => panic!("not receiving timeout"),
+            }
+        }
+
+        assert!(bids.is_empty());
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
+
+    #[test]
+    fn test_mock_timer_reset_block_id() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        // fetch reset submitted earlier should have no impact.
+        mock_timer.exec(vec![TimerCommand::ScheduleReset(
+            TimeoutVariant::BlockSyncTimerExpire(BlockId(Hash([0x00_u8; 32]))),
+        )]);
+
+        let mut bids = HashSet::from([
+            BlockId(Hash([0x00_u8; 32])),
+            BlockId(Hash([0x01_u8; 32])),
+            BlockId(Hash([0x02_u8; 32])),
+            BlockId(Hash([0x03_u8; 32])),
+            BlockId(Hash([0x04_u8; 32])),
+            BlockId(Hash([0x05_u8; 32])),
+            BlockId(Hash([0x06_u8; 32])),
+            BlockId(Hash([0x07_u8; 32])),
+            BlockId(Hash([0x08_u8; 32])),
+            BlockId(Hash([0x09_u8; 32])),
+        ]);
+
+        for id in bids.iter() {
+            mock_timer.exec(vec![TimerCommand::Schedule {
+                duration: Duration::ZERO,
+                event: TimeoutVariant::BlockSyncTimerExpire(*id),
+                on_timeout: Box::new(|tmo_var| (tmo_var)),
+            }]);
+        }
+
+        mock_timer.exec(vec![TimerCommand::ScheduleReset(
+            TimeoutVariant::BlockSyncTimerExpire(BlockId(Hash([0x01_u8; 32]))),
+        )]);
+
+        mock_timer.exec(vec![TimerCommand::ScheduleReset(
+            TimeoutVariant::BlockSyncTimerExpire(BlockId(Hash([0x02_u8; 32]))),
+        )]);
+
+        for _ in 0..8 {
+            match mock_timer.next().now_or_never() {
+                Some(Some(TimeoutVariant::BlockSyncTimerExpire(bid))) => {
+                    assert!(bids.remove(&bid));
+                }
+                _ => panic!("not receiving timeout"),
+            }
+        }
+
+        assert_eq!(bids.len(), 2);
+        assert_eq!(mock_timer.next().now_or_never(), None);
+        assert!(bids.contains(&BlockId(Hash([0x01_u8; 32]))));
+        assert!(bids.contains(&BlockId(Hash([0x02_u8; 32]))));
+    }
+
+    #[test]
+    fn test_mock_timer_retrieval_in_order() {
+        let mut mock_timer = MockTimer::default();
+        assert_eq!(mock_timer.next().now_or_never(), None);
+
+        let mut bids = vec![
+            BlockId(Hash([0x00_u8; 32])),
+            BlockId(Hash([0x01_u8; 32])),
+            BlockId(Hash([0x02_u8; 32])),
+            BlockId(Hash([0x03_u8; 32])),
+            BlockId(Hash([0x04_u8; 32])),
+            BlockId(Hash([0x05_u8; 32])),
+            BlockId(Hash([0x06_u8; 32])),
+            BlockId(Hash([0x07_u8; 32])),
+            BlockId(Hash([0x08_u8; 32])),
+            BlockId(Hash([0x09_u8; 32])),
+        ];
+
+        for (i, id) in bids.iter().enumerate() {
+            mock_timer.exec(vec![TimerCommand::Schedule {
+                duration: Duration::from_millis((i as u64) + 10),
+                event: TimeoutVariant::BlockSyncTimerExpire(*id),
+                on_timeout: Box::new(|tmo_var| (tmo_var)),
+            }]);
+        }
+
+        for _ in 0..10 {
+            match mock_timer.next().now_or_never() {
+                Some(Some(TimeoutVariant::BlockSyncTimerExpire(bid))) => {
+                    assert_eq!(*bids.first().expect("bids are empty"), bid);
+                    bids.remove(0);
+                }
+                _ => panic!("not receiving timeout"),
+            }
+        }
+
+        assert_eq!(bids.len(), 0);
+        assert_eq!(mock_timer.next().now_or_never(), None);
+    }
     #[test]
     fn test_fetch() {
         let mut mempool = MockMempool::<()>::default();

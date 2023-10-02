@@ -42,15 +42,9 @@ enum PhaseHonest {
 pub enum PacemakerCommand<SCT: SignatureCollection> {
     PrepareTimeout(Timeout<SCT>),
     Broadcast(TimeoutMessage<SCT>),
-    Schedule {
-        duration: Duration,
-        on_timeout: PacemakerTimerExpire,
-    },
+    Schedule { duration: Duration },
     ScheduleReset,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PacemakerTimerExpire;
 
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn new(
@@ -87,7 +81,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 
         PacemakerCommand::Schedule {
             duration: self.get_round_timer(),
-            on_timeout: PacemakerTimerExpire,
         }
     }
 
@@ -122,7 +115,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
-        _event: PacemakerTimerExpire,
     ) -> Vec<PacemakerCommand<SCT>> {
         self.phase = PhaseHonest::One;
         self.local_timeout_round(safety, high_qc)

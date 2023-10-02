@@ -1,4 +1,7 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    time::Duration,
+};
 
 use log::debug;
 use monad_consensus::messages::message::BlockSyncMessage;
@@ -9,7 +12,7 @@ use monad_consensus_types::{
     transaction_validator::TransactionValidator,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId};
+use monad_types::{BlockId, NodeId, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::command::ConsensusCommand;
@@ -23,9 +26,9 @@ pub struct InFlightBlockSync<SCT> {
     pub qc: QuorumCertificate<SCT>, // qc responsible for this event
 }
 pub enum BlockSyncResult<SCT: SignatureCollection> {
-    Success(FullBlock<SCT>),       // retrieved and validated
-    Failed(ConsensusCommand<SCT>), // unable to retrieve
-    IllegalResponse,               // never requested from this peer or never requested
+    Success(FullBlock<SCT>),            // retrieved and validated
+    Failed(Vec<ConsensusCommand<SCT>>), // unable to retrieve
+    IllegalResponse,                    // never requested from this peer or never requested
 }
 
 impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
@@ -42,6 +45,7 @@ impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
 pub struct BlockSyncManager<SCT> {
     requests: HashMap<BlockId, InFlightBlockSync<SCT>>,
     id: NodeId,
+    tmo_duration: Duration,
 }
 
 fn choose_peer(my_id: NodeId, peers: &[NodeId], mut cnt: usize) -> (NodeId, usize) {
@@ -62,10 +66,11 @@ impl<SCT> BlockSyncManager<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn new(id: NodeId) -> Self {
+    pub fn new(id: NodeId, tmo_duration: Duration) -> Self {
         Self {
             requests: HashMap::new(),
             id,
+            tmo_duration,
         }
     }
 
@@ -84,7 +89,13 @@ where
                 let (peer, cnt) =
                     choose_peer(self.id, validator_set.get_list(), DEFAULT_PEER_INDEX);
                 let req = InFlightBlockSync::new(peer, cnt, qc.clone());
-                let req_cmd = vec![(&req).into()];
+                let req_cmd = vec![
+                    (&req).into(),
+                    ConsensusCommand::Schedule {
+                        duration: self.tmo_duration,
+                        on_timeout: TimeoutVariant::BlockSyncTimerExpire(*id),
+                    },
+                ];
                 entry.insert(req);
                 req_cmd
             }
@@ -131,25 +142,59 @@ where
             let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt + 1);
             *req_target = peer;
             *retry_cnt = cnt;
-            BlockSyncResult::Failed(ConsensusCommand::RequestSync {
-                peer: *req_target,
-                block_id: bid,
-            })
+            BlockSyncResult::Failed(vec![
+                entry.get().into(),
+                ConsensusCommand::Schedule {
+                    duration: self.tmo_duration,
+                    on_timeout: TimeoutVariant::BlockSyncTimerExpire(bid),
+                },
+            ])
         } else {
             BlockSyncResult::IllegalResponse
         }
+    }
+
+    pub fn handle_timeout<VT: ValidatorSetType>(
+        &mut self,
+        bid: BlockId,
+        validator_set: &VT,
+    ) -> Vec<ConsensusCommand<SCT>> {
+        let mut cmds = vec![ConsensusCommand::ScheduleReset(
+            TimeoutVariant::BlockSyncTimerExpire(bid),
+        )];
+        if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
+            let InFlightBlockSync {
+                req_target,
+                retry_cnt,
+                qc: _,
+            } = entry.get_mut();
+            // block retrieve failed, re-request
+            let (peer, cnt) = choose_peer(self.id, validator_set.get_list(), *retry_cnt + 1);
+            *req_target = peer;
+            *retry_cnt = cnt;
+            cmds.extend(vec![
+                entry.get().into(),
+                ConsensusCommand::Schedule {
+                    duration: self.tmo_duration,
+                    on_timeout: TimeoutVariant::BlockSyncTimerExpire(bid),
+                },
+            ]);
+        }
+        cmds
     }
 }
 
 #[cfg(test)]
 mod test {
     use core::panic;
+    use std::time::Duration;
 
     use monad_consensus_types::{
         block::{Block, UnverifiedFullBlock},
         ledger::LedgerCommitInfo,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
         quorum_certificate::{QcInfo, QuorumCertificate},
+        signature_collection::SignatureCollection,
         transaction_validator::MockValidator,
         validation::{Hasher, Sha256Hash},
         voting::VoteInfo,
@@ -158,7 +203,7 @@ mod test {
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, NodeId, Round};
+    use monad_types::{BlockId, Hash, NodeId, Round, TimeoutVariant};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::BlockSyncManager;
@@ -204,10 +249,26 @@ mod test {
         }
     }
 
+    fn extract_request_sync<SCT: SignatureCollection>(
+        cmds: &Vec<ConsensusCommand<SCT>>,
+    ) -> &ConsensusCommand<SCT> {
+        let res = cmds.iter().find(|c| {
+            matches!(
+                c,
+                ConsensusCommand::RequestSync {
+                    peer: NodeId(_),
+                    block_id: BlockId(_),
+                },
+            )
+        });
+
+        res.expect("request sync not found")
+    }
+
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
         let keypair = get_key(6);
-        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()));
+        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
 
         let qc = &QC::new::<Sha256Hash>(
@@ -226,7 +287,7 @@ mod test {
 
         let cmds = manager.request::<VT>(qc, &valset);
 
-        assert!(cmds.len() == 1);
+        assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
@@ -256,7 +317,7 @@ mod test {
         );
         let cmds = manager.request::<VT>(qc, &valset);
 
-        assert!(cmds.len() == 1);
+        assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
@@ -269,7 +330,7 @@ mod test {
     #[test]
     fn test_handle_retrieval() {
         let keypair = get_key(6);
-        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()));
+        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
         let transaction_validator = TV::default();
 
@@ -290,7 +351,7 @@ mod test {
 
         let cmds = manager.request::<VT>(qc_1, &valset);
 
-        assert!(cmds.len() == 1);
+        assert!(cmds.len() == 2);
         let (peer_1, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
@@ -316,7 +377,7 @@ mod test {
 
         let cmds = manager.request::<VT>(qc_2, &valset);
 
-        assert!(cmds.len() == 1);
+        assert!(cmds.len() == 2);
         let (peer_2, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
@@ -342,7 +403,7 @@ mod test {
 
         let cmds = manager.request::<VT>(qc_3, &valset);
 
-        assert!(cmds.len() == 1);
+        assert!(cmds.len() == 2);
         let (peer_3, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
@@ -468,9 +529,9 @@ mod test {
         let ConsensusCommand::RequestSync {
             peer: peer_2,
             block_id: _,
-        } = retry_command
+        } = extract_request_sync(&retry_command)
         else {
-            panic!("retry didn't create a publish command");
+            panic!("request sync not found")
         };
 
         let BlockSyncResult::<SC>::Success(b) =
@@ -488,9 +549,9 @@ mod test {
         let ConsensusCommand::RequestSync {
             peer: peer_3,
             block_id: _,
-        } = retry_command
+        } = extract_request_sync(&retry_command)
         else {
-            panic!("retry didn't create a publish command");
+            panic!("request sync not found")
         };
 
         assert!(b.get_block() == &block_1);
@@ -504,9 +565,9 @@ mod test {
         let ConsensusCommand::RequestSync {
             peer: peer_2,
             block_id: _,
-        } = retry_command
+        } = extract_request_sync(&retry_command)
         else {
-            panic!("retry didn't create a publish command");
+            panic!("request sync not found")
         };
 
         let BlockSyncResult::<SC>::Success(b) =
@@ -530,7 +591,7 @@ mod test {
     fn test_never_request_to_self() {
         let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
         let my_id = valset.get_list()[0];
-        let mut manager = BlockSyncManager::<SC>::new(my_id);
+        let mut manager = BlockSyncManager::<SC>::new(my_id, Duration::MAX);
 
         let qc = &QC::new::<Sha256Hash>(
             QcInfo {
@@ -548,7 +609,7 @@ mod test {
 
         let cmds = manager.request::<VT>(qc, &valset);
 
-        assert!(cmds.len() == 1);
+        assert!(cmds.len() == 2);
         let (mut peer, bid) = match cmds[0] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
@@ -572,7 +633,7 @@ mod test {
                 let ConsensusCommand::RequestSync {
                     peer: p,
                     block_id: bid,
-                } = retry_command
+                } = retry_command[0]
                 else {
                     panic!("RequestSync is not produced")
                 };
@@ -588,5 +649,150 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_proper_emit_timeout() {
+        // Total of 3 cases of timeout
+        // Request, Failed, natural timeout
+        let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
+        let my_id = valset.get_list()[0];
+        let mut manager = BlockSyncManager::<SC>::new(my_id, Duration::MAX);
+
+        let qc = &QC::new::<Sha256Hash>(
+            QcInfo {
+                vote: VoteInfo {
+                    id: BlockId(Hash([0x01_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x02_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: 0,
+                },
+                ledger_commit: LedgerCommitInfo::default(),
+            },
+            MockSignatures::with_pubkeys(&[]),
+        );
+
+        let cmds = manager.request::<VT>(qc, &valset);
+
+        assert!(cmds.len() == 2);
+
+        let (peer, bid) = match cmds[0] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+        assert!(peer == valset.get_list()[1]);
+        assert!(bid == qc.info.vote.id);
+
+        let (duration, TimeoutVariant::BlockSyncTimerExpire(bid)) = (match cmds[1] {
+            ConsensusCommand::Schedule {
+                duration,
+                on_timeout,
+            } => (duration, on_timeout),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        }) else {
+            panic!("timeout event is not block sync")
+        };
+        assert!(duration == Duration::MAX);
+        assert!(bid == qc.info.vote.id);
+
+        // similarly, failure of message should have also triggered a timeout
+        let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
+
+        let transaction_validator = TV::default();
+
+        let BlockSyncResult::<SC>::Failed(retry_command) =
+            manager.handle_retrieval(&peer, msg_failed.clone(), &valset, &transaction_validator)
+        else {
+            panic!("illegal response is processed");
+        };
+
+        assert_eq!(retry_command.len(), 2);
+
+        let (peer, bid) = match retry_command[0] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+        assert!(peer == valset.get_list()[2]);
+        assert!(bid == qc.info.vote.id);
+
+        let (duration, TimeoutVariant::BlockSyncTimerExpire(bid)) = (match retry_command[1] {
+            ConsensusCommand::Schedule {
+                duration,
+                on_timeout,
+            } => (duration, on_timeout),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        }) else {
+            panic!("timeout event is not block sync")
+        };
+        assert!(duration == Duration::MAX);
+        assert!(bid == qc.info.vote.id);
+
+        // lastly, natural timeout should trigger it too.
+
+        let retry_command = manager.handle_timeout(bid, &valset);
+
+        assert_eq!(retry_command.len(), 3);
+
+        let ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSyncTimerExpire(bid)) =
+            retry_command[0]
+        else {
+            panic!("timeout didn't emit reset first")
+        };
+
+        assert!(bid == qc.info.vote.id);
+
+        let (peer, bid) = match retry_command[1] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+        assert!(peer == valset.get_list()[3]);
+        assert!(bid == qc.info.vote.id);
+
+        let (duration, TimeoutVariant::BlockSyncTimerExpire(bid)) = (match retry_command[2] {
+            ConsensusCommand::Schedule {
+                duration,
+                on_timeout,
+            } => (duration, on_timeout),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        }) else {
+            panic!("timeout event is not block sync")
+        };
+        assert!(duration == Duration::MAX);
+        assert!(bid == qc.info.vote.id);
+
+        // if somehow we sync up on the block, timeout should be ignored
+        let payload = Payload {
+            txns: TransactionList::default(),
+            header: ExecutionArtifacts::zero(),
+            seq_num: 0,
+        };
+        let block = Block::new::<FakeHasher1>(peer, Round(3), &payload, qc);
+
+        let msg_with_block = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+            block: block.clone(),
+            full_txs: FullTransactionList::default(),
+        });
+
+        let BlockSyncResult::<SC>::Success(b) =
+            manager.handle_retrieval(&peer, msg_with_block, &valset, &transaction_validator)
+        else {
+            panic!("illegal response is processed");
+        };
+
+        assert_eq!(b.get_block(), &block);
+
+        // this should return nothing, except the regular reset
+        let retry_command = manager.handle_timeout(bid, &valset);
+
+        assert_eq!(retry_command.len(), 1);
+
+        let ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSyncTimerExpire(bid)) =
+            retry_command[0]
+        else {
+            panic!("timeout didn't emit reset first")
+        };
+
+        assert!(bid == qc.info.vote.id);
     }
 }

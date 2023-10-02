@@ -29,3 +29,4 @@ tracing = { workspace = true }
 monad-testutil = { path = "../monad-testutil" }
 
 test-case = { workspace = true }
+ntest = { workspace = true }

@@ -3,8 +3,7 @@ pub mod convert;
 use std::{fmt::Debug, hash::Hash};
 
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage, pacemaker::PacemakerTimerExpire,
-    validation::signing::Unverified,
+    messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
 };
 use monad_consensus_types::{
     command::{FetchedBlock, FetchedFullTxs, FetchedTxs},
@@ -13,7 +12,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::secp256k1::PubKey;
-use monad_types::{BlockId, Epoch, Hash as ConsensusHash, NodeId, ValidatorData};
+use monad_types::{BlockId, Epoch, Hash as ConsensusHash, NodeId, TimeoutVariant, ValidatorData};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
@@ -64,9 +63,10 @@ pub enum TimerCommand<E> {
     // TODO create test to demonstrate faulty behavior if written improperly
     Schedule {
         duration: std::time::Duration,
-        on_timeout: E,
+        event: TimeoutVariant,
+        on_timeout: Box<dyn (FnOnce(TimeoutVariant) -> E) + Send + Sync>,
     },
-    ScheduleReset,
+    ScheduleReset(TimeoutVariant),
 }
 
 pub enum MempoolCommand<E> {
@@ -166,7 +166,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         sender: PubKey,
         unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
     },
-    Timeout(PacemakerTimerExpire),
+    Timeout(TimeoutVariant),
     FetchedTxs(FetchedTxs<SCT>),
     FetchedFullTxs(FetchedFullTxs<SCT>),
     FetchedBlock(FetchedBlock<SCT>),
