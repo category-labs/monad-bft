@@ -80,7 +80,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         pubkeys,
         state_configs,

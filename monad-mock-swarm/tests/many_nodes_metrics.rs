@@ -52,7 +52,7 @@ fn many_nodes_metrics() {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {

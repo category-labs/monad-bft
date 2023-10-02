@@ -7,7 +7,7 @@ use monad_consensus::{
     validation::signing::Unverified,
 };
 use monad_consensus_types::{
-    command::{FetchedBlock, FetchedFullTxs, FetchedTxs},
+    command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionList},
     signature_collection::SignatureCollection,
@@ -69,20 +69,24 @@ pub enum TimerCommand<E> {
     ScheduleReset,
 }
 
-pub enum MempoolCommand<E> {
-    // TODO consider moving away from dynamic dispatch
+pub enum MempoolCommand<SCT> {
     /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
     // TODO create test to demonstrate faulty behavior if written improperly
     FetchTxs(
+        /// max number of txns to fetch
         usize,
+        /// list of txns to avoid fetching (as they are already in pending blocks)
         Vec<TransactionList>,
-        Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>,
+        /// params of the proposal of this fetch
+        FetchTxParams<SCT>,
     ),
     FetchReset,
     FetchFullTxs(
+        /// Transaction hashes of the Full transaction to be fetched
         TransactionList,
-        Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>,
+        /// params of the proposal of this fetch
+        FetchFullTxParams<SCT>,
     ),
     FetchFullReset,
     DrainTxs(Vec<TransactionList>),
@@ -106,20 +110,20 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
-pub enum Command<M, OM, B, C>
+pub enum Command<M, OM, B, C, SCT>
 where
     M: Message,
 {
     RouterCommand(RouterCommand<M, OM>),
     TimerCommand(TimerCommand<M::Event>),
 
-    MempoolCommand(MempoolCommand<M::Event>),
+    MempoolCommand(MempoolCommand<SCT>),
     LedgerCommand(LedgerCommand<B, M::Event>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
 }
 
-impl<M, OM, B, C> Command<M, OM, B, C>
+impl<M, OM, B, C, SCT> Command<M, OM, B, C, SCT>
 where
     M: Message,
 {
@@ -128,7 +132,7 @@ where
     ) -> (
         Vec<RouterCommand<M, OM>>,
         Vec<TimerCommand<M::Event>>,
-        Vec<MempoolCommand<M::Event>>,
+        Vec<MempoolCommand<SCT>>,
         Vec<LedgerCommand<B, M::Event>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
@@ -167,8 +171,8 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
     },
     Timeout(PacemakerTimerExpire),
-    FetchedTxs(FetchedTxs<SCT>),
-    FetchedFullTxs(FetchedFullTxs<SCT>),
+    FetchedTxs(FetchTxParams<SCT>, TransactionList),
+    FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),
     AdvanceEpoch(Option<ValidatorData>),
@@ -187,13 +191,14 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
-            ConsensusEvent::FetchedTxs(p) => p.fmt(f),
-            ConsensusEvent::FetchedFullTxs(p) => f
+            ConsensusEvent::FetchedTxs(p, t) => {
+                f.debug_tuple("FetchedTxs").field(p).field(t).finish()
+            }
+            ConsensusEvent::FetchedFullTxs(p, _) => f
                 .debug_struct("FetchedFullTxs")
                 .field("author", &p.author)
                 .field("proposal block", &p.p_block)
                 .field("proposal tc", &p.p_last_round_tc)
-                .field("txns", &p.txns)
                 .finish(),
             ConsensusEvent::FetchedBlock(b) => f
                 .debug_struct("FetchedBlock")

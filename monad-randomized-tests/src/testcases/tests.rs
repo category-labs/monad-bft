@@ -38,7 +38,7 @@ fn random_latency_test(seed: u64) {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -90,7 +90,7 @@ fn delayed_message_test(seed: u64) {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         pubkeys,
         state_configs,

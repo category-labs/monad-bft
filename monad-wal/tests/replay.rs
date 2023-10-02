@@ -80,6 +80,7 @@ mod test {
         type Message = MockMessage;
         type Block = MockBlock;
         type Checkpoint = ();
+        type SignatureCollection = ();
 
         fn init(
             _config: Self::Config,
@@ -91,6 +92,7 @@ mod test {
                     Self::OutboundMessage,
                     Self::Block,
                     Self::Checkpoint,
+                    Self::SignatureCollection,
                 >,
             >,
         ) {
@@ -107,6 +109,7 @@ mod test {
                 Self::OutboundMessage,
                 Self::Block,
                 Self::Checkpoint,
+                Self::SignatureCollection,
             >,
         > {
             self.events.push(event);

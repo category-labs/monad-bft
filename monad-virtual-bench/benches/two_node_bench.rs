@@ -32,7 +32,7 @@ fn two_nodes() -> u128 {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {

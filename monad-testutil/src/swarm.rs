@@ -107,7 +107,11 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     swarm_config: SwarmTestConfig,
 ) -> Duration
 where
-    S: State<Config = MonadConfig<SCT, TVT>, Event = MonadEvent<ST, SCT>>,
+    S: State<
+        Config = MonadConfig<SCT, TVT>,
+        Event = MonadEvent<ST, SCT>,
+        SignatureCollection = SCT,
+    >,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
@@ -118,7 +122,7 @@ where
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized> + Clone,
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: PartialEq + Unpin,
@@ -158,7 +162,11 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     min_ledger_len: u32,
 ) -> Duration
 where
-    S: State<Config = MonadConfig<SCT, TVT>, Event = MonadEvent<ST, SCT>>,
+    S: State<
+        Config = MonadConfig<SCT, TVT>,
+        Event = MonadEvent<ST, SCT>,
+        SignatureCollection = SCT,
+    >,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
@@ -169,7 +177,7 @@ where
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized> + Clone,
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: PartialEq + Unpin,

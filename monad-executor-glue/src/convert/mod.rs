@@ -9,7 +9,7 @@ use monad_proto::{
     proto::{event::*, pacemaker::ProtoPacemakerTimerExpire},
 };
 
-use crate::{ConsensusEvent, FetchedBlock, FetchedFullTxs, FetchedTxs, PeerId};
+use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock, PeerId};
 
 pub mod event;
 pub mod interface;
@@ -50,28 +50,24 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
             ConsensusEvent::Timeout(_tmo) => {
                 proto_consensus_event::Event::Timeout(ProtoPacemakerTimerExpire {})
             }
-            ConsensusEvent::FetchedTxs(fetched) => {
+            ConsensusEvent::FetchedTxs(fetched, txns) => {
                 proto_consensus_event::Event::FetchedTxs(ProtoFetchedTxs {
                     node_id: Some((&fetched.node_id).into()),
                     round: Some((&fetched.round).into()),
                     high_qc: Some((&fetched.high_qc).into()),
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
-                    tx_hashes: fetched.txns.0.clone(),
+                    tx_hashes: txns.0.clone(),
                     seq_num: fetched.seq_num,
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
             }
-            ConsensusEvent::FetchedFullTxs(fetched_full) => {
+            ConsensusEvent::FetchedFullTxs(fetched_full, txns) => {
                 proto_consensus_event::Event::FetchedFullTxs(ProtoFetchedFullTxs {
                     author: Some((&fetched_full.author).into()),
                     p_block: Some((&fetched_full.p_block).into()),
                     p_last_round_tc: fetched_full.p_last_round_tc.as_ref().map(Into::into),
-                    full_txs: fetched_full
-                        .txns
-                        .as_ref()
-                        .map(|txns| txns.0.clone())
-                        .unwrap_or_default(),
+                    full_txs: txns.as_ref().map(|txns| txns.0.clone()).unwrap_or_default(),
                 })
             }
             ConsensusEvent::FetchedBlock(fetched_block) => {
@@ -132,59 +128,63 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                 ConsensusEvent::Timeout(PacemakerTimerExpire)
             }
             Some(proto_consensus_event::Event::FetchedTxs(fetched_txs)) => {
-                ConsensusEvent::FetchedTxs(FetchedTxs {
-                    node_id: fetched_txs
-                        .node_id
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_txs.node_id".to_owned(),
-                        ))?
-                        .try_into()?,
-                    round: fetched_txs
-                        .round
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_txs.round".to_owned(),
-                        ))?
-                        .try_into()?,
-                    seq_num: fetched_txs.seq_num,
-                    state_root_hash: fetched_txs
-                        .state_root_hash
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_txs.state_root_hash".to_owned(),
-                        ))?
-                        .try_into()?,
-                    high_qc: fetched_txs
-                        .high_qc
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_txs.high_qc".to_owned(),
-                        ))?
-                        .try_into()?,
-                    last_round_tc: fetched_txs
-                        .last_round_tc
-                        .map(TryInto::try_into)
-                        .transpose()?,
-                    txns: TransactionList(fetched_txs.tx_hashes),
-                })
+                ConsensusEvent::FetchedTxs(
+                    FetchTxParams {
+                        node_id: fetched_txs
+                            .node_id
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_txs.node_id".to_owned(),
+                            ))?
+                            .try_into()?,
+                        round: fetched_txs
+                            .round
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_txs.round".to_owned(),
+                            ))?
+                            .try_into()?,
+                        seq_num: fetched_txs.seq_num,
+                        state_root_hash: fetched_txs
+                            .state_root_hash
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_txs.state_root_hash".to_owned(),
+                            ))?
+                            .try_into()?,
+                        high_qc: fetched_txs
+                            .high_qc
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_txs.high_qc".to_owned(),
+                            ))?
+                            .try_into()?,
+                        last_round_tc: fetched_txs
+                            .last_round_tc
+                            .map(TryInto::try_into)
+                            .transpose()?,
+                    },
+                    TransactionList(fetched_txs.tx_hashes),
+                )
             }
             Some(proto_consensus_event::Event::FetchedFullTxs(fetched_full_txs)) => {
-                ConsensusEvent::FetchedFullTxs(FetchedFullTxs {
-                    author: fetched_full_txs
-                        .author
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_full_txs.author".to_owned(),
-                        ))?
-                        .try_into()?,
-                    p_block: fetched_full_txs
-                        .p_block
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_full_txs.p_block".to_owned(),
-                        ))?
-                        .try_into()?,
-                    p_last_round_tc: fetched_full_txs
-                        .p_last_round_tc
-                        .map(TryInto::try_into)
-                        .transpose()?,
-                    txns: Some(FullTransactionList(fetched_full_txs.full_txs)),
-                })
+                ConsensusEvent::FetchedFullTxs(
+                    FetchFullTxParams {
+                        author: fetched_full_txs
+                            .author
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_full_txs.author".to_owned(),
+                            ))?
+                            .try_into()?,
+                        p_block: fetched_full_txs
+                            .p_block
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_full_txs.p_block".to_owned(),
+                            ))?
+                            .try_into()?,
+                        p_last_round_tc: fetched_full_txs
+                            .p_last_round_tc
+                            .map(TryInto::try_into)
+                            .transpose()?,
+                    },
+                    Some(FullTransactionList(fetched_full_txs.full_txs)),
+                )
             }
             Some(proto_consensus_event::Event::FetchedBlock(fetched_block)) => {
                 ConsensusEvent::FetchedBlock(FetchedBlock {

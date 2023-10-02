@@ -56,7 +56,7 @@ mod test {
             MockWALogger<_>,
             _,
             MockValidator,
-            MockMempool<_>,
+            MockMempool<_, _>,
         >(
             pubkeys,
             state_configs,
@@ -127,7 +127,7 @@ mod test {
             MockWALogger<_>,
             _,
             MockValidator,
-            MockMempool<_>,
+            MockMempool<_, _>,
         >(
             pubkeys,
             state_configs,

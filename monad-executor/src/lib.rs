@@ -16,15 +16,32 @@ pub trait State: Sized {
     type Message: Message<Event = Self::Event>;
     type Block: BlockType;
     type Checkpoint;
+    type SignatureCollection;
 
     fn init(
         config: Self::Config,
     ) -> (
         Self,
-        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>,
+        Vec<
+            Command<
+                Self::Message,
+                Self::OutboundMessage,
+                Self::Block,
+                Self::Checkpoint,
+                Self::SignatureCollection,
+            >,
+        >,
     );
     fn update(
         &mut self,
         event: Self::Event,
-    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>;
+    ) -> Vec<
+        Command<
+            Self::Message,
+            Self::OutboundMessage,
+            Self::Block,
+            Self::Checkpoint,
+            Self::SignatureCollection,
+        >,
+    >;
 }

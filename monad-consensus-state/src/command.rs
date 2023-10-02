@@ -7,8 +7,8 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, FullBlock, UnverifiedFullBlock},
-    command::{FetchedBlock, FetchedFullTxs, FetchedTxs},
-    payload::{FullTransactionList, TransactionList},
+    command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
+    payload::TransactionList,
     signature_collection::SignatureCollection,
 };
 use monad_executor_glue::RouterTarget;
@@ -26,16 +26,9 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
         on_timeout: PacemakerTimerExpire,
     },
     ScheduleReset,
-    FetchTxs(
-        usize,
-        Vec<TransactionList>,
-        Box<dyn (FnOnce(TransactionList) -> FetchedTxs<SCT>) + Send + Sync>,
-    ),
+    FetchTxs(usize, Vec<TransactionList>, FetchTxParams<SCT>),
     FetchTxsReset,
-    FetchFullTxs(
-        TransactionList,
-        Box<dyn (FnOnce(Option<FullTransactionList>) -> FetchedFullTxs<SCT>) + Send + Sync>,
-    ),
+    FetchFullTxs(TransactionList, FetchFullTxParams<SCT>),
     FetchFullTxsReset,
     DrainTxs(Vec<TransactionList>),
     LedgerCommit(Vec<FullBlock<SCT>>),

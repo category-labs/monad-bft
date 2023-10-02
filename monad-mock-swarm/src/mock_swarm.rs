@@ -25,7 +25,7 @@ pub struct Node<S, RS, P, LGR, ME, ST, SCT>
 where
     S: State,
     RS: RouterScheduler,
-    ME: MockableExecutor,
+    ME: MockableExecutor<SignatureCollection = SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
@@ -40,7 +40,7 @@ where
 
 impl<S, RS, P, LGR, ME, ST, SCT> Node<S, RS, P, LGR, ME, ST, SCT>
 where
-    S: State<Event = MonadEvent<ST, SCT>>,
+    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
@@ -52,7 +52,7 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: Unpin,
@@ -148,9 +148,7 @@ where
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ME: MockableExecutor<SignatureCollection = SCT>,
 {
     states: BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>>,
 }
@@ -163,7 +161,7 @@ enum SwarmEventType {
 
 impl<S, RS, P, LGR, ME, ST, SCT> Nodes<S, RS, P, LGR, ME, ST, SCT>
 where
-    S: State<Event = MonadEvent<ST, SCT>>,
+    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
@@ -175,7 +173,7 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: Unpin,

@@ -72,7 +72,7 @@ fn nodes_with_random_latency(seed: u64) {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {

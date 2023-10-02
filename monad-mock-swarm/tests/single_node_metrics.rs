@@ -52,7 +52,7 @@ fn two_nodes() {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {

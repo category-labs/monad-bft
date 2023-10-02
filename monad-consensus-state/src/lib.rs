@@ -13,7 +13,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
-    command::{FetchedFullTxs, FetchedTxs},
+    command::{FetchFullTxParams, FetchTxParams},
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -217,12 +217,11 @@ where
             inc_count!(rx_empty_block);
             return vec![ConsensusCommand::FetchFullTxs(
                 TransactionList::default(),
-                Box::new(move |txns| FetchedFullTxs {
+                FetchFullTxParams {
                     author,
                     p_block: p.block,
                     p_last_round_tc: p.last_round_tc,
-                    txns,
-                }),
+                },
             )];
         }
 
@@ -250,12 +249,11 @@ where
                 inc_count!(rx_proposal);
                 vec![ConsensusCommand::FetchFullTxs(
                     p.block.payload.txns.clone(),
-                    Box::new(move |txns| FetchedFullTxs {
+                    FetchFullTxParams {
                         author,
                         p_block: p.block,
                         p_last_round_tc: p.last_round_tc,
-                        txns,
-                    }),
+                    },
                 )]
             }
         }
@@ -627,15 +625,14 @@ where
                 vec![ConsensusCommand::FetchTxs(
                     self.config.proposal_size,
                     pending_txs,
-                    Box::new(move |txns| FetchedTxs {
+                    FetchTxParams {
                         node_id,
                         round,
                         seq_num: proposed_seq_num,
                         state_root_hash: h,
                         high_qc,
                         last_round_tc,
-                        txns,
-                    }),
+                    },
                 )]
             }
             ConsensusAction::Abstain => {
@@ -652,15 +649,14 @@ where
                 vec![ConsensusCommand::FetchTxs(
                     0,
                     vec![],
-                    Box::new(move |_txns| FetchedTxs {
+                    FetchTxParams {
                         node_id,
                         round,
                         seq_num: proposed_seq_num,
                         state_root_hash: Hash([0; 32]),
                         high_qc,
                         last_round_tc,
-                        txns: TransactionList::default(),
-                    }),
+                    },
                 )]
             }
         }

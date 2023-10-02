@@ -1,7 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, HashSet, VecDeque},
-    marker::Unpin,
+    marker::{PhantomData, Unpin},
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -10,6 +10,7 @@ use std::{
 
 use futures::{Stream, StreamExt};
 use monad_consensus_types::{
+    command::{FetchFullTxParams, FetchTxParams},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionList},
     signature_collection::SignatureCollection,
@@ -121,9 +122,13 @@ where
 }
 
 pub trait MockableExecutor:
-    Executor<Command = MempoolCommand<Self::Event>> + Stream<Item = Self::Event> + Unpin + Default
+    Executor<Command = MempoolCommand<Self::SignatureCollection>>
+    + Stream<Item = Self::Event>
+    + Unpin
+    + Default
 {
     type Event;
+    type SignatureCollection;
 
     fn ready(&self) -> bool;
 }
@@ -133,7 +138,7 @@ where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
-    ME: MockableExecutor,
+    ME: MockableExecutor<SignatureCollection = SCT>,
 {
     mempool: ME,
     ledger: MockLedger<S::Block, S::Event>,
@@ -200,7 +205,7 @@ where
     ST: MessageSignature,
     SCT: SignatureCollection,
     RS: RouterScheduler,
-    ME: MockableExecutor,
+    ME: MockableExecutor<SignatureCollection = SCT>,
 {
     pub fn new(router: RS) -> Self {
         Self {
@@ -273,11 +278,11 @@ where
     ST: MessageSignature,
     SCT: SignatureCollection,
     RS: RouterScheduler,
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<SignatureCollection = SCT, Event = S::Event>,
 
     S::OutboundMessage: Serializable<RS::M>,
 {
-    type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint>;
+    type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint, SCT>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut to_publish = Vec::new();
         let mut to_unpublish = HashSet::new();
@@ -338,11 +343,11 @@ pub enum MockExecutorEvent<E, Ser> {
 
 impl<S, RS, ME, ST, SCT> MockExecutor<S, RS, ME, ST, SCT>
 where
-    S: State<Event = MonadEvent<ST, SCT>>,
+    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
     RS: RouterScheduler,
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<SignatureCollection = S::SignatureCollection, Event = S::Event>,
 
     S::Message: Deserializable<RS::M>,
     S::Block: Unpin,
@@ -404,7 +409,7 @@ where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
-    ME: MockableExecutor,
+    ME: MockableExecutor<SignatureCollection = SCT>,
 {
     pub fn ledger(&self) -> &MockLedger<S::Block, S::Event> {
         &self.ledger
@@ -466,24 +471,26 @@ where
     }
 }
 
-pub struct MockMempool<E> {
-    fetch_txs_state: Option<Box<dyn (FnOnce(TransactionList) -> E) + Send + Sync>>,
-    fetch_full_txs_state: Option<Box<dyn (FnOnce(Option<FullTransactionList>) -> E) + Send + Sync>>,
+pub struct MockMempool<ST, SCT> {
+    fetch_txs_state: Option<FetchTxParams<SCT>>,
+    fetch_full_txs_state: Option<FetchFullTxParams<SCT>>,
     waker: Option<Waker>,
+    phantom: PhantomData<ST>,
 }
 
-impl<E> Default for MockMempool<E> {
+impl<ST, SCT> Default for MockMempool<ST, SCT> {
     fn default() -> Self {
         Self {
             fetch_txs_state: None,
             fetch_full_txs_state: None,
             waker: None,
+            phantom: PhantomData,
         }
     }
 }
 
-impl<E> Executor for MockMempool<E> {
-    type Command = MempoolCommand<E>;
+impl<ST, SCT> Executor for MockMempool<ST, SCT> {
+    type Command = MempoolCommand<SCT>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
@@ -518,21 +525,30 @@ impl<E> Executor for MockMempool<E> {
     }
 }
 
-impl<E> Stream for MockMempool<E>
+impl<ST, SCT> Stream for MockMempool<ST, SCT>
 where
     Self: Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
-    type Item = E;
+    type Item = MonadEvent<ST, SCT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if let Some(cb) = this.fetch_txs_state.take() {
-            return Poll::Ready(Some(cb(TransactionList(Vec::new()))));
+        if let Some(s) = this.fetch_txs_state.take() {
+            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
+                monad_executor_glue::ConsensusEvent::FetchedTxs(s, TransactionList(Vec::new())),
+            )));
         }
 
-        if let Some(cb) = this.fetch_full_txs_state.take() {
-            return Poll::Ready(Some(cb(Some(FullTransactionList(Vec::new())))));
+        if let Some(s) = this.fetch_full_txs_state.take() {
+            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
+                monad_executor_glue::ConsensusEvent::FetchedFullTxs(
+                    s,
+                    Some(FullTransactionList(Vec::new())),
+                ),
+            )));
         }
 
         self.waker = Some(cx.waker().clone());
@@ -540,8 +556,13 @@ where
     }
 }
 
-impl<E> MockableExecutor for MockMempool<E> {
-    type Event = E;
+impl<ST, SCT> MockableExecutor for MockMempool<ST, SCT>
+where
+    ST: MessageSignature + Unpin,
+    SCT: SignatureCollection + Unpin,
+{
+    type Event = MonadEvent<ST, SCT>;
+    type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
         self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
@@ -553,10 +574,27 @@ mod tests {
     use std::time::Duration;
 
     use futures::{FutureExt, StreamExt};
+    use monad_consensus_types::{
+        multi_sig::MultiSig, quorum_certificate::QuorumCertificate, validation::Sha256Hash,
+    };
+    use monad_crypto::NopSignature;
     use monad_executor::Executor;
     use monad_executor_glue::TimerCommand;
+    use monad_testutil::signing::node_id;
+    use monad_types::Round;
 
     use super::*;
+
+    fn dont_care_fetched_tx_param<S: SignatureCollection>() -> FetchTxParams<S> {
+        FetchTxParams {
+            node_id: node_id(),
+            round: Round(0),
+            seq_num: 0,
+            state_root_hash: Default::default(),
+            high_qc: QuorumCertificate::genesis_prime_qc::<Sha256Hash>(),
+            last_round_tc: None,
+        }
+    }
 
     #[test]
     fn test_mock_timer_schedule() {
@@ -674,35 +712,51 @@ mod tests {
 
     #[test]
     fn test_fetch() {
-        let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            0,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
 
     #[test]
     fn test_double_fetch() {
-        let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            0,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            0,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
 
     #[test]
     fn test_reset() {
-        let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            0,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
         mempool.exec(vec![MempoolCommand::FetchReset]);
         assert!(!mempool.ready());
     }
 
     #[test]
     fn test_inline_double_fetch() {
-        let mut mempool = MockMempool::<()>::default();
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
         mempool.exec(vec![
-            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
-            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
+            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
         ]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -710,9 +764,9 @@ mod tests {
 
     #[test]
     fn test_inline_reset() {
-        let mut mempool = MockMempool::<()>::default();
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
         mempool.exec(vec![
-            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
             MempoolCommand::FetchReset,
         ]);
         assert!(!mempool.ready());
@@ -720,10 +774,10 @@ mod tests {
 
     #[test]
     fn test_inline_reset_fetch() {
-        let mut mempool = MockMempool::<()>::default();
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
         mempool.exec(vec![
             MempoolCommand::FetchReset,
-            MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {})),
+            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
         ]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -731,8 +785,12 @@ mod tests {
 
     #[test]
     fn test_noop_exec() {
-        let mut mempool = MockMempool::<()>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(0, vec![], Box::new(|_| {}))]);
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            0,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
         mempool.exec(Vec::new());
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());

@@ -2,13 +2,12 @@ use monad_types::{BlockId, Hash, NodeId, Round};
 
 use crate::{
     block::{Block, UnverifiedFullBlock},
-    payload::{FullTransactionList, TransactionList},
     quorum_certificate::QuorumCertificate,
     timeout::TimeoutCertificate,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedTxs<SCT> {
+pub struct FetchTxParams<SCT> {
     // some of this stuff is probably not strictly necessary
     // they're included here just to be extra safe
     pub node_id: NodeId,
@@ -17,16 +16,13 @@ pub struct FetchedTxs<SCT> {
     pub state_root_hash: Hash,
     pub high_qc: QuorumCertificate<SCT>,
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
-
-    pub txns: TransactionList,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedFullTxs<SCT> {
+pub struct FetchFullTxParams<SCT> {
     pub author: NodeId,
     pub p_block: Block<SCT>,
     pub p_last_round_tc: Option<TimeoutCertificate<SCT>>,
-    pub txns: Option<FullTransactionList>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

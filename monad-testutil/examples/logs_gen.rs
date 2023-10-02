@@ -69,7 +69,7 @@ pub fn generate_log<P: Pipeline<MM>>(
         NoSerRouterScheduler<MM>,
         P,
         WALoggerType,
-        MockMempool<ME>,
+        MockMempool<SignatureType, SignatureCollectionType>,
         SignatureType,
         SignatureCollectionType,
     >::new(peers);

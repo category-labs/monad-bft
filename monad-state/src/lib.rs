@@ -228,12 +228,21 @@ where
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
     type Block = FullBlock<SCT>;
     type Checkpoint = Checkpoint<SCT>;
+    type SignatureCollection = SCT;
 
     fn init(
         config: Self::Config,
     ) -> (
         Self,
-        Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>>,
+        Vec<
+            Command<
+                Self::Message,
+                Self::OutboundMessage,
+                Self::Block,
+                Self::Checkpoint,
+                Self::SignatureCollection,
+            >,
+        >,
     ) {
         // FIXME stake should be configurable
         let staking_list = config
@@ -294,7 +303,15 @@ where
     fn update(
         &mut self,
         event: MonadEvent<ST, SCT>,
-    ) -> Vec<Command<Self::Message, Self::OutboundMessage, Self::Block, Self::Checkpoint>> {
+    ) -> Vec<
+        Command<
+            Self::Message,
+            Self::OutboundMessage,
+            Self::Block,
+            Self::Checkpoint,
+            Self::SignatureCollection,
+        >,
+    > {
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
@@ -304,7 +321,7 @@ where
                         .into_iter()
                         .map(Into::into)
                         .collect(),
-                    ConsensusEvent::FetchedTxs(fetched) => {
+                    ConsensusEvent::FetchedTxs(fetched, txns) => {
                         assert_eq!(fetched.node_id, self.consensus.get_nodeid());
 
                         let mut cmds = vec![ConsensusCommand::FetchTxsReset];
@@ -317,7 +334,7 @@ where
                                 fetched.node_id,
                                 fetched.round,
                                 &Payload {
-                                    txns: fetched.txns,
+                                    txns,
                                     header,
                                     seq_num: fetched.seq_num,
                                 },
@@ -337,10 +354,10 @@ where
 
                         cmds
                     }
-                    ConsensusEvent::FetchedFullTxs(fetched_txs) => {
+                    ConsensusEvent::FetchedFullTxs(fetched_txs, txns) => {
                         let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
 
-                        if let Some(txns) = fetched_txs.txns {
+                        if let Some(txns) = txns {
                             let proposal_msg = ProposalMessage {
                                 block: fetched_txs.p_block,
                                 last_round_tc: fetched_txs.p_last_round_tc,
@@ -478,26 +495,19 @@ where
                         ConsensusCommand::ScheduleReset => {
                             cmds.push(Command::TimerCommand(TimerCommand::ScheduleReset))
                         }
-                        ConsensusCommand::FetchTxs(max_txns, pending_txs, cb) => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchTxs(
+                        ConsensusCommand::FetchTxs(max_txns, pending_txs, fetch_params) => cmds
+                            .push(Command::MempoolCommand(MempoolCommand::FetchTxs(
                                 max_txns,
                                 pending_txs,
-                                Box::new(|txs| {
-                                    MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(cb(txs)))
-                                }),
-                            )))
-                        }
+                                fetch_params,
+                            ))),
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }
-                        ConsensusCommand::FetchFullTxs(txs, cb) => {
+                        ConsensusCommand::FetchFullTxs(txs, fetch_params) => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullTxs(
                                 txs,
-                                Box::new(|full_txs| {
-                                    MonadEvent::ConsensusEvent(ConsensusEvent::FetchedFullTxs(cb(
-                                        full_txs,
-                                    )))
-                                }),
+                                fetch_params,
                             )))
                         }
                         ConsensusCommand::FetchFullTxsReset => {

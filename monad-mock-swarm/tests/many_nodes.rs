@@ -39,7 +39,7 @@ fn many_nodes() {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -80,7 +80,7 @@ fn many_nodes_quic() {
         MockWALogger<_>,
         _,
         MockValidator,
-        MockMempool<_>,
+        MockMempool<_, _>,
     >(
         MockValidator,
         |all_peers, me| QuicRouterSchedulerConfig {

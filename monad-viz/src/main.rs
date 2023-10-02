@@ -77,7 +77,7 @@ type Sim = NodesSimulation<
     GenericTransformerPipeline<MM>,
     PersistenceLoggerType,
     SimConfig,
-    MockMempool<ME>,
+    MockMempool<SignatureType, SignatureCollectionType>,
     SignatureType,
     SignatureCollectionType,
 >;

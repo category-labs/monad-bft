@@ -84,7 +84,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
-        MockMempool<_>,
+        MockMempool<_, _>,
         SignatureType,
         SignatureCollectionType,
     >::new(peers);
@@ -168,7 +168,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
         NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
         _,
         WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
-        MockMempool<_>,
+        MockMempool<_, _>,
         SignatureType,
         SignatureCollectionType,
     >::new(peers_clone);

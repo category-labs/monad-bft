@@ -101,6 +101,7 @@ where
                 <S as State>::OutboundMessage,
                 <S as State>::Block,
                 <S as State>::Checkpoint,
+                <S as State>::SignatureCollection,
             >,
         >,
     ) {

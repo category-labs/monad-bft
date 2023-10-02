@@ -77,7 +77,7 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, P, LGR, ST, SCT>,
-    ME: MockableExecutor,
+    ME: MockableExecutor<SignatureCollection = SCT>,
 {
     config: C,
 
@@ -88,14 +88,14 @@ where
 
 impl<S, RS, P, LGR, C, ME, ST, SCT> NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
+    S: monad_executor::State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, P, LGR, ST, SCT>,
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
@@ -134,14 +134,14 @@ where
 
 impl<S, RS, P, LGR, C, ME, ST, SCT> Graph for NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
+    S: monad_executor::State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, P, LGR, ST, SCT>,
-    ME: MockableExecutor<Event = S::Event>,
+    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
