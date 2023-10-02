@@ -469,7 +469,7 @@ where
                         Vec::new()
                     }
                     ConsensusEvent::StateUpdate((seq_num, root_hash)) => {
-                        self.consensus.handle_state_update(seq_num, root_hash);
+                        self.consensus.handle_state_root_update(seq_num, root_hash);
                         Vec::new()
                     }
                 };

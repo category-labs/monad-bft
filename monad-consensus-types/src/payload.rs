@@ -150,7 +150,7 @@ impl StateRootValidator for StateRoot {
             return;
         }
         self.root_hashes
-            .retain(|k, _| *k >= (latest_seq_num - self.delay));
+            .retain(|k, _| *k > (latest_seq_num - self.delay));
     }
 
     fn validate(&self, seq_num: u64, block_state_root_hash: Hash) -> StateRootResult {

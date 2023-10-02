@@ -22,7 +22,6 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 
 pub struct ProposalGen<ST, SCT> {
     round: Round,
-    seq_num: u64,
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
     last_tc: Option<TimeoutCertificate<SCT>>,
@@ -37,7 +36,6 @@ where
     pub fn new(genesis_qc: QuorumCertificate<SCT>) -> Self {
         ProposalGen {
             round: Round(0),
-            seq_num: 0,
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
             last_tc: None,
@@ -75,13 +73,12 @@ where
             &Payload {
                 txns,
                 header: execution_header,
-                seq_num: self.seq_num,
+                seq_num: qc.info.vote.seq_num + 1,
             },
             qc,
         );
 
         self.high_qc = self.qc.clone();
-        self.seq_num += 1;
         self.qc = self.get_next_qc(certkeys, &block, validator_mapping);
 
         let proposal = ProposalMessage {
@@ -170,7 +167,7 @@ where
             round: block.round,
             parent_id: block.qc.info.vote.id,
             parent_round: block.qc.info.vote.round,
-            seq_num: self.seq_num,
+            seq_num: block.payload.seq_num,
         };
         let commit = Some(block.get_id().0); // FIXME: is this hash correct?
         let lci = LedgerCommitInfo::new::<Sha256Hash>(commit, &vi);

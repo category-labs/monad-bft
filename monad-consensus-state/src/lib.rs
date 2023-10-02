@@ -173,7 +173,7 @@ where
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
-    fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash);
+    fn handle_state_root_update(&mut self, seq_num: u64, root_hash: Hash);
 
     fn get_current_round(&self) -> Round;
 
@@ -546,7 +546,7 @@ where
         self.block_sync_manager.request(&qc, validators)
     }
 
-    fn handle_state_update(&mut self, seq_num: u64, root_hash: Hash) {
+    fn handle_state_root_update(&mut self, seq_num: u64, root_hash: Hash) {
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 
@@ -766,8 +766,8 @@ mod test {
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
         payload::{
-            ExecutionArtifacts, FullTransactionList, NopStateRoot, StateRootValidator,
-            TransactionList,
+            Bloom, ExecutionArtifacts, FullTransactionList, Gas, NopStateRoot, StateRoot,
+            StateRootValidator, TransactionList,
         },
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -848,7 +848,7 @@ mod test {
                     Duration::from_secs(1),
                     ConsensusConfig {
                         proposal_size: 5000,
-                        state_root_delay: 0,
+                        state_root_delay: 1,
                         propose_with_missing_blocks: false,
                     },
                     std::mem::replace(&mut dupkeys[i], default_key),
@@ -2047,6 +2047,248 @@ mod test {
             )
         });
         assert!(res.is_none());
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_receive_empty_block() {
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
+        let election = SimpleRoundRobin::new();
+        let (state, _) = states.split_first_mut().unwrap();
+
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+
+        let p1 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList::default(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = p1.destructure();
+
+        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message);
+        let result = cmds
+            .iter()
+            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
+        assert!(result.is_some());
+
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains("monotonic_counter.rx_empty_block"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("Expected count 1 got {}", n)),
+            }
+        });
+    }
+
+    #[traced_test]
+    #[test]
+    fn test_lagging_execution() {
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
+        let election = SimpleRoundRobin::new();
+        let (state, _) = states.split_first_mut().unwrap();
+
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+
+        let p0 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList(vec![0xaa]),
+            ExecutionArtifacts::zero(),
+        );
+
+        let p1 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList(vec![0xaa]),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = p1.destructure();
+        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message);
+        let result = cmds
+            .iter()
+            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
+        assert!(result.is_none());
+
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains("monotonic_counter.rx_execution_lagging"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("Expected count 1 got {}", n)),
+            }
+        });
+    }
+
+    #[test]
+    fn test_state_root_updates() {
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
+        let election = SimpleRoundRobin::new();
+        let (state, _) = states.split_first_mut().unwrap();
+
+        // delay gap in setup is 1
+
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let p0 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList::default(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author, _, verified_message) = p0.destructure();
+        // p0 should have seqnum 1 and therefore only require state_root 0
+        state.handle_state_root_update(0, Hash([0xaa; 32]));
+        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let result = cmds
+            .iter()
+            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
+        assert!(result.is_some());
+        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+
+        let p1 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList(vec![0xaa]),
+            ExecutionArtifacts {
+                parent_hash: Default::default(),
+                state_root: Hash([0x99; 32]),
+                transactions_root: Default::default(),
+                receipts_root: Default::default(),
+                logs_bloom: Bloom::zero(),
+                gas_used: Gas(0),
+            },
+        );
+        let (author, _, verified_message) = p1.destructure();
+        // p1 should have seqnum 2 and therefore only require state_root 1
+        state.handle_state_root_update(1, Hash([0x99; 32]));
+        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let result = cmds
+            .iter()
+            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
+        assert!(result.is_some());
+
+        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+
+        // commit some blocks and confirm cleanup of state root hashes happened
+
+        let p2 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList(vec![0xaa]),
+            ExecutionArtifacts {
+                parent_hash: Default::default(),
+                state_root: Hash([0xbb; 32]),
+                transactions_root: Default::default(),
+                receipts_root: Default::default(),
+                logs_bloom: Bloom::zero(),
+                gas_used: Gas(0),
+            },
+        );
+
+        let (author, _, verified_message) = p2.destructure();
+        state.handle_state_root_update(2, Hash([0xbb; 32]));
+        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let result = cmds
+            .iter()
+            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
+        assert!(result.is_some());
+
+        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+        let lc = p2_cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(lc.is_some());
+
+        let p3 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            TransactionList(vec![0xaa]),
+            ExecutionArtifacts {
+                parent_hash: Default::default(),
+                state_root: Hash([0xcc; 32]),
+                transactions_root: Default::default(),
+                receipts_root: Default::default(),
+                logs_bloom: Bloom::zero(),
+                gas_used: Gas(0),
+            },
+        );
+
+        let (author, _, verified_message) = p3.destructure();
+        state.handle_state_root_update(3, Hash([0xcc; 32]));
+        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let result = cmds
+            .iter()
+            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
+        assert!(result.is_some());
+
+        let p3_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::default(),
+            &valset,
+            &election,
+        );
+        let lc = p3_cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(lc.is_some());
+
+        // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
+        // state_root_validator had updates for 0, 1, 2, 3
+        // Proposals with seq num 1 and 2 are committed, so expect 2 and 3 to remain
+        // in the state_root_validator
+        assert_eq!(2, state.state_root_validator.root_hashes.len());
+        assert!(state.state_root_validator.root_hashes.contains_key(&2));
+        assert!(state.state_root_validator.root_hashes.contains_key(&3));
     }
 
     #[test]
