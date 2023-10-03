@@ -100,5 +100,6 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         Duration::from_secs(1),
         usize::MAX,
         20,
+        1,
     );
 }

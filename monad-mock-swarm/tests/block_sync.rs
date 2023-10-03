@@ -77,6 +77,7 @@ mod test {
             Duration::from_secs(4),
             usize::MAX,
             20,
+            1,
         );
     }
 
@@ -145,6 +146,7 @@ mod test {
             until,
             usize::MAX,
             20,
+            1,
         );
     }
 }

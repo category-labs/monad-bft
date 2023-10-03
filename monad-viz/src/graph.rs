@@ -65,7 +65,7 @@ where
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 {
     fn max_tick(&self) -> Duration;
-    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config, P)>;
+    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config, P, u64)>;
 }
 
 pub struct NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>

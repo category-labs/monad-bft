@@ -55,6 +55,7 @@ fn random_latency_test(seed: u64) {
             until: Duration::from_secs(10),
             until_block: usize::MAX,
             expected_block: 2048,
+            seed: 1,
         },
     );
 }
@@ -110,6 +111,7 @@ fn delayed_message_test(seed: u64) {
         Duration::from_secs(2),
         usize::MAX,
         20,
+        1,
     );
 }
 

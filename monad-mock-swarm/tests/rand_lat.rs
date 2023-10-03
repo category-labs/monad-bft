@@ -91,6 +91,7 @@ fn nodes_with_random_latency(seed: u64) {
             until: Duration::from_secs(60 * 60),
             until_block: usize::MAX,
             expected_block: 2048,
+            seed: 1,
         },
     );
 }

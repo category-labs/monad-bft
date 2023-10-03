@@ -64,6 +64,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
                 vec![GenericTransformer::XorLatency(XorLatencyTransformer(
                     Duration::from_millis(u8::MAX as u64),
                 ))],
+                1,
             )
         })
         .collect::<Vec<_>>();
@@ -148,6 +149,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
                 vec![GenericTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(1),
                 ))],
+                1,
             )
         })
         .collect::<Vec<_>>();

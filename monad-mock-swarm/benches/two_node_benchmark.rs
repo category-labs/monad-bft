@@ -57,6 +57,7 @@ fn two_nodes() {
             until: Duration::from_secs(10),
             until_block: usize::MAX,
             expected_block: 1024,
+            seed: 1,
         },
     );
 }

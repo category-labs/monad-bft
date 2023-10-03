@@ -72,6 +72,7 @@ impl
         <PersistenceLoggerType as PersistenceLogger>::Config,
         Rsc,
         GenericTransformerPipeline<MM>,
+        u64,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) =
             create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
@@ -127,6 +128,7 @@ impl
                         all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                     },
                     self.pipeline.clone(),
+                    1,
                 )
             })
             .collect()

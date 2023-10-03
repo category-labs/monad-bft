@@ -49,6 +49,7 @@ fn two_nodes() -> u128 {
             until: Duration::from_secs(10),
             until_block: 1024,
             expected_block: 1024,
+            seed: 1,
         },
     )
     .as_millis()

@@ -127,6 +127,7 @@ where
 #[test_case::test_case(&[1,3]; "fail 1 3")]
 // #[test_case::test_case(&[2,3]; "fail 2 3")]
 fn replay_one_honest(failure_idx: &[usize]) {
+    let default_seed = 1;
     // setup 4 nodes
     let (peers, state_configs) =
         get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA);
@@ -159,6 +160,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                         PeerId(pubkey),
                     ),
                     pipeline.clone(),
+                    default_seed,
                 )
             })
             .collect(),
@@ -226,6 +228,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             PeerId(pubkeys[f0]),
         ),
         pipeline.clone(),
+        default_seed,
     ));
 
     nodes.add_state((
@@ -237,6 +240,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             PeerId(pubkeys[f1]),
         ),
         pipeline,
+        default_seed,
     ));
 
     // assert consensus state is the same after replay

@@ -1,10 +1,10 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BinaryHeap},
-    marker::PhantomData,
     time::Duration,
 };
 
+use itertools::Itertools;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
@@ -13,6 +13,8 @@ use monad_executor::{timed_event::TimedEvent, Executor, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
+use rand::{Rng, SeedableRng};
+use rand_chacha::{ChaCha20Rng, ChaChaRng};
 use rayon::prelude::*;
 use tracing::info_span;
 
@@ -35,7 +37,8 @@ where
     pub logger: LGR,
     pub pipeline: P,
     pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
-    _marker: PhantomData<(ST, SCT)>,
+    pub rng: ChaCha20Rng,
+    pub current_seed: usize,
 }
 
 impl<S, RS, P, LGR, ME, ST, SCT> Node<S, RS, P, LGR, ME, ST, SCT>
@@ -58,7 +61,8 @@ where
     S::Block: Unpin,
 {
     fn peek_event(&self) -> Option<(Duration, SwarmEventType)> {
-        std::iter::empty()
+        // avoid modification of the original rng
+        let events = std::iter::empty()
             .chain(
                 self.executor
                     .peek_tick()
@@ -70,8 +74,18 @@ where
                     (*min_scheduled_tick, SwarmEventType::ScheduledMessage)
                 },
             ))
-            .min()
+            .min_set();
+        if !events.is_empty() {
+            Some(events[self.current_seed % events.len()])
+        } else {
+            None
+        }
     }
+
+    fn update_rng(&mut self) {
+        self.current_seed = self.rng.gen();
+    }
+
     fn step_until(
         &mut self,
         until: Duration,
@@ -81,6 +95,8 @@ where
             if tick > until {
                 break;
             }
+            // polling event, thus update the rng
+            self.update_rng();
 
             let event = match event_type {
                 SwarmEventType::ExecutorEvent => {
@@ -154,7 +170,7 @@ where
     tick: Duration,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SwarmEventType {
     ExecutorEvent,
     ScheduledMessage,
@@ -181,7 +197,7 @@ where
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
     RS::Serialized: Send,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config, P)>) -> Self {
+    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config, P, u64)>) -> Self {
         assert!(!peers.is_empty());
 
         let mut nodes = Self {
@@ -307,8 +323,8 @@ where
         self.states.remove(peer_id)
     }
 
-    pub fn add_state(&mut self, peer: (PubKey, S::Config, LGR::Config, RS::Config, P)) {
-        let (pubkey, state_config, logger_config, router_scheduler_config, pipeline) = peer;
+    pub fn add_state(&mut self, peer: (PubKey, S::Config, LGR::Config, RS::Config, P, u64)) {
+        let (pubkey, state_config, logger_config, router_scheduler_config, pipeline, seed) = peer;
         let mut executor: MockExecutor<S, RS, ME, ST, SCT> =
             MockExecutor::new(RS::new(router_scheduler_config), self.tick);
         let (wal, replay_events) = LGR::new(logger_config).unwrap();
@@ -319,6 +335,7 @@ where
         }
 
         executor.exec(init_commands);
+        let mut rng = ChaChaRng::seed_from_u64(seed);
 
         self.states.insert(
             PeerId(pubkey),
@@ -329,7 +346,8 @@ where
                 logger: wal,
                 pipeline,
                 pending_inbound_messages: Default::default(),
-                _marker: PhantomData,
+                rng: ChaCha20Rng::seed_from_u64(rng.gen()),
+                current_seed: rng.gen(),
             },
         );
     }

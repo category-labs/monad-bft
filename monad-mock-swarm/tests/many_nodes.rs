@@ -56,6 +56,7 @@ fn many_nodes() {
             until: Duration::from_secs(4),
             until_block: usize::MAX,
             expected_block: 1024,
+            seed: 1,
         },
     );
 }
@@ -101,6 +102,7 @@ fn many_nodes_quic() {
             until: Duration::from_secs(4),
             until_block: usize::MAX,
             expected_block: 10,
+            seed: 1,
         },
     );
 }

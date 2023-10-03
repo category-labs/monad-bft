@@ -28,6 +28,7 @@ pub struct SwarmTestConfig {
     pub until: Duration,
     pub until_block: usize,
     pub expected_block: usize,
+    pub seed: u64,
 }
 
 pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
@@ -146,6 +147,7 @@ where
         swarm_config.until,
         swarm_config.until_block,
         swarm_config.expected_block,
+        swarm_config.seed,
     )
 }
 
@@ -160,6 +162,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     until: Duration,
     until_block: usize,
     min_ledger_len: usize,
+    seed: u64,
 ) -> Duration
 where
     S: State<
@@ -204,6 +207,7 @@ where
                         PeerId(pubkey),
                     ),
                     pipeline.clone(),
+                    seed,
                 )
             })
             .collect(),

@@ -24,6 +24,7 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
+itertools = { workspace = true }
 
 [dev-dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
@@ -39,7 +40,6 @@ monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-validator = { path = "../monad-validator" }
 
 criterion = { workspace = true }
-itertools = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 tempfile = { workspace = true }

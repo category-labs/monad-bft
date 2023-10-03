@@ -61,6 +61,7 @@ pub fn generate_log<P: Pipeline<MM>>(
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
                 pipeline.clone(),
+                1,
             )
         })
         .collect::<Vec<_>>();
