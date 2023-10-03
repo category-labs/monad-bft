@@ -1,12 +1,7 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
-use monad_executor_glue::{
-    Command, Identifiable, LedgerCommand, Message, PeerId, RouterCommand, RouterTarget,
-};
+use monad_executor_glue::{Command, LedgerCommand, Message, PeerId, RouterCommand, RouterTarget};
 
 use crate::State;
 
@@ -97,7 +92,7 @@ where
         tick: Duration,
         cmds: Vec<
             Command<
-                <S as State>::Message,
+                <S as State>::Event,
                 <S as State>::OutboundMessage,
                 <S as State>::Block,
                 <S as State>::Checkpoint,
@@ -105,9 +100,6 @@ where
             >,
         >,
     ) {
-        let mut to_publish = Vec::new();
-        let mut to_unpublish = HashSet::new();
-
         for command in cmds {
             match command {
                 Command::LedgerCommand(LedgerCommand::LedgerCommit(b)) => {
@@ -120,41 +112,32 @@ where
                 }
                 Command::RouterCommand(cmd) => match cmd {
                     RouterCommand::Publish { target, message } => {
-                        to_publish.push((target, message));
-                    }
-                    RouterCommand::Unpublish { target, id } => {
-                        to_unpublish.insert((target, id));
+                        let message = message.into();
+
+                        let tos = match target {
+                            RouterTarget::PointToPoint(to) => vec![to],
+                            RouterTarget::Broadcast => {
+                                let peer_ids: Vec<_> =
+                                    self.replay_nodes_info.keys().copied().collect();
+                                peer_ids.clone()
+                            }
+                        };
+                        for to in tos.iter().filter(|to| **to != *node_id) {
+                            let msg_queue = self
+                                .replay_nodes_info
+                                .get_mut(to)
+                                .unwrap()
+                                .mut_pending_messages();
+                            msg_queue.push(PendingMsg {
+                                send_id: *node_id,
+                                send_tick: tick,
+                                event: message.clone().event(*node_id),
+                                message: message.clone(),
+                            });
+                        }
                     }
                 },
                 _ => {}
-            }
-        }
-        for (target, out_message) in to_publish {
-            let id = out_message.as_ref().id();
-            if to_unpublish.contains(&(target, id)) {
-                continue;
-            }
-            let message = out_message.into();
-
-            let tos = match target {
-                RouterTarget::PointToPoint(to) => vec![to],
-                RouterTarget::Broadcast => {
-                    let peer_ids: Vec<_> = self.replay_nodes_info.keys().copied().collect();
-                    peer_ids.clone()
-                }
-            };
-            for to in tos.iter().filter(|to| **to != *node_id) {
-                let msg_queue = self
-                    .replay_nodes_info
-                    .get_mut(to)
-                    .unwrap()
-                    .mut_pending_messages();
-                msg_queue.push(PendingMsg {
-                    send_id: *node_id,
-                    send_tick: tick,
-                    event: message.clone().event(*node_id),
-                    message: message.clone(),
-                });
             }
         }
     }

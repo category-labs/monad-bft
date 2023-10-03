@@ -115,6 +115,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
                 })
             });
         cmds.extend(maybe_broadcast);
+        cmds.push(PacemakerCommand::Schedule {
+            duration: self.get_round_timer(),
+            on_timeout: PacemakerTimerExpire,
+        });
         cmds
     }
 
@@ -359,9 +363,10 @@ mod test {
         );
         assert_eq!(pacemaker.phase, PhaseHonest::One);
         assert!(tc.is_none());
-        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds.len(), 3);
         assert!(matches!(cmds[0], PacemakerCommand::ScheduleReset));
         assert!(matches!(cmds[1], PacemakerCommand::PrepareTimeout(_)));
+        assert!(matches!(cmds[2], PacemakerCommand::Schedule { .. }));
 
         // enter PhaseHonest::SuperMajority, qc is created
         let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(

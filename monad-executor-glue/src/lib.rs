@@ -36,13 +36,9 @@ pub enum RouterTarget {
     PointToPoint(PeerId),
 }
 
-pub enum RouterCommand<M, OM>
-where
-    M: Message,
-{
+pub enum RouterCommand<OM> {
     // TODO add a RouterCommand for setting peer set for broadcast
     Publish { target: RouterTarget, message: OM },
-    Unpublish { target: RouterTarget, id: M::Id },
 }
 
 pub trait Message: Identifiable + Clone {
@@ -110,30 +106,24 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
-pub enum Command<M, OM, B, C, SCT>
-where
-    M: Message,
-{
-    RouterCommand(RouterCommand<M, OM>),
-    TimerCommand(TimerCommand<M::Event>),
+pub enum Command<E, OM, B, C, SCT> {
+    RouterCommand(RouterCommand<OM>),
+    TimerCommand(TimerCommand<E>),
 
     MempoolCommand(MempoolCommand<SCT>),
-    LedgerCommand(LedgerCommand<B, M::Event>),
+    LedgerCommand(LedgerCommand<B, E>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
 }
 
-impl<M, OM, B, C, SCT> Command<M, OM, B, C, SCT>
-where
-    M: Message,
-{
+impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
-        Vec<RouterCommand<M, OM>>,
-        Vec<TimerCommand<M::Event>>,
+        Vec<RouterCommand<OM>>,
+        Vec<TimerCommand<E>>,
         Vec<MempoolCommand<SCT>>,
-        Vec<LedgerCommand<B, M::Event>>,
+        Vec<LedgerCommand<B, E>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
     ) {

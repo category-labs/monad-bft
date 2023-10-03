@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashSet, VecDeque},
+    collections::{BTreeSet, VecDeque},
     marker::{PhantomData, Unpin},
     ops::DerefMut,
     pin::Pin,
@@ -17,8 +17,7 @@ use monad_consensus_types::{
 };
 use monad_executor::{Executor, State};
 use monad_executor_glue::{
-    Command, Identifiable, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand,
-    RouterTarget, TimerCommand,
+    Command, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget, TimerCommand,
 };
 use monad_types::{Deserializable, Serializable};
 use monad_updaters::{
@@ -282,11 +281,8 @@ where
 
     S::OutboundMessage: Serializable<RS::M>,
 {
-    type Command = Command<S::Message, S::OutboundMessage, S::Block, S::Checkpoint, SCT>;
+    type Command = Command<S::Event, S::OutboundMessage, S::Block, S::Checkpoint, SCT>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut to_publish = Vec::new();
-        let mut to_unpublish = HashSet::new();
-
         let (
             router_cmds,
             timer_cmds,
@@ -295,16 +291,6 @@ where
             checkpoint_cmds,
             state_root_hash_cmds,
         ) = Self::Command::split_commands(commands);
-        for command in router_cmds {
-            match command {
-                RouterCommand::Publish { target, message } => {
-                    to_publish.push((target, message));
-                }
-                RouterCommand::Unpublish { target, id } => {
-                    to_unpublish.insert((target, id));
-                }
-            }
-        }
         for command in timer_cmds {
             match command {
                 TimerCommand::ScheduleReset => self.timer = None,
@@ -326,12 +312,12 @@ where
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
 
-        for (target, message) in to_publish {
-            let id = message.as_ref().id();
-            if to_unpublish.contains(&(target, id)) {
-                continue;
+        for command in router_cmds {
+            match command {
+                RouterCommand::Publish { target, message } => {
+                    self.router.outbound(self.tick, target, message.serialize());
+                }
             }
-            self.router.outbound(self.tick, target, message.serialize());
         }
     }
 }

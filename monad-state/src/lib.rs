@@ -1,6 +1,5 @@
-use std::{fmt::Debug, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, time::Duration};
 
-use message::MessageState;
 use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
@@ -40,8 +39,6 @@ use ref_cast::RefCast;
 
 pub mod convert;
 
-mod message;
-
 type HasherType = Sha256Hash;
 
 pub struct MonadState<CT, ST, SCT, VT, LT, BST>
@@ -49,8 +46,6 @@ where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
-    message_state: MessageState<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
-
     consensus: CT,
     epoch: Epoch,
     leader_election: LT,
@@ -58,6 +53,8 @@ where
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     upcoming_validator_set: Option<VT>,
     block_sync: BST,
+
+    _pd: PhantomData<ST>,
 }
 
 impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
@@ -247,7 +244,7 @@ where
         Self,
         Vec<
             Command<
-                Self::Message,
+                Self::Event,
                 Self::OutboundMessage,
                 Self::Block,
                 Self::Checkpoint,
@@ -269,7 +266,7 @@ where
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set = VT::new(staking_list.clone()).expect("initial validator set init failed");
+        let val_set = VT::new(staking_list).expect("initial validator set init failed");
         let val_mapping = ValidatorMapping::new(voting_identities);
         let election = LT::new();
 
@@ -279,13 +276,6 @@ where
         );
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT, BST> = Self {
-            message_state: MessageState::new(
-                10,
-                staking_list
-                    .into_iter()
-                    .map(|(NodeId(pubkey), _)| PeerId(pubkey))
-                    .collect(),
-            ),
             validator_set: val_set,
             validator_mapping: val_mapping,
             upcoming_validator_set: None,
@@ -303,6 +293,8 @@ where
                 config.beneficiary,
             ),
             block_sync: BST::new(),
+
+            _pd: PhantomData,
         };
 
         let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
@@ -314,10 +306,10 @@ where
 
     fn update(
         &mut self,
-        event: MonadEvent<ST, SCT>,
+        event: Self::Event,
     ) -> Vec<
         Command<
-            Self::Message,
+            Self::Event,
             Self::OutboundMessage,
             Self::Block,
             Self::Checkpoint,
@@ -478,16 +470,12 @@ where
                     }
                 };
 
-                let mut prepare_router_message =
+                let prepare_router_message =
                     |target: RouterTarget, message: ConsensusMessage<SCT>| {
                         let message = VerifiedMonadMessage(
                             message.sign::<HasherType, ST>(self.consensus.get_keypair()),
                         );
-                        let publish_action = self.message_state.send(target, message);
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: publish_action.target,
-                            message: publish_action.message,
-                        })
+                        Command::RouterCommand(RouterCommand::Publish { target, message })
                     };
 
                 let mut cmds = Vec::new();

@@ -83,9 +83,7 @@ where
 
 fn liveness<S, RS, P, LGR, ME, ST, SCT>(
     nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>,
-
-    until_tick: Duration,
-    until_block: usize,
+    last_ledger_len: usize,
 ) -> bool
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
@@ -107,25 +105,22 @@ where
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
     RS::Serialized: Send,
 {
-    if let Some(next_tick) = nodes.peek_tick() {
-        next_tick > until_tick
-            || nodes
-                .states()
-                .values()
-                .any(|node| node.executor.ledger().get_blocks().len() > until_block)
-    } else {
-        false
-    }
+    let max_ledger_len = nodes
+        .states()
+        .values()
+        .map(|node| node.executor.ledger().get_blocks().len())
+        .max()
+        .unwrap();
+    max_ledger_len > last_ledger_len + 2
 }
 
-// FIXME: the commented testcases fail without timeout re-broadcast implemented
 #[traced_test]
 #[test_case::test_case(&[0,1]; "fail 0 1")]
-// #[test_case::test_case(&[0,2]; "fail 0 2")]
-// #[test_case::test_case(&[0,3]; "fail 0 3")]
+#[test_case::test_case(&[0,2]; "fail 0 2")]
+#[test_case::test_case(&[0,3]; "fail 0 3")]
 #[test_case::test_case(&[1,2]; "fail 1 2")]
 #[test_case::test_case(&[1,3]; "fail 1 3")]
-// #[test_case::test_case(&[2,3]; "fail 2 3")]
+#[test_case::test_case(&[2,3]; "fail 2 3")]
 fn replay_one_honest(failure_idx: &[usize]) {
     let default_seed = 1;
     // setup 4 nodes
@@ -181,11 +176,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let max_tick = run_nodes_until(&mut nodes, max_tick, phase_one_until, phase_one_until_block);
 
     // it should've reached some `until` condition, rather than losing liveness
-    assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(
-        &nodes,
-        phase_one_until,
-        phase_one_until_block
-    ));
+    assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(&nodes, 0));
 
     let phase_one_length = nodes
         .states()
@@ -211,9 +202,15 @@ fn replay_one_honest(failure_idx: &[usize]) {
     // nodes lost liveness because only 2/4 are online
     assert!(!liveness::<S, RS, _, LoggerType, ME, _, _>(
         &nodes,
-        phase_two_until,
-        phase_two_until_block
+        phase_one_length
     ));
+
+    let phase_two_length = nodes
+        .states()
+        .values()
+        .map(|node| node.executor.ledger().get_blocks().len())
+        .max()
+        .unwrap();
 
     // bring up failed nodes with the replay logs
     let node0_logger_config = MockMemLoggerConfig::new(node0.logger.log);
@@ -274,8 +271,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     );
     assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(
         &nodes,
-        phase_three_until,
-        phase_three_until_block
+        phase_two_length
     ));
 
     node_ledger_verification(

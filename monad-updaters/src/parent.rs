@@ -7,7 +7,7 @@ use std::{
 use futures::{Stream, StreamExt};
 use monad_executor::Executor;
 use monad_executor_glue::{
-    CheckpointCommand, Command, LedgerCommand, MempoolCommand, Message, RouterCommand, TimerCommand,
+    CheckpointCommand, Command, LedgerCommand, MempoolCommand, RouterCommand, TimerCommand,
 };
 
 pub struct ParentExecutor<R, T, M, L, C> {
@@ -19,19 +19,17 @@ pub struct ParentExecutor<R, T, M, L, C> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, ME, LE, CE, M, OM, B, C, S> Executor for ParentExecutor<RE, TE, ME, LE, CE>
+impl<RE, TE, ME, LE, CE, E, OM, B, C, S> Executor for ParentExecutor<RE, TE, ME, LE, CE>
 where
-    RE: Executor<Command = RouterCommand<M, OM>>,
-    TE: Executor<Command = TimerCommand<M::Event>>,
+    RE: Executor<Command = RouterCommand<OM>>,
+    TE: Executor<Command = TimerCommand<E>>,
 
     CE: Executor<Command = CheckpointCommand<C>>,
-    LE: Executor<Command = LedgerCommand<B, M::Event>>,
+    LE: Executor<Command = LedgerCommand<B, E>>,
     ME: Executor<Command = MempoolCommand<S>>,
-
-    M: Message,
 {
-    type Command = Command<M, OM, B, C, S>;
-    fn exec(&mut self, commands: Vec<Command<M, OM, B, C, S>>) {
+    type Command = Command<E, OM, B, C, S>;
+    fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
         let (
             router_cmds,
             timer_cmds,

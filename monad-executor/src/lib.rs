@@ -26,7 +26,7 @@ pub trait State: Sized {
         Self,
         Vec<
             Command<
-                Self::Message,
+                Self::Event,
                 Self::OutboundMessage,
                 Self::Block,
                 Self::Checkpoint,
@@ -39,7 +39,7 @@ pub trait State: Sized {
         event: Self::Event,
     ) -> Vec<
         Command<
-            Self::Message,
+            Self::Event,
             Self::OutboundMessage,
             Self::Block,
             Self::Checkpoint,

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     ops::DerefMut,
     sync::Arc,
     task::Poll,
@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
-use libp2p::{request_response::RequestId, swarm::SwarmBuilder, Transport};
+use libp2p::{swarm::SwarmBuilder, Transport};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand, RouterTarget};
 use monad_types::{Deserializable, Serializable};
@@ -26,9 +26,6 @@ where
     OM: Serializable<Vec<u8>> + Send + Sync + 'static,
 {
     swarm: libp2p::Swarm<Behavior<M, OM>>,
-
-    outbound_messages: HashMap<RequestId, Arc<WrappedMessage<M, OM>>>,
-    outbound_messages_lookup: HashMap<(libp2p::PeerId, M::Id), RequestId>,
 
     self_events: VecDeque<M::Event>,
 
@@ -68,8 +65,6 @@ where
 
         Self {
             swarm,
-            outbound_messages: HashMap::new(),
-            outbound_messages_lookup: HashMap::new(),
 
             self_events: VecDeque::new(),
 
@@ -112,8 +107,6 @@ where
 
         Self {
             swarm,
-            outbound_messages: HashMap::new(),
-            outbound_messages_lookup: HashMap::new(),
 
             self_events: VecDeque::new(),
 
@@ -151,36 +144,12 @@ where
             self.self_events.push_back(message.into().event(*to));
             return;
         }
-        let id = message.as_ref().id();
         let message = Arc::new(WrappedMessage::Send(message));
-        let request_id = self
+        let _request_id = self
             .swarm
             .behaviour_mut()
             .request_response
-            .send_request(&to_libp2p, message.clone());
-        self.outbound_messages.insert(request_id, message);
-        self.outbound_messages_lookup
-            .insert((to_libp2p, id), request_id);
-        assert_eq!(
-            self.outbound_messages.len(),
-            self.outbound_messages_lookup.len()
-        );
-    }
-
-    pub fn unpublish_message(&mut self, to: &monad_executor_glue::PeerId, message_id: &M::Id) {
-        let to: libp2p::PeerId = (&to.0).into();
-        if let Some(request_id) = self
-            .outbound_messages_lookup
-            .remove(&(to, message_id.clone()))
-        {
-            self.outbound_messages
-                .remove(&request_id)
-                .expect("outbound_messages out of sync");
-        }
-        assert_eq!(
-            self.outbound_messages.len(),
-            self.outbound_messages_lookup.len()
-        );
+            .send_request(&to_libp2p, message);
     }
 }
 
@@ -192,7 +161,7 @@ where
 
     OM: Into<M> + AsRef<M> + Clone,
 {
-    type Command = RouterCommand<M, OM>;
+    type Command = RouterCommand<OM>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
@@ -204,15 +173,6 @@ where
                     };
                     for to in peers {
                         self.publish_message(&to, message.clone())
-                    }
-                }
-                RouterCommand::Unpublish { target, id } => {
-                    let peers = match target {
-                        RouterTarget::Broadcast => self.peers.iter().copied().collect(),
-                        RouterTarget::PointToPoint(peer) => vec![peer],
-                    };
-                    for to in peers {
-                        self.unpublish_message(&to, &id)
                     }
                 }
             }
@@ -252,38 +212,24 @@ where
                         }
                     };
                     let service = self.deref_mut();
-                    match message {
-                        libp2p::request_response::Message::Request {
-                            request_id: _,
-                            request,
-                            channel,
-                        } => {
-                            // err doesn't matter - peer will resent message and get acked later
-                            // TODO log/inc-counter here?
-                            let _ = service
-                                .swarm
-                                .behaviour_mut()
-                                .request_response
-                                .send_response(channel, ());
-                            return Poll::Ready(Some(
-                                Arc::try_unwrap(request)
-                                    .unwrap_or_else(|_| {
-                                        panic!("more than 1 copies of Arc<Message>")
-                                    })
-                                    .event(monad_executor_glue::PeerId(pubkey)),
-                            ));
-                        }
-                        libp2p::request_response::Message::Response {
-                            request_id,
-                            response: (),
-                        } => {
-                            if let Some(message) = service.outbound_messages.remove(&request_id) {
-                                service
-                                    .outbound_messages_lookup
-                                    .remove(&(peer, message.id()))
-                                    .expect("outbound_messages_lookup out of sync");
-                            }
-                        }
+                    if let libp2p::request_response::Message::Request {
+                        request_id: _,
+                        request,
+                        channel,
+                    } = message
+                    {
+                        // err doesn't matter - peer will resent message and get acked later
+                        // TODO log/inc-counter here?
+                        let _ = service
+                            .swarm
+                            .behaviour_mut()
+                            .request_response
+                            .send_response(channel, ());
+                        return Poll::Ready(Some(
+                            Arc::try_unwrap(request)
+                                .unwrap_or_else(|_| panic!("more than 1 copies of Arc<Message>"))
+                                .event(monad_executor_glue::PeerId(pubkey)),
+                        ));
                     }
                 }
                 libp2p::swarm::SwarmEvent::Behaviour(behavior::BehaviorEvent::RequestResponse(

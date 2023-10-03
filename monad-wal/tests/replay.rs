@@ -90,7 +90,7 @@ mod test {
             Self,
             Vec<
                 monad_executor_glue::Command<
-                    Self::Message,
+                    Self::Event,
                     Self::OutboundMessage,
                     Self::Block,
                     Self::Checkpoint,
@@ -107,7 +107,7 @@ mod test {
             event: Self::Event,
         ) -> Vec<
             monad_executor_glue::Command<
-                Self::Message,
+                Self::Event,
                 Self::OutboundMessage,
                 Self::Block,
                 Self::Checkpoint,
