@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use log::{error, warn};
 use monad_proto::proto::signing::ProtoMultiSig;
@@ -41,7 +41,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
-        let mut sig_map = HashMap::new();
+        let mut sig_map = BTreeMap::new();
         // software bug: signature collector should check the node_id is in validator set
         let mut external_sigs = Vec::new();
         // "slashable" behavior

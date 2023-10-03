@@ -18,6 +18,7 @@ use crate::{
 };
 
 #[derive(Debug)]
+#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
 pub struct Pacemaker<SCT: SignatureCollection> {
     delta: Duration,
 
@@ -31,7 +32,7 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     phase: PhaseHonest,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum PhaseHonest {
     Zero,
     One,

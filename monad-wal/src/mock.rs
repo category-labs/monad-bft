@@ -38,3 +38,40 @@ impl<M> PersistenceLogger for MockWALogger<M> {
         Ok(())
     }
 }
+
+#[derive(Clone)]
+pub struct MockMemLoggerConfig<M: Clone> {
+    log: Vec<M>,
+}
+
+impl<M: Clone> std::default::Default for MockMemLoggerConfig<M> {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl<M: Clone> MockMemLoggerConfig<M> {
+    pub fn new(log: Vec<M>) -> Self {
+        Self { log }
+    }
+}
+
+pub struct MockMemLogger<M> {
+    pub log: Vec<M>,
+}
+
+impl<M: Debug + Clone> PersistenceLogger for MockMemLogger<M> {
+    type Event = M;
+    type Error = MockWALoggerError;
+    type Config = MockMemLoggerConfig<M>;
+
+    fn new(config: Self::Config) -> Result<(Self, Vec<Self::Event>), Self::Error> {
+        let log = config.log;
+        Ok((Self { log: log.clone() }, log))
+    }
+
+    fn push(&mut self, message: &Self::Event) -> Result<(), Self::Error> {
+        self.log.push(message.clone());
+        Ok(())
+    }
+}

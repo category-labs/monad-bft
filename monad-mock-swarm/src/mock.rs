@@ -207,7 +207,7 @@ where
     RS: RouterScheduler,
     ME: MockableExecutor<SignatureCollection = SCT>,
 {
-    pub fn new(router: RS) -> Self {
+    pub fn new(router: RS, tick: Duration) -> Self {
         Self {
             checkpoint: Default::default(),
             ledger: Default::default(),
@@ -215,7 +215,7 @@ where
             epoch: Default::default(),
             state_root_hash: Default::default(),
 
-            tick: Duration::default(),
+            tick,
 
             timer: None,
 

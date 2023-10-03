@@ -27,7 +27,7 @@ pub struct SwarmTestConfig {
     pub parallelize: bool,
     pub until: Duration,
     pub until_block: usize,
-    pub expected_block: u32,
+    pub expected_block: usize,
 }
 
 pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
@@ -76,7 +76,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
 
 pub fn node_ledger_verification<O: BlockType + PartialEq>(
     ledgers: &Vec<Vec<O>>,
-    min_ledger_len: u32,
+    min_ledger_len: usize,
 ) {
     let (max_ledger_idx, max_b) = ledgers
         .iter()
@@ -87,7 +87,7 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
 
     for ledger in ledgers {
         let ledger_len = ledger.len();
-        assert!(ledger_len as u32 >= min_ledger_len);
+        assert!(ledger_len >= min_ledger_len);
         assert!(
             ledger.iter().collect::<Vec<_>>()
                 == ledgers[max_ledger_idx]
@@ -159,7 +159,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
 
     until: Duration,
     until_block: usize,
-    min_ledger_len: u32,
+    min_ledger_len: usize,
 ) -> Duration
 where
     S: State<

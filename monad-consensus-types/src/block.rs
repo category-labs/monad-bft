@@ -36,12 +36,13 @@ impl<T> PartialEq for Block<T> {
 }
 impl<T> Eq for Block<T> {}
 
-impl<T> std::fmt::Debug for Block<T> {
+impl<T: std::fmt::Debug> std::fmt::Debug for Block<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Block")
             .field("author", &self.author)
             .field("round", &self.round)
             .field("qc_info", &self.qc.info)
+            .field("qc", &self.qc)
             .field("id", &self.id)
             .finish_non_exhaustive()
     }

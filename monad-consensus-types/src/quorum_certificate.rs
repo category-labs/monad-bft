@@ -24,6 +24,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
         f.debug_struct("QC")
             .field("info", &self.info)
             .field("sigs", &self.signatures)
+            .field("signature_hash", &self.signature_hash)
             .finish_non_exhaustive()
     }
 }

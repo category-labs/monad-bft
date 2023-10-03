@@ -131,9 +131,9 @@ pub fn create_certificate_keys<SCT: SignatureCollection>(
 ) -> Vec<SignatureCollectionKeyPairType<SCT>> {
     let mut res = Vec::new();
     for i in 0..num_keys {
-        // (i+1) makes sure that the MessageKeyPair != CertificateKeyPair
+        // (i+u32::MAX) makes sure that the MessageKeyPair != CertificateKeyPair
         // so we don't accidentally mis-sign stuff without test noticing
-        let keypair = get_certificate_key::<SCT>(i as u64 + 1);
+        let keypair = get_certificate_key::<SCT>(i as u64 + u32::MAX as u64);
         res.push(keypair);
     }
     res

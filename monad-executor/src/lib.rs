@@ -17,6 +17,8 @@ pub trait State: Sized {
     type Block: BlockType;
     type Checkpoint;
     type SignatureCollection;
+    #[cfg(feature = "monad_test")]
+    type ConsensusState: PartialEq + Eq;
 
     fn init(
         config: Self::Config,
@@ -44,4 +46,6 @@ pub trait State: Sized {
             Self::SignatureCollection,
         >,
     >;
+    #[cfg(feature = "monad_test")]
+    fn consensus(&self) -> &Self::ConsensusState;
 }

@@ -28,9 +28,12 @@ tracing = { workspace = true }
 [dev-dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus = { path = "../monad-consensus" }
-monad-consensus-state = { path = "../monad-consensus-state" }
+monad-consensus-state = { path = "../monad-consensus-state", features = [
+    "monad_test",
+] }
+monad-executor = { path = "../monad-executor", features = ["monad_test"] }
 monad-quic = { path = "../monad-quic" }
-monad-state = { path = "../monad-state" }
+monad-state = { path = "../monad-state", features = ["monad_test"] }
 monad-testutil = { path = "../monad-testutil" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-validator = { path = "../monad-validator" }
@@ -44,6 +47,7 @@ test-case = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true, features = ["no-env-filter"] }
 
 [[bench]]
 name = "two_node_benchmark"

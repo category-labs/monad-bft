@@ -213,9 +213,16 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub genesis_signatures: SCT,
 }
 
-impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
+impl<
+        #[cfg(feature = "monad_test")] CT: ConsensusProcess<SCT> + Eq,
+        #[cfg(not(feature = "monad_test"))] CT: ConsensusProcess<SCT>,
+        ST,
+        SCT,
+        VT,
+        LT,
+        BST,
+    > State for MonadState<CT, ST, SCT, VT, LT, BST>
 where
-    CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
@@ -229,6 +236,8 @@ where
     type Block = FullBlock<SCT>;
     type Checkpoint = Checkpoint<SCT>;
     type SignatureCollection = SCT;
+    #[cfg(feature = "monad_test")]
+    type ConsensusState = CT;
 
     fn init(
         config: Self::Config,
@@ -558,5 +567,9 @@ where
                 cmds
             }
         }
+    }
+    #[cfg(feature = "monad_test")]
+    fn consensus(&self) -> &Self::ConsensusState {
+        &self.consensus
     }
 }

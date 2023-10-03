@@ -12,6 +12,7 @@ use monad_consensus_types::{
 use monad_types::*;
 
 #[derive(Debug)]
+#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
 pub struct Safety {
     highest_vote_round: Round,
     highest_qc_round: Round,

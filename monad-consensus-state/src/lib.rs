@@ -58,6 +58,47 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
 }
 
+#[cfg(feature = "monad_test")]
+impl<SCT, TVT, SVT> PartialEq for ConsensusState<SCT, TVT, SVT>
+where
+    SCT: SignatureCollection,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.pending_block_tree.eq(&other.pending_block_tree)
+            && self.vote_state.eq(&other.vote_state)
+            && self.high_qc.eq(&other.high_qc)
+            && self.pacemaker.eq(&other.pacemaker)
+            && self.safety.eq(&other.safety)
+            && self.nodeid.eq(&other.nodeid)
+            && self.config.eq(&other.config)
+            && self.block_sync_manager.eq(&other.block_sync_manager)
+    }
+}
+
+#[cfg(feature = "monad_test")]
+impl<SCT, TVT, SVT> std::fmt::Debug for ConsensusState<SCT, TVT, SVT>
+where
+    SCT: SignatureCollection,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsensusState")
+            .field("pending_block_tree", &self.pending_block_tree)
+            .field("vote_state", &self.vote_state)
+            .field("high_qc", &self.high_qc)
+            .field("pacemaker", &self.pacemaker)
+            .field("safety", &self.safety)
+            .field("nodeid", &self.nodeid)
+            .field("config", &self.config)
+            .field("block_sync_manager", &self.block_sync_manager)
+            .finish()
+    }
+}
+
+#[cfg(feature = "monad_test")]
+impl<SCT, TVT, SVT> Eq for ConsensusState<SCT, TVT, SVT> where SCT: SignatureCollection {}
+
+#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(Debug)]
 pub struct ConsensusConfig {
     pub proposal_size: usize,
     pub state_root_delay: u64,
@@ -821,7 +862,7 @@ mod test {
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[traced_test]
-    #[test_log::test]
+    #[test]
     fn lock_qc_high() {
         let (keys, certkeys, valset, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);

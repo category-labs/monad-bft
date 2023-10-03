@@ -151,6 +151,7 @@ where
     ME: MockableExecutor<SignatureCollection = SCT>,
 {
     states: BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>>,
+    tick: Duration,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -183,35 +184,16 @@ where
     pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config, P)>) -> Self {
         assert!(!peers.is_empty());
 
-        let mut states = BTreeMap::new();
+        let mut nodes = Self {
+            states: BTreeMap::new(),
+            tick: Duration::ZERO,
+        };
 
-        for (pubkey, state_config, logger_config, router_scheduler_config, pipeline) in peers {
-            let mut executor: MockExecutor<S, RS, ME, ST, SCT> =
-                MockExecutor::new(RS::new(router_scheduler_config));
-            let (wal, replay_events) = LGR::new(logger_config).unwrap();
-            let (mut state, mut init_commands) = S::init(state_config);
-
-            for event in replay_events {
-                init_commands.extend(state.update(event.event));
-            }
-
-            executor.exec(init_commands);
-
-            states.insert(
-                PeerId(pubkey),
-                Node {
-                    id: PeerId(pubkey),
-                    executor,
-                    state,
-                    logger: wal,
-                    pipeline,
-                    pending_inbound_messages: Default::default(),
-                    _marker: PhantomData,
-                },
-            );
+        for peer in peers {
+            nodes.add_state(peer);
         }
 
-        Self { states }
+        nodes
     }
 
     fn peek_event(&self) -> Option<(Duration, SwarmEventType, PeerId)> {
@@ -254,13 +236,14 @@ where
 
             let mut emitted_messages = Vec::new();
             let emitted_event = node.step_until(tick, &mut emitted_messages);
+            self.tick = tick;
 
             for (sched_tick, message) in emitted_messages {
-                self.states
-                    .get_mut(&message.to)
-                    .expect("logic error, should be nonempty")
-                    .pending_inbound_messages
-                    .push(Reverse((sched_tick, message)));
+                // deliver message if node is still in the swarm
+                self.states.get_mut(&message.to).map(|node| {
+                    node.pending_inbound_messages
+                        .push(Reverse((sched_tick, message)))
+                });
             }
 
             if let Some((tick, event)) = emitted_event {
@@ -303,6 +286,7 @@ where
                 while let Some((_tick, _event)) = node.step_until(tick, &mut emitted) {}
                 emitted.into_iter()
             }));
+            self.tick = tick;
 
             for (sched_tick, message) in emitted_messages {
                 self.states
@@ -317,5 +301,36 @@ where
 
     pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>> {
         &self.states
+    }
+
+    pub fn remove_state(&mut self, peer_id: &PeerId) -> Option<Node<S, RS, P, LGR, ME, ST, SCT>> {
+        self.states.remove(peer_id)
+    }
+
+    pub fn add_state(&mut self, peer: (PubKey, S::Config, LGR::Config, RS::Config, P)) {
+        let (pubkey, state_config, logger_config, router_scheduler_config, pipeline) = peer;
+        let mut executor: MockExecutor<S, RS, ME, ST, SCT> =
+            MockExecutor::new(RS::new(router_scheduler_config), self.tick);
+        let (wal, replay_events) = LGR::new(logger_config).unwrap();
+        let (mut state, mut init_commands) = S::init(state_config);
+
+        for event in replay_events {
+            init_commands.extend(state.update(event.event));
+        }
+
+        executor.exec(init_commands);
+
+        self.states.insert(
+            PeerId(pubkey),
+            Node {
+                id: PeerId(pubkey),
+                executor,
+                state,
+                logger: wal,
+                pipeline,
+                pending_inbound_messages: Default::default(),
+                _marker: PhantomData,
+            },
+        );
     }
 }
