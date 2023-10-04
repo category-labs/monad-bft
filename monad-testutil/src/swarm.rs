@@ -7,6 +7,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
@@ -55,6 +56,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
             transaction_validator: tvt.clone(),
             key,
             certkey,
+            beneficiary: EthAddress::default(),
             validators: validator_mapping
                 .map
                 .iter()

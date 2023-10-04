@@ -8,6 +8,7 @@ use monad_consensus_types::{
     validation::{Hasher, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
+use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Hash, NodeId, Round};
 
 // test utility if you only wish for simple block
@@ -101,6 +102,7 @@ pub fn setup_block<SCT: SignatureCollection>(
             txns,
             header: execution_header,
             seq_num: 1,
+            beneficiary: EthAddress::default(),
         },
         &qc,
     )

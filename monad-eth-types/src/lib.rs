@@ -1,5 +1,8 @@
-use reth_primitives::{TransactionSignedEcRecovered, TxHash};
+use reth_primitives::{Address, TransactionSignedEcRecovered, TxHash, H160};
 use reth_rlp::{Decodable, Encodable};
+
+#[cfg(feature = "serde")]
+pub mod serde;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EthTransactionList(pub Vec<TxHash>);
@@ -32,5 +35,14 @@ impl EthFullTransactionList {
 
     pub fn rlp_decode(rlp_data: Vec<u8>) -> Result<Self, reth_rlp::DecodeError> {
         Vec::<TransactionSignedEcRecovered>::decode(&mut rlp_data.as_slice()).map(Self)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct EthAddress(pub Address);
+
+impl EthAddress {
+    pub fn from_bytes(bytes: [u8; 20]) -> Self {
+        Self(H160(bytes))
     }
 }

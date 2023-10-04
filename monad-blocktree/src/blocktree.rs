@@ -403,6 +403,7 @@ mod test {
         voting::VoteInfo,
     };
     use monad_crypto::secp256k1::KeyPair;
+    use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, Hash, NodeId, Round};
 
@@ -424,6 +425,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -739,6 +741,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -849,6 +852,7 @@ mod test {
                     txns: TransactionList::default(),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -885,6 +889,7 @@ mod test {
                     txns: TransactionList(vec![1]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -907,6 +912,7 @@ mod test {
                     txns: TransactionList(vec![2]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -937,6 +943,7 @@ mod test {
                     txns: TransactionList(vec![3]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -986,6 +993,7 @@ mod test {
                     txns: TransactionList::default(),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -1022,6 +1030,7 @@ mod test {
                     txns: TransactionList(vec![1]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -1057,6 +1066,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -1214,6 +1224,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
 
         let g = FullBlock::from_block(
@@ -1347,6 +1358,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -1538,6 +1550,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
 
         let g = FullBlock::from_block(
@@ -1636,6 +1649,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -1734,6 +1748,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(

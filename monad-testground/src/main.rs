@@ -19,6 +19,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
+use monad_eth_types::EthAddress;
 use monad_executor::{Executor, State};
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
@@ -234,6 +235,7 @@ fn testnet(
                     txns: genesis_txn,
                     header: genesis_execution_header,
                     seq_num: 0,
+                    beneficiary: EthAddress::default(),
                 },
                 &genesis_prime_qc,
             ),
@@ -338,6 +340,7 @@ async fn run(
             .collect(),
         key: keypair,
         certkey: certkeypair,
+        beneficiary: EthAddress::default(),
         delta: config.delta,
         consensus_config: config.consensus_config,
         genesis_block: config.genesis_block,

@@ -23,6 +23,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Hash, NodeId, Round};
@@ -56,6 +57,7 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     // TODO deprecate
     keypair: KeyPair,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
+    beneficiary: EthAddress,
 }
 
 #[cfg(feature = "monad_test")]
@@ -120,11 +122,14 @@ where
         config: ConsensusConfig,
         keypair: KeyPair,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
+        beneficiary: EthAddress,
     ) -> Self;
 
     fn get_pubkey(&self) -> PubKey;
 
     fn get_nodeid(&self) -> NodeId;
+
+    fn get_beneficiary(&self) -> EthAddress;
 
     fn blocktree(&self) -> &BlockTree<SCT>;
 
@@ -207,6 +212,7 @@ where
         // TODO deprecate
         keypair: KeyPair,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
+        beneficiary: EthAddress,
     ) -> Self {
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
@@ -222,6 +228,7 @@ where
             block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey)),
             keypair,
             cert_keypair,
+            beneficiary,
         }
     }
 
@@ -558,6 +565,10 @@ where
         self.nodeid
     }
 
+    fn get_beneficiary(&self) -> EthAddress {
+        self.beneficiary
+    }
+
     fn blocktree(&self) -> &BlockTree<SCT> {
         &self.pending_block_tree
     }
@@ -777,6 +788,7 @@ mod test {
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{secp256k1::KeyPair, NopSignature};
+    use monad_eth_types::EthAddress;
     use monad_executor_glue::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
@@ -853,6 +865,7 @@ mod test {
                     },
                     std::mem::replace(&mut dupkeys[i], default_key),
                     std::mem::replace(&mut dupcertkeys[i], default_cert_key),
+                    EthAddress::default(),
                 )
             })
             .collect::<Vec<_>>();

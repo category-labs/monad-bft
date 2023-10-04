@@ -12,6 +12,7 @@ mod tests {
         validation::Sha256Hash, voting::ValidatorMapping,
     };
     use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_eth_types::EthAddress;
     use monad_executor::{Executor, State};
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::mock::MockMempool;
@@ -129,6 +130,7 @@ mod tests {
                         transaction_validator,
                         key,
                         certkey,
+                        beneficiary: EthAddress::default(),
                         validators: config_validators.clone(),
                         delta: Duration::from_millis(2),
                         consensus_config: ConsensusConfig {

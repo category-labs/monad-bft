@@ -7,6 +7,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
 use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
 use monad_state::MonadConfig;
@@ -50,6 +51,7 @@ impl ReplayConfig<MS> for RepConfig {
                 transaction_validator: MockValidator,
                 key,
                 certkey,
+                beneficiary: EthAddress::default(),
                 validators: validator_mapping
                     .map
                     .iter()

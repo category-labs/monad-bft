@@ -114,6 +114,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             .collect(),
         key: node_state.identity,
         certkey: node_state.certkey,
+        beneficiary: node_state.config.beneficiary,
         delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
             proposal_size: 5000,

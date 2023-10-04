@@ -17,6 +17,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::KeyPair;
+use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
@@ -74,6 +75,7 @@ where
                 txns,
                 header: execution_header,
                 seq_num: qc.info.vote.seq_num + 1,
+                beneficiary: EthAddress::default(),
             },
             qc,
         );

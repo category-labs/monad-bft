@@ -8,6 +8,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::PubKey;
+use monad_eth_types::EthAddress;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
     validators::create_keys_w_validators,
@@ -46,6 +47,7 @@ fn setup_block(
             txns,
             header: ExecutionArtifacts::zero(),
             seq_num: 1,
+            beneficiary: EthAddress::default(),
         },
         &qc,
     )

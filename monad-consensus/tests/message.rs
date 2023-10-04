@@ -12,6 +12,7 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_eth_types::EthAddress;
 use monad_testutil::signing::*;
 use monad_types::*;
 use sha2::Digest;
@@ -194,6 +195,7 @@ fn proposal_msg_hash() {
             txns,
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         },
         &qc,
     );

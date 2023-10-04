@@ -11,6 +11,7 @@ use monad_consensus_types::{
     validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
@@ -97,6 +98,7 @@ impl
                 transaction_validator: MockValidator,
                 key,
                 certkey,
+                beneficiary: EthAddress::default(),
                 validators: validator_mapping
                     .map
                     .iter()

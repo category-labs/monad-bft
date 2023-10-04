@@ -1,3 +1,4 @@
+use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
     proto::{
@@ -200,6 +201,7 @@ impl From<&Payload> for ProtoPayload {
             txns: Some((&(value.txns)).into()),
             header: Some((&(value.header)).into()),
             seq_num: value.seq_num,
+            beneficiary: value.beneficiary.0.to_vec(),
         }
     }
 }
@@ -219,6 +221,12 @@ impl TryFrom<ProtoPayload> for Payload {
                 ))?
                 .try_into()?,
             seq_num: value.seq_num,
+            beneficiary: EthAddress::from_bytes(
+                value
+                    .beneficiary
+                    .try_into()
+                    .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
+            ),
         })
     }
 }

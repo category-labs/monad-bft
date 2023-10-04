@@ -6,6 +6,7 @@ use monad_consensus_types::{
     validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
+use monad_eth_types::EthAddress;
 use monad_testutil::signing::{hash, node_id, MockSignatures};
 use monad_types::*;
 
@@ -35,6 +36,7 @@ fn block_hash_id() {
             txns,
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         },
         &qc,
     );

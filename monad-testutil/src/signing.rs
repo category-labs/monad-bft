@@ -15,6 +15,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
+use monad_eth_types::EthAddress;
 use monad_types::{Hash, NodeId, Round};
 use sha2::{Digest, Sha256};
 use zerocopy::AsBytes;
@@ -159,6 +160,7 @@ where
             txns: genesis_txn,
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         },
         &genesis_prime_qc,
     );

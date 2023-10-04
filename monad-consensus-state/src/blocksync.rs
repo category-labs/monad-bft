@@ -156,6 +156,7 @@ mod test {
         validation::{Hasher, Sha256Hash},
         voting::VoteInfo,
     };
+    use monad_eth_types::EthAddress;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
@@ -357,6 +358,7 @@ mod test {
             txns: TransactionList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
+            beneficiary: EthAddress::default(),
         };
 
         let block_1 = Block::new::<FakeHasher1>(

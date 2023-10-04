@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use monad_eth_types::EthAddress;
 use monad_types::Hash;
 use zerocopy::AsBytes;
 
@@ -90,6 +91,7 @@ pub struct Payload {
     pub txns: TransactionList,
     pub header: ExecutionArtifacts,
     pub seq_num: u64,
+    pub beneficiary: EthAddress,
 }
 
 impl Hashable for Payload {

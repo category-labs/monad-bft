@@ -4346,6 +4346,7 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -4359,6 +4360,7 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-proto",
  "monad-testutil",
  "monad-types",
@@ -4381,6 +4383,7 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor-glue",
  "monad-testutil",
  "monad-tracing-counter",
@@ -4399,6 +4402,7 @@ dependencies = [
  "bitvec",
  "log",
  "monad-crypto",
+ "monad-eth-types",
  "monad-proto",
  "monad-testutil",
  "monad-types",
@@ -4440,6 +4444,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
@@ -4460,6 +4465,7 @@ version = "0.1.0"
 dependencies = [
  "reth-primitives",
  "reth-rlp",
+ "serde",
 ]
 
 [[package]]
@@ -4617,6 +4623,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-mempool-controller",
  "monad-p2p",
@@ -4700,6 +4707,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
@@ -4732,6 +4740,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-p2p",
  "monad-state",
@@ -4758,6 +4767,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
@@ -4846,6 +4856,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",

@@ -11,6 +11,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round};
 
 use crate::{error::NodeSetupError, HasherType, SignatureCollectionType, TransactionValidatorType};
@@ -66,6 +67,7 @@ fn build_genesis_block(
                 txns: genesis_txs,
                 header: genesis_execution_header,
                 seq_num: 0,
+                beneficiary: EthAddress::default(),
             },
             &genesis_prime_qc,
         ),

@@ -11,3 +11,7 @@ bench = false
 [dependencies]
 reth-primitives = { workspace = true }
 reth-rlp = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde"]

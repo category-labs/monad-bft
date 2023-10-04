@@ -28,6 +28,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, Identifiable, LedgerCommand, MempoolCommand,
@@ -205,6 +206,7 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub validators: Vec<(PubKey, SignatureCollectionPubKeyType<SCT>)>,
     pub key: KeyPair,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
+    pub beneficiary: EthAddress,
 
     pub delta: Duration,
     pub consensus_config: ConsensusConfig,
@@ -298,6 +300,7 @@ where
                 config.consensus_config,
                 config.key,
                 config.certkey,
+                config.beneficiary,
             ),
             block_sync: BST::new(),
         };
@@ -346,6 +349,7 @@ where
                                     txns,
                                     header,
                                     seq_num: fetched.seq_num,
+                                    beneficiary: self.consensus.get_beneficiary(),
                                 },
                                 &fetched.high_qc,
                             );
