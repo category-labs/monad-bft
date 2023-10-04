@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::{
     command::{FetchFullTxParams, FetchTxParams},
     message_signature::MessageSignature,
@@ -24,6 +24,8 @@ use monad_updaters::{
     checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
     state_root_hash::MockStateRootHash,
 };
+use rand::Rng;
+use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 #[derive(Debug)]
 pub enum RouterEvent<M, Serialized> {
@@ -121,13 +123,13 @@ where
 }
 
 pub trait MockableExecutor:
-    Executor<Command = MempoolCommand<Self::SignatureCollection>>
-    + Stream<Item = Self::Event>
-    + Unpin
-    + Default
+    Executor<Command = MempoolCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
 {
     type Event;
     type SignatureCollection;
+    type Config: Copy;
+
+    fn new(config: Self::Config) -> Self;
 
     fn ready(&self) -> bool;
 }
@@ -206,11 +208,11 @@ where
     RS: RouterScheduler,
     ME: MockableExecutor<SignatureCollection = SCT>,
 {
-    pub fn new(router: RS, tick: Duration) -> Self {
+    pub fn new(router: RS, mempool_config: ME::Config, tick: Duration) -> Self {
         Self {
             checkpoint: Default::default(),
             ledger: Default::default(),
-            mempool: Default::default(),
+            mempool: ME::new(mempool_config),
             epoch: Default::default(),
             state_root_hash: Default::default(),
 
@@ -370,10 +372,12 @@ where
                 ExecutorEventType::Timer => {
                     MockExecutorEvent::Event(self.timer.take().unwrap().event)
                 }
-                ExecutorEventType::Mempool => {
-                    return futures::executor::block_on(self.mempool.next())
-                        .map(MockExecutorEvent::Event)
-                }
+                ExecutorEventType::Mempool => match self.mempool.next().now_or_never() {
+                    Some(e) => {
+                        return e.map(MockExecutorEvent::Event);
+                    }
+                    None => continue,
+                },
                 ExecutorEventType::Ledger => {
                     return futures::executor::block_on(self.ledger.next())
                         .map(MockExecutorEvent::Event)
@@ -542,6 +546,9 @@ where
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct MockMempoolConfig;
+
 impl<ST, SCT> MockableExecutor for MockMempool<ST, SCT>
 where
     ST: MessageSignature + Unpin,
@@ -549,9 +556,105 @@ where
 {
     type Event = MonadEvent<ST, SCT>;
     type SignatureCollection = SCT;
+    type Config = MockMempoolConfig;
+
+    fn new(_config: Self::Config) -> Self {
+        Default::default()
+    }
 
     fn ready(&self) -> bool {
         self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
+    }
+}
+
+pub struct MockMempoolRandFail<ST, SCT> {
+    mpool: MockMempool<ST, SCT>,
+    fail_rate: f32,
+    rng: ChaCha20Rng,
+}
+
+impl<ST, SCT> MockMempoolRandFail<ST, SCT> {
+    pub fn new(seed: u64, fail_rate: f32) -> Self {
+        MockMempoolRandFail {
+            mpool: Default::default(),
+            fail_rate,
+            rng: ChaChaRng::seed_from_u64(seed),
+        }
+    }
+}
+
+impl<ST, SCT> Executor for MockMempoolRandFail<ST, SCT> {
+    type Command = MempoolCommand<SCT>;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        self.mpool.exec(commands)
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct MockMempoolRandFailConfig {
+    pub fail_rate: f32,
+    pub seed: u64,
+}
+
+impl<ST, SCT> MockableExecutor for MockMempoolRandFail<ST, SCT>
+where
+    ST: MessageSignature + Unpin,
+    SCT: SignatureCollection + Unpin,
+{
+    type Event = MonadEvent<ST, SCT>;
+    type SignatureCollection = SCT;
+    type Config = MockMempoolRandFailConfig;
+
+    fn new(config: Self::Config) -> Self {
+        MockMempoolRandFail {
+            mpool: Default::default(),
+            fail_rate: config.fail_rate,
+            rng: ChaChaRng::seed_from_u64(config.seed),
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.mpool.ready()
+    }
+}
+
+impl<ST, SCT> Stream for MockMempoolRandFail<ST, SCT>
+where
+    Self: Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+{
+    type Item = MonadEvent<ST, SCT>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        if let Some(s) = this.mpool.fetch_txs_state.take() {
+            if self.rng.gen_range(0.0..1.0) < self.fail_rate {
+                return Poll::Pending;
+            }
+
+            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
+                monad_executor_glue::ConsensusEvent::FetchedTxs(s, TransactionList(Vec::new())),
+            )));
+        }
+
+        if let Some(s) = this.mpool.fetch_full_txs_state.take() {
+            if self.rng.gen_range(0.0..1.0) < self.fail_rate {
+                return Poll::Pending;
+            }
+
+            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
+                monad_executor_glue::ConsensusEvent::FetchedFullTxs(
+                    s,
+                    Some(FullTransactionList(Vec::new())),
+                ),
+            )));
+        }
+
+        self.mpool.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 

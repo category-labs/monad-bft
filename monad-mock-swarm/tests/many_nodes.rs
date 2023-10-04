@@ -7,7 +7,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{
-    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_quic::{
@@ -46,6 +46,7 @@ fn many_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
+        MockMempoolConfig,
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
@@ -92,6 +93,7 @@ fn many_nodes_quic() {
             gossip_config: MockGossipConfig { all_peers },
         },
         MockWALoggerConfig,
+        MockMempoolConfig,
         vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
             Duration::from_millis(1),
         ))],

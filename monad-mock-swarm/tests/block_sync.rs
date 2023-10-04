@@ -9,7 +9,7 @@ mod test {
     use monad_crypto::NopSignature;
     use monad_executor_glue::PeerId;
     use monad_mock_swarm::{
-        mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+        mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
         transformer::{
             DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
             PeriodicTransformer,
@@ -64,6 +64,7 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
+            MockMempoolConfig,
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
@@ -136,6 +137,7 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
+            MockMempoolConfig,
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node

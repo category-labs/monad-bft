@@ -11,8 +11,8 @@ use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{
-        MockExecutor, MockMempool, MockableExecutor, NoSerRouterConfig, NoSerRouterScheduler,
-        RouterScheduler,
+        MockExecutor, MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig,
+        NoSerRouterScheduler, RouterScheduler,
     },
     mock_swarm::{Node, Nodes},
     transformer::{GenericTransformer, LatencyTransformer, Pipeline},
@@ -154,6 +154,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                         pubkeys.iter().copied().map(PeerId).collect(),
                         PeerId(pubkey),
                     ),
+                    MockMempoolConfig,
                     pipeline.clone(),
                     default_seed,
                 )
@@ -224,6 +225,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(PeerId).collect(),
             PeerId(pubkeys[f0]),
         ),
+        MockMempoolConfig,
         pipeline.clone(),
         default_seed,
     ));
@@ -236,6 +238,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(PeerId).collect(),
             PeerId(pubkeys[f1]),
         ),
+        MockMempoolConfig,
         pipeline,
         default_seed,
     ));

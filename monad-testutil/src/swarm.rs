@@ -106,6 +106,7 @@ pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     tvt: TVT,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
+    mock_mempool_config: ME::Config,
     pipeline: P,
     swarm_config: SwarmTestConfig,
 ) -> Duration
@@ -144,6 +145,7 @@ where
         state_configs,
         router_scheduler_config,
         logger_config,
+        mock_mempool_config,
         pipeline,
         swarm_config.parallelize,
         swarm_config.until,
@@ -158,6 +160,7 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
+    mock_mempool_config: ME::Config,
     pipeline: P,
     parallelize: bool,
 
@@ -208,6 +211,7 @@ where
                         pubkeys.iter().copied().map(PeerId).collect(),
                         PeerId(pubkey),
                     ),
+                    mock_mempool_config,
                     pipeline.clone(),
                     seed,
                 )

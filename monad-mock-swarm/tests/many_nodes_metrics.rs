@@ -7,7 +7,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{
-    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
@@ -59,6 +59,7 @@ fn many_nodes_metrics() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
+        MockMempoolConfig,
         vec![GenericTransformer::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >::Latency(LatencyTransformer(

@@ -7,7 +7,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_mock_swarm::{
-    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
@@ -45,6 +45,7 @@ fn two_nodes_bls() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
+        MockMempoolConfig,
         vec![GenericTransformer::Latency::<
             MonadMessage<SignatureType, SignatureCollectionType>,
         >(LatencyTransformer(Duration::from_millis(1)))],

@@ -57,15 +57,26 @@ where
     fn nodes(&self) -> Vec<(PubKey, S::Config)>;
 }
 
-pub trait SimulationConfig<S, RS, P, LGR, ST, SCT>
+pub trait SimulationConfig<S, RS, P, LGR, ME, ST, SCT>
 where
     S: monad_executor::State,
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ME: MockableExecutor<SignatureCollection = SCT>,
 {
     fn max_tick(&self) -> Duration;
-    fn nodes(&self) -> Vec<(PubKey, S::Config, LGR::Config, RS::Config, P, u64)>;
+    fn nodes(
+        &self,
+    ) -> Vec<(
+        PubKey,
+        S::Config,
+        LGR::Config,
+        RS::Config,
+        ME::Config,
+        P,
+        u64,
+    )>;
 }
 
 pub struct NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
@@ -76,7 +87,7 @@ where
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, P, LGR, ST, SCT>,
+    C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
     ME: MockableExecutor<SignatureCollection = SCT>,
 {
     config: C,
@@ -94,7 +105,7 @@ where
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, P, LGR, ST, SCT>,
+    C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     S::Message: Deserializable<RS::M>,
@@ -140,7 +151,7 @@ where
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, P, LGR, ST, SCT>,
+    C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     S::Message: Deserializable<RS::M>,

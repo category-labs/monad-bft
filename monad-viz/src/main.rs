@@ -70,6 +70,7 @@ type MM = <MS as State>::Message;
 type ME = MonadEvent<SignatureType, SignatureCollectionType>;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
+type MockableMempoolType = MockMempool<SignatureType, SignatureCollectionType>;
 type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
 type Sim = NodesSimulation<
     MS,

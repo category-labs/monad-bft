@@ -197,7 +197,17 @@ where
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
     RS::Serialized: Send,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config, LGR::Config, RS::Config, P, u64)>) -> Self {
+    pub fn new(
+        peers: Vec<(
+            PubKey,
+            S::Config,
+            LGR::Config,
+            RS::Config,
+            ME::Config,
+            P,
+            u64,
+        )>,
+    ) -> Self {
         assert!(!peers.is_empty());
 
         let mut nodes = Self {
@@ -323,10 +333,32 @@ where
         self.states.remove(peer_id)
     }
 
-    pub fn add_state(&mut self, peer: (PubKey, S::Config, LGR::Config, RS::Config, P, u64)) {
-        let (pubkey, state_config, logger_config, router_scheduler_config, pipeline, seed) = peer;
-        let mut executor: MockExecutor<S, RS, ME, ST, SCT> =
-            MockExecutor::new(RS::new(router_scheduler_config), self.tick);
+    pub fn add_state(
+        &mut self,
+        peer: (
+            PubKey,
+            S::Config,
+            LGR::Config,
+            RS::Config,
+            ME::Config,
+            P,
+            u64,
+        ),
+    ) {
+        let (
+            pubkey,
+            state_config,
+            logger_config,
+            router_scheduler_config,
+            mock_mempool_config,
+            pipeline,
+            seed,
+        ) = peer;
+        let mut executor: MockExecutor<S, RS, ME, ST, SCT> = MockExecutor::new(
+            RS::new(router_scheduler_config),
+            mock_mempool_config,
+            self.tick,
+        );
         let (wal, replay_events) = LGR::new(logger_config).unwrap();
         let (mut state, mut init_commands) = S::init(state_config);
 

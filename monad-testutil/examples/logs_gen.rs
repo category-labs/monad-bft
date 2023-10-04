@@ -9,7 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
     transformer::{GenericTransformer, Pipeline},
 };
@@ -60,6 +60,7 @@ pub fn generate_log<P: Pipeline<MM>>(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
+                MockMempoolConfig,
                 pipeline.clone(),
                 1,
             )

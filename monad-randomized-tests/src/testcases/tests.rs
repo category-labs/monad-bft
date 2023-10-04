@@ -8,7 +8,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::{MockMempool, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
         ReplayTransformer, TransformerReplayOrder,
@@ -45,6 +45,7 @@ fn random_latency_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
+        MockMempoolConfig,
         vec![GenericTransformer::RandLatency(
             RandLatencyTransformer::new(seed, 330),
         )],
@@ -99,6 +100,7 @@ fn delayed_message_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
+        MockMempoolConfig,
         vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_peers)),

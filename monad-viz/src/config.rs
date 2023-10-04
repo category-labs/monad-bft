@@ -15,7 +15,7 @@ use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::NoSerRouterScheduler,
+    mock::{MockMempoolConfig, MockableExecutor, NoSerRouterScheduler},
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
     },
@@ -26,8 +26,8 @@ use monad_types::NodeId;
 use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
 use crate::{
-    graph::SimulationConfig, PersistenceLoggerType, Rsc, SignatureCollectionType, SignatureType,
-    TransactionValidatorType, MM, MS,
+    graph::SimulationConfig, MockableMempoolType, PersistenceLoggerType, Rsc,
+    SignatureCollectionType, SignatureType, TransactionValidatorType, MM, MS,
 };
 
 #[derive(Debug, Clone)]
@@ -61,6 +61,7 @@ impl
         NoSerRouterScheduler<MM>,
         GenericTransformerPipeline<MM>,
         PersistenceLoggerType,
+        MockableMempoolType,
         SignatureType,
         SignatureCollectionType,
     > for SimConfig
@@ -72,6 +73,7 @@ impl
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
         Rsc,
+        <MockableMempoolType as MockableExecutor>::Config,
         GenericTransformerPipeline<MM>,
         u64,
     )> {
@@ -129,6 +131,7 @@ impl
                     Rsc {
                         all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                     },
+                    MockMempoolConfig,
                     self.pipeline.clone(),
                     1,
                 )
