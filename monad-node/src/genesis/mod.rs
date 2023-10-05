@@ -4,7 +4,7 @@ use clap::error::ErrorKind;
 use monad_consensus_types::{
     block::{Block, BlockType, FullBlock},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::SignatureCollection,
     validation::Hasher,
@@ -68,6 +68,7 @@ fn build_genesis_block(
                 header: genesis_execution_header,
                 seq_num: 0,
                 beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
             },
             &genesis_prime_qc,
         ),

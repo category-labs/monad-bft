@@ -5,7 +5,7 @@ use monad_consensus_types::{
     block::{Block, BlockType, FullBlock},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -161,6 +161,7 @@ where
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         },
         &genesis_prime_qc,
     );

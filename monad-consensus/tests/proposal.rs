@@ -2,7 +2,7 @@ use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, Payload, TransactionList},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::{Error, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
@@ -48,6 +48,7 @@ fn setup_block(
             header: ExecutionArtifacts::zero(),
             seq_num: 1,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         },
         &qc,
     )

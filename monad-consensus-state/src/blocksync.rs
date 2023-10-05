@@ -182,7 +182,9 @@ mod test {
     use monad_consensus_types::{
         block::{Block, UnverifiedFullBlock},
         ledger::LedgerCommitInfo,
-        payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
+        payload::{
+            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList,
+        },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
         validation::{Hasher, Sha256Hash},
@@ -391,6 +393,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
 
         let block_1 = Block::new::<FakeHasher1>(

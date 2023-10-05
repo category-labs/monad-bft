@@ -2,7 +2,7 @@ use monad_consensus_types::{
     block::{Block, BlockType},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, Payload, TransactionList},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validation::{Hasher, Sha256Hash},
@@ -103,6 +103,7 @@ pub fn setup_block<SCT: SignatureCollection>(
             header: execution_header,
             seq_num: 1,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
         },
         &qc,
     )

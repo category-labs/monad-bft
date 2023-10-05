@@ -9,7 +9,7 @@ use monad_consensus_types::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     message_signature::MessageSignature,
-    payload::{ExecutionArtifacts, Payload, TransactionList},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -63,9 +63,10 @@ where
             &self.qc
         };
 
-        let leader_key = keys
+        let (leader_key, leader_certkey) = keys
             .iter()
-            .find(|k| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
+            .zip(certkeys)
+            .find(|(k, _)| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
             .expect("key not in valset");
 
         let block = Block::new::<Sha256Hash>(
@@ -76,6 +77,7 @@ where
                 header: execution_header,
                 seq_num: qc.info.vote.seq_num + 1,
                 beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },
             qc,
         );

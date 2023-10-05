@@ -127,6 +127,8 @@ where
 
     fn get_pubkey(&self) -> PubKey;
 
+    fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT>;
+
     fn get_nodeid(&self) -> NodeId;
 
     fn get_beneficiary(&self) -> EthAddress;
@@ -150,6 +152,7 @@ where
         p: ProposalMessage<SCT>,
         txns: FullTransactionList,
         validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -313,6 +316,7 @@ where
         p: ProposalMessage<SCT>,
         full_txs: FullTransactionList,
         validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Fetched full proposal: {:?}", p);
@@ -335,6 +339,22 @@ where
 
         let round = self.pacemaker.get_current_round();
         let leader = election.get_leader(round, validators.get_list());
+
+        let author_pubkey = validator_mapping
+            .map
+            .get(&author)
+            .expect("proposal author exists in validator_mapping");
+
+        if let Err(e) = p
+            .block
+            .payload
+            .randao_reveal
+            .verify::<SCT::SignatureType>(p.block.get_round(), author_pubkey)
+        {
+            warn!("Invalid randao_reveal signature, reason: {:?}", e);
+            inc_count!(failed_verify_randao_reveal_signature);
+            return cmds;
+        };
 
         let Some(full_block) =
             FullBlock::from_block(p.block, full_txs, &self.transaction_validator)
@@ -577,6 +597,10 @@ where
 
     fn get_keypair(&self) -> &KeyPair {
         &self.keypair
+    }
+
+    fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT> {
+        &self.cert_keypair
     }
 }
 
@@ -976,6 +1000,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1015,6 +1040,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1045,6 +1071,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1086,6 +1113,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1118,6 +1146,7 @@ mod test {
                 verified_message,
                 FullTransactionList::default(),
                 &valset,
+                &valmap,
                 &election,
             );
             let result = cmds.iter().find(|&c| {
@@ -1177,6 +1206,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1197,6 +1227,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         assert!(cmds.is_empty());
@@ -1234,6 +1265,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1265,6 +1297,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1309,6 +1342,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1324,6 +1358,7 @@ mod test {
                 verified_message,
                 FullTransactionList::default(),
                 &valset,
+                &valmap,
                 &election,
             ));
         }
@@ -1362,6 +1397,7 @@ mod test {
                         m.clone(),
                         FullTransactionList::default(),
                         &valset,
+                        &valmap,
                         &election,
                     ));
                 }
@@ -1388,6 +1424,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1424,6 +1461,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1461,6 +1499,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1504,6 +1543,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let lc = p2_cmds
@@ -1536,6 +1576,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1555,6 +1596,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1614,6 +1656,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1687,6 +1730,7 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let p1_votes = cmds1
@@ -1705,6 +1749,7 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let p3_votes = cmds3
@@ -1723,6 +1768,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let p4_votes = cmds4
@@ -1742,6 +1788,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let p2_votes = cmds2
@@ -1822,6 +1869,7 @@ mod test {
             verified_message_2.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1831,6 +1879,7 @@ mod test {
             verified_message_2.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let res = cmds1.into_iter().find(|c| {
@@ -1865,6 +1914,7 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
@@ -1872,6 +1922,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1910,6 +1961,7 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         // new block added should allow path_to_root properly, thus no more request sync
@@ -1929,6 +1981,7 @@ mod test {
             verified_message.clone(),
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -1954,6 +2007,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -2029,6 +2083,7 @@ mod test {
             verified_message_2,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         assert_eq!(third_state.pending_block_tree.size(), 5);
@@ -2181,6 +2236,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -2214,6 +2270,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
 
@@ -2249,6 +2306,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let lc = p2_cmds
@@ -2286,6 +2344,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let lc = p3_cmds
@@ -2338,6 +2397,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_correct).unwrap();
@@ -2367,6 +2427,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_branch).unwrap();
@@ -2399,6 +2460,7 @@ mod test {
                 verified_message,
                 FullTransactionList::default(),
                 &valset,
+                &valmap,
                 &election,
             );
             let full_block = first_state.fetch_uncommitted_block(&bid).unwrap();
@@ -2448,6 +2510,7 @@ mod test {
                     verified_message.clone(),
                     FullTransactionList(Vec::new()),
                     &valset,
+                    &valmap,
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2488,6 +2551,7 @@ mod test {
                     verified_message.clone(),
                     FullTransactionList(Vec::new()),
                     &valset,
+                    &valmap,
                     &election,
                 );
 
@@ -2567,6 +2631,7 @@ mod test {
                     verified_message.clone(),
                     FullTransactionList(Vec::new()),
                     &valset,
+                    &valmap,
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2660,6 +2725,7 @@ mod test {
             verified_message,
             FullTransactionList::default(),
             &valset,
+            &valmap,
             &election,
         );
         let req: Vec<(NodeId, BlockId)> = cmds

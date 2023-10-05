@@ -396,7 +396,9 @@ mod test {
     use monad_consensus_types::{
         block::{Block as ConsensusBlock, BlockType, FullBlock},
         ledger::LedgerCommitInfo,
-        payload::{ExecutionArtifacts, FullTransactionList, Payload, TransactionList},
+        payload::{
+            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList,
+        },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
         validation::Sha256Hash,
@@ -426,6 +428,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -742,6 +745,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -853,6 +857,7 @@ mod test {
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -890,6 +895,7 @@ mod test {
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -913,6 +919,7 @@ mod test {
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -944,6 +951,7 @@ mod test {
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -994,6 +1002,7 @@ mod test {
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -1031,6 +1040,7 @@ mod test {
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
@@ -1067,6 +1077,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -1225,6 +1236,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
 
         let g = FullBlock::from_block(
@@ -1359,6 +1371,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -1551,6 +1564,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
 
         let g = FullBlock::from_block(
@@ -1650,6 +1664,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(
@@ -1749,6 +1764,7 @@ mod test {
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
             Block::new::<Sha256Hash>(

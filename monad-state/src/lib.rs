@@ -18,7 +18,7 @@ use monad_consensus_types::{
     block::{Block, FullBlock},
     certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
-    payload::{ExecutionArtifacts, Payload},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal},
     quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
@@ -342,6 +342,10 @@ where
                                     header,
                                     seq_num: fetched.seq_num,
                                     beneficiary: self.consensus.get_beneficiary(),
+                                    randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
+                                        fetched.round,
+                                        self.consensus.get_cert_keypair(),
+                                    ),
                                 },
                                 &fetched.high_qc,
                             );
@@ -374,6 +378,7 @@ where
                                         proposal_msg,
                                         txns,
                                         &self.validator_set,
+                                        &self.validator_mapping,
                                         &self.leader_election,
                                     ),
                             );

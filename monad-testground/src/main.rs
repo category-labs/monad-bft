@@ -9,7 +9,10 @@ use monad_consensus_types::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, FullTransactionList, NopStateRoot, Payload, TransactionList},
+    payload::{
+        ExecutionArtifacts, FullTransactionList, NopStateRoot, Payload, RandaoReveal,
+        TransactionList,
+    },
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
@@ -236,6 +239,7 @@ fn testnet(
                     header: genesis_execution_header,
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
                 },
                 &genesis_prime_qc,
             ),

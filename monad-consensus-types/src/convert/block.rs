@@ -9,7 +9,9 @@ use monad_proto::{
 
 use crate::{
     block::{Block, FullBlock, UnverifiedFullBlock},
-    payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, TransactionList},
+    payload::{
+        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal, TransactionList,
+    },
     signature_collection::SignatureCollection,
     validation::Sha256Hash,
 };
@@ -202,6 +204,7 @@ impl From<&Payload> for ProtoPayload {
             header: Some((&(value.header)).into()),
             seq_num: value.seq_num,
             beneficiary: value.beneficiary.0.to_vec(),
+            randao_reveal: value.randao_reveal.0.clone(),
         }
     }
 }
@@ -227,6 +230,7 @@ impl TryFrom<ProtoPayload> for Payload {
                     .try_into()
                     .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
             ),
+            randao_reveal: RandaoReveal(value.randao_reveal),
         })
     }
 }

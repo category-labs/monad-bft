@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 
 use monad_eth_types::EthAddress;
-use monad_types::Hash;
+use monad_types::{Hash, Round};
 use zerocopy::AsBytes;
 
-use crate::validation::{Hashable, Hasher};
+use crate::{
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
+    validation::{Hashable, Hasher},
+};
 
 const BLOOM_SIZE: usize = 256;
 
@@ -85,6 +88,24 @@ impl std::fmt::Debug for FullTransactionList {
         f.debug_tuple("Txns").field(&self.0).finish()
     }
 }
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RandaoReveal(pub Vec<u8>);
+
+impl RandaoReveal {
+    pub fn new<CS: CertificateSignature>(round: Round, keypair: &CS::KeyPairType) -> Self {
+        Self(CS::sign(&round.0.to_le_bytes(), keypair).serialize())
+    }
+
+    pub fn verify<CS: CertificateSignature>(
+        &self,
+        round: Round,
+        pubkey: &<CS::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> Result<(), CS::Error> {
+        let sig = CS::deserialize(&self.0)?;
+
+        sig.verify(&round.0.to_le_bytes(), pubkey)
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
@@ -92,6 +113,7 @@ pub struct Payload {
     pub header: ExecutionArtifacts,
     pub seq_num: u64,
     pub beneficiary: EthAddress,
+    pub randao_reveal: RandaoReveal,
 }
 
 impl Hashable for Payload {

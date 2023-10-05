@@ -23,6 +23,7 @@ message ProtoPayload {
   ProtoExecutionArtifacts header = 2;
   uint64 seq_num = 3;
   bytes beneficiary = 4;
+  bytes randao_reveal = 5;
 }
 
 message ProtoBlock {
