@@ -223,7 +223,7 @@ fn testnet(
         .collect::<Vec<_>>();
 
     let genesis_block = {
-        let genesis_txn = TransactionList::default();
+        let genesis_txn = TransactionList(vec![0xc0]);
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(
@@ -239,7 +239,7 @@ fn testnet(
                 },
                 &genesis_prime_qc,
             ),
-            FullTransactionList::default(),
+            FullTransactionList(vec![0xc0]),
             &TransactionValidatorType::default(),
         )
         .unwrap()

@@ -54,7 +54,7 @@ fn build_genesis_block(
 ) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
     // TODO: Deserialize transactions from GenesisConfig
     let (genesis_txs, genesis_full_txs) =
-        (TransactionList::default(), FullTransactionList::default());
+        (TransactionList(vec![0xc0]), FullTransactionList(vec![0xc0]));
 
     let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
     let genesis_execution_header = ExecutionArtifacts::zero();

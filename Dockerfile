@@ -10,7 +10,7 @@ FROM chef AS builder
 
 WORKDIR /usr/src/monad-bft
 RUN apt update
-RUN apt install -y python3
+RUN apt install -y python3 clang
 
 # Build dependencies (docker layer cache)
 COPY --from=planner /app/recipe.json recipe.json

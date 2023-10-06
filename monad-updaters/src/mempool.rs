@@ -22,6 +22,7 @@ use tokio::{
     sync::mpsc,
     task::{JoinError, JoinHandle},
 };
+use tracing::*;
 
 const DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE: usize = 64;
 
@@ -109,7 +110,7 @@ where
                     match task {
                         ControllerTaskCommand::FetchTxs(num_max_txs, pending_txs) => {
                             let Ok(pending_txs) = pending_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.0)).collect::<Result<Vec<_>, _>>() else {
-                                // TODO: warn
+                                error!("Invalid pending_txs!");
                                 continue;
                             };
 
@@ -135,12 +136,9 @@ where
                             .await?;
                         }
                         ControllerTaskCommand::DrainTxs(drain_txs) => {
-                            let drain_txs = match drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.0)).collect::<Result<Vec<EthTransactionList>, _>>() {
-                                Ok(drain_txs) => drain_txs,
-                                Err(_) => {
-                                    // TODO: warn
-                                    continue;
-                                }
+                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.0)).collect::<Result<Vec<EthTransactionList>, _>>() else {
+                                error!("Invalid drain_txs!");
+                                continue;
                             };
 
                             for txs in drain_txs {
