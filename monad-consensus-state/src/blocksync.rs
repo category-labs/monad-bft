@@ -1,3 +1,4 @@
+use core::fmt;
 use std::collections::{hash_map::Entry, HashMap};
 
 use log::debug;
@@ -23,10 +24,39 @@ pub struct InFlightBlockSync<SCT> {
     pub retry_cnt: usize,
     pub qc: QuorumCertificate<SCT>, // qc responsible for this event
 }
+
 pub enum BlockSyncResult<SCT: SignatureCollection> {
     Success(FullBlock<SCT>),       // retrieved and validated
     Failed(ConsensusCommand<SCT>), // unable to retrieve
     IllegalResponse,               // never requested from this peer or never requested
+}
+
+impl<SCT: SignatureCollection> fmt::Debug for BlockSyncResult<SCT> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BlockSyncResult::Success(_) => write!(f, "successful"),
+            BlockSyncResult::Failed(_) => write!(f, "failed"),
+            BlockSyncResult::IllegalResponse => write!(f, "illegal"),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> BlockSyncResult<SCT> {
+    fn log(&self, bid: BlockId) {
+        match self {
+            BlockSyncResult::Success(_) => {
+                inc_count!(block_sync_response_successful);
+            }
+            BlockSyncResult::Failed(_) => {
+                inc_count!(block_sync_response_failed);
+            }
+            BlockSyncResult::IllegalResponse => {
+                inc_count!(block_sync_response_illegal);
+            }
+        };
+
+        debug!("Block sync response: bid={:?}, result={:?}", bid, self);
+    }
 }
 
 impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
@@ -81,7 +111,7 @@ where
         match self.requests.entry(*id) {
             Entry::Occupied(_) => vec![],
             Entry::Vacant(entry) => {
-                debug!("Block sync request: blockid={:?}", qc);
+                debug!("Block sync request: bid={:?}, qc={:?}", id, qc);
                 inc_count!(block_sync_request);
                 let (peer, cnt) =
                     choose_peer(self.id, validator_set.get_list(), DEFAULT_PEER_INDEX);
@@ -104,7 +134,7 @@ where
             BlockSyncMessage::BlockFound(b) => b.block.get_id(),
             BlockSyncMessage::NotAvailable(bid) => *bid,
         };
-        if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
+        let result = if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
             let InFlightBlockSync {
                 req_target,
                 retry_cnt,
@@ -139,7 +169,9 @@ where
             })
         } else {
             BlockSyncResult::IllegalResponse
-        }
+        };
+        result.log(bid);
+        result
     }
 }
 

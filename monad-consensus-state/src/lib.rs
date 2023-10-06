@@ -515,8 +515,6 @@ where
             &self.transaction_validator,
         ) {
             BlockSyncResult::Success(full_block) => {
-                debug!("Block sync response: bid={:?}", full_block.get_id());
-                inc_count!(block_sync_response);
                 if self.pending_block_tree.is_valid(&full_block) {
                     // check if this block will extend into root
                     if let Some(qc) = self
