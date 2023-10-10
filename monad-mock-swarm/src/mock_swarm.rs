@@ -10,7 +10,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::{timed_event::TimedEvent, Executor, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::{MempoolCommand, MonadEvent, PeerId};
 use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
@@ -27,7 +27,7 @@ pub struct Node<S, RS, P, LGR, ME, ST, SCT>
 where
     S: State,
     RS: RouterScheduler,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    ME: MockableExecutor<Command = MempoolCommand<SCT>, SignatureCollection = SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
@@ -55,7 +55,11 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: Unpin,
@@ -164,7 +168,7 @@ where
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    ME: MockableExecutor<Command = MempoolCommand<SCT>, SignatureCollection = SCT>,
 {
     states: BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>>,
     tick: Duration,
@@ -190,7 +194,11 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: Unpin,

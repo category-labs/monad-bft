@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt::Debug, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
@@ -9,7 +9,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::{MempoolCommand, MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes},
@@ -77,7 +77,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     (pubkeys, state_configs)
 }
 
-pub fn node_ledger_verification<O: BlockType + PartialEq>(
+pub fn node_ledger_verification<O: BlockType + PartialEq + Debug>(
     ledgers: &Vec<Vec<O>>,
     min_ledger_len: usize,
 ) {
@@ -91,13 +91,12 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
     for ledger in ledgers {
         let ledger_len = ledger.len();
         assert!(ledger_len >= min_ledger_len);
-        assert!(
-            ledger.iter().collect::<Vec<_>>()
-                == ledgers[max_ledger_idx]
-                    .iter()
-                    .take(ledger_len)
-                    .collect::<Vec<_>>()
-        );
+
+        ledger
+            .iter()
+            .zip(ledgers[max_ledger_idx].iter().take(ledger_len))
+            .for_each(|(l1, l2)| assert_eq!(l1, l2));
+
         assert!(max_b - ledger.len() <= 5); // this 5 block bound is arbitrary... is there a better way to do this?
     }
 }
@@ -126,7 +125,11 @@ where
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized> + Clone,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: PartialEq + Unpin,
@@ -185,7 +188,11 @@ where
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized> + Clone,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: PartialEq + Unpin,

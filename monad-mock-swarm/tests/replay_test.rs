@@ -8,7 +8,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::{MempoolCommand, MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{
         MockExecutor, MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig,
@@ -64,7 +64,11 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: Unpin,
@@ -98,7 +102,11 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
     S::Block: Unpin,

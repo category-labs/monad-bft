@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use monad_types::{BlockId, Hash as HashType, NodeId, Round};
 use zerocopy::AsBytes;
 
@@ -9,7 +11,7 @@ use crate::{
     validation::{Hashable, Hasher},
 };
 
-pub trait BlockType: Clone + PartialEq + Eq {
+pub trait BlockType: Clone + PartialEq + Eq + Debug {
     fn get_id(&self) -> BlockId;
     fn get_round(&self) -> Round;
     fn get_author(&self) -> NodeId;

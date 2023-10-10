@@ -5,7 +5,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
+use monad_executor_glue::{Identifiable, MempoolCommand, MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes},
@@ -88,7 +88,7 @@ where
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    ME: MockableExecutor<Command = MempoolCommand<SCT>, SignatureCollection = SCT>,
 {
     config: C,
 
@@ -106,7 +106,11 @@ where
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
@@ -152,7 +156,11 @@ where
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    ME: MockableExecutor<
+        Command = MempoolCommand<SCT>,
+        Event = S::Event,
+        SignatureCollection = SCT,
+    >,
 
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
