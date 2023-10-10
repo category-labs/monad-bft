@@ -31,9 +31,7 @@ pub struct QuicRouterScheduler<G: Gossip> {
     me: PeerId,
     endpoint: quinn_proto::Endpoint,
     connections: HashMap<ConnectionHandle, Connection>,
-    outbound_connections: HashMap<PeerId, ConnectionHandle>,
-    outbound_writeable_streams: HashMap<PeerId, StreamId>,
-    inbound_readable_streams: HashMap<PeerId, StreamId>,
+    outbound_connections: HashMap<PeerId, (ConnectionHandle, Option<StreamId>)>,
 
     peer_ids: HashMap<PeerId, SocketAddr>,
     addresses: HashMap<SocketAddr, PeerId>,
@@ -87,7 +85,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
                 .connect(config.zero_instant, client_config, sock_addr, SERVER_NAME)
                 .expect("mock quic should never fail to connect");
             connections.insert(connection_handle, connection);
-            outbound_connections.insert(*peer, connection_handle);
+            outbound_connections.insert(*peer, (connection_handle, None));
         }
         let addresses = peer_ids.iter().map(|(x, y)| (*y, *x)).collect();
 
@@ -98,8 +96,6 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
             endpoint,
             connections,
             outbound_connections,
-            outbound_writeable_streams: HashMap::new(),
-            inbound_readable_streams: HashMap::new(),
 
             peer_ids,
             addresses,
@@ -308,17 +304,22 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                 }
             }
 
-            if let Some(stream_id) = self.outbound_writeable_streams.get(remote_peer_id) {
-                let pending_outbound = self
-                    .pending_outbound_messages
-                    .entry(*remote_peer_id)
-                    .or_default();
-                while let Some(gossip_message) = pending_outbound.pop_front() {
-                    let num_sent = connection
-                        .send_stream(*stream_id)
-                        .write(&gossip_message)
-                        .expect("expect no write error for mock quic");
-                    assert_eq!(gossip_message.len(), num_sent);
+            if let Some((outbound_connection_handle, Some(stream_id))) =
+                self.outbound_connections.get(remote_peer_id)
+            {
+                if connection_handle == outbound_connection_handle {
+                    // we only check pending_outbound if it's an outbound connection.
+                    let pending_outbound = self
+                        .pending_outbound_messages
+                        .entry(*remote_peer_id)
+                        .or_default();
+                    while let Some(gossip_message) = pending_outbound.pop_front() {
+                        let num_sent = connection
+                            .send_stream(*stream_id)
+                            .write(&gossip_message)
+                            .expect("expect no write error for mock quic");
+                        assert_eq!(gossip_message.len(), num_sent);
+                    }
                 }
             }
 
@@ -332,10 +333,10 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                                 .open(Dir::Uni)
                                 .expect("creating stream_id failed");
 
-                            let maybe_removed = self
-                                .outbound_writeable_streams
-                                .insert(*remote_peer_id, stream_id);
-                            assert!(maybe_removed.is_none());
+                            self.outbound_connections
+                                .get_mut(remote_peer_id)
+                                .expect("outbound connection should already exist")
+                                .1 = Some(stream_id);
                             should_poll = true;
                             break;
                         }
@@ -349,10 +350,6 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                                 .streams()
                                 .accept(dir)
                                 .expect("stream id should exist");
-                            let replaced = self
-                                .inbound_readable_streams
-                                .insert(*remote_peer_id, stream_id);
-                            assert!(replaced.is_none());
 
                             let mut recv_stream = connection.recv_stream(stream_id);
                             let mut chunks = recv_stream.read(true).expect("failed to read chunks");
@@ -368,11 +365,7 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                             let _should_transmit = chunks.finalize();
                         }
                         quinn_proto::StreamEvent::Readable { id } => {
-                            let stream_id = *self
-                                .inbound_readable_streams
-                                .get(remote_peer_id)
-                                .expect("readable stream should be registered as inbound stream");
-                            let mut recv_stream = connection.recv_stream(stream_id);
+                            let mut recv_stream = connection.recv_stream(id);
                             let mut chunks = recv_stream.read(true).expect("failed to read chunks");
                             while let Ok(Some(chunk)) = chunks.next(
                                 10_000, // TODO ?
@@ -406,8 +399,11 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                             .or_default()
                             .push(RouterEvent::Tx(peer_id, gossip_message))
                     } else {
-                        let maybe_connection_handle =
-                            self.outbound_connections.get(&peer_id).copied();
+                        let maybe_connection_handle = self
+                            .outbound_connections
+                            .get(&peer_id)
+                            .map(|(handle, _)| handle)
+                            .copied();
                         self.pending_outbound_messages
                             .entry(peer_id)
                             .or_default()
