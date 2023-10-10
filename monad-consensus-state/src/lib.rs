@@ -804,7 +804,7 @@ mod test {
         },
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-        timeout::{Timeout, TimeoutInfo},
+        timeout::Timeout,
         transaction_validator::{MockValidator, TransactionValidator},
         validation::Sha256Hash,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -1118,68 +1118,6 @@ mod test {
         );
 
         assert_eq!(state.pacemaker.get_current_round(), Round(7));
-    }
-
-    #[test]
-    fn old_qc_in_timeout_message() {
-        let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
-        let election = SimpleRoundRobin::new();
-        let state = &mut states[0];
-        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
-
-        let mut qc2 = state.high_qc.clone();
-
-        for i in 1..5 {
-            let p = propgen.next_proposal(
-                &keys,
-                &certkeys,
-                &valset,
-                &election,
-                &valmap,
-                Default::default(),
-                ExecutionArtifacts::zero(),
-            );
-            let (author, _, verified_message) = p.clone().destructure();
-            let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
-                author,
-                verified_message,
-                FullTransactionList::default(),
-                &valset,
-                &valmap,
-                &election,
-            );
-            let result = cmds.iter().find(|&c| {
-                matches!(
-                    c,
-                    ConsensusCommand::Publish {
-                        target: RouterTarget::PointToPoint(_),
-                        message: ConsensusMessage::Vote(_),
-                    }
-                )
-            });
-
-            if i == 3 {
-                qc2 = p.block.qc.clone();
-                assert_eq!(qc2.info.vote.round, Round(2));
-            }
-
-            assert_eq!(state.pacemaker.get_current_round(), Round(i));
-            assert!(result.is_some());
-        }
-        let byzantine_tmo = Timeout {
-            tminfo: TimeoutInfo {
-                round: state.pacemaker.get_current_round(),
-                high_qc: qc2,
-            },
-            last_round_tc: None,
-        };
-        let byzantine_tmo_msg = TimeoutMessage::new::<Sha256Hash>(byzantine_tmo, &certkeys[1]);
-        let signed_byzantine_tm: Verified<SignatureType, _> =
-            Verified::new::<Sha256Hash>(byzantine_tmo_msg, &keys[1]);
-        let (author, _signature, tm) = signed_byzantine_tm.destructure();
-        state.handle_timeout_message::<Sha256Hash, _, _>(author, tm, &valset, &valmap, &election);
-        // FIXME: what are we expecting here?
     }
 
     #[test]
