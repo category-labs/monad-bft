@@ -11,7 +11,7 @@ use monad_gossip::{Gossip, GossipEvent};
 use monad_mock_swarm::mock::{RouterEvent, RouterScheduler};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
-    TransportConfig,
+    TransportConfig, WriteError,
 };
 
 use crate::timeout_queue::TimeoutQueue;
@@ -52,12 +52,22 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
     type Serialized = Vec<u8>;
 
     fn new(config: Self::Config) -> Self {
+        let transport_config = {
+            let mut config = TransportConfig::default();
+            config.max_idle_timeout(None);
+            // TODO reasonable initial window sizes
+            Arc::new(config)
+        };
         let mut endpoint = quinn_proto::Endpoint::new(
             Arc::new(EndpointConfig::default()),
             Some(Arc::new(
-                quinn_proto::ServerConfig::with_crypto(Arc::new(
-                    UnsafeTlsVerifier::make_server_config(Vec::new()),
-                )), // TODO use_retry ?
+                {
+                    let mut server_config = quinn_proto::ServerConfig::with_crypto(Arc::new(
+                        UnsafeTlsVerifier::make_server_config(Vec::new()),
+                    ));
+                    server_config.transport_config(transport_config.clone());
+                    server_config
+                }, // TODO use_retry ?
             )),
             false,
         );
@@ -77,9 +87,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
 
             let mut client_config =
                 ClientConfig::new(Arc::new(UnsafeTlsVerifier::make_client_config(Vec::new())));
-            client_config.transport_config(Arc::new(
-                TransportConfig::default(), // TODO ?
-            ));
+            client_config.transport_config(transport_config.clone());
 
             let (connection_handle, connection) = endpoint
                 .connect(config.zero_instant, client_config, sock_addr, SERVER_NAME)
@@ -313,12 +321,22 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                         .pending_outbound_messages
                         .entry(*remote_peer_id)
                         .or_default();
-                    while let Some(gossip_message) = pending_outbound.pop_front() {
-                        let num_sent = connection
-                            .send_stream(*stream_id)
-                            .write(&gossip_message)
-                            .expect("expect no write error for mock quic");
-                        assert_eq!(gossip_message.len(), num_sent);
+                    while let Some(mut gossip_message) = pending_outbound.pop_front() {
+                        match connection.send_stream(*stream_id).write(&gossip_message) {
+                            Ok(num_sent) => {
+                                if num_sent < gossip_message.len() {
+                                    pending_outbound.push_front(gossip_message.split_off(num_sent));
+                                    break;
+                                }
+                            }
+                            Err(WriteError::Blocked) => {
+                                pending_outbound.push_front(gossip_message);
+                                break;
+                            }
+                            Err(WriteError::Stopped(_) | WriteError::UnknownStream) => {
+                                unreachable!("expect no write error")
+                            }
+                        }
                     }
                 }
             }
@@ -378,7 +396,30 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                             }
                             let _should_transmit = chunks.finalize();
                         }
-                        quinn_proto::StreamEvent::Writable { id } => todo!(),
+                        quinn_proto::StreamEvent::Writable { id } => {
+                            let pending_outbound = self
+                                .pending_outbound_messages
+                                .entry(*remote_peer_id)
+                                .or_default();
+                            while let Some(mut gossip_message) = pending_outbound.pop_front() {
+                                match connection.send_stream(id).write(&gossip_message) {
+                                    Ok(num_sent) => {
+                                        if num_sent < gossip_message.len() {
+                                            pending_outbound
+                                                .push_front(gossip_message.split_off(num_sent));
+                                            break;
+                                        }
+                                    }
+                                    Err(WriteError::Blocked) => {
+                                        pending_outbound.push_front(gossip_message);
+                                        break;
+                                    }
+                                    Err(WriteError::Stopped(_) | WriteError::UnknownStream) => {
+                                        unreachable!("expect no write error")
+                                    }
+                                }
+                            }
+                        }
                         quinn_proto::StreamEvent::Finished { id } => todo!(),
                         quinn_proto::StreamEvent::Stopped { id, error_code } => todo!(),
                         quinn_proto::StreamEvent::Available { dir } => todo!(),
