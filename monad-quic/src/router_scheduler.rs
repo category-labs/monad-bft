@@ -294,7 +294,7 @@ impl<G: Gossip> QuicRouterScheduler<G> {
 
             if let Some(timeout) = connection.poll_timeout() {
                 self.timeouts
-                    .insert(timeout - self.zero_instant, connection_handle)
+                    .insert((timeout - self.zero_instant).max(time), connection_handle)
             }
 
             while let Some(endpoint_event) = connection.poll_endpoint_events() {
