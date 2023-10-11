@@ -10,7 +10,7 @@ use monad_consensus_types::{
     block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
     validation::Sha256Hash,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::secp256k1::KeyPair;
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::PeerId;
@@ -27,7 +27,7 @@ use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
 use crate::{
     graph::SimulationConfig, MockableMempoolType, PersistenceLoggerType, Rsc,
-    SignatureCollectionType, SignatureType, TransactionValidatorType, MM, MS,
+    SignatureCollectionType, SignatureType, TransactionValidatorType, ID, MM, MS,
 };
 
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ pub struct SimConfig {
     pub num_nodes: u32,
     pub delta: Duration,
     pub max_tick: Duration,
-    pub pipeline: GenericTransformerPipeline<MM>,
+    pub pipeline: GenericTransformerPipeline<ID, MM>,
 }
 
 impl SimConfig {
@@ -59,22 +59,23 @@ impl
     SimulationConfig<
         MS,
         NoSerRouterScheduler<MM>,
-        GenericTransformerPipeline<MM>,
+        GenericTransformerPipeline<ID, MM>,
         PersistenceLoggerType,
         MockableMempoolType,
         SignatureType,
         SignatureCollectionType,
+        ID,
     > for SimConfig
 {
     fn nodes(
         &self,
     ) -> Vec<(
-        PubKey,
+        ID,
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
         Rsc,
         <MockableMempoolType as MockableExecutor>::Config,
-        GenericTransformerPipeline<MM>,
+        GenericTransformerPipeline<ID, MM>,
         u64,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) =
@@ -125,7 +126,7 @@ impl
             .zip(state_configs)
             .map(|(a, b)| {
                 (
-                    a,
+                    PeerId(a),
                     b,
                     MockWALoggerConfig {},
                     Rsc {

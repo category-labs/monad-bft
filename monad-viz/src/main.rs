@@ -67,20 +67,21 @@ type MS = MonadState<
     BlockSyncState,
 >;
 type MM = <MS as State>::Message;
-type ME = MonadEvent<SignatureType, SignatureCollectionType>;
 type PersistenceLoggerType =
     MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
 type MockableMempoolType = MockMempool<SignatureType, SignatureCollectionType>;
 type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
+type ID = PeerId;
 type Sim = NodesSimulation<
     MS,
     NoSerRouterScheduler<MM>,
-    GenericTransformerPipeline<MM>,
+    GenericTransformerPipeline<ID, MM>,
     PersistenceLoggerType,
     SimConfig,
     MockMempool<SignatureType, SignatureCollectionType>,
     SignatureType,
     SignatureCollectionType,
+    ID,
 >;
 type ReplaySim = ReplayNodesSimulation<MS, RepConfig, SignatureType, SignatureCollectionType>;
 
@@ -207,6 +208,7 @@ impl Application for Viz {
                     _,
                     SignatureType,
                     SignatureCollectionType,
+                    PeerId,
                 >::new(config)
             };
 

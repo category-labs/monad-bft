@@ -86,6 +86,7 @@ fn delayed_message_test(seed: u64) {
             SimpleRoundRobin,
             BlockSyncState,
         >,
+        PeerId,
         NopSignature,
         MultiSig<NopSignature>,
         NoSerRouterScheduler<MonadMessage<_, _>>,
@@ -95,7 +96,7 @@ fn delayed_message_test(seed: u64) {
         MockValidator,
         MockMempool<_, _>,
     >(
-        pubkeys,
+        pubkeys.into_iter().map(PeerId).collect(),
         state_configs,
         |all_peers: Vec<_>, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),

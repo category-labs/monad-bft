@@ -12,7 +12,7 @@ use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{
         MockExecutor, MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig,
-        NoSerRouterScheduler, RouterScheduler,
+        NoSerRouterScheduler, RouterScheduler, RouterSchedulerID,
     },
     mock_swarm::{Node, Nodes},
     transformer::{GenericTransformer, LatencyTransformer, Pipeline},
@@ -45,8 +45,8 @@ type S = MonadState<
 type LoggerType = MockMemLogger<TimedEvent<MonadEvent<ST, SignatureCollectionType>>>;
 type ME = MockMempool<ST, SignatureCollectionType>;
 
-fn run_nodes_until<S, RS, P, LGR, ME, ST, SCT>(
-    nodes: &mut Nodes<S, RS, P, LGR, ME, ST, SCT>,
+fn run_nodes_until<S, RS, P, LGR, ME, ST, SCT, ID>(
+    nodes: &mut Nodes<S, RS, P, LGR, ME, ST, SCT, ID>,
     start_tick: Duration,
     until_tick: Duration,
     until_block: usize,
@@ -56,19 +56,20 @@ where
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
-    P: Pipeline<RS::Serialized>,
+    P: Pipeline<ID, RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ID: RouterSchedulerID,
 
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT, ID>: Unpin,
     S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT, ID>: Send,
     RS::Serialized: Send,
 {
     let mut max_tick = start_tick;
@@ -81,8 +82,8 @@ where
     max_tick
 }
 
-fn liveness<S, RS, P, LGR, ME, ST, SCT>(
-    nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>,
+fn liveness<S, RS, P, LGR, ME, ST, SCT, ID>(
+    nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT, ID>,
     last_ledger_len: usize,
 ) -> bool
 where
@@ -90,19 +91,20 @@ where
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
-    P: Pipeline<RS::Serialized>,
+    P: Pipeline<ID, RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ID: RouterSchedulerID,
 
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT, ID>: Unpin,
     S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT, ID>: Send,
     RS::Serialized: Send,
 {
     let max_ledger_len = nodes
@@ -135,19 +137,20 @@ fn replay_one_honest(failure_idx: &[usize]) {
     };
     let logger_config = MockMemLoggerConfig::default();
     let pipeline = vec![GenericTransformer::<
+        _,
         MonadMessage<ST, SignatureCollectionType>,
     >::Latency(LatencyTransformer(Duration::from_millis(1)))];
     let phase_one_until = Duration::from_secs(4);
     let phase_one_until_block = 1024;
 
-    let mut nodes = Nodes::<S, RS, _, LoggerType, ME, ST, SignatureCollectionType>::new(
+    let mut nodes = Nodes::<S, RS, _, LoggerType, ME, ST, SignatureCollectionType, _>::new(
         pubkeys
             .iter()
             .copied()
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    pubkey,
+                    PeerId(pubkey),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
@@ -177,7 +180,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let max_tick = run_nodes_until(&mut nodes, max_tick, phase_one_until, phase_one_until_block);
 
     // it should've reached some `until` condition, rather than losing liveness
-    assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(&nodes, 0));
+    assert!(liveness::<S, RS, _, LoggerType, ME, _, _, _>(&nodes, 0));
 
     let phase_one_length = nodes
         .states()
@@ -201,7 +204,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let max_tick = run_nodes_until(&mut nodes, max_tick, phase_two_until, phase_two_until_block);
 
     // nodes lost liveness because only 2/4 are online
-    assert!(!liveness::<S, RS, _, LoggerType, ME, _, _>(
+    assert!(!liveness::<S, RS, _, LoggerType, ME, _, _, _>(
         &nodes,
         phase_one_length
     ));
@@ -218,7 +221,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_logger_config = MockMemLoggerConfig::new(node1.logger.log);
 
     nodes.add_state((
-        pubkeys[f0],
+        PeerId(pubkeys[f0]),
         state_configs_duplicate.remove(f0),
         node0_logger_config,
         router_scheduler_config(
@@ -231,7 +234,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     ));
 
     nodes.add_state((
-        pubkeys[f1],
+        PeerId(pubkeys[f1]),
         state_configs_duplicate.remove(f1 - 1),
         node1_logger_config,
         router_scheduler_config(
@@ -272,7 +275,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         phase_three_until,
         phase_three_until_block,
     );
-    assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(
+    assert!(liveness::<S, RS, _, LoggerType, ME, _, _, _>(
         &nodes,
         phase_two_length
     ));

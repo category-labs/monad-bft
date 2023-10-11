@@ -8,9 +8,8 @@ use itertools::Itertools;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
-use monad_crypto::secp256k1::PubKey;
 use monad_executor::{timed_event::TimedEvent, Executor, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
@@ -19,45 +18,46 @@ use rayon::prelude::*;
 use tracing::info_span;
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent, MockableExecutor, RouterScheduler},
+    mock::{MockExecutor, MockExecutorEvent, MockableExecutor, RouterScheduler, RouterSchedulerID},
     transformer::{LinkMessage, Pipeline},
 };
 
-pub struct Node<S, RS, P, LGR, ME, ST, SCT>
+pub struct Node<S, RS, P, LGR, ME, ST, SCT, ID>
 where
     S: State,
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     ME: MockableExecutor<SignatureCollection = SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
+    ID: RouterSchedulerID,
 {
-    pub id: PeerId,
-    pub executor: MockExecutor<S, RS, ME, ST, SCT>,
+    pub id: ID,
+    pub executor: MockExecutor<S, RS, ME, ST, SCT, ID>,
     pub state: S,
     pub logger: LGR,
     pub pipeline: P,
-    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
+    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<ID, RS::Serialized>)>>,
     pub rng: ChaCha20Rng,
     pub current_seed: usize,
 }
 
-impl<S, RS, P, LGR, ME, ST, SCT> Node<S, RS, P, LGR, ME, ST, SCT>
+impl<S, RS, P, LGR, ME, ST, SCT, ID> Node<S, RS, P, LGR, ME, ST, SCT, ID>
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
-    P: Pipeline<RS::Serialized>,
+    P: Pipeline<ID, RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    ID: RouterSchedulerID,
+    MockExecutor<S, RS, ME, ST, SCT, ID>: Unpin,
     S::Block: Unpin,
 {
     fn peek_event(&self) -> Option<(Duration, SwarmEventType)> {
@@ -89,7 +89,7 @@ where
     fn step_until(
         &mut self,
         until: Duration,
-        emitted_messages: &mut Vec<(Duration, LinkMessage<RS::Serialized>)>,
+        emitted_messages: &mut Vec<(Duration, LinkMessage<ID, RS::Serialized>)>,
     ) -> Option<(Duration, S::Event)> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
@@ -156,17 +156,18 @@ where
     }
 }
 
-pub struct Nodes<S, RS, P, LGR, ME, ST, SCT>
+pub struct Nodes<S, RS, P, LGR, ME, ST, SCT, ID>
 where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
+    RS: RouterScheduler<ID = ID>,
+    P: Pipeline<ID, RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     ME: MockableExecutor<SignatureCollection = SCT>,
+    ID: RouterSchedulerID,
 {
-    states: BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>>,
+    states: BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT, ID>>,
     tick: Duration,
 }
 
@@ -176,38 +177,29 @@ enum SwarmEventType {
     ScheduledMessage,
 }
 
-impl<S, RS, P, LGR, ME, ST, SCT> Nodes<S, RS, P, LGR, ME, ST, SCT>
+impl<S, RS, P, LGR, ME, ST, SCT, ID> Nodes<S, RS, P, LGR, ME, ST, SCT, ID>
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
-    P: Pipeline<RS::Serialized>,
+    P: Pipeline<ID, RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ID: RouterSchedulerID,
 
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT, ID>: Unpin,
     S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT, ID>: Send,
     RS::Serialized: Send,
 {
-    pub fn new(
-        peers: Vec<(
-            PubKey,
-            S::Config,
-            LGR::Config,
-            RS::Config,
-            ME::Config,
-            P,
-            u64,
-        )>,
-    ) -> Self {
+    pub fn new(peers: Vec<(ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64)>) -> Self {
         assert!(!peers.is_empty());
 
         let mut nodes = Self {
@@ -218,11 +210,10 @@ where
         for peer in peers {
             nodes.add_state(peer);
         }
-
         nodes
     }
 
-    fn peek_event(&self) -> Option<(Duration, SwarmEventType, PeerId)> {
+    fn peek_event(&self) -> Option<(Duration, SwarmEventType, ID)> {
         self.states
             .iter()
             .filter_map(|(id, node)| {
@@ -236,7 +227,7 @@ where
         self.peek_event().map(|(tick, _, _)| tick)
     }
 
-    pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
+    pub fn step(&mut self) -> Option<(Duration, ID, S::Event)> {
         self.step_until(Duration::MAX, usize::MAX)
     }
 
@@ -244,7 +235,7 @@ where
         &mut self,
         until: Duration,
         until_block: usize,
-    ) -> Option<(Duration, PeerId, S::Event)> {
+    ) -> Option<(Duration, ID, S::Event)> {
         while let Some((tick, _event_type, id)) = self.peek_event() {
             if tick > until
                 || self
@@ -325,28 +316,20 @@ where
         end_tick
     }
 
-    pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>> {
+    pub fn states(&self) -> &BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT, ID>> {
         &self.states
     }
 
-    pub fn remove_state(&mut self, peer_id: &PeerId) -> Option<Node<S, RS, P, LGR, ME, ST, SCT>> {
-        self.states.remove(peer_id)
+    pub fn remove_state(&mut self, id: &ID) -> Option<Node<S, RS, P, LGR, ME, ST, SCT, ID>> {
+        self.states.remove(id)
     }
 
     pub fn add_state(
         &mut self,
-        peer: (
-            PubKey,
-            S::Config,
-            LGR::Config,
-            RS::Config,
-            ME::Config,
-            P,
-            u64,
-        ),
+        peer: (ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64),
     ) {
         let (
-            pubkey,
+            id,
             state_config,
             logger_config,
             router_scheduler_config,
@@ -354,7 +337,7 @@ where
             pipeline,
             seed,
         ) = peer;
-        let mut executor: MockExecutor<S, RS, ME, ST, SCT> = MockExecutor::new(
+        let mut executor: MockExecutor<S, RS, ME, ST, SCT, ID> = MockExecutor::new(
             RS::new(router_scheduler_config),
             mock_mempool_config,
             self.tick,
@@ -369,10 +352,13 @@ where
         executor.exec(init_commands);
         let mut rng = ChaChaRng::seed_from_u64(seed);
 
+        // ensure each insert is unique
+        assert!(!self.states.contains_key(&id));
+
         self.states.insert(
-            PeerId(pubkey),
+            id,
             Node {
-                id: PeerId(pubkey),
+                id,
                 executor,
                 state,
                 logger: wal,

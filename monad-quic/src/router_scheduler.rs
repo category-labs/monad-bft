@@ -40,13 +40,14 @@ pub struct QuicRouterScheduler<G: Gossip> {
 
     timeouts: TimeoutQueue,
 
-    pending_events: BTreeMap<Duration, Vec<RouterEvent<Vec<u8>, Vec<u8>>>>,
+    pending_events: BTreeMap<Duration, Vec<RouterEvent<PeerId, Vec<u8>, Vec<u8>>>>,
     pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
 }
 
 const SERVER_NAME: &str = "MONAD";
 
 impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
+    type ID = PeerId;
     type Config = QuicRouterSchedulerConfig<G::Config>;
     type M = Vec<u8>;
     type Serialized = Vec<u8>;
@@ -199,7 +200,10 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         self.peek_event().map(|(tick, _)| tick)
     }
 
-    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>> {
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::ID, Self::M, Self::Serialized>> {
         while let Some((min_tick, event_type)) = self.peek_event() {
             if min_tick > until {
                 break;

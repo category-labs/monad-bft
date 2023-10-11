@@ -24,6 +24,7 @@ type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;
 type StateRootValidatorType = NopStateRoot;
+type ID = PeerId;
 
 #[test]
 fn test_replay() {
@@ -61,7 +62,7 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs.clone())
         .map(|((a, b), c)| {
             (
-                a,
+                PeerId(a),
                 b,
                 c,
                 NoSerRouterConfig {
@@ -95,6 +96,7 @@ pub fn recover_nodes_msg_delays(
         MockMempool<_, _>,
         SignatureType,
         SignatureCollectionType,
+        ID,
     >::new(peers);
 
     while let Some((_, _, _)) = nodes.step() {
@@ -148,7 +150,7 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs)
         .map(|((a, b), c)| {
             (
-                a,
+                PeerId(a),
                 b,
                 c,
                 NoSerRouterConfig {
@@ -182,6 +184,7 @@ pub fn recover_nodes_msg_delays(
         MockMempool<_, _>,
         SignatureType,
         SignatureCollectionType,
+        ID,
     >::new(peers_clone);
 
     let node_ledger_recovered = nodes_recovered

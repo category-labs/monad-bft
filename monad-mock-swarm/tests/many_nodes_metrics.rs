@@ -60,9 +60,7 @@ fn many_nodes_metrics() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >::Latency(LatencyTransformer(
+        vec![GenericTransformer::<_, _>::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
         SwarmTestConfig {

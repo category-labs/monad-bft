@@ -54,6 +54,7 @@ mod test {
                 SimpleRoundRobin,
                 BlockSyncState,
             >,
+            PeerId,
             NopSignature,
             MultiSig<NopSignature>,
             NoSerRouterScheduler<MonadMessage<_, _>>,
@@ -63,7 +64,7 @@ mod test {
             MockValidator,
             MockMempool<_, _>,
         >(
-            pubkeys,
+            pubkeys.into_iter().map(PeerId).collect(),
             state_configs,
             |all_peers: Vec<_>, _| NoSerRouterConfig {
                 all_peers: all_peers.into_iter().collect(),
@@ -132,6 +133,7 @@ mod test {
                 SimpleRoundRobin,
                 BlockSyncState,
             >,
+            PeerId,
             NopSignature,
             MultiSig<NopSignature>,
             NoSerRouterScheduler<MonadMessage<_, _>>,
@@ -141,7 +143,7 @@ mod test {
             MockValidator,
             MockMempool<_, _>,
         >(
-            pubkeys,
+            pubkeys.into_iter().map(PeerId).collect(),
             state_configs,
             |all_peers: Vec<_>, _| NoSerRouterConfig {
                 all_peers: all_peers.into_iter().collect(),

@@ -11,7 +11,7 @@ use monad_eth_types::EthAddress;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockableExecutor, RouterScheduler},
+    mock::{MockExecutor, MockableExecutor, RouterScheduler, RouterSchedulerID},
     mock_swarm::{Node, Nodes},
     transformer::Pipeline,
 };
@@ -120,19 +120,18 @@ where
     >,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
-
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = PeerId>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized> + Clone,
+    P: Pipeline<PeerId, RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT, PeerId>: Unpin,
     S::Block: PartialEq + Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT, PeerId>: Send,
     RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
@@ -146,8 +145,9 @@ where
         swarm_config.consensus_delta,
         swarm_config.state_root_delay,
     );
-    run_nodes_until::<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
-        peers,
+    // always use peer ID
+    run_nodes_until::<S, PeerId, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+        peers.into_iter().map(PeerId).collect(),
         state_configs,
         router_scheduler_config,
         logger_config,
@@ -161,8 +161,8 @@ where
     )
 }
 
-pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
-    pubkeys: Vec<PubKey>,
+pub fn run_nodes_until<S, ID, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
+    ids: Vec<ID>,
     state_configs: Vec<MonadConfig<SCT, TVT>>,
     router_scheduler_config: RSC,
     logger_config: LGR::Config,
@@ -183,40 +183,36 @@ where
     >,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
-
-    RS: RouterScheduler,
+    ID: RouterSchedulerID,
+    RS: RouterScheduler<ID = ID>,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
     RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized> + Clone,
+    P: Pipeline<ID, RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
+    MockExecutor<S, RS, ME, ST, SCT, ID>: Unpin,
     S::Block: PartialEq + Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
+    Node<S, RS, P, LGR, ME, ST, SCT, ID>: Send,
     RS::Serialized: Send,
 
-    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
+    RSC: Fn(Vec<ID>, ID) -> RS::Config,
 
     LGR::Config: Clone,
     TVT: Clone,
 {
-    let mut nodes = Nodes::<S, RS, P, LGR, ME, ST, SCT>::new(
-        pubkeys
-            .iter()
+    let mut nodes = Nodes::<S, RS, P, LGR, ME, ST, SCT, ID>::new(
+        ids.iter()
             .copied()
             .zip(state_configs)
-            .map(|(pubkey, state_config)| {
+            .map(|(id, state_config)| {
                 (
-                    pubkey,
+                    id,
                     state_config,
                     logger_config.clone(),
-                    router_scheduler_config(
-                        pubkeys.iter().copied().map(PeerId).collect(),
-                        PeerId(pubkey),
-                    ),
+                    router_scheduler_config(ids.to_vec(), id),
                     mock_mempool_config,
                     pipeline.clone(),
                     seed,

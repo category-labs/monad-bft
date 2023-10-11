@@ -45,9 +45,9 @@ fn two_nodes() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::Latency::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >(LatencyTransformer(Duration::from_millis(1)))],
+        vec![GenericTransformer::Latency::<_, _>(LatencyTransformer(
+            Duration::from_millis(1),
+        ))],
         SwarmTestConfig {
             num_nodes: 2,
             consensus_delta: Duration::from_millis(2),
@@ -93,7 +93,7 @@ fn two_nodes_quic() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
+        vec![GenericTransformer::Latency::<_, _>(LatencyTransformer(
             Duration::from_millis(1),
         ))],
         SwarmTestConfig {

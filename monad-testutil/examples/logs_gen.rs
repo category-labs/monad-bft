@@ -28,10 +28,12 @@ type MS = MonadState<
     SimpleRoundRobin,
     BlockSyncState,
 >;
+
+type ID = PeerId;
 type MM = <MS as State>::Message;
 type ME = MonadEvent<SignatureType, SignatureCollectionType>;
 
-pub fn generate_log<P: Pipeline<MM>>(
+pub fn generate_log<P: Pipeline<ID, MM>>(
     num_nodes: u16,
     num_blocks: usize,
     delta: Duration,
@@ -59,7 +61,7 @@ pub fn generate_log<P: Pipeline<MM>>(
         .zip(file_path_vec)
         .map(|((a, b), c)| {
             (
-                a,
+                PeerId(a),
                 b,
                 c,
                 NoSerRouterConfig {
@@ -79,6 +81,7 @@ pub fn generate_log<P: Pipeline<MM>>(
         MockMempool<SignatureType, SignatureCollectionType>,
         SignatureType,
         SignatureCollectionType,
+        ID,
     >::new(peers);
 
     while let Some((duration, id, event)) = nodes.step() {

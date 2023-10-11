@@ -93,7 +93,7 @@ fn many_nodes_quic() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
+        vec![GenericTransformer::Latency::<_, _>(LatencyTransformer(
             Duration::from_millis(1),
         ))],
         SwarmTestConfig {

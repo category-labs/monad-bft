@@ -14,8 +14,9 @@ type BytesType = Vec<u8>;
 
 pub(crate) struct Swarm<G> {
     current_tick: Duration,
-    nodes: BTreeMap<PeerId, (G, BytesTransformerPipeline)>,
-    pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<BytesType>)>>,
+    nodes: BTreeMap<PeerId, (G, BytesTransformerPipeline<PeerId>)>,
+    pending_inbound_messages:
+        BinaryHeap<Reverse<(Duration, usize, LinkMessage<PeerId, BytesType>)>>,
     seq_no: usize,
 }
 
@@ -27,7 +28,7 @@ pub enum SwarmEventType {
 
 impl<G: Gossip> Swarm<G> {
     pub fn new(
-        configs: impl Iterator<Item = (PeerId, G::Config, BytesTransformerPipeline)>,
+        configs: impl Iterator<Item = (PeerId, G::Config, BytesTransformerPipeline<PeerId>)>,
     ) -> Self {
         let nodes = configs
             .map(|(peer_id, config, pipeline)| (peer_id, (G::new(config), pipeline)))

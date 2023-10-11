@@ -81,11 +81,9 @@ fn nodes_with_random_latency(seed: u64) {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >::RandLatency(RandLatencyTransformer::new(
-            seed, 330,
-        ))],
+        vec![GenericTransformer::<_, _>::RandLatency(
+            RandLatencyTransformer::new(seed, 330),
+        )],
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(250),

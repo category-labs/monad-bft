@@ -1,6 +1,8 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, VecDeque},
+    fmt::Debug,
+    hash::Hash,
     marker::{PhantomData, Unpin},
     ops::DerefMut,
     pin::Pin,
@@ -27,13 +29,24 @@ use monad_updaters::{
 };
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
+pub trait RouterSchedulerID:
+    Clone + Copy + Debug + Ord + PartialOrd + Eq + PartialEq + Hash + Send + Sync
+{
+    fn get_peer_id(&self) -> PeerId;
+}
+
+impl RouterSchedulerID for PeerId {
+    fn get_peer_id(&self) -> PeerId {
+        *self
+    }
+}
 
 const MOCK_DEFAULT_SEED: u64 = 1;
 
 #[derive(Debug)]
-pub enum RouterEvent<M, Serialized> {
-    Rx(PeerId, M),
-    Tx(PeerId, Serialized),
+pub enum RouterEvent<ID: RouterSchedulerID, M, Serialized> {
+    Rx(ID, M),
+    Tx(ID, Serialized),
 }
 
 /// RouterScheduler describes HOW gossip messages get delivered
@@ -42,19 +55,23 @@ pub trait RouterScheduler {
     /// transport-level message type - usually will be bytes
     type M;
     type Serialized;
+    type ID: RouterSchedulerID;
 
     fn new(config: Self::Config) -> Self;
 
-    fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized);
+    fn inbound(&mut self, time: Duration, from: Self::ID, message: Self::Serialized);
     fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM);
 
     fn peek_tick(&self) -> Option<Duration>;
-    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>>;
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::ID, Self::M, Self::Serialized>>;
 }
 
 pub struct NoSerRouterScheduler<M> {
     all_peers: BTreeSet<PeerId>,
-    events: VecDeque<(Duration, RouterEvent<M, M>)>,
+    events: VecDeque<(Duration, RouterEvent<PeerId, M, M>)>,
 }
 
 #[derive(Clone)]
@@ -69,6 +86,7 @@ where
     type Config = NoSerRouterConfig;
     type M = M;
     type Serialized = M;
+    type ID = PeerId;
 
     fn new(config: NoSerRouterConfig) -> Self {
         Self {
@@ -77,7 +95,7 @@ where
         }
     }
 
-    fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized) {
+    fn inbound(&mut self, time: Duration, from: Self::ID, message: Self::Serialized) {
         assert!(
             time >= self
                 .events
@@ -117,7 +135,10 @@ where
         self.events.front().map(|(tick, _)| *tick)
     }
 
-    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>> {
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::ID, Self::M, Self::Serialized>> {
         if self.peek_tick().unwrap_or(Duration::MAX) <= until {
             let (_, event) = self.events.pop_front().expect("must exist");
             Some(event)
@@ -139,12 +160,14 @@ pub trait MockableExecutor:
     fn ready(&self) -> bool;
 }
 
-pub struct MockExecutor<S, RS, ME, ST, SCT>
+pub struct MockExecutor<S, RS, ME, ST, SCT, ID>
 where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
     ME: MockableExecutor<SignatureCollection = SCT>,
+    ID: RouterSchedulerID,
+    RS: RouterScheduler<ID = ID>,
 {
     mempool: ME,
     ledger: MockLedger<S::Block, S::Event>,
@@ -205,13 +228,14 @@ enum ExecutorEventType {
     StateRootHash,
 }
 
-impl<S, RS, ME, ST, SCT> MockExecutor<S, RS, ME, ST, SCT>
+impl<S, RS, ME, ST, SCT, ID> MockExecutor<S, RS, ME, ST, SCT, ID>
 where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     ME: MockableExecutor<SignatureCollection = SCT>,
+    ID: RouterSchedulerID,
 {
     pub fn new(router: RS, mempool_config: ME::Config, tick: Duration) -> Self {
         Self {
@@ -232,7 +256,7 @@ where
     pub fn tick(&self) -> Duration {
         self.tick
     }
-    pub fn send_message(&mut self, tick: Duration, from: PeerId, message: RS::Serialized) {
+    pub fn send_message(&mut self, tick: Duration, from: ID, message: RS::Serialized) {
         assert!(tick >= self.tick);
 
         self.router.inbound(tick, from, message);
@@ -278,13 +302,14 @@ where
     }
 }
 
-impl<S, RS, ME, ST, SCT> Executor for MockExecutor<S, RS, ME, ST, SCT>
+impl<S, RS, ME, ST, SCT, ID> Executor for MockExecutor<S, RS, ME, ST, SCT, ID>
 where
     S: State<Event = MonadEvent<ST, SCT>>,
     ST: MessageSignature,
     SCT: SignatureCollection,
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     ME: MockableExecutor<SignatureCollection = SCT, Event = S::Event>,
+    ID: RouterSchedulerID,
 
     S::OutboundMessage: Serializable<RS::M>,
 {
@@ -329,18 +354,19 @@ where
     }
 }
 
-pub enum MockExecutorEvent<E, Ser> {
+pub enum MockExecutorEvent<ID, E, Ser> {
     Event(E),
-    Send(PeerId, Ser),
+    Send(ID, Ser),
 }
 
-impl<S, RS, ME, ST, SCT> MockExecutor<S, RS, ME, ST, SCT>
+impl<S, RS, ME, ST, SCT, ID> MockExecutor<S, RS, ME, ST, SCT, ID>
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
-    RS: RouterScheduler,
+    RS: RouterScheduler<ID = ID>,
     ME: MockableExecutor<SignatureCollection = S::SignatureCollection, Event = S::Event>,
+    ID: RouterSchedulerID,
 
     S::Message: Deserializable<RS::M>,
     S::Block: Unpin,
@@ -349,7 +375,7 @@ where
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<MockExecutorEvent<S::Event, RS::Serialized>> {
+    ) -> Option<MockExecutorEvent<ID, S::Event, RS::Serialized>> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
@@ -365,7 +391,7 @@ where
                             let message =
                                 <S::Message as Deserializable<RS::M>>::deserialize(&message)
                                     .expect("all messages should deserialize in mock executor");
-                            MockExecutorEvent::Event(message.event(from))
+                            MockExecutorEvent::Event(message.event(from.get_peer_id()))
                         }
                         Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
                     }
@@ -399,12 +425,14 @@ where
     }
 }
 
-impl<S, RS, ME, ST, SCT> MockExecutor<S, RS, ME, ST, SCT>
+impl<S, RS, ME, ST, SCT, ID> MockExecutor<S, RS, ME, ST, SCT, ID>
 where
     S: State,
     ST: MessageSignature,
     SCT: SignatureCollection,
     ME: MockableExecutor<SignatureCollection = SCT>,
+    RS: RouterScheduler<ID = ID>,
+    ID: RouterSchedulerID,
 {
     pub fn ledger(&self) -> &MockLedger<S::Block, S::Event> {
         &self.ledger
