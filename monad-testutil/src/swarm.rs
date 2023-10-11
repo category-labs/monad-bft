@@ -29,6 +29,7 @@ pub struct SwarmTestConfig {
     pub until: Duration,
     pub until_block: usize,
     pub expected_block: usize,
+    pub state_root_delay: u64,
     pub seed: u64,
 }
 
@@ -36,6 +37,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     tvt: TVT,
     num_nodes: u16,
     delta: Duration,
+    state_root_delay: u64,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
@@ -65,7 +67,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
             delta,
             consensus_config: ConsensusConfig {
                 proposal_size: 5000,
-                state_root_delay: 4,
+                state_root_delay,
                 propose_with_missing_blocks: false,
             },
             genesis_block: genesis_block.clone(),
@@ -138,8 +140,12 @@ where
     LGR::Config: Clone,
     TVT: TransactionValidator,
 {
-    let (peers, state_configs) =
-        get_configs::<ST, SCT, TVT>(tvt, swarm_config.num_nodes, swarm_config.consensus_delta);
+    let (peers, state_configs) = get_configs::<ST, SCT, TVT>(
+        tvt,
+        swarm_config.num_nodes,
+        swarm_config.consensus_delta,
+        swarm_config.state_root_delay,
+    );
     run_nodes_until::<S, ST, SCT, RS, RSC, LGR, P, TVT, ME>(
         peers,
         state_configs,

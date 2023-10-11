@@ -27,14 +27,20 @@ type StateRootValidatorType = NopStateRoot;
 
 #[test]
 fn test_replay() {
-    recover_nodes_msg_delays(4, 10, 5);
+    recover_nodes_msg_delays(4, 10, 5, 4);
 }
 
-pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_block_after: usize) {
+pub fn recover_nodes_msg_delays(
+    num_nodes: u16,
+    num_blocks_before: usize,
+    num_block_after: usize,
+    state_root_delay: u64,
+) {
     let (pubkeys, state_configs) = get_configs::<SignatureType, SignatureCollectionType, _>(
         TransactionValidatorType {},
         num_nodes,
         Duration::from_millis(101),
+        state_root_delay,
     );
 
     // create the log file path
@@ -132,6 +138,7 @@ pub fn recover_nodes_msg_delays(num_nodes: u16, num_blocks_before: usize, num_bl
             TransactionValidatorType {},
             num_nodes,
             Duration::from_millis(2),
+            4,
         );
 
     let peers_clone = pubkeys_clone

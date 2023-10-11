@@ -92,6 +92,9 @@ fn nodes_with_random_latency(seed: u64) {
             until: Duration::from_secs(60 * 60),
             until_block: usize::MAX,
             expected_block: 2048,
+            // avoid state_root trigger in rand latency setting
+            // TODO, cover cases with low state_root_delay once state_sync is done
+            state_root_delay: 1000,
             seed: 1,
         },
     );

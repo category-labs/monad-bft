@@ -50,6 +50,7 @@ fn two_nodes() -> u128 {
             until: Duration::from_secs(10),
             until_block: 1024,
             expected_block: 1024,
+            state_root_delay: 4,
             seed: 1,
         },
     )

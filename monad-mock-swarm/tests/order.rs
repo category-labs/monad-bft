@@ -53,7 +53,9 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
     let (pubkeys, state_configs) =
-        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
+        // due to the burst behavior of replay-transformer, its okay to have delay as 1
+        // TODO?: Make Replay Transformer's stored message not burst within the same Duration
+        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta, 1);
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 

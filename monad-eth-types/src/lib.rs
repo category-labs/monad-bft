@@ -4,6 +4,8 @@ use reth_rlp::{Decodable, Encodable};
 #[cfg(feature = "serde")]
 pub mod serde;
 
+pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EthTransactionList(pub Vec<TxHash>);
 

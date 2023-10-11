@@ -23,7 +23,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Hash, NodeId, Round};
@@ -263,7 +263,7 @@ where
         p: ProposalMessage<SCT>,
     ) -> Vec<ConsensusCommand<SCT>> {
         // NULL blocks are not required to have state root hashes
-        if p.block.payload.txns.0.is_empty() {
+        if p.block.payload.txns == TransactionList(vec![EMPTY_RLP_TX_LIST]) {
             debug!("Received empty block: block={:?}", p.block);
             inc_count!(rx_empty_block);
             return vec![ConsensusCommand::FetchFullTxs(
@@ -2225,7 +2225,8 @@ mod test {
         );
         let (author, _, verified_message) = p0.destructure();
         // p0 should have seqnum 1 and therefore only require state_root 0
-        state.handle_state_root_update(0, Hash([0xaa; 32]));
+        // the state_root 0's hash should be Hash([0x00; 32])
+        state.handle_state_root_update(0, Hash([0x00; 32]));
         let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
         let result = cmds
             .iter()

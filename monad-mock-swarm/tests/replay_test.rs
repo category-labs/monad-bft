@@ -125,9 +125,9 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let default_seed = 1;
     // setup 4 nodes
     let (peers, state_configs) =
-        get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA);
+        get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA, 4);
     let (_, mut state_configs_duplicate) =
-        get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA);
+        get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA, 4);
 
     let pubkeys = peers;
     let router_scheduler_config = |all_peers: Vec<PeerId>, _: PeerId| NoSerRouterConfig {

@@ -35,14 +35,19 @@ pub fn generate_log<P: Pipeline<MM>>(
     num_nodes: u16,
     num_blocks: usize,
     delta: Duration,
+    state_root_delay: u64,
     pipeline: P,
 ) where
     P: Clone,
     P: Send,
 {
     type WALoggerType = WALogger<TimedEvent<ME>>;
-    let (pubkeys, state_configs) =
-        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
+    let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
+        MockValidator,
+        num_nodes,
+        delta,
+        state_root_delay,
+    );
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
         sync: false,
@@ -99,6 +104,7 @@ fn main() {
         4,
         10,
         Duration::from_millis(101),
+        4,
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(100),
         ))],

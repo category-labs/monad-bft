@@ -22,7 +22,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor::{Executor, State};
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
@@ -226,7 +226,7 @@ fn testnet(
         .collect::<Vec<_>>();
 
     let genesis_block = {
-        let genesis_txn = TransactionList(vec![0xc0]);
+        let genesis_txn = TransactionList(vec![EMPTY_RLP_TX_LIST]);
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(
@@ -243,7 +243,7 @@ fn testnet(
                 },
                 &genesis_prime_qc,
             ),
-            FullTransactionList(vec![0xc0]),
+            FullTransactionList(vec![EMPTY_RLP_TX_LIST]),
             &TransactionValidatorType::default(),
         )
         .unwrap()

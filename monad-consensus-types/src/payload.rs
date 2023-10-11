@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{Hash, Round};
 use zerocopy::AsBytes;
 
@@ -70,9 +70,15 @@ impl Hashable for ExecutionArtifacts {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 // TODO rename to TransactionHashList or something
 pub struct TransactionList(pub Vec<u8>);
+
+impl Default for TransactionList {
+    fn default() -> Self {
+        Self(vec![EMPTY_RLP_TX_LIST])
+    }
+}
 
 impl std::fmt::Debug for TransactionList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

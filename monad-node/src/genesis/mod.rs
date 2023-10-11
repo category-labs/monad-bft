@@ -11,7 +11,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{NodeId, Round};
 
 use crate::{error::NodeSetupError, HasherType, SignatureCollectionType, TransactionValidatorType};
@@ -53,8 +53,10 @@ fn build_genesis_block(
     author: PubKey,
 ) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
     // TODO: Deserialize transactions from GenesisConfig
-    let (genesis_txs, genesis_full_txs) =
-        (TransactionList(vec![0xc0]), FullTransactionList(vec![0xc0]));
+    let (genesis_txs, genesis_full_txs) = (
+        TransactionList(vec![EMPTY_RLP_TX_LIST]),
+        FullTransactionList(vec![EMPTY_RLP_TX_LIST]),
+    );
 
     let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
     let genesis_execution_header = ExecutionArtifacts::zero();

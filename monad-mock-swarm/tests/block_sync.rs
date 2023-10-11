@@ -25,11 +25,16 @@ mod test {
      *  Couple messages gets delayed significantly for 1 second
      */
     #[test]
-    fn extreme_delay() {
+    fn extreme_delay_recovery_with_block_sync() {
         let num_nodes = 4;
         let delta = Duration::from_millis(2);
-        let (pubkeys, state_configs) =
-            get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
+        let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
+            MockValidator,
+            num_nodes,
+            delta,
+            // giving a high delay so state root doesn't trigger
+            1000,
+        );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
@@ -82,27 +87,32 @@ mod test {
         );
     }
 
-    #[test_case(4, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),1; "test 1")]
-    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),10; "test 2")]
-    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),25; "test 3")]
-    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),50; "test 4")]
-    #[test_case(10, Duration::from_secs(0),Duration::from_secs(2),Duration::from_secs(4),3; "test 5")]
-    #[test_case(10, Duration::from_secs(0),Duration::from_secs(30),Duration::from_secs(60), 3; "test 6")]
-
-    fn black_out(
+    #[test_case(4, Duration::from_millis(100),Duration::from_millis(200),Duration::from_secs(4),1, 200; "test 1")]
+    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),10, 1000; "test 2")]
+    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),25, 1000; "test 3")]
+    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),50, 1000; "test 4")]
+    #[test_case(10, Duration::from_secs(0),Duration::from_secs(2),Duration::from_secs(4),3, 2000; "test 5")]
+    #[test_case(10, Duration::from_secs(0),Duration::from_secs(10),Duration::from_secs(20), 3, 4000; "test 6")]
+    fn black_out_recovery_with_block_sync(
         num_nodes: u16,
         from: Duration,
         to: Duration,
         until: Duration,
         black_out_cnt: usize,
+        // giving a high delay so state root doesn't trigger
+        state_root_delay: u64,
     ) {
         assert!(
             from < to && to < until && black_out_cnt <= (num_nodes as usize) && black_out_cnt >= 1
         );
 
         let delta = Duration::from_millis(2);
-        let (pubkeys, state_configs) =
-            get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta);
+        let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
+            MockValidator,
+            num_nodes,
+            delta,
+            state_root_delay,
+        );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 

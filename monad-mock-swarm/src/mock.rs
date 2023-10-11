@@ -15,6 +15,7 @@ use monad_consensus_types::{
     payload::{FullTransactionList, TransactionList},
     signature_collection::SignatureCollection,
 };
+use monad_eth_types::EMPTY_RLP_TX_LIST;
 use monad_executor::{Executor, State};
 use monad_executor_glue::{
     Command, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget, TimerCommand,
@@ -463,6 +464,7 @@ where
 
 pub struct MockMempool<ST, SCT> {
     fetch_txs_state: Option<FetchTxParams<SCT>>,
+    num_fetch_txs: usize,
     fetch_full_txs_state: Option<FetchFullTxParams<SCT>>,
     waker: Option<Waker>,
     phantom: PhantomData<ST>,
@@ -472,6 +474,7 @@ impl<ST, SCT> Default for MockMempool<ST, SCT> {
     fn default() -> Self {
         Self {
             fetch_txs_state: None,
+            num_fetch_txs: 0,
             fetch_full_txs_state: None,
             waker: None,
             phantom: PhantomData,
@@ -487,12 +490,14 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(_, _, cb) => {
+                MempoolCommand::FetchTxs(num_txs, _, cb) => {
                     self.fetch_txs_state = Some(cb);
+                    self.num_fetch_txs = num_txs;
                     wake = true;
                 }
                 MempoolCommand::FetchReset => {
                     self.fetch_txs_state = None;
+                    self.num_fetch_txs = 0;
                     wake = self.fetch_full_txs_state.is_some();
                 }
                 MempoolCommand::FetchFullTxs(_, cb) => {
@@ -515,6 +520,17 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
     }
 }
 
+impl<ST, SCT> MockMempool<ST, SCT> {
+    fn get_fetched_txs_list(&self) -> TransactionList {
+        if self.num_fetch_txs == 0 {
+            TransactionList(vec![EMPTY_RLP_TX_LIST])
+        } else {
+            // Random non-empty value
+            TransactionList(vec![0xaa])
+        }
+    }
+}
+
 impl<ST, SCT> Stream for MockMempool<ST, SCT>
 where
     Self: Unpin,
@@ -528,7 +544,7 @@ where
 
         if let Some(s) = this.fetch_txs_state.take() {
             return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::FetchedTxs(s, TransactionList(Vec::new())),
+                monad_executor_glue::ConsensusEvent::FetchedTxs(s, self.get_fetched_txs_list()),
             )));
         }
 
@@ -636,7 +652,10 @@ where
             }
 
             return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::FetchedTxs(s, TransactionList(Vec::new())),
+                monad_executor_glue::ConsensusEvent::FetchedTxs(
+                    s,
+                    self.mpool.get_fetched_txs_list(),
+                ),
             )));
         }
 

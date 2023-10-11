@@ -4588,6 +4588,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-quic",
