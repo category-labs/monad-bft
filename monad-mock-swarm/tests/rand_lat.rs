@@ -80,7 +80,7 @@ fn nodes_with_random_latency(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >::RandLatency(RandLatencyTransformer::new(

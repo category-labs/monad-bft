@@ -69,7 +69,7 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            MockMempoolConfig,
+            MockMempoolConfig::default(),
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
@@ -147,7 +147,7 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            MockMempoolConfig,
+            MockMempoolConfig::default(),
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node

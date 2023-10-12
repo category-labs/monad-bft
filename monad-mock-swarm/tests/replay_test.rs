@@ -154,7 +154,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                         pubkeys.iter().copied().map(PeerId).collect(),
                         PeerId(pubkey),
                     ),
-                    MockMempoolConfig,
+                    MockMempoolConfig::default(),
                     pipeline.clone(),
                     default_seed,
                 )
@@ -225,7 +225,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(PeerId).collect(),
             PeerId(pubkeys[f0]),
         ),
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         pipeline.clone(),
         default_seed,
     ));
@@ -238,7 +238,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(PeerId).collect(),
             PeerId(pubkeys[f1]),
         ),
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         pipeline,
         default_seed,
     ));

@@ -28,6 +28,8 @@ use monad_updaters::{
 use rand::Rng;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
+const MOCK_DEFAULT_SEED: u64 = 1;
+
 #[derive(Debug)]
 pub enum RouterEvent<M, Serialized> {
     Rx(PeerId, M),
@@ -469,6 +471,7 @@ pub struct MockMempool<ST, SCT> {
     num_fetch_txs: usize,
     fetch_full_txs_state: Option<FetchFullTxParams<SCT>>,
     waker: Option<Waker>,
+    rng: ChaCha20Rng,
     phantom: PhantomData<ST>,
 }
 
@@ -479,6 +482,7 @@ impl<ST, SCT> Default for MockMempool<ST, SCT> {
             num_fetch_txs: 0,
             fetch_full_txs_state: None,
             waker: None,
+            rng: ChaCha20Rng::seed_from_u64(MOCK_DEFAULT_SEED),
             phantom: PhantomData,
         }
     }
@@ -523,12 +527,16 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
 }
 
 impl<ST, SCT> MockMempool<ST, SCT> {
-    fn get_fetched_txs_list(&self) -> TransactionList {
+    fn get_fetched_txs_list(&mut self) -> TransactionList {
         if self.num_fetch_txs == 0 {
             TransactionList(vec![EMPTY_RLP_TX_LIST])
         } else {
-            // Random non-empty value
-            TransactionList(vec![0xaa])
+            // Random non-empty value with size = num_fetch_txs
+            TransactionList(
+                (0..self.num_fetch_txs)
+                    .map(|_| self.rng.gen::<u8>())
+                    .collect(),
+            )
         }
     }
 }
@@ -565,7 +573,13 @@ where
 }
 
 #[derive(Copy, Clone)]
-pub struct MockMempoolConfig;
+pub struct MockMempoolConfig(pub u64);
+
+impl Default for MockMempoolConfig {
+    fn default() -> Self {
+        Self(MOCK_DEFAULT_SEED)
+    }
+}
 
 impl<ST, SCT> MockableExecutor for MockMempool<ST, SCT>
 where
@@ -576,8 +590,11 @@ where
     type SignatureCollection = SCT;
     type Config = MockMempoolConfig;
 
-    fn new(_config: Self::Config) -> Self {
-        Default::default()
+    fn new(config: Self::Config) -> Self {
+        Self {
+            rng: ChaCha20Rng::seed_from_u64(config.0),
+            ..Default::default()
+        }
     }
 
     fn ready(&self) -> bool {
@@ -689,7 +706,7 @@ mod tests {
     };
     use monad_crypto::NopSignature;
     use monad_executor::Executor;
-    use monad_executor_glue::TimerCommand;
+    use monad_executor_glue::{ConsensusEvent, TimerCommand};
     use monad_testutil::signing::node_id;
     use monad_types::Round;
 
@@ -848,7 +865,44 @@ mod tests {
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
+    #[test]
+    fn test_seeded_fetch() {
+        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            10,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
+        let res = futures::executor::block_on(mempool.next());
+        assert!(res.is_some());
+        assert!(!mempool.ready());
+        let txs_list_1 = match res.unwrap() {
+            MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(_, txs_list)) => txs_list,
+            _ => {
+                panic!("wrong event returned")
+            }
+        };
 
+        let mut mempool =
+            MockMempool::<NopSignature, MultiSig<NopSignature>>::new(MockMempoolConfig(100));
+        mempool.exec(vec![MempoolCommand::FetchTxs(
+            10,
+            vec![],
+            dont_care_fetched_tx_param(),
+        )]);
+        let res = futures::executor::block_on(mempool.next());
+        assert!(res.is_some());
+        assert!(!mempool.ready());
+        let txs_list_2 = match res.unwrap() {
+            MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(_, txs_list)) => txs_list,
+            _ => {
+                panic!("wrong event returned")
+            }
+        };
+        assert_eq!(txs_list_2.0.len(), 10);
+        assert_eq!(txs_list_2.0.len(), txs_list_1.0.len());
+        assert_ne!(txs_list_2.0, txs_list_1.0);
+    }
     #[test]
     fn test_reset() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();

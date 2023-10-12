@@ -39,7 +39,7 @@ fn two_nodes() -> u128 {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],

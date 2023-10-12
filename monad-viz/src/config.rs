@@ -131,7 +131,7 @@ impl
                     Rsc {
                         all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                     },
-                    MockMempoolConfig,
+                    MockMempoolConfig::default(),
                     self.pipeline.clone(),
                     1,
                 )

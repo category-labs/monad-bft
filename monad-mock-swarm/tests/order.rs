@@ -90,7 +90,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_peers)),

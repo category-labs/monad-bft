@@ -45,7 +45,7 @@ fn two_nodes_bls() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency::<
             MonadMessage<SignatureType, SignatureCollectionType>,
         >(LatencyTransformer(Duration::from_millis(1)))],

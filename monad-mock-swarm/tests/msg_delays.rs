@@ -42,7 +42,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::XorLatency(XorLatencyTransformer(
             Duration::from_millis(u8::MAX as u64),
         ))],

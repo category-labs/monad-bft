@@ -67,7 +67,7 @@ pub fn recover_nodes_msg_delays(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
-                MockMempoolConfig,
+                MockMempoolConfig::default(),
                 vec![GenericTransformer::XorLatency(XorLatencyTransformer(
                     Duration::from_millis(u8::MAX as u64),
                 ))],
@@ -154,7 +154,7 @@ pub fn recover_nodes_msg_delays(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
-                MockMempoolConfig,
+                MockMempoolConfig::default(),
                 vec![GenericTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(1),
                 ))],

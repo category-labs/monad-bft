@@ -59,7 +59,7 @@ fn many_nodes_metrics() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >::Latency(LatencyTransformer(

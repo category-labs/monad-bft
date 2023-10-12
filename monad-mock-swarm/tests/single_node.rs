@@ -44,7 +44,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency::<
             MonadMessage<NopSignature, MultiSig<NopSignature>>,
         >(LatencyTransformer(Duration::from_millis(1)))],
@@ -92,7 +92,7 @@ fn two_nodes_quic() {
             gossip_config: MockGossipConfig { all_peers },
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency::<Vec<u8>>(LatencyTransformer(
             Duration::from_millis(1),
         ))],

@@ -65,7 +65,7 @@ pub fn generate_log<P: Pipeline<MM>>(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                 },
-                MockMempoolConfig,
+                MockMempoolConfig::default(),
                 pipeline.clone(),
                 1,
             )

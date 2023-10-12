@@ -45,7 +45,7 @@ fn random_latency_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![GenericTransformer::RandLatency(
             RandLatencyTransformer::new(seed, 330),
         )],
@@ -101,7 +101,7 @@ fn delayed_message_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig,
+        MockMempoolConfig::default(),
         vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_peers)),
