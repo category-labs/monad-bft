@@ -51,6 +51,7 @@ fn nodes_with_random_latency_cron() {
 #[test_case(8; "seed8")]
 #[test_case(9; "seed9")]
 #[test_case(10; "seed10")]
+#[test_case(14710580201381303742; "seed11")]
 fn nodes_with_random_latency(seed: u64) {
     use std::time::Duration;
 
@@ -94,7 +95,7 @@ fn nodes_with_random_latency(seed: u64) {
             expected_block: 2048,
             // avoid state_root trigger in rand latency setting
             // TODO, cover cases with low state_root_delay once state_sync is done
-            state_root_delay: 1000,
+            state_root_delay: u64::MAX,
             seed: 1,
         },
     );
