@@ -18,12 +18,13 @@ monad-types = { path = "../monad-types" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-executor = { path = "../monad-executor", features = ["monad_test"] }
+monad-executor = { path = "../monad-executor"}
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
-monad-wal = { path = ".", features = ["monad_test"] }
+
+
 
 criterion = { workspace = true }
 tempfile = { workspace = true }
