@@ -4461,6 +4461,7 @@ dependencies = [
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [
+ "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
@@ -4722,7 +4723,6 @@ dependencies = [
  "monad-mock-swarm",
  "monad-proto",
  "monad-quic",
- "monad-state",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -4889,7 +4889,6 @@ dependencies = [
  "monad-state",
  "monad-testutil",
  "monad-types",
- "monad-wal",
  "tempfile",
 ]
 

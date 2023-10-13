@@ -2,6 +2,8 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
+    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_crypto::NopSignature;
     use monad_executor::State;
     use monad_executor_glue::{Identifiable, Message};
     use monad_testutil::block::MockBlock;
@@ -80,9 +82,7 @@ mod test {
         type Message = MockMessage;
         type Block = MockBlock;
         type Checkpoint = ();
-        type SignatureCollection = ();
-        #[cfg(feature = "monad_test")]
-        type ConsensusState = ();
+        type SignatureCollection = MultiSig<NopSignature>;
 
         fn init(
             _config: Self::Config,
@@ -116,10 +116,6 @@ mod test {
         > {
             self.events.push(event);
             Vec::new()
-        }
-        #[cfg(feature = "monad_test")]
-        fn consensus(&self) -> &Self::ConsensusState {
-            unimplemented!()
         }
     }
 

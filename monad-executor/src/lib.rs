@@ -1,7 +1,8 @@
 pub mod replay_nodes;
 pub mod timed_event;
-
-use monad_consensus_types::block::BlockType;
+#[cfg(feature = "monad_test")]
+use monad_consensus_state::ConsensusProcess;
+use monad_consensus_types::{block::BlockType, signature_collection::SignatureCollection};
 use monad_executor_glue::{Command, Message};
 
 pub trait Executor {
@@ -16,9 +17,9 @@ pub trait State: Sized {
     type Message: Message<Event = Self::Event>;
     type Block: BlockType;
     type Checkpoint;
-    type SignatureCollection;
+    type SignatureCollection: SignatureCollection;
     #[cfg(feature = "monad_test")]
-    type ConsensusState: PartialEq + Eq;
+    type ConsensusState: ConsensusProcess<Self::SignatureCollection> + PartialEq + Eq;
 
     fn init(
         config: Self::Config,

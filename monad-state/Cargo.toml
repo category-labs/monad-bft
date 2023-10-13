@@ -28,11 +28,6 @@ monad-validator = { path = "../monad-validator" }
 ref-cast = { workspace = true }
 
 [dev-dependencies]
-monad-consensus-state = { path = "../monad-consensus-state", features = [
-    "monad_test",
-] }
-monad-executor = { path = "../monad-executor", features = ["monad_test"] }
-monad-state = { path = ".", features = ["monad_test"] }
 monad-quic = { path = "../monad-quic" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-testutil = { path = "../monad-testutil" }

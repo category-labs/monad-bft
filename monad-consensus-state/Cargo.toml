@@ -27,8 +27,8 @@ log = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-blocktree = { path = "../monad-blocktree", features = ["monad_test"] }
-monad-consensus = { path = "../monad-consensus", features = ["monad_test"] }
+monad-blocktree = { path = "../monad-blocktree"}
+monad-consensus = { path = "../monad-consensus"}
 monad-testutil = { path = "../monad-testutil" }
 
 env_logger = { workspace = true }

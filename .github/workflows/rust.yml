@@ -12,7 +12,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest-32
-
+    strategy:
+      matrix: 
+          TARGET: [--all-targets, -p monad-mock-swarm --features monad_test]
     steps:
       - uses: actions/checkout@v3
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
@@ -20,7 +22,7 @@ jobs:
         run: cargo +nightly fmt --all --check --verbose
       - uses: Swatinem/rust-cache@v2
       - name: Lint
-        run: cargo clippy --all-targets --all-features --
+        run: cargo clippy ${{ matrix.TARGET }} --
           -D clippy::suspicious
           -D clippy::style
           -D clippy::clone_on_copy
@@ -39,10 +41,10 @@ jobs:
           -A clippy::type_complexity
           -A clippy::int_plus_one
           -A clippy::uninlined-format-args
-          -A clippy::enum-variant-names
+          -A clippy::enum-variant-names 
       - name: Lint unused deps
         run: cargo clippy --all-features -- -D unused_crate_dependencies
       - name: Check
-        run: cargo check --all-targets --all-features --verbose
+        run: cargo check ${{ matrix.TARGET }} --verbose 
       - name: Run tests
-        run: cargo test --release --all-targets --all-features --verbose
+        run: cargo test --release ${{ matrix.TARGET }} --verbose 
