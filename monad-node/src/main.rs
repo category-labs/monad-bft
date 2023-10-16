@@ -18,8 +18,8 @@ use monad_mempool_controller::ControllerConfig;
 use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer,
+    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
+    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;
@@ -100,6 +100,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         timer: TokioTimer::default(),
         mempool: MonadMempool::new(mempool_controller_config),
         ledger: MockLedger::default(),
+        execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
     };
 

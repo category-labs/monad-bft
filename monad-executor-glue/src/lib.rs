@@ -7,6 +7,7 @@ use monad_consensus::{
     validation::signing::Unverified,
 };
 use monad_consensus_types::{
+    block::FullBlock,
     command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionList},
@@ -98,6 +99,10 @@ pub enum LedgerCommand<B, E> {
     LedgerFetchReset(NodeId, BlockId),
 }
 
+pub enum ExecutionLedgerCommand<SCT> {
+    LedgerCommit(Vec<FullBlock<SCT>>),
+}
+
 pub enum CheckpointCommand<C> {
     Save(C),
 }
@@ -112,6 +117,7 @@ pub enum Command<E, OM, B, C, SCT> {
 
     MempoolCommand(MempoolCommand<SCT>),
     LedgerCommand(LedgerCommand<B, E>),
+    ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
 }
@@ -124,6 +130,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         Vec<TimerCommand<E>>,
         Vec<MempoolCommand<SCT>>,
         Vec<LedgerCommand<B, E>>,
+        Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
     ) {
@@ -131,14 +138,17 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         let mut timer_cmds = Vec::new();
         let mut mempool_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
+        let mut execution_ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
+
         for command in commands {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
                 Command::MempoolCommand(cmd) => mempool_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
+                Command::ExecutionLedgerCommand(cmd) => execution_ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
             }
@@ -148,6 +158,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
             timer_cmds,
             mempool_cmds,
             ledger_cmds,
+            execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
         )

@@ -24,8 +24,9 @@ pub struct NodeState {
     pub identity_libp2p: Keypair,
     pub certkey: KeyPair,
 
-    pub otel_context: Option<opentelemetry::Context>,
+    pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: Option<PathBuf>,
+    pub otel_context: Option<opentelemetry::Context>,
 }
 
 impl NodeState {
@@ -57,8 +58,9 @@ impl NodeState {
             identity_libp2p,
             certkey,
 
-            otel_context,
+            execution_ledger_path: cli.execution_ledger_path,
             mempool_ipc_path: cli.mempool_ipc_path,
+            otel_context,
         })
     }
 }

@@ -1,4 +1,4 @@
-mod aof;
+pub mod aof;
 pub mod mock;
 pub mod wal;
 

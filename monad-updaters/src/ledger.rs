@@ -93,10 +93,7 @@ where
     }
 }
 
-impl<O: BlockType, E> MockLedger<O, E>
-where
-    O: BlockType,
-{
+impl<O: BlockType, E> MockLedger<O, E> {
     pub fn ready(&self) -> bool {
         !self.ledger_fetches.is_empty()
     }
@@ -104,6 +101,7 @@ where
         &self.blockchain
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::{

@@ -12,6 +12,7 @@ members = [
     "monad-executor",
     "monad-executor-glue",
     "monad-gossip",
+    "monad-ledger",
     "monad-mempool-controller",
     "monad-mempool-ipc",
     "monad-mempool-messenger",

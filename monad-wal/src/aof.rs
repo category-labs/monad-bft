@@ -5,7 +5,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub(crate) struct AppendOnlyFile {
+pub struct AppendOnlyFile {
     file: File,
 }
 

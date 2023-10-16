@@ -18,7 +18,8 @@ use monad_consensus_types::{
 use monad_eth_types::EMPTY_RLP_TX_LIST;
 use monad_executor::{Executor, State};
 use monad_executor_glue::{
-    Command, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget, TimerCommand,
+    Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand,
+    RouterTarget, TimerCommand,
 };
 use monad_types::{Deserializable, Serializable};
 use monad_updaters::{
@@ -148,6 +149,7 @@ where
 {
     mempool: ME,
     ledger: MockLedger<S::Block, S::Event>,
+    execution_ledger: MockExecutionLedger<SCT>,
     checkpoint: MockCheckpoint<S::Checkpoint>,
     epoch: MockEpoch<ST, SCT>,
     state_root_hash: MockStateRootHash<S::Block, ST, SCT>,
@@ -217,6 +219,7 @@ where
         Self {
             checkpoint: Default::default(),
             ledger: Default::default(),
+            execution_ledger: Default::default(),
             mempool: ME::new(mempool_config),
             epoch: Default::default(),
             state_root_hash: Default::default(),
@@ -295,9 +298,11 @@ where
             timer_cmds,
             mempool_cmds,
             ledger_cmds,
+            execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
         ) = Self::Command::split_commands(commands);
+
         for command in timer_cmds {
             match command {
                 TimerCommand::ScheduleReset => self.timer = None,
@@ -314,8 +319,10 @@ where
                 }
             }
         }
+
         self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
+        self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
 
@@ -693,6 +700,24 @@ where
 
         self.mpool.waker = Some(cx.waker().clone());
         Poll::Pending
+    }
+}
+
+pub struct MockExecutionLedger<SCT> {
+    phantom: PhantomData<SCT>,
+}
+
+impl<SCT> Executor for MockExecutionLedger<SCT> {
+    type Command = ExecutionLedgerCommand<SCT>;
+
+    fn exec(&mut self, _: Vec<Self::Command>) {}
+}
+
+impl<O> Default for MockExecutionLedger<O> {
+    fn default() -> Self {
+        Self {
+            phantom: Default::default(),
+        }
     }
 }
 

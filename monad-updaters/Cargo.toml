@@ -15,14 +15,17 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-ledger = { path = "../monad-ledger" }
 monad-mempool-controller = { path = "../monad-mempool-controller" }
 monad-mempool-messenger = { path = "../monad-mempool-messenger" }
 monad-types = { path = "../monad-types" }
+monad-wal = { path = "../monad-wal" }
 
 futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 tracing = { workspace = true }
 

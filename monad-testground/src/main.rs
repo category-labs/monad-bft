@@ -27,8 +27,8 @@ use monad_executor::{Executor, State};
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer,
+    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
+    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -332,6 +332,7 @@ async fn run(
         timer: TokioTimer::default(),
         mempool: MonadMempool::default(),
         ledger: MockLedger::default(),
+        execution_ledger: MonadFileLedger::default(),
         checkpoint: MockCheckpoint::default(),
     };
 

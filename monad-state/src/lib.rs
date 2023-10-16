@@ -30,8 +30,9 @@ use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, Identifiable, LedgerCommand, MempoolCommand,
-    Message, MonadEvent, PeerId, RouterCommand, RouterTarget, StateRootHashCommand, TimerCommand,
+    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
+    LedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget,
+    StateRootHashCommand, TimerCommand,
 };
 use monad_types::{Epoch, NodeId, Stake, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
@@ -532,7 +533,12 @@ where
                             ));
                         }
                         ConsensusCommand::LedgerCommit(block) => {
-                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(block)))
+                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
+                                block.clone(),
+                            )));
+                            cmds.push(Command::ExecutionLedgerCommand(
+                                ExecutionLedgerCommand::LedgerCommit(block),
+                            ))
                         }
                         ConsensusCommand::LedgerFetch(n_id, b_id, cb) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetch(

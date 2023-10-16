@@ -4494,6 +4494,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-ledger"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-eth-types",
+ "reth-primitives",
+ "reth-rlp",
+ "sha2 0.10.8",
+]
+
+[[package]]
 name = "monad-mempool-controller"
 version = "0.1.0"
 dependencies = [
@@ -4815,12 +4826,15 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-ledger",
  "monad-mempool-controller",
  "monad-mempool-messenger",
  "monad-testutil",
  "monad-types",
+ "monad-wal",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "tempfile",
  "test-case",
  "thiserror",
  "tokio",
