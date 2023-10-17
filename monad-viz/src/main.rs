@@ -31,59 +31,60 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    swarm_relation::SwarmRelation,
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
         ID,
     },
 };
-use monad_state::{MonadMessage, MonadState};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
-    mock::MockWALogger,
+    mock::{MockWALogger, MockWALoggerConfig},
     wal::{WALogger, WALoggerConfig},
     PersistenceLogger,
 };
 use replay_graph::{RepConfig, ReplayNodesSimulation};
 
-type SignatureType = NopSignature;
-type SignatureCollectionType = MultiSig<SignatureType>;
-type TransactionValidatorType = MockValidator;
-type StateRootValidatorType = NopStateRoot;
+pub struct VizSwarm;
+
+impl SwarmRelation for VizSwarm {
+    type STATE = MonadState<
+        ConsensusState<Self::SCT, MockValidator, NopStateRoot>,
+        Self::ST,
+        Self::SCT,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+    type ST = NopSignature;
+    type SCT = MultiSig<Self::ST>;
+    type RS = NoSerRouterScheduler<<Self::STATE as State>::Message>;
+    type P = GenericTransformerPipeline<<Self::STATE as State>::Message>;
+    type LGR = MockWALogger<TimedEvent<<Self::STATE as State>::Event>>;
+    type ME = MockMempool<Self::ST, Self::SCT>;
+    type TVT = MockValidator;
+    type LGRCFG = MockWALoggerConfig;
+    type RSCFG = NoSerRouterConfig;
+    type MPCFG = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
+    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+    type Message = MonadMessage<Self::ST, Self::SCT>;
+}
+
 type NS<'a> = NodeState<
     'a,
     PeerId,
-    MS,
-    monad_state::MonadMessage<SignatureType, SignatureCollectionType>,
-    MonadEvent<SignatureType, SignatureCollectionType>,
+    <VizSwarm as SwarmRelation>::STATE,
+    <VizSwarm as SwarmRelation>::Message,
+    <<VizSwarm as SwarmRelation>::STATE as State>::Event,
 >;
-type MS = MonadState<
-    ConsensusState<SignatureCollectionType, TransactionValidatorType, StateRootValidatorType>,
-    SignatureType,
-    SignatureCollectionType,
-    ValidatorSet,
-    SimpleRoundRobin,
-    BlockSyncState,
->;
-type MM = <MS as State>::Message;
-type ME = MonadEvent<SignatureType, SignatureCollectionType>;
-type PersistenceLoggerType =
-    MockWALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>;
-type MockableMempoolType = MockMempool<SignatureType, SignatureCollectionType>;
-type Rsc = <NoSerRouterScheduler<MM> as RouterScheduler>::Config;
-type Sim = NodesSimulation<
-    MS,
-    NoSerRouterScheduler<MM>,
-    GenericTransformerPipeline<MM>,
-    PersistenceLoggerType,
-    SimConfig,
-    MockMempool<SignatureType, SignatureCollectionType>,
-    SignatureType,
-    SignatureCollectionType,
->;
-type ReplaySim = ReplayNodesSimulation<MS, RepConfig, SignatureType, SignatureCollectionType>;
+
+type Sim = NodesSimulation<VizSwarm, SimConfig>;
+type ReplaySim = ReplayNodesSimulation<VizSwarm, RepConfig>;
 
 #[derive(Parser, Default)]
 struct Arg {
@@ -136,7 +137,7 @@ impl Application for Viz {
                     sync: false,
                 };
                 let (_, event_vec) = WALogger::<
-                    TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>,
+                    TimedEvent<<<VizSwarm as SwarmRelation>::STATE as State>::Event>,
                 >::new(log_config)
                 .unwrap();
                 replay_events.insert(PeerId(*pk), event_vec.clone());
@@ -149,25 +150,7 @@ impl Application for Viz {
                         .timestamp,
                 );
             }
-            let simulation = {
-                ReplayNodesSimulation::<
-                    MonadState<
-                        ConsensusState<
-                            SignatureCollectionType,
-                            TransactionValidatorType,
-                            StateRootValidatorType,
-                        >,
-                        SignatureType,
-                        SignatureCollectionType,
-                        ValidatorSet,
-                        SimpleRoundRobin,
-                        BlockSyncState,
-                    >,
-                    _,
-                    SignatureType,
-                    SignatureCollectionType,
-                >::new(config, replay_events)
-            };
+            let simulation = { ReplayNodesSimulation::<VizSwarm, _>::new(config, replay_events) };
 
             (
                 Self {
@@ -187,29 +170,7 @@ impl Application for Viz {
                     ))),
                 ],
             };
-            let simulation = {
-                NodesSimulation::<
-                    MonadState<
-                        ConsensusState<
-                            SignatureCollectionType,
-                            TransactionValidatorType,
-                            StateRootValidatorType,
-                        >,
-                        SignatureType,
-                        SignatureCollectionType,
-                        ValidatorSet,
-                        SimpleRoundRobin,
-                        BlockSyncState,
-                    >,
-                    NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
-                    _,
-                    _,
-                    _,
-                    _,
-                    SignatureType,
-                    SignatureCollectionType,
-                >::new(config)
-            };
+            let simulation = { NodesSimulation::<VizSwarm, _>::new(config) };
 
             (
                 Self {

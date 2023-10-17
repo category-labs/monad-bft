@@ -6,12 +6,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
-};
 use monad_executor::{timed_event::TimedEvent, Executor, State};
-use monad_executor_glue::MonadEvent;
-use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -19,47 +14,34 @@ use rayon::prelude::*;
 use tracing::info_span;
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent, MockableExecutor, RouterScheduler},
+    mock::{MockExecutor, MockExecutorEvent, RouterScheduler},
+    swarm_relation::SwarmRelation,
     transformer::{LinkMessage, Pipeline, ID},
 };
 
-pub struct Node<S, RS, P, LGR, ME, ST, SCT>
+pub struct Node<S>
 where
-    S: State,
-    RS: RouterScheduler,
-    ME: MockableExecutor<SignatureCollection = SCT>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    S: SwarmRelation,
 {
     pub id: ID,
-    pub executor: MockExecutor<S, RS, ME, ST, SCT>,
-    pub state: S,
-    pub logger: LGR,
-    pub pipeline: P,
-    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<RS::Serialized>)>>,
+    pub executor: MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>,
+    pub state: S::STATE,
+    pub logger: S::LGR,
+    pub pipeline: S::P,
+    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<S::Message>)>>,
     pub rng: ChaCha20Rng,
     pub current_seed: usize,
 }
 
-impl<S, RS, P, LGR, ME, ST, SCT> Node<S, RS, P, LGR, ME, ST, SCT>
+impl<S> Node<S>
 where
-    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
-
-    RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
+    S: SwarmRelation,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
 {
+    fn update_rng(&mut self) {
+        self.current_seed = self.rng.gen();
+    }
+
     fn peek_event(&self) -> Option<(Duration, SwarmEventType)> {
         // avoid modification of the original rng
         let events = std::iter::empty()
@@ -82,15 +64,11 @@ where
         }
     }
 
-    fn update_rng(&mut self) {
-        self.current_seed = self.rng.gen();
-    }
-
     fn step_until(
         &mut self,
         until: Duration,
-        emitted_messages: &mut Vec<(Duration, LinkMessage<RS::Serialized>)>,
-    ) -> Option<(Duration, S::Event)> {
+        emitted_messages: &mut Vec<(Duration, LinkMessage<S::Message>)>,
+    ) -> Option<(Duration, <S::STATE as State>::Event)> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
@@ -159,17 +137,11 @@ where
     }
 }
 
-pub trait NodesTerminator<S, RS, P, LGR, ME, ST, SCT>
+pub trait NodesTerminator<S>
 where
-    S: State,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    S: SwarmRelation,
 {
-    fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool;
+    fn should_terminate(&self, nodes: &Nodes<S>) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -203,17 +175,11 @@ impl UntilTerminator {
     }
 }
 
-impl<S, RS, P, LGR, ME, ST, SCT> NodesTerminator<S, RS, P, LGR, ME, ST, SCT> for UntilTerminator
+impl<S> NodesTerminator<S> for UntilTerminator
 where
-    S: State,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    S: SwarmRelation,
 {
-    fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool {
+    fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         nodes.tick > self.until_tick
             || nodes
                 .states
@@ -237,17 +203,11 @@ impl ProgressTerminator {
     }
 }
 
-impl<S, RS, P, LGR, ME, ST, SCT> NodesTerminator<S, RS, P, LGR, ME, ST, SCT> for ProgressTerminator
+impl<S> NodesTerminator<S> for ProgressTerminator
 where
-    S: State,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    S: SwarmRelation,
 {
-    fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool {
+    fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         if nodes.tick > self.timeout {
             panic!(
                 "ProgressTerminator timed-out, expecting nodes 
@@ -272,17 +232,11 @@ where
     }
 }
 
-pub struct Nodes<S, RS, P, LGR, ME, ST, SCT>
+pub struct Nodes<S>
 where
-    S: State,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    S: SwarmRelation,
 {
-    states: BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT>>,
+    states: BTreeMap<ID, Node<S>>,
     tick: Duration,
     must_deliver: bool,
 }
@@ -293,28 +247,23 @@ enum SwarmEventType {
     ScheduledMessage,
 }
 
-impl<S, RS, P, LGR, ME, ST, SCT> Nodes<S, RS, P, LGR, ME, ST, SCT>
+impl<S> Nodes<S>
 where
-    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
-
-    RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
+    S: SwarmRelation,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
 {
-    pub fn new(peers: Vec<(ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64)>) -> Self {
+    pub fn new(
+        peers: Vec<(
+            ID,
+            <S::STATE as State>::Config,
+            S::LGRCFG,
+            S::RSCFG,
+            S::MPCFG,
+            S::P,
+            u64,
+        )>,
+    ) -> Self {
         assert!(!peers.is_empty());
 
         let mut nodes = Self {
@@ -350,7 +299,7 @@ where
     }
 
     // step until exactly the next event, either internal or external event out of all the nodes.
-    pub fn step_until<Terminator: NodesTerminator<S, RS, P, LGR, ME, ST, SCT>>(
+    pub fn step_until<Terminator: NodesTerminator<S>>(
         &mut self,
         terminator: &Terminator,
     ) -> Option<Duration> {
@@ -384,7 +333,7 @@ where
         None
     }
 
-    pub fn batch_step_until<Terminator: NodesTerminator<S, RS, P, LGR, ME, ST, SCT>>(
+    pub fn batch_step_until<Terminator: NodesTerminator<S>>(
         &mut self,
         terminator: &Terminator,
     ) -> Option<Duration> {
@@ -405,10 +354,7 @@ where
                 return Some(self.tick);
             }
 
-            let mut emitted_messages: Vec<(
-                Duration,
-                LinkMessage<<RS as RouterScheduler>::Serialized>,
-            )> = Vec::new();
+            let mut emitted_messages: Vec<(Duration, LinkMessage<S::Message>)> = Vec::new();
 
             emitted_messages.par_extend(self.states.par_iter_mut().flat_map_iter(|(_id, node)| {
                 let mut emitted = Vec::new();
@@ -430,17 +376,25 @@ where
         None
     }
 
-    pub fn states(&self) -> &BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT>> {
+    pub fn states(&self) -> &BTreeMap<ID, Node<S>> {
         &self.states
     }
 
-    pub fn remove_state(&mut self, id: &ID) -> Option<Node<S, RS, P, LGR, ME, ST, SCT>> {
-        self.states.remove(id)
+    pub fn remove_state(&mut self, peer_id: &ID) -> Option<Node<S>> {
+        self.states.remove(peer_id)
     }
 
     pub fn add_state(
         &mut self,
-        peer: (ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64),
+        peer: (
+            ID,
+            <S::STATE as State>::Config,
+            S::LGRCFG,
+            S::RSCFG,
+            S::MPCFG,
+            S::P,
+            u64,
+        ),
     ) {
         let (
             id,
@@ -455,13 +409,13 @@ where
         // No duplicate ID insertion should be allowed
         assert!(!self.states.contains_key(&id));
 
-        let mut executor: MockExecutor<S, RS, ME, ST, SCT> = MockExecutor::new(
-            RS::new(router_scheduler_config),
+        let mut executor: MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT> = MockExecutor::new(
+            S::RS::new(router_scheduler_config),
             mock_mempool_config,
             self.tick,
         );
-        let (wal, replay_events) = LGR::new(logger_config).unwrap();
-        let (mut state, mut init_commands) = S::init(state_config);
+        let (wal, replay_events) = S::LGR::new(logger_config).unwrap();
+        let (mut state, mut init_commands) = S::STATE::init(state_config);
 
         for event in replay_events {
             init_commands.extend(state.update(event.event));

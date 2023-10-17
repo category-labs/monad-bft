@@ -9,12 +9,12 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
 };
-use monad_crypto::{hasher::HasherType, secp256k1::KeyPair};
+use monad_crypto::{hasher::Sha256Hash, secp256k1::KeyPair};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, MockableExecutor, NoSerRouterScheduler},
+    swarm_relation::SwarmRelation,
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
         ID,
@@ -23,12 +23,15 @@ use monad_mock_swarm::{
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::NodeId;
-use monad_wal::{mock::MockWALoggerConfig, PersistenceLogger};
 
-use crate::{
-    graph::SimulationConfig, MockableMempoolType, PersistenceLoggerType, Rsc,
-    SignatureCollectionType, SignatureType, TransactionValidatorType, MM, MS,
-};
+use crate::{graph::SimulationConfig, VizSwarm};
+
+type MM = <VizSwarm as SwarmRelation>::Message;
+type MC = <<VizSwarm as SwarmRelation>::STATE as State>::Config;
+type LoggerConfig = <VizSwarm as SwarmRelation>::LGRCFG;
+type RouterSchedulerConfig = <VizSwarm as SwarmRelation>::RSCFG;
+type MempoolConfig = <VizSwarm as SwarmRelation>::MPCFG;
+type Pipe = <VizSwarm as SwarmRelation>::P;
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
@@ -55,30 +58,20 @@ impl SimConfig {
     }
 }
 
-impl
-    SimulationConfig<
-        MS,
-        NoSerRouterScheduler<MM>,
-        GenericTransformerPipeline<MM>,
-        PersistenceLoggerType,
-        MockableMempoolType,
-        SignatureType,
-        SignatureCollectionType,
-    > for SimConfig
-{
+impl SimulationConfig<VizSwarm> for SimConfig {
     fn nodes(
         &self,
     ) -> Vec<(
         ID,
-        <MS as State>::Config,
-        <PersistenceLoggerType as PersistenceLogger>::Config,
-        Rsc,
-        <MockableMempoolType as MockableExecutor>::Config,
-        GenericTransformerPipeline<MM>,
+        MC,
+        LoggerConfig,
+        RouterSchedulerConfig,
+        MempoolConfig,
+        Pipe,
         u64,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) =
-            create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
+            create_keys_w_validators::<<VizSwarm as SwarmRelation>::SCT>(self.num_nodes);
 
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
         let voting_keys = keys
@@ -87,10 +80,10 @@ impl
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) =
-            get_genesis_config::<HasherType, SignatureCollectionType, TransactionValidatorType>(
+            get_genesis_config::<Sha256Hash, <VizSwarm as SwarmRelation>::SCT, _>(
                 voting_keys.iter(),
                 &validator_mapping,
-                &TransactionValidatorType::default(),
+                &MockValidator::default(),
             );
 
         let state_configs = keys
@@ -127,11 +120,11 @@ impl
                 (
                     ID::new(PeerId(a)),
                     b,
-                    MockWALoggerConfig {},
-                    Rsc {
+                    LoggerConfig {},
+                    RouterSchedulerConfig {
                         all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
                     },
-                    MockMempoolConfig::default(),
+                    MempoolConfig::default(),
                     self.pipeline.clone(),
                     1,
                 )

@@ -10,16 +10,15 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::EthAddress;
-use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockableExecutor, RouterScheduler},
+    mock::MockExecutor,
     mock_swarm::{Node, Nodes, NodesTerminator},
-    transformer::{Pipeline, ID},
+    swarm_relation::SwarmRelation,
+    transformer::ID,
 };
 use monad_state::MonadConfig;
-use monad_types::{Deserializable, NodeId, Serializable};
-use monad_wal::PersistenceLogger;
+use monad_types::NodeId;
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -110,51 +109,30 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
     }
 }
 
-pub fn create_and_run_nodes<S, ST, SCT, RS, RSC, LGR, P, TVT, ME, TERM>(
-    tvt: TVT,
+pub fn create_and_run_nodes<S, RSC, TERM>(
+    tvt: S::TVT,
     router_scheduler_config: RSC,
-    logger_config: LGR::Config,
-    mock_mempool_config: ME::Config,
-    pipeline: P,
+    logger_config: S::LGRCFG,
+    mock_mempool_config: S::MPCFG,
+    pipeline: S::P,
     terminator: TERM,
     swarm_config: SwarmTestConfig,
 ) -> Duration
 where
-    S: State<
-        Config = MonadConfig<SCT, TVT>,
-        Event = MonadEvent<ST, SCT>,
-        SignatureCollection = SCT,
-    >,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    S: SwarmRelation,
 
-    RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized> + Clone,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: PartialEq + Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
-
-    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
-
-    LGR::Config: Clone,
-    TVT: TransactionValidator,
-    TERM: NodesTerminator<S, RS, P, LGR, ME, ST, SCT>,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
+    RSC: Fn(Vec<PeerId>, PeerId) -> S::RSCFG,
+    TERM: NodesTerminator<S>,
 {
-    let (peers, state_configs) = get_configs::<ST, SCT, TVT>(
+    let (peers, state_configs) = get_configs::<S::ST, S::SCT, S::TVT>(
         tvt,
         swarm_config.num_nodes,
         swarm_config.consensus_delta,
         swarm_config.state_root_delay,
     );
-    run_nodes_until::<_, _, _, _, _, _, _, _, _, _>(
+    run_nodes_until::<S, _, _>(
         peers,
         state_configs,
         router_scheduler_config,
@@ -168,13 +146,13 @@ where
     )
 }
 
-pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME, TERM>(
+pub fn run_nodes_until<S, RSC, TERM>(
     pubkeys: Vec<PubKey>,
-    state_configs: Vec<MonadConfig<SCT, TVT>>,
+    state_configs: Vec<MonadConfig<S::SCT, S::TVT>>,
     router_scheduler_config: RSC,
-    logger_config: LGR::Config,
-    mock_mempool_config: ME::Config,
-    pipeline: P,
+    logger_config: S::LGRCFG,
+    mock_mempool_config: S::MPCFG,
+    pipeline: S::P,
     parallelize: bool,
 
     terminator: TERM,
@@ -182,35 +160,14 @@ pub fn run_nodes_until<S, ST, SCT, RS, RSC, LGR, P, TVT, ME, TERM>(
     seed: u64,
 ) -> Duration
 where
-    S: State<
-        Config = MonadConfig<SCT, TVT>,
-        Event = MonadEvent<ST, SCT>,
-        SignatureCollection = SCT,
-    >,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    S: SwarmRelation,
 
-    RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    P: Pipeline<RS::Serialized> + Clone,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: PartialEq + Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
-
-    RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
-
-    LGR::Config: Clone,
-    TVT: Clone,
-    TERM: NodesTerminator<S, RS, P, LGR, ME, ST, SCT>,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
+    RSC: Fn(Vec<PeerId>, PeerId) -> S::RSCFG,
+    TERM: NodesTerminator<S>,
 {
-    let mut nodes = Nodes::<S, RS, P, LGR, ME, ST, SCT>::new(
+    let mut nodes = Nodes::<S>::new(
         pubkeys
             .iter()
             .copied()

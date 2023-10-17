@@ -4703,15 +4703,11 @@ name = "monad-randomized-tests"
 version = "0.1.0"
 dependencies = [
  "inventory",
- "monad-block-sync",
- "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
  "monad-mock-swarm",
- "monad-state",
  "monad-testutil",
- "monad-validator",
  "monad-wal",
  "simple-xml-builder",
 ]

@@ -12,18 +12,43 @@ use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Nodes, UntilTerminator},
-    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
+    swarm_relation::SwarmRelation,
+    transformer::{
+        GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
+        ID,
+    },
 };
-use monad_state::{MonadMessage, MonadState};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
 
-type SignatureType = SecpSignature;
-type SignatureCollectionType = MultiSig<SignatureType>;
-type TransactionValidatorType = MockValidator;
-type StateRootValidatorType = NopStateRoot;
+struct ReplaySwarm;
+impl SwarmRelation for ReplaySwarm {
+    type STATE = MonadState<
+        ConsensusState<Self::SCT, MockValidator, NopStateRoot>,
+        Self::ST,
+        Self::SCT,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+    type ST = SecpSignature;
+    type SCT = MultiSig<Self::ST>;
+    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
+    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
+    type LGR = WALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
+
+    type ME = MockMempool<Self::ST, Self::SCT>;
+    type TVT = MockValidator;
+    type LGRCFG = WALoggerConfig;
+    type RSCFG = NoSerRouterConfig;
+    type MPCFG = MockMempoolConfig;
+    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
+    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+}
 
 #[test]
 fn test_replay() {
@@ -36,12 +61,13 @@ pub fn recover_nodes_msg_delays(
     num_block_after: usize,
     state_root_delay: u64,
 ) {
-    let (pubkeys, state_configs) = get_configs::<SignatureType, SignatureCollectionType, _>(
-        TransactionValidatorType {},
-        num_nodes,
-        Duration::from_millis(101),
-        state_root_delay,
-    );
+    let (pubkeys, state_configs) =
+        get_configs::<<ReplaySwarm as SwarmRelation>::ST, <ReplaySwarm as SwarmRelation>::SCT, _>(
+            MockValidator {},
+            num_nodes,
+            Duration::from_millis(101),
+            state_root_delay,
+        );
 
     // create the log file path
     let mut logger_configs = Vec::new();
@@ -76,26 +102,7 @@ pub fn recover_nodes_msg_delays(
         })
         .collect::<Vec<_>>();
 
-    let mut nodes = Nodes::<
-        MonadState<
-            ConsensusState<
-                SignatureCollectionType,
-                TransactionValidatorType,
-                StateRootValidatorType,
-            >,
-            SignatureType,
-            SignatureCollectionType,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
-        NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
-        _,
-        WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
-        MockMempool<_, _>,
-        SignatureType,
-        SignatureCollectionType,
-    >::new(peers);
+    let mut nodes = Nodes::<ReplaySwarm>::new(peers);
     let term = UntilTerminator::new().until_block(num_blocks_before);
     while nodes.step_until(&term).is_some() {}
 
@@ -120,8 +127,8 @@ pub fn recover_nodes_msg_delays(
     drop(nodes);
 
     let (pubkeys_clone, state_configs_clone) =
-        get_configs::<SignatureType, SignatureCollectionType, _>(
-            TransactionValidatorType {},
+        get_configs::<<ReplaySwarm as SwarmRelation>::ST, <ReplaySwarm as SwarmRelation>::SCT, _>(
+            MockValidator {},
             num_nodes,
             Duration::from_millis(2),
             4,
@@ -149,26 +156,7 @@ pub fn recover_nodes_msg_delays(
         })
         .collect::<Vec<_>>();
 
-    let mut nodes_recovered = Nodes::<
-        MonadState<
-            ConsensusState<
-                SignatureCollectionType,
-                TransactionValidatorType,
-                StateRootValidatorType,
-            >,
-            SignatureType,
-            SignatureCollectionType,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
-        NoSerRouterScheduler<MonadMessage<SignatureType, SignatureCollectionType>>,
-        _,
-        WALogger<TimedEvent<MonadEvent<SignatureType, SignatureCollectionType>>>,
-        MockMempool<_, _>,
-        SignatureType,
-        SignatureCollectionType,
-    >::new(peers_clone);
+    let mut nodes_recovered = Nodes::<ReplaySwarm>::new(peers_clone);
 
     let node_ledger_recovered = nodes_recovered
         .states()

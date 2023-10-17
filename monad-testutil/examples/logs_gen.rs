@@ -6,52 +6,58 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Nodes, UntilTerminator},
-    transformer::{GenericTransformer, Pipeline, ID},
+    swarm_relation::SwarmRelation,
+    transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
-use monad_state::MonadState;
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::get_configs;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
-type SignatureType = NopSignature;
-type SignatureCollectionType = MultiSig<SignatureType>;
-type MS = MonadState<
-    ConsensusState<SignatureCollectionType, MockValidator, NopStateRoot>,
-    SignatureType,
-    SignatureCollectionType,
-    ValidatorSet,
-    SimpleRoundRobin,
-    BlockSyncState,
->;
-type MM = <MS as State>::Message;
-type ME = MonadEvent<SignatureType, SignatureCollectionType>;
+pub struct LogSwarm;
 
-pub fn generate_log<P: Pipeline<MM>>(
-    num_nodes: u16,
-    num_blocks: usize,
-    delta: Duration,
-    state_root_delay: u64,
-    pipeline: P,
-) where
-    P: Clone,
-    P: Send,
-{
-    type WALoggerType = WALogger<TimedEvent<ME>>;
-    let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
-        MockValidator,
-        num_nodes,
-        delta,
-        state_root_delay,
-    );
+impl SwarmRelation for LogSwarm {
+    type STATE = MonadState<
+        ConsensusState<Self::SCT, MockValidator, NopStateRoot>,
+        Self::ST,
+        Self::SCT,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+    type ST = NopSignature;
+    type SCT = MultiSig<Self::ST>;
+    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
+    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
+    type LGR = WALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
+    type ME = MockMempool<Self::ST, Self::SCT>;
+    type TVT = MockValidator;
+    type LGRCFG = WALoggerConfig;
+    type RSCFG = NoSerRouterConfig;
+    type MPCFG = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
+    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+    type Message = MonadMessage<Self::ST, Self::SCT>;
+}
+
+pub fn generate_log(num_nodes: u16, num_blocks: usize, delta: Duration, state_root_delay: u64) {
+    let (pubkeys, state_configs) = get_configs::<
+        <LogSwarm as SwarmRelation>::ST,
+        <LogSwarm as SwarmRelation>::SCT,
+        _,
+    >(MockValidator, num_nodes, delta, state_root_delay);
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
         sync: false,
     });
+    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer(
+        Duration::from_millis(100),
+    ))];
     let peers = pubkeys
         .iter()
         .copied()
@@ -71,15 +77,7 @@ pub fn generate_log<P: Pipeline<MM>>(
             )
         })
         .collect::<Vec<_>>();
-    let mut nodes = Nodes::<
-        MS,
-        NoSerRouterScheduler<MM>,
-        P,
-        WALoggerType,
-        MockMempool<SignatureType, SignatureCollectionType>,
-        SignatureType,
-        SignatureCollectionType,
-    >::new(peers);
+    let mut nodes = Nodes::<LogSwarm>::new(peers);
 
     let term = UntilTerminator::new().until_block(num_blocks);
 
@@ -87,15 +85,6 @@ pub fn generate_log<P: Pipeline<MM>>(
 }
 
 fn main() {
-    use monad_mock_swarm::transformer::LatencyTransformer;
-    generate_log(
-        4,
-        10,
-        Duration::from_millis(101),
-        4,
-        vec![GenericTransformer::Latency(LatencyTransformer(
-            Duration::from_millis(100),
-        ))],
-    );
+    generate_log(4, 10, Duration::from_millis(101), 4);
     println!("Logs Generated!");
 }

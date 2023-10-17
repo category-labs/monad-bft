@@ -3,73 +3,63 @@ use std::time::Duration;
 use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    message_signature::MessageSignature, multi_sig::MultiSig, payload::StateRoot,
-    signature_collection::SignatureCollection, transaction_validator::MockValidator,
+    multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{
-        MockExecutor, MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig,
-        NoSerRouterScheduler, RouterScheduler,
-    },
+    mock::{MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Node, Nodes, UntilTerminator},
-    transformer::{GenericTransformer, LatencyTransformer, Pipeline, ID},
+    swarm_relation::SwarmRelation,
+    transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
-use monad_state::{MonadMessage, MonadState};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
-use monad_types::{Deserializable, Serializable};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockMemLogger, MockMemLoggerConfig},
     PersistenceLogger,
 };
 use tracing_test::traced_test;
-
 const CONSENSUS_DELTA: Duration = Duration::from_millis(10);
 
-type ST = NopSignature;
-type SignatureCollectionType = MultiSig<NopSignature>;
-type TxValType = MockValidator;
-type StateRootValType = StateRoot;
-type RS = NoSerRouterScheduler<MonadMessage<ST, SignatureCollectionType>>;
-type S = MonadState<
-    ConsensusState<SignatureCollectionType, TxValType, StateRootValType>,
-    ST,
-    SignatureCollectionType,
-    ValidatorSet,
-    SimpleRoundRobin,
-    BlockSyncState,
->;
-type LoggerType = MockMemLogger<TimedEvent<MonadEvent<ST, SignatureCollectionType>>>;
-type ME = MockMempool<ST, SignatureCollectionType>;
+struct ReplaySwarm;
+impl SwarmRelation for ReplaySwarm {
+    type STATE = MonadState<
+        ConsensusState<Self::SCT, MockValidator, StateRoot>,
+        Self::ST,
+        Self::SCT,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+    type ST = NopSignature;
+    type SCT = MultiSig<Self::ST>;
+    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
+    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
+    type LGR = MockMemLogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
+    type ME = MockMempool<Self::ST, Self::SCT>;
+    type TVT = MockValidator;
+    type LGRCFG = <Self::LGR as PersistenceLogger>::Config;
+    type RSCFG = NoSerRouterConfig;
+    type MPCFG = MockMempoolConfig;
+    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
+    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+}
 
-fn run_nodes_until<S, RS, P, LGR, ME, ST, SCT>(
-    nodes: &mut Nodes<S, RS, P, LGR, ME, ST, SCT>,
+fn run_nodes_until<S>(
+    nodes: &mut Nodes<S>,
     start_tick: Duration,
     until_tick: Duration,
     until_block: usize,
 ) -> Duration
 where
-    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    S: SwarmRelation,
 
-    RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
 {
     let mut max_tick = start_tick;
     let terminator = UntilTerminator::new()
@@ -84,29 +74,12 @@ where
     max_tick
 }
 
-fn liveness<S, RS, P, LGR, ME, ST, SCT>(
-    nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>,
-    last_ledger_len: usize,
-) -> bool
+fn liveness<S>(nodes: &Nodes<S>, last_ledger_len: usize) -> bool
 where
-    S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    S: SwarmRelation,
 
-    RS: RouterScheduler,
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
 {
     let max_ledger_len = nodes
         .states()
@@ -127,23 +100,29 @@ where
 fn replay_one_honest(failure_idx: &[usize]) {
     let default_seed = 1;
     // setup 4 nodes
-    let (peers, state_configs) =
-        get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA, 4);
-    let (_, mut state_configs_duplicate) =
-        get_configs::<ST, SignatureCollectionType, TxValType>(MockValidator, 4, CONSENSUS_DELTA, 4);
+    let (peers, state_configs) = get_configs::<
+        <ReplaySwarm as SwarmRelation>::ST,
+        <ReplaySwarm as SwarmRelation>::SCT,
+        _,
+    >(MockValidator, 4, CONSENSUS_DELTA, 4);
+    let (_, mut state_configs_duplicate) = get_configs::<
+        <ReplaySwarm as SwarmRelation>::ST,
+        <ReplaySwarm as SwarmRelation>::SCT,
+        _,
+    >(MockValidator, 4, CONSENSUS_DELTA, 4);
 
     let pubkeys = peers;
     let router_scheduler_config = |all_peers: Vec<PeerId>, _: PeerId| NoSerRouterConfig {
         all_peers: all_peers.into_iter().collect(),
     };
     let logger_config = MockMemLoggerConfig::default();
-    let pipeline = vec![GenericTransformer::<
-        MonadMessage<ST, SignatureCollectionType>,
-    >::Latency(LatencyTransformer(Duration::from_millis(1)))];
+    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer(
+        Duration::from_millis(1),
+    ))];
     let phase_one_until = Duration::from_secs(4);
     let phase_one_until_block = 1024;
 
-    let mut nodes = Nodes::<S, RS, _, LoggerType, ME, ST, SignatureCollectionType>::new(
+    let mut nodes = Nodes::<ReplaySwarm>::new(
         pubkeys
             .iter()
             .copied()
@@ -181,7 +160,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let max_tick = run_nodes_until(&mut nodes, max_tick, phase_one_until, phase_one_until_block);
 
     // it should've reached some `until` condition, rather than losing liveness
-    assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(&nodes, 0));
+    assert!(liveness::<ReplaySwarm>(&nodes, 0));
 
     let phase_one_length = nodes
         .states()
@@ -205,10 +184,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let max_tick = run_nodes_until(&mut nodes, max_tick, phase_two_until, phase_two_until_block);
 
     // nodes lost liveness because only 2/4 are online
-    assert!(!liveness::<S, RS, _, LoggerType, ME, _, _>(
-        &nodes,
-        phase_one_length
-    ));
+    assert!(!liveness::<ReplaySwarm>(&nodes, phase_one_length));
 
     let phase_two_length = nodes
         .states()
@@ -276,10 +252,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         phase_three_until,
         phase_three_until_block,
     );
-    assert!(liveness::<S, RS, _, LoggerType, ME, _, _>(
-        &nodes,
-        phase_two_length
-    ));
+    assert!(liveness::<ReplaySwarm>(&nodes, phase_two_length));
 
     node_ledger_verification(
         &nodes

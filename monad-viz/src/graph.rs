@@ -1,18 +1,14 @@
 use std::{cmp::Reverse, time::Duration};
 
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
-};
 use monad_crypto::secp256k1::PubKey;
-use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
+use monad_executor::State;
+use monad_executor_glue::{Identifiable, PeerId};
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockableExecutor, RouterScheduler},
+    mock::MockExecutor,
     mock_swarm::{Node, Nodes, UntilTerminator},
-    transformer::{Pipeline, ID},
+    swarm_relation::SwarmRelation,
+    transformer::ID,
 };
-use monad_types::{Deserializable, Serializable};
-use monad_wal::PersistenceLogger;
 pub enum NodeEvent<'s, Id, M, E> {
     Message {
         tx_time: Duration,
@@ -57,55 +53,44 @@ where
     fn nodes(&self) -> Vec<(PubKey, S::Config)>;
 }
 
-pub trait SimulationConfig<S, RS, P, LGR, ME, ST, SCT>
+pub trait SimulationConfig<S>
 where
-    S: monad_executor::State,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    S: SwarmRelation,
 {
     fn max_tick(&self) -> Duration;
-    fn nodes(&self) -> Vec<(ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64)>;
+    fn nodes(
+        &self,
+    ) -> Vec<(
+        ID,
+        <S::STATE as State>::Config,
+        S::LGRCFG,
+        S::RSCFG,
+        S::MPCFG,
+        S::P,
+        u64,
+    )>;
 }
 
-pub struct NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
+pub struct NodesSimulation<S, C>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized>,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
-    ME: MockableExecutor<SignatureCollection = SCT>,
+    S: SwarmRelation,
+    C: SimulationConfig<S>,
 {
     config: C,
 
     // TODO move stuff below into separate struct
-    pub nodes: Nodes<S, RS, P, LGR, ME, ST, SCT>,
+    pub nodes: Nodes<S>,
     current_tick: Duration,
 }
 
-impl<S, RS, P, LGR, C, ME, ST, SCT> NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
+impl<S, C> NodesSimulation<S, C>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized> + Clone,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    S: SwarmRelation,
+    C: SimulationConfig<S>,
 
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
+    S::Message: Identifiable,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -133,33 +118,22 @@ where
     }
 }
 
-impl<S, RS, P, LGR, C, ME, ST, SCT> Graph for NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
+impl<S, C> Graph for NodesSimulation<S, C>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
-    RS: RouterScheduler,
-    P: Pipeline<RS::Serialized> + Clone,
-    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
-    C: SimulationConfig<S, RS, P, LGR, ME, ST, SCT>,
-    ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
+    S: SwarmRelation,
+    C: SimulationConfig<S>,
 
-    S::Message: Deserializable<RS::M>,
-    S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
-    MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
-    Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
+    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    Node<S>: Send,
+    S::Message: Identifiable,
 {
-    type State = S;
-    type Message = RS::Serialized;
+    type State = S::STATE;
+    type Message = S::Message;
     type MessageId = <S::Message as Identifiable>::Id;
-    type Event = S::Event;
+    type Event = <S::STATE as State>::Event;
     type NodeId = PeerId;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, S, RS::Serialized, MonadEvent<ST, SCT>>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::Event>> {
         let mut state = self
             .nodes
             .states()

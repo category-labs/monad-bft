@@ -6,15 +6,43 @@ use monad_consensus_types::{
     bls::BlsSignatureCollection, payload::StateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::SecpSignature;
+use monad_executor::timed_event::TimedEvent;
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::UntilTerminator,
-    transformer::{GenericTransformer, LatencyTransformer},
+    swarm_relation::SwarmRelation,
+    transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer},
 };
-use monad_state::{MonadMessage, MonadState};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
+
+struct BLSSwarm;
+impl SwarmRelation for BLSSwarm {
+    type STATE = MonadState<
+        ConsensusState<Self::SCT, MockValidator, StateRoot>,
+        Self::ST,
+        Self::SCT,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+    type ST = SecpSignature;
+    type SCT = BlsSignatureCollection;
+    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
+    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
+    type LGR = MockWALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
+    type ME = MockMempool<Self::ST, Self::SCT>;
+    type TVT = MockValidator;
+    type LGRCFG = MockWALoggerConfig;
+    type RSCFG = NoSerRouterConfig;
+    type MPCFG = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
+    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+    type Message = MonadMessage<Self::ST, Self::SCT>;
+}
 
 type SignatureType = SecpSignature;
 type SignatureCollectionType = BlsSignatureCollection;
@@ -23,25 +51,7 @@ type SignatureCollectionType = BlsSignatureCollection;
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
-    create_and_run_nodes::<
-        MonadState<
-            ConsensusState<SignatureCollectionType, MockValidator, StateRoot>,
-            SignatureType,
-            SignatureCollectionType,
-            ValidatorSet,
-            SimpleRoundRobin,
-            BlockSyncState,
-        >,
-        SignatureType,
-        SignatureCollectionType,
-        NoSerRouterScheduler<MonadMessage<_, _>>,
-        _,
-        MockWALogger<_>,
-        _,
-        MockValidator,
-        MockMempool<_, _>,
-        _,
-    >(
+    create_and_run_nodes::<BLSSwarm, _, _>(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),

@@ -2,23 +2,23 @@ use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
-    signature_collection::SignatureCollection, transaction_validator::MockValidator,
+    block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
 };
 use monad_crypto::{
-    hasher::HasherType,
+    hasher::Sha256Hash,
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
-use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
+use monad_executor_glue::{Identifiable, PeerId};
+use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::NodeId;
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
-    SignatureCollectionType, TransactionValidatorType, MS,
+    VizSwarm,
 };
 
 #[derive(Debug, Clone)]
@@ -28,10 +28,12 @@ pub struct RepConfig {
     pub delta: Duration,
 }
 
+type MS = <VizSwarm as SwarmRelation>::STATE;
+
 impl ReplayConfig<MS> for RepConfig {
     fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
         let (keys, cert_keys, _validators, validator_mapping) =
-            create_keys_w_validators::<SignatureCollectionType>(self.num_nodes);
+            create_keys_w_validators::<<VizSwarm as SwarmRelation>::SCT>(self.num_nodes);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
 
         let voting_keys = keys
@@ -39,12 +41,15 @@ impl ReplayConfig<MS> for RepConfig {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<HasherType, SignatureCollectionType, TransactionValidatorType>(
-                voting_keys.iter(),
-                &validator_mapping,
-                &TransactionValidatorType::default(),
-            );
+        let (genesis_block, genesis_sigs) = get_genesis_config::<
+            Sha256Hash,
+            <VizSwarm as SwarmRelation>::SCT,
+            <VizSwarm as SwarmRelation>::TVT,
+        >(
+            voting_keys.iter(),
+            &validator_mapping,
+            &MockValidator::default(),
+        );
 
         let state_configs = keys
             .into_iter()
@@ -78,28 +83,30 @@ impl ReplayConfig<MS> for RepConfig {
     }
 }
 
-pub struct ReplayNodesSimulation<S, C, ST, SCT>
+pub struct ReplayNodesSimulation<S, C>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    C: ReplayConfig<S>,
+    S: SwarmRelation,
+    C: ReplayConfig<S::STATE>,
+
+    S::Message: Identifiable,
 {
-    pub nodes: ReplayNodes<S>,
+    pub nodes: ReplayNodes<S::STATE>,
     pub current_tick: Duration,
     config: C,
-    pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>,
+    pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::STATE as State>::Event>>>,
 }
 
-impl<S, C, ST, SCT> ReplayNodesSimulation<S, C, ST, SCT>
+impl<S, C> ReplayNodesSimulation<S, C>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    // S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug + Eq,
-    C: ReplayConfig<S>,
+    S: SwarmRelation,
+    C: ReplayConfig<S::STATE>,
+
+    S::Message: Identifiable,
 {
-    pub fn new(config: C, replay_events: BTreeMap<PeerId, Vec<TimedEvent<S::Event>>>) -> Self {
+    pub fn new(
+        config: C,
+        replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::STATE as State>::Event>>>,
+    ) -> Self {
         Self {
             nodes: ReplayNodes::new(config.nodes()),
             current_tick: Duration::ZERO,
@@ -120,7 +127,7 @@ where
     fn get_pending_events(
         &self,
         node_id: &PeerId,
-    ) -> Vec<NodeEvent<PeerId, <S as State>::Message, S::Event>> {
+    ) -> Vec<NodeEvent<PeerId, <S::STATE as State>::Message, <S::STATE as State>::Event>> {
         let mut nes = vec![];
         for pmsg in self
             .nodes
@@ -148,21 +155,20 @@ where
     }
 }
 
-impl<S, C, ST, SCT> Graph for ReplayNodesSimulation<S, C, ST, SCT>
+impl<S, C> Graph for ReplayNodesSimulation<S, C>
 where
-    S: monad_executor::State<Event = MonadEvent<ST, SCT>>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    // S::Event: Serializable<Vec<u8>> + Deserializable<[u8]> + Eq + Debug,
-    C: ReplayConfig<S>,
+    S: SwarmRelation,
+    C: ReplayConfig<S::STATE>,
+
+    S::Message: Identifiable,
 {
-    type State = S;
-    type Message = S::Message;
+    type State = S::STATE;
+    type Message = <S::STATE as State>::Message;
     type MessageId = <S::Message as Identifiable>::Id;
-    type Event = S::Event;
+    type Event = <S::STATE as State>::Event;
     type NodeId = PeerId;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, S, S::Message, S::Event>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::Event>> {
         let mut state = self
             .nodes
             .replay_nodes_info
