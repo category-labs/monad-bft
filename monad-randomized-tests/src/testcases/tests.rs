@@ -11,7 +11,7 @@ use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     transformer::{
         GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
-        ReplayTransformer, TransformerReplayOrder,
+        ReplayTransformer, TransformerReplayOrder, ID,
     },
 };
 use monad_state::{MonadMessage, MonadState};
@@ -73,7 +73,7 @@ fn delayed_message_test(seed: u64) {
     let first_node = PeerId(*pubkeys.first().unwrap());
 
     let mut filter_peers = HashSet::new();
-    filter_peers.insert(first_node);
+    filter_peers.insert(ID::new(first_node));
 
     println!("delayed node ID: {:?}", first_node);
 

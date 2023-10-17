@@ -11,7 +11,7 @@ use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
-    transformer::{GenericTransformer, Pipeline},
+    transformer::{GenericTransformer, Pipeline, ID},
 };
 use monad_state::MonadState;
 use monad_testutil::swarm::get_configs;
@@ -59,7 +59,7 @@ pub fn generate_log<P: Pipeline<MM>>(
         .zip(file_path_vec)
         .map(|((a, b), c)| {
             (
-                a,
+                ID::new(PeerId(a)),
                 b,
                 c,
                 NoSerRouterConfig {

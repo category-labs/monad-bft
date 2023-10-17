@@ -15,7 +15,7 @@ use monad_mock_swarm::{
         NoSerRouterScheduler, RouterScheduler,
     },
     mock_swarm::{Node, Nodes},
-    transformer::{GenericTransformer, LatencyTransformer, Pipeline},
+    transformer::{GenericTransformer, LatencyTransformer, Pipeline, ID},
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
@@ -147,7 +147,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    pubkey,
+                    ID::new(PeerId(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
@@ -160,7 +160,8 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 )
             })
             .collect(),
-    );
+    )
+    .can_fail_deliver();
 
     let f0 = failure_idx[0];
     let f1 = failure_idx[1];
@@ -188,10 +189,10 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     // bring down 2 nodes
     let node0 = nodes
-        .remove_state(&PeerId(pubkeys[f0]))
+        .remove_state(&ID::new(PeerId(pubkeys[f0])))
         .expect("peer0 exists");
     let node1 = nodes
-        .remove_state(&PeerId(pubkeys[f1]))
+        .remove_state(&ID::new(PeerId(pubkeys[f1])))
         .expect("peer1 exists");
 
     let phase_two_until = max_tick + Duration::from_secs(4);
@@ -218,7 +219,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_logger_config = MockMemLoggerConfig::new(node1.logger.log);
 
     nodes.add_state((
-        pubkeys[f0],
+        ID::new(PeerId(pubkeys[f0])),
         state_configs_duplicate.remove(f0),
         node0_logger_config,
         router_scheduler_config(
@@ -231,7 +232,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     ));
 
     nodes.add_state((
-        pubkeys[f1],
+        ID::new(PeerId(pubkeys[f1])),
         state_configs_duplicate.remove(f1 - 1),
         node1_logger_config,
         router_scheduler_config(
@@ -247,7 +248,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node0_consensus = node0.state.consensus();
     let node0_consensus_recovered = nodes
         .states()
-        .get(&PeerId(pubkeys[f0]))
+        .get(&ID::new(PeerId(pubkeys[f0])))
         .unwrap()
         .state
         .consensus();
@@ -256,7 +257,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_consensus = node1.state.consensus();
     let node1_consensus_recovered = nodes
         .states()
-        .get(&PeerId(pubkeys[f1]))
+        .get(&ID::new(PeerId(pubkeys[f1])))
         .unwrap()
         .state
         .consensus();

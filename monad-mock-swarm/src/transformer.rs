@@ -9,10 +9,29 @@ use monad_executor_glue::PeerId;
 use rand::{prelude::SliceRandom, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
+const DEFAULT_ID: usize = 0;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ID(usize, PeerId);
+
+impl ID {
+    pub fn new(peer_id: PeerId) -> Self {
+        Self(DEFAULT_ID, peer_id)
+    }
+
+    pub fn with_identifier(mut self, identifier: usize) -> Self {
+        self.0 = identifier;
+        self
+    }
+
+    pub fn get_peer_id(&self) -> &PeerId {
+        &self.1
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkMessage<M> {
-    pub from: PeerId,
-    pub to: PeerId,
+    pub from: ID,
+    pub to: ID,
     pub message: M,
 
     /// absolute time
@@ -85,10 +104,10 @@ pub struct XorLatencyTransformer(pub Duration);
 impl<M> Transformer<M> for XorLatencyTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
         let mut ck: u8 = 0;
-        for b in message.from.0.bytes() {
+        for b in message.from.get_peer_id().0.bytes() {
             ck ^= b;
         }
-        for b in message.to.0.bytes() {
+        for b in message.to.get_peer_id().0.bytes() {
             ck ^= b;
         }
         TransformerStream::Continue(vec![(self.0.mul_f32(ck as f32 / u8::MAX as f32), message)])
@@ -123,7 +142,7 @@ impl<M> Transformer<M> for RandLatencyTransformer {
     }
 }
 #[derive(Clone)]
-pub struct PartitionTransformer(pub HashSet<PeerId>);
+pub struct PartitionTransformer(pub HashSet<ID>);
 
 impl<M> Transformer<M> for PartitionTransformer {
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
@@ -295,7 +314,7 @@ pub type GenericTransformerPipeline<M> = Vec<GenericTransformer<M>>;
 #[derive(Debug, Clone)]
 pub struct BytesSplitterTransformer {
     rng: ChaCha20Rng,
-    buffers: BTreeMap<PeerId, VecDeque<LinkMessage<Vec<u8>>>>,
+    buffers: BTreeMap<ID, VecDeque<LinkMessage<Vec<u8>>>>,
 }
 
 impl Default for BytesSplitterTransformer {
@@ -482,7 +501,7 @@ mod test {
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
-    use super::{GenericTransformer, LatencyTransformer, Pipeline, Transformer};
+    use super::{GenericTransformer, LatencyTransformer, Pipeline, Transformer, ID};
     use crate::transformer::{
         BytesSplitterTransformer, DropTransformer, LinkMessage, PartitionTransformer,
         PeriodicTransformer, RandLatencyTransformer, ReplayTransformer, TransformerStream,
@@ -493,8 +512,8 @@ mod test {
     fn get_mock_message() -> LinkMessage<String> {
         let keys = create_keys(2);
         LinkMessage {
-            from: PeerId(keys[0].pubkey()),
-            to: PeerId(keys[1].pubkey()),
+            from: ID::new(PeerId(keys[0].pubkey())),
+            to: ID::new(PeerId(keys[1].pubkey())),
             message: "Dummy Message".to_string(),
             from_tick: Duration::from_millis(10),
         }
@@ -546,7 +565,7 @@ mod test {
     fn test_partition_transformer() {
         let keys = create_keys(2);
         let mut peers = HashSet::new();
-        peers.insert(PeerId(keys[0].pubkey()));
+        peers.insert(ID::new(PeerId(keys[0].pubkey())));
         let mut t = PartitionTransformer(peers.clone());
         let m = get_mock_message();
         let TransformerStream::Continue(c) = t.transform(m.clone()) else {
@@ -669,8 +688,8 @@ mod test {
             let bytes: Vec<u8> = (0..MESSAGE_LEN).map(|_| rng.gen()).collect();
             sent_stream.extend(bytes.iter().copied());
             let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
-                from: PeerId(keys[0].pubkey()),
-                to: PeerId(keys[1].pubkey()),
+                from: ID::new(PeerId(keys[0].pubkey())),
+                to: ID::new(PeerId(keys[1].pubkey())),
                 message: bytes,
                 from_tick: Duration::from_millis(idx),
             }) else {
@@ -706,7 +725,7 @@ mod test {
     fn test_pipeline_complex_flow() {
         let keys = create_keys(5);
         let mut peers = HashSet::new();
-        peers.insert(PeerId(keys[0].pubkey()));
+        peers.insert(ID::new(PeerId(keys[0].pubkey())));
 
         let mut pipe = vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(30))),
@@ -719,7 +738,7 @@ mod test {
         ];
         for idx in 0..1000 {
             let mut mock_message = get_mock_message();
-            mock_message.from = PeerId(keys[3].pubkey());
+            mock_message.from = ID::new(PeerId(keys[3].pubkey()));
             mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);

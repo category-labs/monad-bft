@@ -12,7 +12,7 @@ use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::Nodes,
-    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer},
+    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
 };
 use monad_state::{MonadMessage, MonadState};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
@@ -61,7 +61,7 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs.clone())
         .map(|((a, b), c)| {
             (
-                a,
+                ID::new(PeerId(a)),
                 b,
                 c,
                 NoSerRouterConfig {
@@ -148,7 +148,7 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs)
         .map(|((a, b), c)| {
             (
-                a,
+                ID::new(PeerId(a)),
                 b,
                 c,
                 NoSerRouterConfig {

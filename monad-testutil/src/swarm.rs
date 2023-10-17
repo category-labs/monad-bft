@@ -13,7 +13,7 @@ use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes},
-    transformer::Pipeline,
+    transformer::{Pipeline, ID},
 };
 use monad_state::MonadConfig;
 use monad_types::{Deserializable, NodeId, Serializable};
@@ -210,7 +210,7 @@ where
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    pubkey,
+                    ID::new(PeerId(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(

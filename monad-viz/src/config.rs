@@ -10,7 +10,7 @@ use monad_consensus_types::{
     block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
     validation::Sha256Hash,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::secp256k1::KeyPair;
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::PeerId;
@@ -18,6 +18,7 @@ use monad_mock_swarm::{
     mock::{MockMempoolConfig, MockableExecutor, NoSerRouterScheduler},
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
+        ID,
     },
 };
 use monad_state::MonadConfig;
@@ -69,7 +70,7 @@ impl
     fn nodes(
         &self,
     ) -> Vec<(
-        PubKey,
+        ID,
         <MS as State>::Config,
         <PersistenceLoggerType as PersistenceLogger>::Config,
         Rsc,
@@ -125,7 +126,7 @@ impl
             .zip(state_configs)
             .map(|(a, b)| {
                 (
-                    a,
+                    ID::new(PeerId(a)),
                     b,
                     MockWALoggerConfig {},
                     Rsc {

@@ -8,9 +8,8 @@ use itertools::Itertools;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
-use monad_crypto::secp256k1::PubKey;
 use monad_executor::{timed_event::TimedEvent, Executor, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
@@ -20,7 +19,7 @@ use tracing::info_span;
 
 use crate::{
     mock::{MockExecutor, MockExecutorEvent, MockableExecutor, RouterScheduler},
-    transformer::{LinkMessage, Pipeline},
+    transformer::{LinkMessage, Pipeline, ID},
 };
 
 pub struct Node<S, RS, P, LGR, ME, ST, SCT>
@@ -31,7 +30,7 @@ where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
-    pub id: PeerId,
+    pub id: ID,
     pub executor: MockExecutor<S, RS, ME, ST, SCT>,
     pub state: S,
     pub logger: LGR,
@@ -120,7 +119,7 @@ where
                         Some(MockExecutorEvent::Send(to, serialized)) => {
                             let lm = LinkMessage {
                                 from: self.id,
-                                to,
+                                to: ID::new(to),
                                 message: serialized,
 
                                 from_tick: tick,
@@ -145,8 +144,11 @@ where
                         .pop()
                         .expect("logic error, should be nonempty");
                     assert_eq!(tick, scheduled_tick);
-                    self.executor
-                        .send_message(scheduled_tick, message.from, message.message);
+                    self.executor.send_message(
+                        scheduled_tick,
+                        *message.from.get_peer_id(),
+                        message.message,
+                    );
                     continue;
                 }
             };
@@ -166,8 +168,9 @@ where
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     ME: MockableExecutor<SignatureCollection = SCT>,
 {
-    states: BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>>,
+    states: BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT>>,
     tick: Duration,
+    must_deliver: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -197,22 +200,13 @@ where
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
     RS::Serialized: Send,
 {
-    pub fn new(
-        peers: Vec<(
-            PubKey,
-            S::Config,
-            LGR::Config,
-            RS::Config,
-            ME::Config,
-            P,
-            u64,
-        )>,
-    ) -> Self {
+    pub fn new(peers: Vec<(ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64)>) -> Self {
         assert!(!peers.is_empty());
 
         let mut nodes = Self {
             states: BTreeMap::new(),
             tick: Duration::ZERO,
+            must_deliver: true,
         };
 
         for peer in peers {
@@ -222,7 +216,12 @@ where
         nodes
     }
 
-    fn peek_event(&self) -> Option<(Duration, SwarmEventType, PeerId)> {
+    pub fn can_fail_deliver(mut self) -> Self {
+        self.must_deliver = false;
+        self
+    }
+
+    fn peek_event(&self) -> Option<(Duration, SwarmEventType, ID)> {
         self.states
             .iter()
             .filter_map(|(id, node)| {
@@ -236,7 +235,7 @@ where
         self.peek_event().map(|(tick, _, _)| tick)
     }
 
-    pub fn step(&mut self) -> Option<(Duration, PeerId, S::Event)> {
+    pub fn step(&mut self) -> Option<(Duration, ID, S::Event)> {
         self.step_until(Duration::MAX, usize::MAX)
     }
 
@@ -244,7 +243,7 @@ where
         &mut self,
         until: Duration,
         until_block: usize,
-    ) -> Option<(Duration, PeerId, S::Event)> {
+    ) -> Option<(Duration, ID, S::Event)> {
         while let Some((tick, _event_type, id)) = self.peek_event() {
             if tick > until
                 || self
@@ -265,8 +264,10 @@ where
             self.tick = tick;
 
             for (sched_tick, message) in emitted_messages {
-                // deliver message if node is still in the swarm
-                self.states.get_mut(&message.to).map(|node| {
+                let node = self.states.get_mut(&message.to);
+                // if message must be delivered, then node must exists
+                assert!(!self.must_deliver || node.is_some());
+                node.map(|node| {
                     node.pending_inbound_messages
                         .push(Reverse((sched_tick, message)))
                 });
@@ -305,7 +306,10 @@ where
                 break;
             }
 
-            let mut emitted_messages = Vec::new();
+            let mut emitted_messages: Vec<(
+                Duration,
+                LinkMessage<<RS as RouterScheduler>::Serialized>,
+            )> = Vec::new();
 
             emitted_messages.par_extend(self.states.par_iter_mut().flat_map_iter(|(_id, node)| {
                 let mut emitted = Vec::new();
@@ -315,38 +319,32 @@ where
             self.tick = tick;
 
             for (sched_tick, message) in emitted_messages {
-                self.states
-                    .get_mut(&message.to)
-                    .expect("logic error, should be nonempty")
-                    .pending_inbound_messages
-                    .push(Reverse((sched_tick, message)));
+                let node = self.states.get_mut(&message.to);
+                // if message must be delivered, then node must exists
+                assert!(!self.must_deliver || node.is_some());
+                node.map(|node| {
+                    node.pending_inbound_messages
+                        .push(Reverse((sched_tick, message)))
+                });
             }
         }
         end_tick
     }
 
-    pub fn states(&self) -> &BTreeMap<PeerId, Node<S, RS, P, LGR, ME, ST, SCT>> {
+    pub fn states(&self) -> &BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT>> {
         &self.states
     }
 
-    pub fn remove_state(&mut self, peer_id: &PeerId) -> Option<Node<S, RS, P, LGR, ME, ST, SCT>> {
-        self.states.remove(peer_id)
+    pub fn remove_state(&mut self, id: &ID) -> Option<Node<S, RS, P, LGR, ME, ST, SCT>> {
+        self.states.remove(id)
     }
 
     pub fn add_state(
         &mut self,
-        peer: (
-            PubKey,
-            S::Config,
-            LGR::Config,
-            RS::Config,
-            ME::Config,
-            P,
-            u64,
-        ),
+        peer: (ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64),
     ) {
         let (
-            pubkey,
+            id,
             state_config,
             logger_config,
             router_scheduler_config,
@@ -354,6 +352,10 @@ where
             pipeline,
             seed,
         ) = peer;
+
+        // No duplicate ID insertion should be allowed
+        assert!(!self.states.contains_key(&id));
+
         let mut executor: MockExecutor<S, RS, ME, ST, SCT> = MockExecutor::new(
             RS::new(router_scheduler_config),
             mock_mempool_config,
@@ -370,9 +372,9 @@ where
         let mut rng = ChaChaRng::seed_from_u64(seed);
 
         self.states.insert(
-            PeerId(pubkey),
+            id,
             Node {
-                id: PeerId(pubkey),
+                id,
                 executor,
                 state,
                 logger: wal,

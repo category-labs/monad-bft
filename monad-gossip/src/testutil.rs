@@ -5,7 +5,7 @@ use std::{
 };
 
 use monad_executor_glue::{PeerId, RouterTarget};
-use monad_mock_swarm::transformer::{BytesTransformerPipeline, LinkMessage, Pipeline};
+use monad_mock_swarm::transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
 use rand::Rng;
 
 use super::{Gossip, GossipEvent};
@@ -60,7 +60,11 @@ impl<G: Gossip> Swarm<G> {
                 self.pending_inbound_messages
                     .peek()
                     .map(|Reverse((tick, _, message))| {
-                        (*tick, SwarmEventType::ScheduledMessage, message.to)
+                        (
+                            *tick,
+                            SwarmEventType::ScheduledMessage,
+                            *message.to.get_peer_id(),
+                        )
                     }),
             )
             .min()
@@ -70,23 +74,22 @@ impl<G: Gossip> Swarm<G> {
         &mut self,
         until: Duration,
     ) -> Option<(Duration, PeerId, (PeerId, BytesType))> {
-        while let Some((tick, event_type, peer_id)) = self.peek_event() {
+        while let Some((tick, event_type, id)) = self.peek_event() {
             if tick > until {
                 break;
             }
 
             let event = match event_type {
                 SwarmEventType::GossipEvent => {
-                    let (gossip, pipeline) =
-                        self.nodes.get_mut(&peer_id).expect("invariant broken");
+                    let (gossip, pipeline) = self.nodes.get_mut(&id).expect("invariant broken");
                     let gossip_event = gossip.poll(tick);
                     match gossip_event {
                         None => continue,
                         Some(GossipEvent::Emit(from, message)) => (from, message),
                         Some(GossipEvent::Send(to, bytes)) => {
                             let scheduled_messages = pipeline.process(LinkMessage {
-                                from: peer_id,
-                                to,
+                                from: ID::new(id),
+                                to: ID::new(to),
                                 message: bytes,
 
                                 from_tick: tick,
@@ -113,12 +116,12 @@ impl<G: Gossip> Swarm<G> {
                     assert_eq!(tick, scheduled_tick);
 
                     self.nodes
-                        .get_mut(&gossip_message.to)
+                        .get_mut(gossip_message.to.get_peer_id())
                         .expect("invariant broken")
                         .0
                         .handle_gossip_message(
                             scheduled_tick,
-                            gossip_message.from,
+                            *gossip_message.from.get_peer_id(),
                             &gossip_message.message,
                         );
 
@@ -126,7 +129,7 @@ impl<G: Gossip> Swarm<G> {
                 }
             };
             self.current_tick = tick;
-            return Some((tick, peer_id, event));
+            return Some((tick, id, event));
         }
         self.current_tick = until;
         None
@@ -140,13 +143,13 @@ pub(crate) fn test_broadcast<G: Gossip>(
 ) {
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
-    for tx_peer in peer_ids.iter().copied() {
+    for tx_peer in &peer_ids {
         let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
         let target = RouterTarget::Broadcast;
-        swarm.send(&tx_peer, target, &message);
+        swarm.send(tx_peer, target, &message);
 
         for rx_peer in &peer_ids {
-            pending_messages.insert((*rx_peer, (tx_peer, message.clone())));
+            pending_messages.insert((*rx_peer, (*tx_peer, message.clone())));
         }
     }
 
@@ -171,13 +174,13 @@ pub(crate) fn test_broadcast<G: Gossip>(
 pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, max_tick: Duration) {
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
-    for tx_peer in peer_ids.iter().copied() {
+    for tx_peer in &peer_ids {
         for rx_peer in &peer_ids {
             let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
             let target = RouterTarget::PointToPoint(*rx_peer);
-            swarm.send(&tx_peer, target, &message);
+            swarm.send(tx_peer, target, &message);
 
-            pending_messages.insert((*rx_peer, (tx_peer, message)));
+            pending_messages.insert((*rx_peer, (*tx_peer, message)));
         }
     }
 
@@ -190,7 +193,7 @@ pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, m
         }
     }
 
-    while let Some((tick, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
+    while let Some((_, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
         if pending_messages.is_empty() {
             return;

@@ -12,7 +12,7 @@ mod test {
         mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
         transformer::{
             DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
-            PeriodicTransformer,
+            PeriodicTransformer, ID,
         },
     };
     use monad_state::{MonadMessage, MonadState};
@@ -38,9 +38,9 @@ mod test {
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-        let first_node = PeerId(*pubkeys.first().unwrap());
+        let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
 
-        let mut filter_peers: HashSet<PeerId> = HashSet::new();
+        let mut filter_peers = HashSet::new();
         filter_peers.insert(first_node);
 
         println!("blackout node ID: {:?}", first_node);
@@ -116,10 +116,14 @@ mod test {
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-        let first_node = PeerId(*pubkeys.first().unwrap());
+        let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
 
-        let filter_peers: HashSet<PeerId> =
-            HashSet::from_iter(pubkeys.iter().take(black_out_cnt).map(|k| PeerId(*k)));
+        let filter_peers = HashSet::from_iter(
+            pubkeys
+                .iter()
+                .take(black_out_cnt)
+                .map(|k| ID::new(PeerId(*k))),
+        );
 
         println!("delayed node ID: {:?}", first_node);
 

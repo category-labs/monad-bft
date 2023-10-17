@@ -36,6 +36,7 @@ use monad_mock_swarm::{
     mock::{MockMempool, NoSerRouterScheduler, RouterScheduler},
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
+        ID,
     },
 };
 use monad_state::{MonadMessage, MonadState};
@@ -435,7 +436,7 @@ impl Program<Message> for &Sim {
             let ledger = self
                 .nodes
                 .states()
-                .get(node.id)
+                .get(&ID::new(*node.id))
                 .unwrap()
                 .executor
                 .ledger()

@@ -9,7 +9,7 @@ use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockExecutor, MockableExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes},
-    transformer::Pipeline,
+    transformer::{Pipeline, ID},
 };
 use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
@@ -66,17 +66,7 @@ where
     ME: MockableExecutor<SignatureCollection = SCT>,
 {
     fn max_tick(&self) -> Duration;
-    fn nodes(
-        &self,
-    ) -> Vec<(
-        PubKey,
-        S::Config,
-        LGR::Config,
-        RS::Config,
-        ME::Config,
-        P,
-        u64,
-    )>;
+    fn nodes(&self) -> Vec<(ID, S::Config, LGR::Config, RS::Config, ME::Config, P, u64)>;
 }
 
 pub struct NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
@@ -175,7 +165,7 @@ where
             .states()
             .iter()
             .map(|(peer_id, node)| NodeState {
-                id: peer_id,
+                id: peer_id.get_peer_id(),
                 state: &node.state,
                 pending_events: node
                     .pending_inbound_messages
@@ -183,7 +173,7 @@ where
                     .map(|Reverse((rx_time, message))| NodeEvent::Message {
                         tx_time: message.from_tick,
                         rx_time: *rx_time,
-                        tx_peer: &message.from,
+                        tx_peer: message.from.get_peer_id(),
                         message: &message.message,
                     })
                     .collect(),
