@@ -15,7 +15,7 @@ use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
-fn two_nodes() -> u128 {
+fn two_nodes_virtual() -> u128 {
     create_and_run_nodes::<
         MonadState<
             ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
@@ -57,4 +57,4 @@ fn two_nodes() -> u128 {
     .as_millis()
 }
 
-monad_virtual_bench::virtual_bench_main! {two_nodes}
+monad_virtual_bench::virtual_bench_main! {two_nodes_virtual}

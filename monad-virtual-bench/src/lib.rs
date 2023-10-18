@@ -7,6 +7,6 @@ pub fn runner(benches: &[&(&'static str, fn() -> u128)]) {
         // expected output format:
         //   test bench_fib_20 ... bench:      37,174 ns/iter (+/- 7,527)
 
-        println!("test {} bench: {} ms/iter ", name, result);
+        println!("test {} ... bench: {} ns/iter (+/- 0)", name, result);
     }
 }

@@ -14,7 +14,7 @@ const WARMUP_TXS: u16 = 10000;
 const TX_PER_THREAD: u16 = 10000;
 
 pub fn benchmark_pool(c: &mut Criterion) {
-    c.bench_function("create single proposal with concurrent write/read", |b| {
+    c.bench_function("create_single_proposal_with_concurrent_write_read", |b| {
         let txs_for_threads: Vec<Vec<TransactionSignedEcRecovered>> = (0..THREAD_COUNT)
             .map(|i| create_signed_eth_txs(i.into(), TX_PER_THREAD))
             .collect();
@@ -47,7 +47,7 @@ pub fn benchmark_pool(c: &mut Criterion) {
         )
     });
 
-    c.bench_function("create multi proposal with concurrent write/read", |b| {
+    c.bench_function("create_multi_proposal_with_concurrent_write_read", |b| {
         let txs_for_threads: Vec<Vec<TransactionSignedEcRecovered>> = (0..THREAD_COUNT)
             .map(|i| create_signed_eth_txs(i.into(), TX_PER_THREAD))
             .collect();
