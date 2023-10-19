@@ -51,7 +51,7 @@ impl<S: CertificateSignature> std::fmt::Display for SignatureCollectionError<S> 
 impl<S: CertificateSignature> std::error::Error for SignatureCollectionError<S> {}
 
 pub trait SignatureCollection:
-    Clone + Hashable + Eq + Send + Sync + std::fmt::Debug + 'static
+    Clone + Hashable + Eq + Send + Sync + std::fmt::Debug + Unpin + 'static
 {
     type SignatureType: CertificateSignature;
 

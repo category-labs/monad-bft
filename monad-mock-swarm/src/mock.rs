@@ -41,8 +41,8 @@ pub enum RouterEvent<M, Serialized> {
 pub trait RouterScheduler {
     type Config;
     /// transport-level message type - usually will be bytes
-    type M;
-    type Serialized;
+    type M: Clone + Eq + PartialEq + Send;
+    type Serialized: Clone + Eq + PartialEq + Send;
 
     fn new(config: Self::Config) -> Self;
 
@@ -65,7 +65,7 @@ pub struct NoSerRouterConfig {
 
 impl<M> RouterScheduler for NoSerRouterScheduler<M>
 where
-    M: Clone,
+    M: Clone + Eq + PartialEq + Send,
 {
     type Config = NoSerRouterConfig;
     type M = M;
@@ -344,13 +344,12 @@ pub enum MockExecutorEvent<E, Ser> {
 impl<S, RS, ME, ST, SCT> MockExecutor<S, RS, ME, ST, SCT>
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
     RS: RouterScheduler,
     ME: MockableExecutor<SignatureCollection = S::SignatureCollection, Event = S::Event>,
 
     S::Message: Deserializable<RS::M>,
-    S::Block: Unpin,
     Self: Unpin,
 {
     pub fn step_until(
@@ -590,8 +589,8 @@ impl Default for MockMempoolConfig {
 
 impl<ST, SCT> MockableExecutor for MockMempool<ST, SCT>
 where
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     type Event = MonadEvent<ST, SCT>;
     type SignatureCollection = SCT;
@@ -641,8 +640,8 @@ pub struct MockMempoolRandFailConfig {
 
 impl<ST, SCT> MockableExecutor for MockMempoolRandFail<ST, SCT>
 where
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     type Event = MonadEvent<ST, SCT>;
     type SignatureCollection = SCT;

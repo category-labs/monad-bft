@@ -9,7 +9,7 @@ use crate::{
     validation::{Hashable, Hasher},
 };
 
-pub trait BlockType: Clone + PartialEq + Eq {
+pub trait BlockType: Clone + PartialEq + Eq + Unpin {
     fn get_id(&self) -> BlockId;
     fn get_round(&self) -> Round;
     fn get_author(&self) -> NodeId;

@@ -100,8 +100,8 @@ where
 impl<S, RS, P, LGR, C, ME, ST, SCT> NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
 where
     S: monad_executor::State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
@@ -110,12 +110,9 @@ where
 
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
+
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -146,8 +143,8 @@ where
 impl<S, RS, P, LGR, C, ME, ST, SCT> Graph for NodesSimulation<S, RS, P, LGR, C, ME, ST, SCT>
 where
     S: monad_executor::State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
     RS: RouterScheduler,
     P: Pipeline<RS::Serialized> + Clone,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
@@ -156,12 +153,9 @@ where
 
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
-
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
+
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 {
     type State = S;
     type Message = RS::Serialized;

@@ -53,13 +53,12 @@ fn run_nodes_until<S, RS, P, LGR, ME, ST, SCT>(
 ) -> Duration
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
 
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
@@ -67,9 +66,7 @@ where
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 {
     let mut max_tick = start_tick;
 
@@ -87,13 +84,12 @@ fn liveness<S, RS, P, LGR, ME, ST, SCT>(
 ) -> bool
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
 
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
@@ -101,9 +97,7 @@ where
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 {
     let max_ledger_len = nodes
         .states()

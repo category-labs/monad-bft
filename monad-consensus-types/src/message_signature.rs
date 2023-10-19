@@ -6,7 +6,7 @@ use monad_crypto::{
 };
 
 pub trait MessageSignature:
-    Copy + Clone + Eq + std::hash::Hash + Send + Sync + std::fmt::Debug + 'static
+    Copy + Clone + Eq + std::hash::Hash + Send + Sync + std::fmt::Debug + Unpin + 'static
 {
     fn sign(msg: &[u8], keypair: &SecpKeyPair) -> Self;
 

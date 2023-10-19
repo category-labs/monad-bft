@@ -44,21 +44,18 @@ where
 impl<S, RS, P, LGR, ME, ST, SCT> Node<S, RS, P, LGR, ME, ST, SCT>
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
 
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
 
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
 {
     fn peek_event(&self) -> Option<(Duration, SwarmEventType)> {
         // avoid modification of the original rng
@@ -179,13 +176,12 @@ enum SwarmEventType {
 impl<S, RS, P, LGR, ME, ST, SCT> Nodes<S, RS, P, LGR, ME, ST, SCT>
 where
     S: State<Event = MonadEvent<ST, SCT>, SignatureCollection = SCT>,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
 
     P: Pipeline<RS::Serialized>,
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
@@ -193,9 +189,7 @@ where
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: Unpin,
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 {
     pub fn new(
         peers: Vec<(

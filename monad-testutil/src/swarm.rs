@@ -118,22 +118,20 @@ where
         Event = MonadEvent<ST, SCT>,
         SignatureCollection = SCT,
     >,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
 
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: PartialEq + Unpin,
+
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
@@ -181,22 +179,19 @@ where
         Event = MonadEvent<ST, SCT>,
         SignatureCollection = SCT,
     >,
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 
     RS: RouterScheduler,
     S::Message: Deserializable<RS::M>,
     S::OutboundMessage: Serializable<RS::M>,
-    RS::Serialized: Eq,
 
     LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
     P: Pipeline<RS::Serialized> + Clone,
     ME: MockableExecutor<Event = S::Event, SignatureCollection = SCT>,
-
     MockExecutor<S, RS, ME, ST, SCT>: Unpin,
-    S::Block: PartialEq + Unpin,
+
     Node<S, RS, P, LGR, ME, ST, SCT>: Send,
-    RS::Serialized: Send,
 
     RSC: Fn(Vec<PeerId>, PeerId) -> RS::Config,
 
