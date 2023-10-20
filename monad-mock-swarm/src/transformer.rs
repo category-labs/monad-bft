@@ -6,6 +6,7 @@ use std::{
 };
 
 use monad_executor_glue::PeerId;
+use monad_tracing_counter::inc_count;
 use rand::{prelude::SliceRandom, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
@@ -373,6 +374,81 @@ impl Transformer<Vec<u8>> for BytesSplitterTransformer {
     }
 }
 
+#[derive(Clone, Debug)]
+struct BwWindow {
+    // sliding window of (msg.from_tick, msg.bit_len) sent in the last second
+    window: VecDeque<(Duration, usize)>,
+    total_bits: usize,
+}
+
+impl Default for BwWindow {
+    fn default() -> Self {
+        Self {
+            window: Default::default(),
+            total_bits: 0,
+        }
+    }
+}
+
+impl BwWindow {
+    fn advance_to(&mut self, now: Duration) {
+        while self
+            .window
+            .front()
+            .map_or(false, |&(tick, _)| tick + Duration::from_secs(1) < now)
+        {
+            let (_, bitlen) = self.window.pop_front().unwrap();
+            self.total_bits -= bitlen;
+        }
+    }
+
+    fn try_push(&mut self, bps_limit: usize, msg: &LinkMessage<Vec<u8>>) -> bool {
+        // assert msgs are increasing in from_tick
+        assert!(self
+            .window
+            .back()
+            .map_or(true, |&(tick, _)| msg.from_tick >= tick));
+        let bit_len = msg.message.len() * 8;
+        if self.total_bits + bit_len > bps_limit {
+            false
+        } else {
+            self.total_bits += bit_len;
+            self.window.push_back((msg.from_tick, bit_len));
+            true
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BwTransformer {
+    // unit: bits per second
+    upload_bps: usize,
+    // upload bandwidth window
+    window: BwWindow,
+}
+
+impl BwTransformer {
+    pub fn new(upload_mbps: usize) -> Self {
+        Self {
+            upload_bps: upload_mbps * 1024 * 1024,
+            window: BwWindow::default(),
+        }
+    }
+}
+
+impl Transformer<Vec<u8>> for BwTransformer {
+    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+        self.window.advance_to(message.from_tick);
+
+        if self.window.try_push(self.upload_bps, &message) {
+            TransformerStream::Continue(vec![(Duration::ZERO, message)])
+        } else {
+            inc_count!(bwtransfomer_dropped_msg);
+            TransformerStream::Complete(vec![])
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BytesTransformer {
     Latency(LatencyTransformer),
@@ -384,6 +460,7 @@ pub enum BytesTransformer {
     Replay(ReplayTransformer<Vec<u8>>),
 
     BytesSplitter(BytesSplitterTransformer),
+    Bw(BwTransformer),
 }
 
 impl Transformer<Vec<u8>> for BytesTransformer {
@@ -397,6 +474,7 @@ impl Transformer<Vec<u8>> for BytesTransformer {
             BytesTransformer::Periodic(t) => t.transform(message),
             BytesTransformer::Replay(t) => t.transform(message),
             BytesTransformer::BytesSplitter(t) => t.transform(message),
+            BytesTransformer::Bw(t) => t.transform(message),
         }
     }
 
@@ -422,6 +500,7 @@ impl Transformer<Vec<u8>> for BytesTransformer {
             }
             BytesTransformer::Replay(t) => t.min_external_delay(),
             BytesTransformer::BytesSplitter(t) => t.min_external_delay(),
+            BytesTransformer::Bw(t) => t.min_external_delay(),
         }
     }
 }

@@ -90,7 +90,12 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
 
     for ledger in ledgers {
         let ledger_len = ledger.len();
-        assert!(ledger_len >= min_ledger_len);
+        assert!(
+            ledger_len >= min_ledger_len,
+            "ledger length expected {:?} actual {:?}",
+            min_ledger_len,
+            ledger_len
+        );
         assert!(
             ledger.iter().collect::<Vec<_>>()
                 == ledgers[max_ledger_idx]

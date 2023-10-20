@@ -127,6 +127,7 @@ where
                             let transformed = self.pipeline.process(lm);
                             for (delay, msg) in transformed {
                                 let sched_tick = tick + delay;
+                                // FIXME: do we need to transform msg to self?
                                 if msg.to == self.id {
                                     self.pending_inbound_messages
                                         .push(Reverse((sched_tick, msg)))
