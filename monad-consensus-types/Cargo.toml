@@ -27,6 +27,11 @@ zerocopy = { workspace = true }
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
 
+criterion = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 test-case = { workspace = true }
+
+[[bench]]
+name = "hasher_bench"
+harness = false

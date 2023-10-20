@@ -4389,6 +4389,7 @@ name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
  "bitvec",
+ "criterion",
  "log",
  "monad-crypto",
  "monad-eth-types",
