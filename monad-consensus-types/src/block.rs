@@ -1,4 +1,5 @@
-use monad_types::{BlockId, Hash as HashType, NodeId, Round};
+use monad_crypto::hasher::{Hash as HashType, Hashable, Hasher};
+use monad_types::{BlockId, NodeId, Round};
 use zerocopy::AsBytes;
 
 use crate::{
@@ -6,7 +7,6 @@ use crate::{
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
     transaction_validator::TransactionValidator,
-    validation::{Hashable, Hasher},
 };
 
 pub trait BlockType: Clone + PartialEq + Eq {
@@ -49,7 +49,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Block<T> {
 }
 
 impl<T: SignatureCollection> Hashable for Block<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.author.0.bytes());
         state.update(self.round.as_bytes());
         self.payload.hash(state);
@@ -126,7 +126,7 @@ impl<T> From<FullBlock<T>> for UnverifiedFullBlock<T> {
 }
 
 impl<T: SignatureCollection> Hashable for UnverifiedFullBlock<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
         state.update(self.full_txs.0.as_bytes());
     }

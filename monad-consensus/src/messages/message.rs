@@ -3,9 +3,9 @@ use monad_consensus_types::{
     certificate_signature::CertificateSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
-    validation::{Hashable, Hasher},
     voting::Vote,
 };
+use monad_crypto::hasher::{Hashable, Hasher};
 use monad_types::BlockId;
 use zerocopy::AsBytes;
 
@@ -33,7 +33,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for VoteMessage<SCT> {
 }
 
 impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         self.vote.hash(state);
         self.sig.hash(state);
     }
@@ -68,7 +68,7 @@ impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
 }
 
 impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         self.timeout.hash(state);
         self.sig.hash(state);
     }
@@ -81,7 +81,7 @@ pub struct ProposalMessage<T> {
 }
 
 impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
     }
 }
@@ -92,7 +92,7 @@ pub struct RequestBlockSyncMessage {
 }
 
 impl Hashable for RequestBlockSyncMessage {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.block_id.0.as_bytes());
     }
 }
@@ -104,7 +104,7 @@ pub enum BlockSyncMessage<T> {
 }
 
 impl<T: SignatureCollection> Hashable for BlockSyncMessage<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         match self {
             BlockSyncMessage::BlockFound(unverified_full_block) => {
                 unverified_full_block.hash(state)

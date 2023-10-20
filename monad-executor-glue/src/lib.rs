@@ -13,8 +13,8 @@ use monad_consensus_types::{
     payload::{FullTransactionList, TransactionList},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::secp256k1::PubKey;
-use monad_types::{BlockId, Epoch, Hash as ConsensusHash, NodeId, ValidatorData};
+use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
+use monad_types::{BlockId, Epoch, NodeId, ValidatorData};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);

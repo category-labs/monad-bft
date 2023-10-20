@@ -4355,7 +4355,6 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "prost",
- "sha2 0.10.8",
  "test-case",
  "tracing",
  "zerocopy",
@@ -4389,8 +4388,6 @@ name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
  "bitvec",
- "blake3",
- "criterion",
  "log",
  "monad-crypto",
  "monad-eth-types",
@@ -4401,7 +4398,6 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde_cbor",
- "sha2 0.10.8",
  "test-case",
  "zerocopy",
 ]
@@ -4410,7 +4406,9 @@ dependencies = [
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "blst",
+ "criterion",
  "hex",
  "libp2p-identity",
  "monad-proto",
@@ -4500,10 +4498,10 @@ name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
  "monad-consensus-types",
+ "monad-crypto",
  "monad-eth-types",
  "reth-primitives",
  "reth-rlp",
- "sha2 0.10.8",
 ]
 
 [[package]]
@@ -4797,7 +4795,6 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "monad-wal",
- "sha2 0.10.8",
  "zerocopy",
 ]
 
@@ -4825,6 +4822,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "monad-consensus-types",
+ "monad-crypto",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",

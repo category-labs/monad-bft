@@ -8,9 +8,8 @@ use iced_lazy::Component;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
-    validation::Sha256Hash,
 };
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::{hasher::HasherType, secp256k1::KeyPair};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::PeerId;
@@ -88,7 +87,7 @@ impl
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType, TransactionValidatorType>(
+            get_genesis_config::<HasherType, SignatureCollectionType, TransactionValidatorType>(
                 voting_keys.iter(),
                 &validator_mapping,
                 &TransactionValidatorType::default(),

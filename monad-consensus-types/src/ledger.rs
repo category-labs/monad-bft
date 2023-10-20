@@ -1,9 +1,6 @@
-use monad_types::Hash;
+use monad_crypto::hasher::{Hash, Hashable, Hasher};
 
-use crate::{
-    validation::{Hashable, Hasher},
-    voting::VoteInfo,
-};
+use crate::voting::VoteInfo;
 
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct LedgerCommitInfo {
@@ -44,7 +41,7 @@ impl LedgerCommitInfo {
 }
 
 impl Hashable for LedgerCommitInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.vote_info_hash);
         if let Some(x) = self.commit_state_hash.as_ref() {
             state.update(x);

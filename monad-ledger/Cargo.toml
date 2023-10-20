@@ -10,8 +10,8 @@ bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 
 reth-primitives = { workspace = true }
 reth-rlp = { workspace = true }
-sha2 = { workspace = true }

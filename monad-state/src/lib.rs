@@ -23,10 +23,12 @@ use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
-    validation::Sha256Hash,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    hasher::HasherType,
+    secp256k1::{KeyPair, PubKey},
+};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
@@ -39,8 +41,6 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 use ref_cast::RefCast;
 
 pub mod convert;
-
-type HasherType = Sha256Hash;
 
 pub struct MonadState<CT, ST, SCT, VT, LT, BST>
 where

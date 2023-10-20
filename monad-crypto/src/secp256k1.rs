@@ -1,6 +1,7 @@
 use secp256k1::Secp256k1;
-use sha2::Digest;
 use zeroize::Zeroize;
+
+use crate::hasher::{Hashable, Hasher, HasherType};
 
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
@@ -59,11 +60,11 @@ impl std::hash::Hash for PubKey {
 }
 
 fn msg_hash(msg: &[u8]) -> secp256k1::Message {
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = HasherType::new();
     hasher.update(msg);
-    let hash = hasher.finalize();
+    let hash = hasher.hash();
 
-    secp256k1::Message::from_slice(&hash).expect("32 bytes")
+    secp256k1::Message::from_slice(&hash.0).expect("32 bytes")
 }
 
 impl KeyPair {
@@ -175,6 +176,13 @@ impl SecpSignature {
         Ok(SecpSignature(
             secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
         ))
+    }
+}
+
+impl Hashable for SecpSignature {
+    fn hash(&self, state: &mut impl Hasher) {
+        let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };
+        state.update(slice)
     }
 }
 

@@ -8,12 +8,14 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    validation::Sha256Hash,
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::{
+    hasher::{Hash, HasherType},
+    secp256k1::{KeyPair, SecpSignature},
+};
 use monad_testutil::{signing::*, validators::create_keys_w_validators};
-use monad_types::{BlockId, Hash, Round};
+use monad_types::{BlockId, Round};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 use test_case::test_case;
 
@@ -32,16 +34,16 @@ fn create_signed_vote_message(
         seq_num: 0,
     };
 
-    let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi);
+    let lci = LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi);
 
     let v = Vote {
         vote_info: vi,
         ledger_commit_info: lci,
     };
 
-    let vm = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, certkey);
+    let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, certkey);
 
-    TestSigner::sign_object::<Sha256Hash, _>(vm, key)
+    TestSigner::sign_object::<HasherType, _>(vm, key)
 }
 
 fn setup_ctx(
@@ -59,7 +61,7 @@ fn setup_ctx(
     for i in 0..num_nodes {
         let svm = create_signed_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(0));
         let vm = svm
-            .verify::<Sha256Hash>(valset.get_members(), &keys[i as usize].pubkey())
+            .verify::<HasherType>(valset.get_members(), &keys[i as usize].pubkey())
             .unwrap();
 
         votes.push(vm);
@@ -96,7 +98,7 @@ fn test_votes(num_nodes: u32) {
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
-        let (qc, cmds) = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+        let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
         assert!(cmds.is_empty());
         qcs.push(qc);
     }
@@ -122,7 +124,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
     for k in 0..num_rounds {
         for i in 0..num_nodes {
             let v = &votes[i as usize];
-            let (qc, cmds) = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+            let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
             assert!(cmds.is_empty());
             qcs.push(qc);
         }
@@ -150,7 +152,7 @@ fn test_minority(num_nodes: u32) {
 
     for i in 0..majority - 1 {
         let v = &votes[i as usize];
-        let (qc, cmds) = voteset.process_vote::<Sha256Hash, _>(v.author(), v, &valset, &vmap);
+        let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
         assert!(cmds.is_empty());
         qcs.push(qc);
     }

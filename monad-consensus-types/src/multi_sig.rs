@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use log::{error, warn};
+use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_proto::proto::signing::ProtoMultiSig;
-use monad_types::{Hash, NodeId};
+use monad_types::NodeId;
 use prost::Message;
 
 use crate::{
@@ -10,7 +11,6 @@ use crate::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    validation::{Hashable, Hasher},
     voting::ValidatorMapping,
 };
 
@@ -26,9 +26,9 @@ impl<S: CertificateSignatureRecoverable> Default for MultiSig<S> {
 }
 
 impl<S: CertificateSignatureRecoverable> Hashable for MultiSig<S> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         for s in self.sigs.iter() {
-            <S as Hashable>::hash::<_>(s, state);
+            Hashable::hash(s, state);
         }
     }
 }
@@ -196,9 +196,9 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_crypto::secp256k1::SecpSignature;
+    use monad_crypto::{hasher::Hash, secp256k1::SecpSignature};
     use monad_testutil::signing::get_key;
-    use monad_types::{Hash, NodeId};
+    use monad_types::NodeId;
     use rand::{seq::SliceRandom, SeedableRng};
     use rand_chacha::ChaChaRng;
     use test_case::test_case;

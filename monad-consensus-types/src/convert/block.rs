@@ -1,3 +1,4 @@
+use monad_crypto::hasher::HasherType;
 use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
@@ -13,7 +14,6 @@ use crate::{
         Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal, TransactionList,
     },
     signature_collection::SignatureCollection,
-    validation::Sha256Hash,
 };
 
 impl From<&TransactionList> for ProtoTransactionList {
@@ -46,8 +46,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlock) -> Result<Self, Self::Error> {
-        // The hasher is hard-coded to be Sha256Hash
-        Ok(Self::new::<Sha256Hash>(
+        Ok(Self::new::<HasherType>(
             value
                 .author
                 .ok_or(Self::Error::MissingRequiredField(

@@ -3,32 +3,15 @@ pub mod convert;
 use std::{
     error::Error,
     io,
-    ops::{Add, AddAssign, Deref, Sub, SubAssign},
+    ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::{hasher::Hash, secp256k1::PubKey};
 use monad_proto::{
     error::ProtoError,
     proto::validator_set::{ProtoValidatorSetData, ValidatorMapEntry},
 };
 use zerocopy::AsBytes;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Hash(pub [u8; 32]);
-
-impl Deref for Hash {
-    type Target = [u8; 32];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<[u8]> for Hash {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
-}
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]

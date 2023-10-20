@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_consensus_types::validation::{Blake3Hash, Hasher, Sha256Hash};
+use monad_crypto::hasher::{Blake3Hash, Hasher, Sha256Hash};
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("sha256 (5_000 * 32 bytes)", |b| {

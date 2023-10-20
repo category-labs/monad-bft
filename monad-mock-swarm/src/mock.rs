@@ -726,10 +726,8 @@ mod tests {
     use std::time::Duration;
 
     use futures::{FutureExt, StreamExt};
-    use monad_consensus_types::{
-        multi_sig::MultiSig, quorum_certificate::QuorumCertificate, validation::Sha256Hash,
-    };
-    use monad_crypto::NopSignature;
+    use monad_consensus_types::{multi_sig::MultiSig, quorum_certificate::QuorumCertificate};
+    use monad_crypto::{hasher::HasherType, NopSignature};
     use monad_executor::Executor;
     use monad_executor_glue::{ConsensusEvent, TimerCommand};
     use monad_testutil::signing::node_id;
@@ -743,7 +741,7 @@ mod tests {
             round: Round(0),
             seq_num: 0,
             state_root_hash: Default::default(),
-            high_qc: QuorumCertificate::genesis_prime_qc::<Sha256Hash>(),
+            high_qc: QuorumCertificate::genesis_prime_qc::<HasherType>(),
             last_round_tc: None,
         }
     }

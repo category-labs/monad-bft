@@ -9,9 +9,12 @@ mod tests {
         block::BlockType, certificate_signature::CertificateKeyPair, multi_sig::MultiSig,
         payload::NopStateRoot, quorum_certificate::genesis_vote_info,
         signature_collection::SignatureCollectionKeyPairType, transaction_validator::MockValidator,
-        validation::Sha256Hash, voting::ValidatorMapping,
+        voting::ValidatorMapping,
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::{
+        hasher::HasherType,
+        secp256k1::{KeyPair, SecpSignature},
+    };
     use monad_eth_types::EthAddress;
     use monad_executor::{Executor, State};
     use monad_executor_glue::MonadEvent;
@@ -115,7 +118,7 @@ mod tests {
         let transaction_validator = TransactionValidatorType::default();
 
         let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType, TransactionValidatorType>(
+            get_genesis_config::<HasherType, SignatureCollectionType, TransactionValidatorType>(
                 voting_keys.iter(),
                 &validator_mapping,
                 &transaction_validator,

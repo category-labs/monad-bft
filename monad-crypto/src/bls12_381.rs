@@ -1,6 +1,8 @@
 use blst::min_pk as blst_core;
 use zeroize::Zeroize;
 
+use crate::hasher::{Hashable, Hasher};
+
 // if the curve is switched to min_sig
 // the DST needs to be BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_POP_
 // POP uses a separate pubkey validation step, enables fast verification for
@@ -237,6 +239,14 @@ impl std::hash::Hash for BlsSignature {
     }
 }
 
+impl Hashable for BlsSignature {
+    fn hash(&self, state: &mut impl Hasher) {
+        let slice =
+            unsafe { std::mem::transmute::<Self, [u8; std::mem::size_of::<Self>()]>(*self) };
+        state.update(slice);
+    }
+}
+
 impl PartialEq for BlsSignature {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq(&other.0)
@@ -381,7 +391,13 @@ impl Eq for BlsAggregateSignature {}
 
 impl std::hash::Hash for BlsAggregateSignature {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_signature().hash(state)
+        std::hash::Hash::hash(&self.as_signature(), state)
+    }
+}
+
+impl Hashable for BlsAggregateSignature {
+    fn hash(&self, state: &mut impl Hasher) {
+        Hashable::hash(&self.as_signature(), state);
     }
 }
 

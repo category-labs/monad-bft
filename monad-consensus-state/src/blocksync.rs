@@ -187,15 +187,15 @@ mod test {
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
-        validation::{Hasher, Sha256Hash},
         voting::VoteInfo,
     };
+    use monad_crypto::hasher::{Hash, Hasher, HasherType};
     use monad_eth_types::EthAddress;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::BlockSyncManager;
@@ -247,7 +247,7 @@ mod test {
         let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()));
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
 
-        let qc = &QC::new::<Sha256Hash>(
+        let qc = &QC::new::<HasherType>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x01_u8; 32])),
@@ -278,7 +278,7 @@ mod test {
             assert!(cmds.is_empty());
         }
 
-        let qc = &QC::new::<Sha256Hash>(
+        let qc = &QC::new::<HasherType>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x02_u8; 32])),
@@ -311,7 +311,7 @@ mod test {
         let transaction_validator = TV::default();
 
         // first qc
-        let qc_1 = &QC::new::<Sha256Hash>(
+        let qc_1 = &QC::new::<HasherType>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x01_u8; 32])),
@@ -337,7 +337,7 @@ mod test {
         assert!(bid == qc_1.info.vote.id);
 
         // second qc
-        let qc_2 = &QC::new::<Sha256Hash>(
+        let qc_2 = &QC::new::<HasherType>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x02_u8; 32])),
@@ -363,7 +363,7 @@ mod test {
         assert!(bid == qc_2.info.vote.id);
 
         // third request
-        let qc_3 = &QC::new::<Sha256Hash>(
+        let qc_3 = &QC::new::<HasherType>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x03_u8; 32])),
@@ -400,7 +400,7 @@ mod test {
             NodeId(keypair.pubkey()),
             Round(3),
             &payload,
-            &QC::new::<Sha256Hash>(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
@@ -419,7 +419,7 @@ mod test {
             NodeId(keypair.pubkey()),
             Round(3),
             &payload,
-            &QC::new::<Sha256Hash>(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
@@ -438,7 +438,7 @@ mod test {
             NodeId(keypair.pubkey()),
             Round(3),
             &payload,
-            &QC::new::<Sha256Hash>(
+            &QC::new::<HasherType>(
                 QcInfo {
                     vote: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
@@ -571,7 +571,7 @@ mod test {
         let my_id = valset.get_list()[0];
         let mut manager = BlockSyncManager::<SC>::new(my_id);
 
-        let qc = &QC::new::<Sha256Hash>(
+        let qc = &QC::new::<HasherType>(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x01_u8; 32])),

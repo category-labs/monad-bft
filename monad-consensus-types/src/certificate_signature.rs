@@ -1,10 +1,11 @@
 use monad_crypto::{
-    bls12_381::{BlsAggregateSignature, BlsError, BlsKeyPair, BlsPubKey, BlsSignature},
+    bls12_381::{BlsError, BlsKeyPair, BlsPubKey, BlsSignature},
+    hasher::Hashable,
     secp256k1::{Error as SecpError, KeyPair as SecpKeyPair, PubKey as SecpPubKey, SecpSignature},
     NopSignature,
 };
 
-use crate::{message_signature::MessageSignature, validation::Hashable};
+use crate::message_signature::MessageSignature;
 
 pub trait CertificateKeyPair: Send + Sized + Sync + 'static {
     type PubKeyType: std::cmp::Eq + std::fmt::Debug + std::hash::Hash + Copy;
@@ -54,13 +55,6 @@ impl CertificateKeyPair for SecpKeyPair {
     }
 }
 
-impl Hashable for SecpSignature {
-    fn hash<H: crate::validation::Hasher>(&self, state: &mut H) {
-        let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };
-        state.update(slice)
-    }
-}
-
 impl CertificateSignature for SecpSignature {
     type KeyPairType = SecpKeyPair;
     type Error = SecpError;
@@ -95,13 +89,6 @@ impl CertificateSignatureRecoverable for SecpSignature {
         <Self as CertificateSignature>::Error,
     > {
         self.recover_pubkey(msg)
-    }
-}
-
-impl Hashable for NopSignature {
-    fn hash<H: crate::validation::Hasher>(&self, state: &mut H) {
-        let slice = unsafe { std::mem::transmute::<Self, [u8; 72]>(*self) };
-        state.update(slice)
     }
 }
 
@@ -155,14 +142,6 @@ impl CertificateKeyPair for BlsKeyPair {
     }
 }
 
-impl Hashable for BlsSignature {
-    fn hash<H: crate::validation::Hasher>(&self, state: &mut H) {
-        let slice =
-            unsafe { std::mem::transmute::<Self, [u8; std::mem::size_of::<Self>()]>(*self) };
-        state.update(slice);
-    }
-}
-
 impl CertificateSignature for BlsSignature {
     type KeyPairType = BlsKeyPair;
     type Error = BlsError;
@@ -185,12 +164,6 @@ impl CertificateSignature for BlsSignature {
 
     fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
         Self::deserialize(signature)
-    }
-}
-
-impl Hashable for BlsAggregateSignature {
-    fn hash<H: crate::validation::Hasher>(&self, state: &mut H) {
-        self.as_signature().hash(state);
     }
 }
 

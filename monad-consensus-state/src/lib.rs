@@ -19,14 +19,16 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
     transaction_validator::TransactionValidator,
-    validation::Hasher,
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    hasher::{Hash, Hasher},
+    secp256k1::{KeyPair, PubKey},
+};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Hash, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use tracing::trace;
 
@@ -806,10 +808,13 @@ mod test {
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
         transaction_validator::{MockValidator, TransactionValidator},
-        validation::Sha256Hash,
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
-    use monad_crypto::{secp256k1::KeyPair, NopSignature};
+    use monad_crypto::{
+        hasher::{Hash, HasherType},
+        secp256k1::KeyPair,
+        NopSignature,
+    };
     use monad_eth_types::EthAddress;
     use monad_executor_glue::{PeerId, RouterTarget};
     use monad_testutil::{
@@ -817,7 +822,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -851,13 +856,13 @@ mod test {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<Sha256Hash, SCT, TVT>(
+        let (genesis_block, genesis_sigs) = get_genesis_config::<HasherType, SCT, TVT>(
             voting_keys.iter(),
             &valmap,
             &TVT::default(),
         );
 
-        let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
+        let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
             genesis_vote_info(genesis_block.get_id()),
             genesis_sigs,
         );
@@ -917,25 +922,25 @@ mod test {
         };
         let v = Vote {
             vote_info: vi,
-            ledger_commit_info: LedgerCommitInfo::new::<Sha256Hash>(None, &vi),
+            ledger_commit_info: LedgerCommitInfo::new::<HasherType>(None, &vi),
         };
 
-        let vm1 = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkeys[1]);
-        let vm2 = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkeys[2]);
-        let vm3 = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkeys[3]);
+        let vm1 = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeys[1]);
+        let vm2 = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeys[2]);
+        let vm3 = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeys[3]);
 
-        let v1 = Verified::<SignatureType, _>::new::<Sha256Hash>(vm1, &keys[1]);
-        let v2 = Verified::<SignatureType, _>::new::<Sha256Hash>(vm2, &keys[2]);
-        let v3 = Verified::<SignatureType, _>::new::<Sha256Hash>(vm3, &keys[3]);
+        let v1 = Verified::<SignatureType, _>::new::<HasherType>(vm1, &keys[1]);
+        let v2 = Verified::<SignatureType, _>::new::<HasherType>(vm2, &keys[2]);
+        let v3 = Verified::<SignatureType, _>::new::<HasherType>(vm3, &keys[3]);
 
-        state.handle_vote_message::<Sha256Hash, _, _>(
+        state.handle_vote_message::<HasherType, _, _>(
             *v1.author(),
             *v1,
             &valset,
             &valmap,
             &election,
         );
-        state.handle_vote_message::<Sha256Hash, _, _>(
+        state.handle_vote_message::<HasherType, _, _>(
             *v2.author(),
             *v2,
             &valset,
@@ -946,7 +951,7 @@ mod test {
         // less than 2f+1, so expect not locked
         assert_eq!(state.high_qc.info.vote.round, Round(0));
 
-        state.handle_vote_message::<Sha256Hash, _, _>(
+        state.handle_vote_message::<HasherType, _, _>(
             *v3.author(),
             *v3,
             &valset,
@@ -995,7 +1000,7 @@ mod test {
         // check no vote commands result from receiving the proposal for round 1
 
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1035,7 +1040,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1066,7 +1071,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1108,7 +1113,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p7.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1139,7 +1144,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.clone().destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1160,7 +1165,7 @@ mod test {
 
         // send duplicate of p1, expect it to be ignored and no output commands
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1198,7 +1203,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1230,7 +1235,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1275,7 +1280,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_fut.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1291,7 +1296,7 @@ mod test {
         let mut cmds = Vec::new();
         for i in &perms {
             let (author, _, verified_message) = missing_proposals[*i].clone().destructure();
-            cmds.extend(state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            cmds.extend(state.handle_proposal_message_full::<HasherType, _, _>(
                 author,
                 verified_message,
                 FullTransactionList::default(),
@@ -1330,7 +1335,7 @@ mod test {
                     target: RouterTarget::PointToPoint(_self_id),
                     message: ConsensusMessage::Proposal(m),
                 } => {
-                    proposals.extend(state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                    proposals.extend(state.handle_proposal_message_full::<HasherType, _, _>(
                         m.block.author,
                         m.clone(),
                         FullTransactionList::default(),
@@ -1357,7 +1362,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_last.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1394,7 +1399,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let p1_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p1_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1432,7 +1437,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1476,7 +1481,7 @@ mod test {
         );
         let (author, _, verified_message) = p3.destructure();
 
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1509,7 +1514,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1529,7 +1534,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1589,7 +1594,7 @@ mod test {
         assert_eq!(p3.block.qc.info.vote.round, Round(1));
         assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
-        let p3_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p3_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1663,7 +1668,7 @@ mod test {
             block: verified_message.block.clone(),
             full_txs: FullTransactionList::default(),
         };
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
             FullTransactionList::default(),
@@ -1682,7 +1687,7 @@ mod test {
             })
             .collect::<Vec<_>>()[0];
 
-        let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds3 = third_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
             FullTransactionList::default(),
@@ -1701,7 +1706,7 @@ mod test {
             })
             .collect::<Vec<_>>()[0];
 
-        let cmds4 = fourth_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds4 = fourth_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1721,7 +1726,7 @@ mod test {
             .collect::<Vec<_>>()[0];
 
         let (author, _, verified_message) = mp1.destructure();
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1751,8 +1756,8 @@ mod test {
         // but the last vote would cause a qc to form locally at second_state, thus causing
         // second state to realize its missing a block.
         for i in 0..4 {
-            let v = Verified::<NopSignature, VoteMessage<_>>::new::<Sha256Hash>(votes[i], &keys[i]);
-            let cmds2 = second_state.handle_vote_message::<Sha256Hash, _, _>(
+            let v = Verified::<NopSignature, VoteMessage<_>>::new::<HasherType>(votes[i], &keys[i]);
+            let cmds2 = second_state.handle_vote_message::<HasherType, _, _>(
                 *v.author(),
                 *v,
                 &valset,
@@ -1802,7 +1807,7 @@ mod test {
             block: verified_message_2.block.clone(),
             full_txs: FullTransactionList::default(),
         };
-        second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        second_state.handle_proposal_message_full::<HasherType, _, _>(
             author_2,
             verified_message_2.clone(),
             FullTransactionList::default(),
@@ -1812,7 +1817,7 @@ mod test {
         );
 
         // first_state has the correct block in its blocktree, so it should not request anything
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author_2,
             verified_message_2.clone(),
             FullTransactionList::default(),
@@ -1847,7 +1852,7 @@ mod test {
             full_txs: FullTransactionList::default(),
         };
 
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
             FullTransactionList::default(),
@@ -1855,7 +1860,7 @@ mod test {
             &valmap,
             &election,
         );
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -1894,7 +1899,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp4.destructure();
-        let cmds2 = second_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
             FullTransactionList::default(),
@@ -1914,7 +1919,7 @@ mod test {
         });
         assert!(res.is_none());
 
-        let cmds1 = first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
             FullTransactionList::default(),
@@ -1940,7 +1945,7 @@ mod test {
         // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
         // feeding third_state with a proposal from round 4 should trigger a recursive behaviour to ask for blocks
 
-        let cmds3 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds3 = third_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2016,7 +2021,7 @@ mod test {
         assert!(res.is_none());
 
         //arrival of proposal should also prevent block_sync_request from modifying the tree
-        let cmds2 = third_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds2 = third_state.handle_proposal_message_full::<HasherType, _, _>(
             author_2,
             verified_message_2,
             FullTransactionList::default(),
@@ -2075,7 +2080,7 @@ mod test {
 
         let (author, _, verified_message) = p1.destructure();
 
-        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message);
+        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message);
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
@@ -2124,7 +2129,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message);
+        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message);
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
@@ -2165,12 +2170,12 @@ mod test {
         // p0 should have seqnum 1 and therefore only require state_root 0
         // the state_root 0's hash should be Hash([0x00; 32])
         state.handle_state_root_update(0, Hash([0x00; 32]));
-        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
         assert!(result.is_some());
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2198,13 +2203,13 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
         state.handle_state_root_update(1, Hash([0x99; 32]));
-        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
         assert!(result.is_some());
 
-        state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2234,13 +2239,13 @@ mod test {
 
         let (author, _, verified_message) = p2.destructure();
         state.handle_state_root_update(2, Hash([0xbb; 32]));
-        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
         assert!(result.is_some());
 
-        let p2_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2272,13 +2277,13 @@ mod test {
 
         let (author, _, verified_message) = p3.destructure();
         state.handle_state_root_update(3, Hash([0xcc; 32]));
-        let cmds = state.handle_proposal_message::<Sha256Hash>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
         assert!(result.is_some());
 
-        let p3_cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        let p3_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2331,7 +2336,7 @@ mod test {
         // requesting a block that's doesn't exists should yield None
         assert_eq!(first_state.fetch_uncommitted_block(&bid_correct), None);
         // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
-        first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2361,7 +2366,7 @@ mod test {
         let bid_branch = block_1.block.get_id();
         assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
 
-        first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+        first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),
@@ -2394,7 +2399,7 @@ mod test {
             assert_eq!(first_state.fetch_uncommitted_block(&bid), None);
             // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
 
-            first_state.handle_proposal_message_full::<Sha256Hash, _, _>(
+            first_state.handle_proposal_message_full::<HasherType, _, _>(
                 author,
                 verified_message,
                 FullTransactionList::default(),
@@ -2444,7 +2449,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for state in states.iter_mut() {
-                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
                     FullTransactionList(Vec::new()),
@@ -2485,7 +2490,7 @@ mod test {
         let mut votes = vec![];
         for (i, state) in states.iter_mut().enumerate() {
             if state.nodeid != next_leader {
-                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
                     FullTransactionList(Vec::new()),
@@ -2518,7 +2523,7 @@ mod test {
         }
         for (i, (author, v)) in votes.iter().enumerate() {
             let cmds = states[leader_index]
-                .handle_vote_message::<Sha256Hash, _, _>(*author, *v, &valset, &valmap, &election);
+                .handle_vote_message::<HasherType, _, _>(*author, *v, &valset, &valmap, &election);
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId, BlockId)> = cmds
                     .into_iter()
@@ -2565,7 +2570,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for state in states.iter_mut().skip(1) {
-                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
                     FullTransactionList(Vec::new()),
@@ -2589,7 +2594,7 @@ mod test {
         }
 
         // now timeout someone
-        let cmds = states[1].handle_timeout_expiry::<Sha256Hash>(PacemakerTimerExpire);
+        let cmds = states[1].handle_timeout_expiry::<HasherType>(PacemakerTimerExpire);
         let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {
@@ -2604,8 +2609,8 @@ mod test {
         assert_eq!(tmo.len(), 1);
         assert_eq!(tmo[0].tminfo.round, Round(4));
         let author = states[1].nodeid;
-        let timeout_msg = TimeoutMessage::new::<Sha256Hash>(tmo[0].clone(), &certkeys[1]);
-        let cmds = states[0].handle_timeout_message::<Sha256Hash, _, _>(
+        let timeout_msg = TimeoutMessage::new::<HasherType>(tmo[0].clone(), &certkeys[1]);
+        let cmds = states[0].handle_timeout_message::<HasherType, _, _>(
             author,
             timeout_msg,
             &valset,
@@ -2659,7 +2664,7 @@ mod test {
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds = states[1].handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = states[1].handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::default(),

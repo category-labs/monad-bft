@@ -13,10 +13,12 @@ use monad_consensus_types::{
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    validation::{Hasher, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    secp256k1::KeyPair,
+};
 use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
@@ -69,7 +71,7 @@ where
             .find(|(k, _)| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
             .expect("key not in valset");
 
-        let block = Block::new::<Sha256Hash>(
+        let block = Block::new::<HasherType>(
             NodeId(leader_key.pubkey()),
             self.round,
             &Payload {
@@ -91,7 +93,7 @@ where
         };
         self.last_tc = None;
 
-        Verified::new::<Sha256Hash>(proposal, leader_key)
+        Verified::new::<HasherType>(proposal, leader_key)
     }
 
     // next_tc uses the keys to generate a timeout certificate
@@ -122,7 +124,7 @@ where
             high_qc: self.high_qc.clone(),
         };
 
-        let tmo_digest = tminfo.timeout_digest::<Sha256Hash>();
+        let tmo_digest = tminfo.timeout_digest::<HasherType>();
         // aggregate all tmo signatures into one collection because all nodes share a global state
         // in reality we don't have this configuration because timeout messages
         // can't all contain TC carrying signatures from all validators. It's fine
@@ -150,8 +152,8 @@ where
 
         let mut tmo_msgs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
-            let tmo_msg = TimeoutMessage::new::<Sha256Hash>(timeout.clone(), certkey);
-            tmo_msgs.push(Verified::<ST, _>::new::<Sha256Hash>(tmo_msg, key));
+            let tmo_msg = TimeoutMessage::new::<HasherType>(timeout.clone(), certkey);
+            tmo_msgs.push(Verified::<ST, _>::new::<HasherType>(tmo_msg, key));
         }
 
         // entering new round through tc
@@ -174,13 +176,13 @@ where
             seq_num: block.payload.seq_num,
         };
         let commit = Some(block.get_id().0); // FIXME: is this hash correct?
-        let lci = LedgerCommitInfo::new::<Sha256Hash>(commit, &vi);
+        let lci = LedgerCommitInfo::new::<HasherType>(commit, &vi);
         let qcinfo = QcInfo {
             vote: vi,
             ledger_commit: lci,
         };
 
-        let msg = Sha256Hash::hash_object(&lci);
+        let msg = HasherType::hash_object(&lci);
 
         let mut sigs = Vec::new();
         for ck in certkeys {
@@ -195,6 +197,6 @@ where
 
         let sigcol = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
 
-        QuorumCertificate::new::<Sha256Hash>(qcinfo, sigcol)
+        QuorumCertificate::new::<HasherType>(qcinfo, sigcol)
     }
 }

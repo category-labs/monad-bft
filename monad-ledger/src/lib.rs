@@ -3,10 +3,10 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, FullTransactionList},
     signature_collection::SignatureCollection,
 };
+use monad_crypto::hasher::{Hasher, HasherType};
 use monad_eth_types::EthFullTransactionList;
 use reth_primitives::{BlockBody, Bloom, Bytes, Header, H256, U256};
 use reth_rlp::Encodable;
-use sha2::{Digest, Sha256};
 
 pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SCT>) -> Vec<u8> {
     let (monad_block, monad_full_txs) = full_block.split();
@@ -49,7 +49,7 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
         gas_used,
     } = monad_block.payload.header;
 
-    let mut randao_reveal_hasher = Sha256::new();
+    let mut randao_reveal_hasher = HasherType::new();
 
     randao_reveal_hasher.update(monad_block.payload.randao_reveal.0);
 
@@ -69,7 +69,7 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
         gas_used: gas_used.0,
         // TODO: Add to BFT proposal
         timestamp: 0,
-        mix_hash: H256(randao_reveal_hasher.finalize().into()),
+        mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,
         base_fee_per_gas: None,
         blob_gas_used: None,

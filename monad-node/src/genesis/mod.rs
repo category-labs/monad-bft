@@ -7,14 +7,16 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::SignatureCollection,
-    validation::Hasher,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    secp256k1::{KeyPair, PubKey},
+};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{NodeId, Round};
 
-use crate::{error::NodeSetupError, HasherType, SignatureCollectionType, TransactionValidatorType};
+use crate::{error::NodeSetupError, SignatureCollectionType, TransactionValidatorType};
 
 mod config;
 use config::GenesisConfig;

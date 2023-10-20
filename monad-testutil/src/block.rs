@@ -5,11 +5,11 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    validation::{Hasher, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
+use monad_crypto::hasher::{Hash, Hasher, HasherType};
 use monad_eth_types::EthAddress;
-use monad_types::{BlockId, Hash, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 
 // test utility if you only wish for simple block
 #[derive(Clone, PartialEq, Eq)]
@@ -72,13 +72,13 @@ pub fn setup_block<SCT: SignatureCollection>(
         parent_round: Round(0),
         seq_num: 0,
     };
-    let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
+    let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 
     let qcinfo = QcInfo {
         vote: vi,
         ledger_commit: lci,
     };
-    let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
 
     let mut sigs = Vec::new();
     for certkey in certkeys.iter() {
@@ -93,9 +93,9 @@ pub fn setup_block<SCT: SignatureCollection>(
 
     let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::<SCT>::new::<Sha256Hash>(qcinfo, sig_col);
+    let qc = QuorumCertificate::<SCT>::new::<HasherType>(qcinfo, sig_col);
 
-    Block::<SCT>::new::<Sha256Hash>(
+    Block::<SCT>::new::<HasherType>(
         author,
         block_round,
         &Payload {

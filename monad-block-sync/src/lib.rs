@@ -51,9 +51,9 @@ mod test {
     use monad_consensus::messages::message::RequestBlockSyncMessage;
     use monad_consensus_state::command::ConsensusCommand;
     use monad_consensus_types::multi_sig::MultiSig;
-    use monad_crypto::NopSignature;
+    use monad_crypto::{hasher::Hash, NopSignature};
     use monad_testutil::signing::get_key;
-    use monad_types::{BlockId, Hash, NodeId};
+    use monad_types::{BlockId, NodeId};
     use monad_validator::validator_set::ValidatorSet;
 
     use crate::{BlockSyncProcess, BlockSyncState};

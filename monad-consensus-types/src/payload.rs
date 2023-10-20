@@ -1,13 +1,11 @@
 use std::collections::BTreeMap;
 
+use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::{Hash, Round};
+use monad_types::Round;
 use zerocopy::AsBytes;
 
-use crate::{
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
-    validation::{Hashable, Hasher},
-};
+use crate::certificate_signature::{CertificateKeyPair, CertificateSignature};
 
 const BLOOM_SIZE: usize = 256;
 
@@ -60,7 +58,7 @@ impl ExecutionArtifacts {
 }
 
 impl Hashable for ExecutionArtifacts {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.parent_hash);
         state.update(self.state_root);
         state.update(self.transactions_root);
@@ -123,7 +121,7 @@ pub struct Payload {
 }
 
 impl Hashable for Payload {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.txns.0.as_bytes());
         self.header.hash(state);
         state.update(self.seq_num.as_bytes());
@@ -244,7 +242,7 @@ impl StateRootValidator for NopStateRoot {
 
 #[cfg(test)]
 mod test {
-    use monad_types::Hash;
+    use monad_crypto::hasher::Hash;
 
     use super::{StateRoot, StateRootValidator};
     use crate::payload::StateRootResult;

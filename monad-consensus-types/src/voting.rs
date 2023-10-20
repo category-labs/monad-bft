@@ -1,13 +1,10 @@
 use std::collections::BTreeMap;
 
+use monad_crypto::hasher::{Hashable, Hasher};
 use monad_types::*;
 use zerocopy::AsBytes;
 
-use crate::{
-    certificate_signature::CertificateKeyPair,
-    ledger::LedgerCommitInfo,
-    validation::{Hashable, Hasher},
-};
+use crate::{certificate_signature::CertificateKeyPair, ledger::LedgerCommitInfo};
 
 pub struct ValidatorMapping<VKT: CertificateKeyPair> {
     pub map: BTreeMap<NodeId, VKT::PubKeyType>,
@@ -46,7 +43,7 @@ impl std::fmt::Debug for Vote {
 }
 
 impl Hashable for Vote {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         self.ledger_commit_info.hash(state)
     }
 }
@@ -73,7 +70,7 @@ impl std::fmt::Debug for VoteInfo {
 }
 
 impl Hashable for VoteInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.id.0.as_bytes());
         state.update(self.round.as_bytes());
         state.update(self.parent_id.0.as_bytes());
@@ -84,17 +81,13 @@ impl Hashable for VoteInfo {
 
 #[cfg(test)]
 mod test {
-    use monad_types::{BlockId, Hash, Round};
-    use sha2::Digest;
+    use monad_crypto::hasher::{Hash, Hasher, HasherType};
+    use monad_types::{BlockId, Round};
     use test_case::test_case;
     use zerocopy::AsBytes;
 
     use super::VoteInfo;
-    use crate::{
-        ledger::LedgerCommitInfo,
-        validation::{Hasher, Sha256Hash},
-        voting::Vote,
-    };
+    use crate::{ledger::LedgerCommitInfo, voting::Vote};
 
     #[test]
     fn voteinfo_hash() {
@@ -106,15 +99,15 @@ mod test {
             seq_num: 0,
         };
 
-        let mut hasher = sha2::Sha256::new();
+        let mut hasher = HasherType::new();
         hasher.update(vi.id.0);
         hasher.update(vi.round);
         hasher.update(vi.parent_id.0);
         hasher.update(vi.parent_round);
         hasher.update(vi.seq_num.as_bytes());
 
-        let h1 = Hash(hasher.finalize_reset().into());
-        let h2 = Sha256Hash::hash_object(&vi);
+        let h1 = hasher.hash();
+        let h2 = HasherType::hash_object(&vi);
 
         assert_eq!(h1, h2);
     }
@@ -130,7 +123,7 @@ mod test {
             seq_num: 0,
         };
 
-        let vi_hash = Sha256Hash::hash_object(&vi);
+        let vi_hash = HasherType::hash_object(&vi);
 
         let lci = LedgerCommitInfo {
             commit_state_hash: cs,
@@ -142,14 +135,14 @@ mod test {
             ledger_commit_info: lci,
         };
 
-        let mut hasher = sha2::Sha256::new();
+        let mut hasher = HasherType::new();
         hasher.update(vi_hash);
         if let Some(cs) = cs {
             hasher.update(cs);
         }
 
-        let h1: Hash = Hash(hasher.finalize_reset().into());
-        let h2 = Sha256Hash::hash_object(&v);
+        let h1 = hasher.hash();
+        let h2 = HasherType::hash_object(&v);
 
         assert_eq!(h1, h2);
     }

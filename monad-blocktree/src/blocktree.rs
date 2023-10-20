@@ -401,19 +401,20 @@ mod test {
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
-        validation::Sha256Hash,
         voting::VoteInfo,
     };
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::{
+        hasher::{Hash, HasherType},
+        secp256k1::KeyPair,
+    };
     use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, Hash, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round};
 
     use super::{BlockTree, BlockTreeError, RootKind};
 
     type Block = ConsensusBlock<MockSignatures>;
     type QC = QuorumCertificate<MockSignatures>;
-    type HasherType = Sha256Hash;
 
     fn node_id() -> NodeId {
         let mut privkey: [u8; 32] = [127; 32];
@@ -431,7 +432,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -463,7 +464,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &payload,
@@ -489,7 +490,7 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(2),
                 &payload,
@@ -515,7 +516,7 @@ mod test {
         };
 
         let b3 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(3),
                 &payload,
@@ -541,7 +542,7 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -567,7 +568,7 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(5),
                 &payload,
@@ -593,7 +594,7 @@ mod test {
         };
 
         let b6 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(6),
                 &payload,
@@ -619,7 +620,7 @@ mod test {
         };
 
         let b7 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(7),
                 &payload,
@@ -717,7 +718,7 @@ mod test {
         };
 
         let b8 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(8),
                 &payload,
@@ -748,7 +749,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -780,7 +781,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &payload,
@@ -806,7 +807,7 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(2),
                 &payload,
@@ -849,7 +850,7 @@ mod test {
     #[test]
     fn equal_level_branching() {
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &Payload {
@@ -887,7 +888,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &Payload {
@@ -911,7 +912,7 @@ mod test {
         .unwrap();
 
         let b2 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &Payload {
@@ -943,7 +944,7 @@ mod test {
         };
 
         let b3 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(2),
                 &Payload {
@@ -994,7 +995,7 @@ mod test {
     #[test]
     fn duplicate_blocks() {
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &Payload {
@@ -1032,7 +1033,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &Payload {
@@ -1080,7 +1081,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -1112,7 +1113,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &payload,
@@ -1138,7 +1139,7 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(2),
                 &payload,
@@ -1156,7 +1157,7 @@ mod test {
         .unwrap();
 
         let b3 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(3),
                 &payload,
@@ -1174,7 +1175,7 @@ mod test {
         .unwrap();
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1240,7 +1241,7 @@ mod test {
         };
 
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -1272,7 +1273,7 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1298,7 +1299,7 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(5),
                 &payload,
@@ -1324,7 +1325,7 @@ mod test {
         };
 
         let b6 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(6),
                 &payload,
@@ -1374,7 +1375,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -1406,7 +1407,7 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1432,7 +1433,7 @@ mod test {
         };
 
         let b3 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1458,7 +1459,7 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1484,7 +1485,7 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(5),
                 &payload,
@@ -1510,7 +1511,7 @@ mod test {
         };
 
         let b6 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(6),
                 &payload,
@@ -1568,7 +1569,7 @@ mod test {
         };
 
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -1600,7 +1601,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &payload,
@@ -1626,7 +1627,7 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1667,7 +1668,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -1699,7 +1700,7 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,
@@ -1725,7 +1726,7 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(5),
                 &payload,
@@ -1767,7 +1768,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(0),
                 &payload,
@@ -1799,7 +1800,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(1),
                 &payload,
@@ -1825,7 +1826,7 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(2),
                 &payload,
@@ -1843,7 +1844,7 @@ mod test {
         .unwrap();
 
         let b3 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(3),
                 &payload,
@@ -1861,7 +1862,7 @@ mod test {
         .unwrap();
 
         let b4 = FullBlock::from_block(
-            Block::new::<Sha256Hash>(
+            Block::new::<HasherType>(
                 node_id(),
                 Round(4),
                 &payload,

@@ -7,14 +7,17 @@ use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
-    validation::{Error, Hashable, Hasher},
+    validation::Error,
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    hasher::{Hash, Hashable, Hasher},
+    secp256k1::{KeyPair, PubKey},
+};
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{Hash, NodeId, Stake};
+use monad_types::{NodeId, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{
@@ -509,15 +512,18 @@ mod test {
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-        validation::{Error, Hashable, Hasher, Sha256Hash},
+        validation::Error,
         voting::{ValidatorMapping, VoteInfo},
     };
-    use monad_crypto::secp256k1::SecpSignature;
+    use monad_crypto::{
+        hasher::{Hash, Hashable, Hasher, HasherType},
+        secp256k1::SecpSignature,
+    };
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, NodeId, Round, Stake};
+    use monad_types::{BlockId, NodeId, Round, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
     use test_case::test_case;
 
@@ -547,7 +553,7 @@ mod test {
         .iter()
         .zip(0..3)
         .map(|(x, i)| {
-            let mut h = Sha256Hash::new();
+            let mut h = HasherType::new();
             h.update(Round(5));
             x.hash(&mut h);
             let msg = h.hash();
@@ -568,7 +574,7 @@ mod test {
             high_qc_rounds,
         };
 
-        verify_tc::<_, Sha256Hash, _>(&vset, &vmap, &tc)
+        verify_tc::<_, HasherType, _>(&vset, &vmap, &tc)
     }
 
     #[test]
@@ -581,7 +587,7 @@ mod test {
             seq_num: 0,
         };
 
-        let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypair = get_key(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
@@ -591,7 +597,7 @@ mod test {
         let vset = ValidatorSet::new(stake_list).unwrap();
         let val_mapping = ValidatorMapping::new(voting_identity);
 
-        let msg = Sha256Hash::hash_object(&lci);
+        let msg = HasherType::hash_object(&lci);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keypair);
 
         let sigs = vec![(NodeId(keypair.pubkey()), s)];
@@ -606,7 +612,7 @@ mod test {
             seq_num: 0,
         };
 
-        let qc = QuorumCertificate::new::<Sha256Hash>(
+        let qc = QuorumCertificate::new::<HasherType>(
             QcInfo {
                 vote: vi2,
                 ledger_commit: lci,
@@ -615,7 +621,7 @@ mod test {
         );
 
         assert!(
-            verify_qc::<SignatureCollectionType, Sha256Hash, _>(&vset, &val_mapping, &qc).is_err()
+            verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &val_mapping, &qc).is_err()
         );
     }
 
@@ -629,7 +635,7 @@ mod test {
             seq_num: 0,
         };
 
-        let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypairs = create_keys(2);
         let vlist = vec![
@@ -648,14 +654,14 @@ mod test {
 
         let vmap = ValidatorMapping::new(voting_identity);
 
-        let msg = Sha256Hash::hash_object(&lci);
+        let msg = HasherType::hash_object(&lci);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keys[0]);
 
         let sigs = vec![(NodeId(keypairs[0].pubkey()), s)];
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<Sha256Hash>(
+        let qc = QuorumCertificate::new::<HasherType>(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -664,7 +670,7 @@ mod test {
         );
 
         assert!(matches!(
-            verify_qc::<SignatureCollectionType, Sha256Hash, _>(&vset, &vmap, &qc),
+            verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &vmap, &qc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -684,7 +690,7 @@ mod test {
         .zip(keypairs[..2].iter())
         .zip(certkeys[..2].iter())
         .map(|((x, keypair), certkey)| {
-            let mut h = Sha256Hash::new();
+            let mut h = HasherType::new();
             h.update(round);
             x.hash(&mut h);
             let msg = h.hash();
@@ -706,7 +712,7 @@ mod test {
         };
 
         assert!(matches!(
-            verify_tc::<_, Sha256Hash, _>(&vset, &vmap, &tc),
+            verify_tc::<_, HasherType, _>(&vset, &vmap, &tc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -727,9 +733,9 @@ mod test {
             seq_num: 0,
         };
 
-        let lci = LedgerCommitInfo::new::<Sha256Hash>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
 
-        let msg = Sha256Hash::hash_object(&lci);
+        let msg = HasherType::hash_object(&lci);
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
@@ -739,7 +745,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<Sha256Hash>(
+        let qc = QuorumCertificate::new::<HasherType>(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -758,13 +764,13 @@ mod test {
         };
 
         let byzantine_tmo_msg =
-            TimeoutMessage::<SignatureCollectionType>::new::<Sha256Hash>(tmo, &certkeys[0]);
+            TimeoutMessage::<SignatureCollectionType>::new::<HasherType>(tmo, &certkeys[0]);
         let signed_byzantine_tmo_msg =
-            Verified::<SignatureType, _>::new::<Sha256Hash>(byzantine_tmo_msg, &keypairs[0]);
+            Verified::<SignatureType, _>::new::<HasherType>(byzantine_tmo_msg, &keypairs[0]);
         let (author, signature, tm) = signed_byzantine_tmo_msg.destructure();
 
         let unverified_byzantine_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_byzantine_tmo_msg.verify::<Sha256Hash, _>(&vset, &vmap, &author.0);
+        let err = unverified_byzantine_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 }

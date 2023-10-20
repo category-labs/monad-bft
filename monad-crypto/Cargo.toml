@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-proto = { path = "../monad-proto" }
 
+blake3 = { workspace = true }
 blst = { workspace = true }
 libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }
 multihash = { workspace = true, features = ["identity"], optional = true }
@@ -23,9 +24,14 @@ rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["dangerous_configuration"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 hex = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
 libp2p-identity = ["dep:libp2p-identity", "dep:multihash"]
 rustls = ["dep:rcgen", "dep:rustls"]
+
+[[bench]]
+name = "hasher_bench"
+harness = false

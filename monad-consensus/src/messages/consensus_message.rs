@@ -1,11 +1,12 @@
 use std::fmt::Debug;
 
 use monad_consensus_types::{
-    message_signature::MessageSignature,
-    signature_collection::SignatureCollection,
-    validation::{Hashable, Hasher},
+    message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::{
+    hasher::{Hashable, Hasher},
+    secp256k1::KeyPair,
+};
 
 use crate::{
     messages::message::{
@@ -39,7 +40,7 @@ impl<SCT> Hashable for ConsensusMessage<SCT>
 where
     SCT: SignatureCollection,
 {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         match self {
             ConsensusMessage::Proposal(m) => m.hash(state),
             // FIXME:

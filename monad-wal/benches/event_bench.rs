@@ -17,17 +17,19 @@ use monad_consensus_types::{
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::{
+    hasher::{Hash, Hasher, HasherType},
+    secp256k1::{KeyPair, SecpSignature},
+};
 use monad_executor_glue::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
     block::setup_block,
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Hash, NodeId, Round, Serializable};
+use monad_types::{BlockId, NodeId, Round, Serializable};
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
     PersistenceLogger,
@@ -90,7 +92,7 @@ fn bench_proposal(c: &mut Criterion) {
         block: blk,
         last_round_tc: None,
     });
-    let proposal_hash = Sha256Hash::hash_object(&proposal);
+    let proposal_hash = HasherType::hash_object(&proposal);
     let unverified_message = Unverified::new(proposal, author_keypair.sign(proposal_hash.as_ref()));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
@@ -123,11 +125,11 @@ fn bench_vote(c: &mut Criterion) {
         ledger_commit_info: lci,
     };
 
-    let vm = VoteMessage::<SignatureCollectionType>::new::<Sha256Hash>(v, &certkey);
+    let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkey);
 
     let vote = ConsensusMessage::Vote(vm);
 
-    let vote_hash = Sha256Hash::hash_object(&vote);
+    let vote_hash = HasherType::hash_object(&vote);
     let unverified_message = Unverified::new(vote, <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
@@ -159,14 +161,14 @@ fn bench_timeout(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: 0,
     };
-    let lci = LedgerCommitInfo::new::<Sha256Hash>(None, &vi);
+    let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 
     let qcinfo = QcInfo {
         vote: vi,
         ledger_commit: lci,
     };
 
-    let qcinfo_hash = Sha256Hash::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
 
     let mut sigs = Vec::new();
     for (key, cert_key) in keypairs.iter().zip(cert_keys.iter()) {
@@ -177,7 +179,7 @@ fn bench_timeout(c: &mut Criterion) {
     let aggsig =
         SignatureCollectionType::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new::<Sha256Hash>(qcinfo, aggsig);
+    let qc = QuorumCertificate::new::<HasherType>(qcinfo, aggsig);
 
     let tmo_info = TimeoutInfo {
         round: Round(3),
@@ -186,7 +188,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let high_qc_round = HighQcRound { qc_round: Round(1) };
     let tc_round = Round(2);
-    let mut hasher = Sha256Hash::new();
+    let mut hasher = HasherType::new();
     hasher.update(tc_round);
     hasher.update(high_qc_round.qc_round);
     let high_qc_round_hash = hasher.hash();
@@ -216,9 +218,9 @@ fn bench_timeout(c: &mut Criterion) {
         last_round_tc: Some(tc),
     };
 
-    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new::<Sha256Hash>(timeout, author_certkey));
+    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new::<HasherType>(timeout, author_certkey));
 
-    let tmo_hash = Sha256Hash::hash_object(&tmo);
+    let tmo_hash = HasherType::hash_object(&tmo);
     let unverified_message = Unverified::new(tmo, author_keypair.sign(tmo_hash.as_ref()));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {

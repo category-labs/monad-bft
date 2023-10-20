@@ -1,6 +1,6 @@
+use monad_crypto::hasher::{Hasher, HasherType};
 use monad_testutil::signing::create_keys;
 use monad_types::NodeId;
-use sha2::{Digest, Sha256};
 
 use crate::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
@@ -11,10 +11,10 @@ use crate::{
 pub(crate) fn get_certificate_key<SCT: SignatureCollection>(
     seed: u64,
 ) -> SignatureCollectionKeyPairType<SCT> {
-    let mut hasher = Sha256::new();
+    let mut hasher = HasherType::new();
     hasher.update(seed.to_le_bytes());
-    let mut hash = hasher.finalize();
-    <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash).unwrap()
+    let mut hash = hasher.hash();
+    <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash.0).unwrap()
 }
 
 pub(crate) fn create_certificate_keys<SCT: SignatureCollection>(

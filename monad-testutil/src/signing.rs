@@ -11,13 +11,14 @@ use monad_consensus_types::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     transaction_validator::TransactionValidator,
-    validation::{Hashable, Hasher, Sha256Hash},
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
+use monad_crypto::{
+    hasher::{Hash, Hashable, Hasher, HasherType},
+    secp256k1::{KeyPair, PubKey, SecpSignature},
+};
 use monad_eth_types::EthAddress;
-use monad_types::{Hash, NodeId, Round};
-use sha2::{Digest, Sha256};
+use monad_types::{NodeId, Round};
 use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
@@ -45,7 +46,7 @@ impl MockSignatures {
 }
 
 impl Hashable for MockSignatures {
-    fn hash<H: Hasher>(&self, _state: &mut H) {}
+    fn hash(&self, _state: &mut impl Hasher) {}
 }
 
 impl SignatureCollection for MockSignatures {
@@ -93,8 +94,7 @@ impl SignatureCollection for MockSignatures {
 }
 
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
-    // FIXME: we should replace this with the Sha256Hash
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = HasherType::new();
     hasher.update(b.author.0.bytes());
     hasher.update(b.round);
     hasher.update(&b.payload.txns.0);
@@ -106,9 +106,9 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.update(b.payload.header.gas_used);
     hasher.update(b.payload.seq_num.as_bytes());
     hasher.update(b.qc.info.vote.id.0);
-    hasher.update(b.qc.signatures.get_hash::<Sha256Hash>());
+    hasher.update(b.qc.signatures.get_hash::<HasherType>());
 
-    Hash(hasher.finalize().into())
+    hasher.hash()
 }
 
 pub fn node_id() -> NodeId {
@@ -199,17 +199,17 @@ impl TestSigner<SecpSignature> {
 }
 
 pub fn get_key(seed: u64) -> KeyPair {
-    let mut hasher = Sha256::new();
+    let mut hasher = HasherType::new();
     hasher.update(seed.to_le_bytes());
-    let mut hash = hasher.finalize();
-    KeyPair::from_bytes(&mut hash).unwrap()
+    let mut hash = hasher.hash();
+    KeyPair::from_bytes(&mut hash.0).unwrap()
 }
 
 pub fn get_certificate_key<SCT: SignatureCollection>(
     seed: u64,
 ) -> SignatureCollectionKeyPairType<SCT> {
-    let mut hasher = Sha256::new();
+    let mut hasher = HasherType::new();
     hasher.update(seed.to_le_bytes());
-    let mut hash = hasher.finalize();
-    <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash).unwrap()
+    let mut hash = hasher.hash();
+    <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash.0).unwrap()
 }

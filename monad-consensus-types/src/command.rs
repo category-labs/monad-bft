@@ -1,4 +1,5 @@
-use monad_types::{BlockId, Hash, NodeId, Round};
+use monad_crypto::hasher::Hash;
+use monad_types::{BlockId, NodeId, Round};
 
 use crate::{
     block::{Block, UnverifiedFullBlock},

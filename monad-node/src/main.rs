@@ -10,7 +10,6 @@ use monad_block_sync::BlockSyncState;
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
-    validation::Sha256Hash,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{Executor, State};
@@ -39,7 +38,6 @@ mod genesis;
 mod state;
 use state::NodeState;
 
-type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;

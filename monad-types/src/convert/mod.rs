@@ -1,9 +1,9 @@
 use monad_proto::{
     error::ProtoError,
-    proto::basic::{ProtoBlockId, ProtoEpoch, ProtoHash, ProtoNodeId, ProtoRound, ProtoStake},
+    proto::basic::{ProtoBlockId, ProtoEpoch, ProtoNodeId, ProtoRound, ProtoStake},
 };
 
-use crate::{BlockId, Epoch, Hash, NodeId, Round, Stake};
+use crate::{BlockId, Epoch, NodeId, Round, Stake};
 
 impl From<&NodeId> for ProtoNodeId {
     fn from(nodeid: &NodeId) -> Self {
@@ -35,23 +35,6 @@ impl TryFrom<ProtoRound> for Round {
     type Error = ProtoError;
     fn try_from(value: ProtoRound) -> Result<Self, Self::Error> {
         Ok(Self(value.round))
-    }
-}
-
-impl From<&Hash> for ProtoHash {
-    fn from(value: &Hash) -> Self {
-        Self {
-            hash: value.to_vec(),
-        }
-    }
-}
-
-impl TryFrom<ProtoHash> for Hash {
-    type Error = ProtoError;
-    fn try_from(value: ProtoHash) -> Result<Self, Self::Error> {
-        Ok(Self(value.hash.try_into().map_err(|e: Vec<_>| {
-            Self::Error::WrongHashLen(format!("{}", e.len()))
-        })?))
     }
 }
 

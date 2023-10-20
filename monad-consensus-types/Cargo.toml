@@ -17,22 +17,15 @@ monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
 bitvec = { workspace = true, features = ["serde"] }
-blake3 = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 serde_cbor = { workspace = true }
-sha2 = { workspace = true }
 zerocopy = { workspace = true }
 
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
 
-criterion = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 test-case = { workspace = true }
-
-[[bench]]
-name = "hasher_bench"
-harness = false

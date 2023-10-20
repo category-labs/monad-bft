@@ -18,10 +18,12 @@ use monad_consensus_types::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
     transaction_validator::MockValidator,
-    validation::{Hasher, Sha256Hash},
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey, SecpSignature};
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    secp256k1::{KeyPair, PubKey, SecpSignature},
+};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor::{Executor, State};
 use monad_p2p::Multiaddr;
@@ -36,7 +38,6 @@ use opentelemetry_otlp::WithExportConfig;
 use tracing::{event, instrument::WithSubscriber, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-type HasherType = Sha256Hash;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 type TransactionValidatorType = MockValidator;

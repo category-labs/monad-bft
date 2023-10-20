@@ -4,9 +4,11 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
     signature_collection::SignatureCollection, transaction_validator::MockValidator,
-    validation::Sha256Hash,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    hasher::HasherType,
+    secp256k1::{KeyPair, PubKey},
+};
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
 use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
@@ -38,7 +40,7 @@ impl ReplayConfig<MS> for RepConfig {
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, SignatureCollectionType, TransactionValidatorType>(
+            get_genesis_config::<HasherType, SignatureCollectionType, TransactionValidatorType>(
                 voting_keys.iter(),
                 &validator_mapping,
                 &TransactionValidatorType::default(),

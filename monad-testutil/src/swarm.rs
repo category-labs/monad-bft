@@ -4,9 +4,11 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
     signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
-    validation::Sha256Hash,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::{
+    hasher::HasherType,
+    secp256k1::{KeyPair, PubKey},
+};
 use monad_eth_types::EthAddress;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
@@ -47,7 +49,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
         .collect::<Vec<_>>();
 
     let (genesis_block, genesis_sigs) =
-        get_genesis_config::<Sha256Hash, SCT, TVT>(voting_keys.iter(), &validator_mapping, &tvt);
+        get_genesis_config::<HasherType, SCT, TVT>(voting_keys.iter(), &validator_mapping, &tvt);
 
     let state_configs = keys
         .into_iter()

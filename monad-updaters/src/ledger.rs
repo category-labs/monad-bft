@@ -110,6 +110,7 @@ mod tests {
     };
 
     use futures::{FutureExt, StreamExt};
+    use monad_crypto::hasher::Hash;
     use monad_executor::Executor;
     use monad_executor_glue::LedgerCommand;
     use monad_testutil::{block::MockBlock, signing::get_key};
@@ -158,18 +159,18 @@ mod tests {
         let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
         let block = MockBlock {
-            block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
-            parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+            block_id: monad_types::BlockId(Hash([0x00_u8; 32])),
+            parent_block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
         };
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![block])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
             monad_types::NodeId(get_key(0).pubkey()),
-            monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+            monad_types::BlockId(Hash([0x00_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent {
                 requester: monad_types::NodeId(get_key(0).pubkey()),
-                bid: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+                bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
         )]);
@@ -178,11 +179,11 @@ mod tests {
         let mock_ledger_event = retrieved.unwrap().unwrap().block.unwrap();
         assert_eq!(
             mock_ledger_event.block_id,
-            monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+            monad_types::BlockId(Hash([0x00_u8; 32])),
         );
         assert_eq!(
             mock_ledger_event.parent_block_id,
-            monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+            monad_types::BlockId(Hash([0x01_u8; 32])),
         );
     }
 
@@ -192,30 +193,30 @@ mod tests {
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x00_u8; 32])),
             },
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
             },
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
             },
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x04_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x04_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
             },
         ])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
             monad_types::NodeId(get_key(0).pubkey()),
-            monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
+            monad_types::BlockId(Hash([0x02_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent {
                 requester: monad_types::NodeId(get_key(0).pubkey()),
-                bid: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+                bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
         )]);
@@ -224,20 +225,20 @@ mod tests {
         let mock_ledger_event = retrieved.unwrap().unwrap().block.unwrap();
         assert_eq!(
             mock_ledger_event.block_id,
-            monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
+            monad_types::BlockId(Hash([0x02_u8; 32])),
         );
         assert_eq!(
             mock_ledger_event.parent_block_id,
-            monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+            monad_types::BlockId(Hash([0x01_u8; 32])),
         );
 
         // similarly, calling retrieve again always be viable
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
             monad_types::NodeId(get_key(0).pubkey()),
-            monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
+            monad_types::BlockId(Hash([0x02_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent {
                 requester: monad_types::NodeId(get_key(0).pubkey()),
-                bid: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+                bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
         )]);
@@ -246,11 +247,11 @@ mod tests {
         let mock_ledger_event = retrieved.unwrap().unwrap().block.unwrap();
         assert_eq!(
             mock_ledger_event.block_id,
-            monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
+            monad_types::BlockId(Hash([0x02_u8; 32])),
         );
         assert_eq!(
             mock_ledger_event.parent_block_id,
-            monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+            monad_types::BlockId(Hash([0x01_u8; 32])),
         );
     }
     #[test]
@@ -260,30 +261,30 @@ mod tests {
 
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x00_u8; 32])),
             },
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x01_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
             },
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x02_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
             },
             MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([0x04_u8; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([0x03_u8; 32])),
+                block_id: monad_types::BlockId(Hash([0x04_u8; 32])),
+                parent_block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
             },
         ])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
             monad_types::NodeId(get_key(0).pubkey()),
-            monad_types::BlockId(monad_types::Hash([0x10_u8; 32])),
+            monad_types::BlockId(Hash([0x10_u8; 32])),
             Box::new(|block: Option<MockBlock>| MockLedgerEvent {
                 requester: monad_types::NodeId(get_key(0).pubkey()),
-                bid: monad_types::BlockId(monad_types::Hash([0x00_u8; 32])),
+                bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
         )]);
@@ -316,8 +317,8 @@ mod tests {
 
         let blocks: Vec<_> = (1..40_u8)
             .map(|seed| MockBlock {
-                block_id: monad_types::BlockId(monad_types::Hash([seed; 32])),
-                parent_block_id: monad_types::BlockId(monad_types::Hash([seed - 1; 32])),
+                block_id: monad_types::BlockId(Hash([seed; 32])),
+                parent_block_id: monad_types::BlockId(Hash([seed - 1; 32])),
             })
             .collect();
 

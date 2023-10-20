@@ -10,9 +10,9 @@ use monad_consensus_types::{
     block::BlockType, message_signature::MessageSignature,
     signature_collection::SignatureCollection,
 };
+use monad_crypto::hasher::Hash;
 use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
-use monad_types::Hash;
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 

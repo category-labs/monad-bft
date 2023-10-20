@@ -11,10 +11,12 @@ use monad_consensus_types::{
     payload::ExecutionArtifacts,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     transaction_validator::MockValidator,
-    validation::{Hasher, Sha256Hash},
     voting::{Vote, VoteInfo},
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::{
+    hasher::{Hash, Hasher, HasherType},
+    secp256k1::{KeyPair, SecpSignature},
+};
 use monad_executor_glue::{
     convert::interface::{deserialize_event, serialize_event},
     ConsensusEvent, MonadEvent,
@@ -24,7 +26,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_genesis_config, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Hash, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin};
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -62,8 +64,8 @@ fn test_consensus_message_event_vote_multisig() {
     };
 
     let votemsg: ConsensusMessage<SignatureCollectionType> =
-        ConsensusMessage::Vote(VoteMessage::new::<Sha256Hash>(vote, &certkeypair));
-    let votemsg_hash = Sha256Hash::hash_object(&votemsg);
+        ConsensusMessage::Vote(VoteMessage::new::<HasherType>(vote, &certkeypair));
+    let votemsg_hash = HasherType::hash_object(&votemsg);
     let sig = keypair.sign(votemsg_hash.as_ref());
 
     let unverified_votemsg = Unverified::new(votemsg, sig);
@@ -88,11 +90,11 @@ fn test_consensus_message_event_proposal_bls() {
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
     let (genesis_block, genesis_sigs) = get_genesis_config::<
-        Sha256Hash,
+        HasherType,
         BlsSignatureCollection,
         MockValidator,
     >(voting_keys.iter(), &valmap, &MockValidator {});
-    let genesis_qc = QuorumCertificate::genesis_qc::<Sha256Hash>(
+    let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
     );

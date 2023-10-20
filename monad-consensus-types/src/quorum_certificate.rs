@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
+use monad_crypto::hasher::{Hash, Hasher};
 use monad_types::*;
 
 use crate::{
     ledger::*,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    validation::Hasher,
     voting::*,
 };
 

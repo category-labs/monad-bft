@@ -25,6 +25,5 @@ zerocopy = { workspace = true }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-testutil = { path = "../monad-testutil" }
 
-sha2 = { workspace = true }
 test-case = { workspace = true }
 tracing = { workspace = true }

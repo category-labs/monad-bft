@@ -22,7 +22,6 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
-sha2 = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]

@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use monad_types::{Hash, NodeId};
+use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_types::NodeId;
 
 use crate::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
-    validation::{Hashable, Hasher},
     voting::ValidatorMapping,
 };
 
@@ -90,8 +90,9 @@ pub trait SignatureCollection:
 mod test {
     use std::collections::HashSet;
 
+    use monad_crypto::hasher::Hash;
     use monad_testutil::signing::get_key;
-    use monad_types::{Hash, NodeId};
+    use monad_types::NodeId;
 
     use crate::{
         certificate_signature::CertificateSignature,

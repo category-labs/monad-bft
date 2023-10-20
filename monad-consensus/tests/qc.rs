@@ -1,9 +1,9 @@
 use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     quorum_certificate::{QcInfo, QuorumCertificate, Rank},
-    validation::Sha256Hash,
     voting::VoteInfo,
 };
+use monad_crypto::hasher::{Hash, HasherType};
 use monad_testutil::signing::MockSignatures;
 use monad_types::*;
 
@@ -29,14 +29,14 @@ fn comparison() {
         seq_num: 0,
     };
 
-    let qc_1 = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+    let qc_1 = QuorumCertificate::<MockSignatures>::new::<HasherType>(
         QcInfo {
             vote: vi_1,
             ledger_commit: ci,
         },
         MockSignatures::with_pubkeys(&[]),
     );
-    let mut qc_2 = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+    let mut qc_2 = QuorumCertificate::<MockSignatures>::new::<HasherType>(
         QcInfo {
             vote: vi_2,
             ledger_commit: ci,

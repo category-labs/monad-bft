@@ -1,18 +1,18 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use bitvec::prelude::*;
-use monad_crypto::bls12_381::{
-    BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature,
+use monad_crypto::{
+    bls12_381::{BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature},
+    hasher::{Hash, Hashable, Hasher},
 };
 use monad_proto::proto::signing::ProtoBlsSignatureCollection;
-use monad_types::{Hash, NodeId};
+use monad_types::NodeId;
 use prost::Message;
 
 use crate::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    validation::{Hashable, Hasher},
     voting::ValidatorMapping,
 };
 
@@ -131,7 +131,7 @@ pub struct BlsSignatureCollection {
 }
 
 impl Hashable for BlsSignatureCollection {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         let bitvec_slice = self.signers.as_raw_slice();
         let mut u8_slice = Vec::new();
         for elem in bitvec_slice {

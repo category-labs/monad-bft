@@ -4,10 +4,13 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    validation::{Error, Sha256Hash},
+    validation::Error,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::{
+    hasher::{Hash, HasherType},
+    secp256k1::PubKey,
+};
 use monad_eth_types::EthAddress;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
@@ -32,15 +35,15 @@ fn setup_block(
         parent_round: Round(0),
         seq_num: 0,
     };
-    let qc = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+    let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
         QcInfo {
             vote: vi,
-            ledger_commit: LedgerCommitInfo::new::<Sha256Hash>(Some(Default::default()), &vi),
+            ledger_commit: LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi),
         },
         MockSignatures::with_pubkeys(signers),
     );
 
-    Block::<MockSignatures>::new::<Sha256Hash>(
+    Block::<MockSignatures>::new::<HasherType>(
         author,
         block_round,
         &Payload {
@@ -73,10 +76,10 @@ fn test_proposal_hash() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypairs[0]);
+    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
 
     assert!(sp
-        .verify::<Sha256Hash, _>(&vset, &vmap, &keypairs[0].pubkey())
+        .verify::<HasherType, _>(&vset, &vmap, &keypairs[0].pubkey())
         .is_ok());
 }
 
@@ -99,10 +102,10 @@ fn test_proposal_missing_tc() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &keypairs[0]);
+    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
 
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &vmap, &keypairs[0].pubkey())
+        sp.verify::<HasherType, _>(&vset, &vmap, &keypairs[0].pubkey())
             .unwrap_err(),
         Error::NotWellFormed
     );
@@ -134,7 +137,7 @@ fn test_proposal_author_not_sender() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &author_keypair);
+    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &author_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
@@ -142,7 +145,7 @@ fn test_proposal_author_not_sender() {
         (NodeId(sender_keypair.pubkey()), sender_keypair.pubkey()),
     ]);
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &vmap, &sender_keypair.pubkey())
+        sp.verify::<HasherType, _>(&vset, &vmap, &sender_keypair.pubkey())
             .unwrap_err(),
         Error::AuthorNotSender
     );
@@ -167,7 +170,7 @@ fn test_proposal_invalid_author() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &non_valdiator_keypair);
+    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![(
@@ -175,7 +178,7 @@ fn test_proposal_invalid_author() {
         author_keypair.pubkey(),
     )]);
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &vmap, &author.0)
+        sp.verify::<HasherType, _>(&vset, &vmap, &author.0)
             .unwrap_err(),
         Error::InvalidAuthor
     );
@@ -201,7 +204,7 @@ fn test_proposal_invalid_qc() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<Sha256Hash, _>(proposal, &non_staked_keypair);
+    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_staked_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
@@ -212,7 +215,7 @@ fn test_proposal_invalid_qc() {
         ),
     ]);
     assert_eq!(
-        sp.verify::<Sha256Hash, _>(&vset, &vmap, &non_staked_keypair.pubkey())
+        sp.verify::<HasherType, _>(&vset, &vmap, &non_staked_keypair.pubkey())
             .unwrap_err(),
         Error::InsufficientStake
     );

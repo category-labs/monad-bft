@@ -6,9 +6,9 @@ use monad_consensus_types::{
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
-    validation::Hasher,
     voting::{Vote, VoteInfo},
 };
+use monad_crypto::hasher::Hasher;
 use monad_types::*;
 
 #[derive(Debug)]

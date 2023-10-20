@@ -3,9 +3,9 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
-    validation::{Hasher, Sha256Hash},
     voting::VoteInfo,
 };
+use monad_crypto::hasher::{Hash, Hasher, HasherType};
 use monad_eth_types::EthAddress;
 use monad_testutil::signing::{hash, node_id, MockSignatures};
 use monad_types::*;
@@ -15,7 +15,7 @@ fn block_hash_id() {
     let txns = TransactionList(vec![1, 2, 3, 4]);
     let author = node_id();
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new::<Sha256Hash>(
+    let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
         QcInfo {
             vote: VoteInfo {
                 id: BlockId(Hash([0x00_u8; 32])),
@@ -29,7 +29,7 @@ fn block_hash_id() {
         MockSignatures::with_pubkeys(&[]),
     );
 
-    let block = Block::<MockSignatures>::new::<Sha256Hash>(
+    let block = Block::<MockSignatures>::new::<HasherType>(
         author,
         round,
         &Payload {
@@ -42,7 +42,7 @@ fn block_hash_id() {
         &qc,
     );
 
-    let h1 = Sha256Hash::hash_object(&block);
+    let h1 = HasherType::hash_object(&block);
     let h2: Hash = hash(&block);
 
     assert_eq!(h1, h2);

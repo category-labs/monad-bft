@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_types::*;
 use zerocopy::AsBytes;
 
@@ -8,7 +9,6 @@ use crate::{
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    validation::{Hashable, Hasher},
     voting::ValidatorMapping,
 };
 
@@ -19,7 +19,7 @@ pub struct Timeout<SCT: SignatureCollection> {
 }
 
 impl<SCT: SignatureCollection> Hashable for Timeout<SCT> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         // similar to ProposalMessage, not hashing over last_round_tc
         self.tminfo.hash(state);
     }
@@ -32,7 +32,7 @@ pub struct TimeoutInfo<SCT> {
 }
 
 impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.round);
         state.update(self.high_qc.info.vote.id.0.as_bytes());
         state.update(self.high_qc.get_hash());
@@ -54,7 +54,7 @@ pub struct HighQcRound {
 }
 
 impl Hashable for HighQcRound {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash(&self, state: &mut impl Hasher) {
         state.update(self.qc_round.as_bytes());
     }
 }

@@ -6,9 +6,9 @@ use monad_consensus_types::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     timeout::{Timeout, TimeoutCertificate},
-    validation::Hasher,
     voting::ValidatorMapping,
 };
+use monad_crypto::hasher::Hasher;
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -244,15 +244,17 @@ mod test {
         multi_sig::MultiSig,
         quorum_certificate::QcInfo,
         timeout::TimeoutInfo,
-        validation::Sha256Hash,
         voting::{Vote, VoteInfo},
     };
-    use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+    use monad_crypto::{
+        hasher::{Hash, HasherType},
+        secp256k1::{KeyPair, SecpSignature},
+    };
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, Stake};
+    use monad_types::{BlockId, Stake};
     use monad_validator::validator_set::ValidatorSet;
     use zerocopy::AsBytes;
 
@@ -274,7 +276,7 @@ mod test {
             seq_num: 0,
         };
 
-        let ledger_commit_info = LedgerCommitInfo::new::<Sha256Hash>(None, &vote_info);
+        let ledger_commit_info = LedgerCommitInfo::new::<HasherType>(None, &vote_info);
 
         let qc_info = QcInfo {
             vote: vote_info,
@@ -286,7 +288,7 @@ mod test {
             ledger_commit_info,
         };
 
-        let vote_hash = Sha256Hash::hash_object(&vote);
+        let vote_hash = HasherType::hash_object(&vote);
 
         let mut sigs = Vec::new();
 
@@ -299,7 +301,7 @@ mod test {
 
         let sigcol = SCT::new(sigs, valmap, vote_hash.as_ref()).expect("success");
 
-        QuorumCertificate::<SCT>::new::<Sha256Hash>(qc_info, sigcol)
+        QuorumCertificate::<SCT>::new::<HasherType>(qc_info, sigcol)
     }
 
     fn create_timeout_message<SCT: SignatureCollection>(
@@ -318,7 +320,7 @@ mod test {
 
         let invalid_msg = b"invalid";
 
-        let mut tmo_msg = TimeoutMessage::<SCT>::new::<Sha256Hash>(timeout, certkeypair);
+        let mut tmo_msg = TimeoutMessage::<SCT>::new::<HasherType>(timeout, certkeypair);
         if !valid {
             tmo_msg.sig =
                 <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
@@ -341,7 +343,7 @@ mod test {
         let tm2 = create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), true);
         let tm3 = create_timeout_message(&certkeys[3], timeout_round, high_qc.clone(), true);
 
-        let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -353,7 +355,7 @@ mod test {
         assert!(cmds.is_empty());
 
         // enter PhaseHonest::One, timeout itself
-        let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -369,7 +371,7 @@ mod test {
         assert!(matches!(cmds[2], PacemakerCommand::Schedule { .. }));
 
         // enter PhaseHonest::SuperMajority, qc is created
-        let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -382,7 +384,7 @@ mod test {
         assert!(cmds.is_empty());
 
         // in PhaseHonest::SuperMajority, pacemaker doesn't create TC with new timeouts
-        let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -409,7 +411,7 @@ mod test {
         let tm2_invalid =
             create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), false);
 
-        let _ = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let _ = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -418,7 +420,7 @@ mod test {
             tm0_valid,
         );
 
-        let _ = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let _ = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -427,7 +429,7 @@ mod test {
             tm1_valid,
         );
 
-        let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -481,7 +483,7 @@ mod test {
         let tm1_valid = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
         let tm2_valid = create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), true);
 
-        let _ = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let _ = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -490,7 +492,7 @@ mod test {
             tm1_valid,
         );
 
-        let (tc, _cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, _cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -503,7 +505,7 @@ mod test {
 
         // invalid timeout is removed
         // the remaining two timeouts has 5/7 stake, so TC is created
-        let (tc, cmds) = pacemaker.process_remote_timeout::<Sha256Hash, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
             &valset,
             &vmap,
             &mut safety,
@@ -515,7 +517,7 @@ mod test {
         assert!(tc.is_some());
 
         // assert the TC is created over the two valid timeouts
-        let mut hasher = Sha256Hash::new();
+        let mut hasher = HasherType::new();
         hasher.update(Round(1).as_bytes());
         hasher.update(Round(0).as_bytes());
         let timeout_hash = hasher.hash();
