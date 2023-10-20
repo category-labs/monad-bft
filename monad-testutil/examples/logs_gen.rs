@@ -10,7 +10,7 @@ use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
-    mock_swarm::Nodes,
+    mock_swarm::{Nodes, UntilTerminator},
     transformer::{GenericTransformer, Pipeline, ID},
 };
 use monad_state::MonadState;
@@ -81,21 +81,9 @@ pub fn generate_log<P: Pipeline<MM>>(
         SignatureCollectionType,
     >::new(peers);
 
-    while let Some((duration, id, event)) = nodes.step() {
-        if nodes
-            .states()
-            .values()
-            .next()
-            .unwrap()
-            .executor
-            .ledger()
-            .get_blocks()
-            .len()
-            > num_blocks
-        {
-            break;
-        }
-    }
+    let term = UntilTerminator::new().until_block(num_blocks);
+
+    while nodes.step_until(&term).is_some() {}
 }
 
 fn main() {

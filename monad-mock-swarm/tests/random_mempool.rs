@@ -10,6 +10,7 @@ use monad_mock_swarm::{
     mock::{
         MockMempoolRandFail, MockMempoolRandFailConfig, NoSerRouterConfig, NoSerRouterScheduler,
     },
+    mock_swarm::UntilTerminator,
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
@@ -36,6 +37,7 @@ fn random_mempool_failures() {
         _,
         MockValidator,
         MockMempoolRandFail<_, _>,
+        _,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -49,12 +51,11 @@ fn random_mempool_failures() {
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
+        UntilTerminator::new().until_tick(Duration::from_secs(7)),
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(2),
             parallelize: false,
-            until: Duration::from_secs(7),
-            until_block: usize::MAX,
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,

@@ -8,6 +8,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock_swarm::UntilTerminator,
     transformer::GenericTransformer,
 };
 use monad_state::{MonadMessage, MonadState};
@@ -74,6 +75,7 @@ fn nodes_with_random_latency(seed: u64) {
         _,
         MockValidator,
         MockMempool<_, _>,
+        _,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -86,12 +88,11 @@ fn nodes_with_random_latency(seed: u64) {
         >::RandLatency(RandLatencyTransformer::new(
             seed, 330,
         ))],
+        UntilTerminator::new().until_tick(Duration::from_secs(60 * 60)),
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(250),
             parallelize: false,
-            until: Duration::from_secs(60 * 60),
-            until_block: usize::MAX,
             expected_block: 2048,
             // avoid state_root trigger in rand latency setting
             // TODO, cover cases with low state_root_delay once state_sync is done

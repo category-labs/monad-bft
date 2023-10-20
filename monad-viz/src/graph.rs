@@ -8,7 +8,7 @@ use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{Identifiable, MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockExecutor, MockableExecutor, RouterScheduler},
-    mock_swarm::{Node, Nodes},
+    mock_swarm::{Node, Nodes, UntilTerminator},
     transformer::{Pipeline, ID},
 };
 use monad_types::{Deserializable, Serializable};
@@ -200,7 +200,9 @@ where
             self.reset();
         }
         assert!(tick >= self.current_tick);
-        while self.nodes.step_until(tick, usize::MAX).is_some() {}
+        let term = UntilTerminator::new().until_tick(tick);
+
+        while self.nodes.step_until(&term).is_some() {}
         self.current_tick = tick;
     }
 }

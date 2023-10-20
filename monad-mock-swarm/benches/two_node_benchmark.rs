@@ -9,6 +9,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock_swarm::UntilTerminator,
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_state::{MonadMessage, MonadState};
@@ -41,6 +42,7 @@ fn two_nodes() {
         _,
         MockValidator,
         MockMempool<_, _>,
+        _,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -51,12 +53,11 @@ fn two_nodes() {
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
+        UntilTerminator::new().until_tick(Duration::from_secs(10)),
         SwarmTestConfig {
             num_nodes: 2,
             consensus_delta: Duration::from_millis(2),
             parallelize: false,
-            until: Duration::from_secs(10),
-            until_block: usize::MAX,
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,

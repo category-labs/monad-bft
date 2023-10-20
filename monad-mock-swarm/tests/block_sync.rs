@@ -1,15 +1,21 @@
 mod test {
-    use std::{collections::HashSet, time::Duration};
+    use std::{
+        collections::{BTreeMap, HashSet},
+        time::Duration,
+    };
 
     use monad_block_sync::BlockSyncState;
     use monad_consensus_state::ConsensusState;
     use monad_consensus_types::{
-        multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
+        multi_sig::MultiSig,
+        payload::{NopStateRoot, StateRoot},
+        transaction_validator::MockValidator,
     };
     use monad_crypto::NopSignature;
     use monad_executor_glue::PeerId;
     use monad_mock_swarm::{
         mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+        mock_swarm::{ProgressTerminator, UntilTerminator},
         transformer::{
             DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
             PeriodicTransformer, ID,
@@ -21,29 +27,32 @@ mod test {
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
     use test_case::test_case;
 
-    /**
-     *  Couple messages gets delayed significantly for 1 second
-     */
     #[test]
-    fn extreme_delay_recovery_with_block_sync() {
+    #[should_panic]
+    fn lack_of_progress() {
         let num_nodes = 4;
         let delta = Duration::from_millis(2);
         let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
             MockValidator,
             num_nodes,
             delta,
-            // giving a high delay so state root doesn't trigger
-            1000,
+            u64::MAX,
         );
-
-        assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
         let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
 
         let mut filter_peers = HashSet::new();
         filter_peers.insert(first_node);
 
-        println!("blackout node ID: {:?}", first_node);
+        println!("no progress node ID: {:?}", first_node);
+
+        let terminator = ProgressTerminator::new(
+            pubkeys
+                .iter()
+                .map(|k| (ID::new(PeerId(*k)), 1))
+                .collect::<BTreeMap<_, _>>(),
+            Duration::from_secs(1),
+        );
 
         run_nodes_until::<
             MonadState<
@@ -62,6 +71,68 @@ mod test {
             _,
             MockValidator,
             MockMempool<_, _>,
+            _,
+        >(
+            pubkeys,
+            state_configs,
+            |all_peers: Vec<_>, _| NoSerRouterConfig {
+                all_peers: all_peers.into_iter().collect(),
+            },
+            MockWALoggerConfig,
+            MockMempoolConfig::default(),
+            vec![
+                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
+                GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
+                GenericTransformer::Drop(DropTransformer()),
+            ],
+            false,
+            terminator,
+            20,
+            1,
+        );
+    }
+
+    /**
+     *  Couple messages gets delayed significantly for 1 second
+     */
+    #[test]
+    fn extreme_delay_recovery_with_block_sync() {
+        let num_nodes = 4;
+        let delta = Duration::from_millis(2);
+        let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
+            MockValidator,
+            num_nodes,
+            delta,
+            u64::MAX,
+        );
+
+        assert!(num_nodes >= 2, "test requires 2 or more nodes");
+
+        let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
+
+        let mut filter_peers = HashSet::new();
+        filter_peers.insert(first_node);
+
+        println!("blackout node ID: {:?}", first_node);
+
+        run_nodes_until::<
+            MonadState<
+                ConsensusState<MultiSig<NopSignature>, MockValidator, NopStateRoot>,
+                NopSignature,
+                MultiSig<NopSignature>,
+                ValidatorSet,
+                SimpleRoundRobin,
+                BlockSyncState,
+            >,
+            NopSignature,
+            MultiSig<NopSignature>,
+            NoSerRouterScheduler<MonadMessage<_, _>>,
+            _,
+            MockWALogger<_>,
+            _,
+            MockValidator,
+            MockMempool<_, _>,
+            _,
         >(
             pubkeys,
             state_configs,
@@ -80,19 +151,18 @@ mod test {
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(400))),
             ],
             false,
-            Duration::from_secs(4),
-            usize::MAX,
+            UntilTerminator::new().until_tick(Duration::from_secs(4)),
             20,
             1,
         );
     }
 
-    #[test_case(4, Duration::from_millis(100),Duration::from_millis(200),Duration::from_secs(4),1, 200; "test 1")]
-    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),10, 1000; "test 2")]
-    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),25, 1000; "test 3")]
-    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),50, 1000; "test 4")]
-    #[test_case(10, Duration::from_secs(0),Duration::from_secs(2),Duration::from_secs(4),3, 2000; "test 5")]
-    #[test_case(10, Duration::from_secs(0),Duration::from_secs(10),Duration::from_secs(20), 3, 4000; "test 6")]
+    #[test_case(4, Duration::from_millis(100),Duration::from_millis(200),Duration::from_secs(4),1; "test 1")]
+    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),10; "test 2")]
+    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),25; "test 3")]
+    #[test_case(50, Duration::from_secs(1),Duration::from_secs(2),Duration::from_secs(4),50; "test 4")]
+    #[test_case(10, Duration::from_secs(0),Duration::from_secs(2),Duration::from_secs(4),3; "test 5")]
+    #[test_case(10, Duration::from_secs(0),Duration::from_secs(10),Duration::from_secs(20), 3; "test 6")]
     fn black_out_recovery_with_block_sync(
         num_nodes: u16,
         from: Duration,
@@ -100,7 +170,6 @@ mod test {
         until: Duration,
         black_out_cnt: usize,
         // giving a high delay so state root doesn't trigger
-        state_root_delay: u64,
     ) {
         assert!(
             from < to && to < until && black_out_cnt <= (num_nodes as usize) && black_out_cnt >= 1
@@ -111,7 +180,7 @@ mod test {
             MockValidator,
             num_nodes,
             delta,
-            state_root_delay,
+            u64::MAX,
         );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
@@ -129,7 +198,7 @@ mod test {
 
         run_nodes_until::<
             MonadState<
-                ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
+                ConsensusState<MultiSig<NopSignature>, MockValidator, NopStateRoot>,
                 NopSignature,
                 MultiSig<NopSignature>,
                 ValidatorSet,
@@ -144,6 +213,7 @@ mod test {
             _,
             MockValidator,
             MockMempool<_, _>,
+            _,
         >(
             pubkeys,
             state_configs,
@@ -159,8 +229,7 @@ mod test {
                 GenericTransformer::Drop(DropTransformer()),
             ],
             false,
-            until,
-            usize::MAX,
+            UntilTerminator::new().until_tick(until),
             20,
             1,
         );

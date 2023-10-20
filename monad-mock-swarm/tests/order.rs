@@ -9,6 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock_swarm::UntilTerminator,
     transformer::{
         GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
         TransformerReplayOrder, ID,
@@ -83,6 +84,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         _,
         MockValidator,
         MockMempool<_, _>,
+        _,
     >(
         pubkeys,
         state_configs,
@@ -100,8 +102,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             )),
         ],
         false,
-        Duration::from_secs(1),
-        usize::MAX,
+        UntilTerminator::new().until_tick(Duration::from_secs(1)),
         20,
         1,
     );

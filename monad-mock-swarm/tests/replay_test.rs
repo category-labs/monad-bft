@@ -14,7 +14,7 @@ use monad_mock_swarm::{
         MockExecutor, MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig,
         NoSerRouterScheduler, RouterScheduler,
     },
-    mock_swarm::{Node, Nodes},
+    mock_swarm::{Node, Nodes, UntilTerminator},
     transformer::{GenericTransformer, LatencyTransformer, Pipeline, ID},
 };
 use monad_state::{MonadMessage, MonadState};
@@ -72,8 +72,11 @@ where
     RS::Serialized: Send,
 {
     let mut max_tick = start_tick;
+    let terminator = UntilTerminator::new()
+        .until_tick(until_tick)
+        .until_block(until_block);
 
-    while let Some((tick, _, _)) = nodes.step_until(until_tick, until_block) {
+    while let Some(tick) = nodes.step_until(&terminator) {
         assert!(tick >= max_tick);
         max_tick = tick;
     }

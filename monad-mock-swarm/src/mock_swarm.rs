@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BinaryHeap},
     time::Duration,
+    usize,
 };
 
 use itertools::Itertools;
@@ -96,7 +97,6 @@ where
             }
             // polling event, thus update the rng
             self.update_rng();
-
             let event = match event_type {
                 SwarmEventType::ExecutorEvent => {
                     let executor_event = self.executor.step_until(tick);
@@ -155,6 +155,118 @@ where
             return Some(event);
         }
         None
+    }
+}
+
+pub trait NodesTerminator<S, RS, P, LGR, ME, ST, SCT>
+where
+    S: State,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    RS: RouterScheduler,
+    P: Pipeline<RS::Serialized>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ME: MockableExecutor<SignatureCollection = SCT>,
+{
+    fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool;
+}
+
+pub struct UntilTerminator {
+    until_tick: Duration,
+    until_block: usize,
+}
+
+impl Default for UntilTerminator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UntilTerminator {
+    pub fn new() -> Self {
+        UntilTerminator {
+            until_tick: Duration::MAX,
+            until_block: usize::MAX,
+        }
+    }
+
+    pub fn until_tick(mut self, tick: Duration) -> Self {
+        self.until_tick = tick;
+        self
+    }
+
+    pub fn until_block(mut self, b_cnt: usize) -> Self {
+        self.until_block = b_cnt;
+        self
+    }
+}
+
+impl<S, RS, P, LGR, ME, ST, SCT> NodesTerminator<S, RS, P, LGR, ME, ST, SCT> for UntilTerminator
+where
+    S: State,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    RS: RouterScheduler,
+    P: Pipeline<RS::Serialized>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ME: MockableExecutor<SignatureCollection = SCT>,
+{
+    fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool {
+        nodes.tick > self.until_tick
+            || nodes
+                .states
+                .values()
+                .any(|node| node.executor.ledger().get_blocks().len() > self.until_block)
+    }
+}
+// observe and monitor progress of certain nodes until commit progress is achieved for all
+pub struct ProgressTerminator {
+    // PeerId -> Ledger len
+    nodes_monitor: BTreeMap<ID, usize>,
+    timeout: Duration,
+}
+
+impl ProgressTerminator {
+    pub fn new(nodes_monitor: BTreeMap<ID, usize>, timeout: Duration) -> Self {
+        ProgressTerminator {
+            nodes_monitor,
+            timeout,
+        }
+    }
+}
+
+impl<S, RS, P, LGR, ME, ST, SCT> NodesTerminator<S, RS, P, LGR, ME, ST, SCT> for ProgressTerminator
+where
+    S: State,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    RS: RouterScheduler,
+    P: Pipeline<RS::Serialized>,
+    LGR: PersistenceLogger<Event = TimedEvent<S::Event>>,
+    ME: MockableExecutor<SignatureCollection = SCT>,
+{
+    fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool {
+        if nodes.tick > self.timeout {
+            panic!(
+                "ProgressTerminator timed-out, expecting nodes 
+                to reach following progress before timeout: {:?},
+                but the actual progress is: {:?}",
+                self.nodes_monitor,
+                nodes
+                    .states
+                    .iter()
+                    .map(|(id, nodes)| (id, nodes.executor.ledger().get_blocks().len()))
+                    .collect::<BTreeMap<_, _>>()
+            );
+        }
+
+        nodes.states.iter().all(|(peer_id, node)| {
+            if let Some(expected_len) = self.nodes_monitor.get(peer_id) {
+                node.executor.ledger().get_blocks().len() > *expected_len
+            } else {
+                true
+            }
+        })
     }
 }
 
@@ -235,22 +347,13 @@ where
         self.peek_event().map(|(tick, _, _)| tick)
     }
 
-    pub fn step(&mut self) -> Option<(Duration, ID, S::Event)> {
-        self.step_until(Duration::MAX, usize::MAX)
-    }
-
-    pub fn step_until(
+    // step until exactly the next event, either internal or external event out of all the nodes.
+    pub fn step_until<Terminator: NodesTerminator<S, RS, P, LGR, ME, ST, SCT>>(
         &mut self,
-        until: Duration,
-        until_block: usize,
-    ) -> Option<(Duration, ID, S::Event)> {
+        terminator: &Terminator,
+    ) -> Option<Duration> {
         while let Some((tick, _event_type, id)) = self.peek_event() {
-            if tick > until
-                || self
-                    .states()
-                    .values()
-                    .any(|node| node.executor.ledger().get_blocks().len() > until_block)
-            {
+            if terminator.should_terminate(self) {
                 break;
             }
 
@@ -272,17 +375,17 @@ where
                         .push(Reverse((sched_tick, message)))
                 });
             }
-
-            if let Some((tick, event)) = emitted_event {
-                return Some((tick, id, event));
+            if let Some((tick, _)) = emitted_event {
+                return Some(tick);
             }
         }
-
         None
     }
 
-    pub fn batch_step_until(&mut self, until: Duration, until_block: usize) -> Duration {
-        let mut end_tick = Duration::from_nanos(0);
+    pub fn batch_step_until<Terminator: NodesTerminator<S, RS, P, LGR, ME, ST, SCT>>(
+        &mut self,
+        terminator: &Terminator,
+    ) -> Option<Duration> {
         while let Some(tick) = {
             self.peek_event().map(|(min_tick, _, id)| {
                 let min_unsafe_tick = min_tick
@@ -296,14 +399,8 @@ where
                 min_unsafe_tick - Duration::from_nanos(1)
             })
         } {
-            if tick > until
-                || self
-                    .states()
-                    .values()
-                    .any(|node| node.executor.ledger().get_blocks().len() > until_block)
-            {
-                end_tick = tick;
-                break;
+            if terminator.should_terminate(self) {
+                return Some(self.tick);
             }
 
             let mut emitted_messages: Vec<(
@@ -328,7 +425,7 @@ where
                 });
             }
         }
-        end_tick
+        None
     }
 
     pub fn states(&self) -> &BTreeMap<ID, Node<S, RS, P, LGR, ME, ST, SCT>> {

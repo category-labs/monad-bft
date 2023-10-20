@@ -9,6 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock_swarm::UntilTerminator,
     transformer::{
         GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
         ReplayTransformer, TransformerReplayOrder, ID,
@@ -39,6 +40,7 @@ fn random_latency_test(seed: u64) {
         _,
         MockValidator,
         MockMempool<_, _>,
+        _,
     >(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -49,12 +51,11 @@ fn random_latency_test(seed: u64) {
         vec![GenericTransformer::RandLatency(
             RandLatencyTransformer::new(seed, 330),
         )],
+        UntilTerminator::new().until_tick(Duration::from_secs(10)),
         SwarmTestConfig {
             num_nodes: 4,
             consensus_delta: Duration::from_millis(250),
             parallelize: false,
-            until: Duration::from_secs(10),
-            until_block: usize::MAX,
             expected_block: 2048,
             state_root_delay: 4,
             seed: 1,
@@ -94,6 +95,7 @@ fn delayed_message_test(seed: u64) {
         _,
         MockValidator,
         MockMempool<_, _>,
+        _,
     >(
         pubkeys,
         state_configs,
@@ -111,8 +113,7 @@ fn delayed_message_test(seed: u64) {
             )),
         ],
         false,
-        Duration::from_secs(2),
-        usize::MAX,
+        UntilTerminator::new().until_tick(Duration::from_secs(2)),
         20,
         1,
     );

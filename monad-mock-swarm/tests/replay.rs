@@ -11,7 +11,7 @@ use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
-    mock_swarm::Nodes,
+    mock_swarm::{Nodes, UntilTerminator},
     transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
 };
 use monad_state::{MonadMessage, MonadState};
@@ -96,22 +96,8 @@ pub fn recover_nodes_msg_delays(
         SignatureType,
         SignatureCollectionType,
     >::new(peers);
-
-    while let Some((_, _, _)) = nodes.step() {
-        if nodes
-            .states()
-            .values()
-            .next()
-            .unwrap()
-            .executor
-            .ledger()
-            .get_blocks()
-            .len()
-            > num_blocks_before
-        {
-            break;
-        }
-    }
+    let term = UntilTerminator::new().until_block(num_blocks_before);
+    while nodes.step_until(&term).is_some() {}
 
     // can skip this verification so we don't have two cases failing for the same reason
     let node_ledger_before = nodes
@@ -201,22 +187,8 @@ pub fn recover_nodes_msg_delays(
         .collect::<HashMap<_, _>>();
 
     assert_eq!(node_ledger_before, node_ledger_recovered);
-
-    while let Some((_, _, _)) = nodes_recovered.step() {
-        if nodes_recovered
-            .states()
-            .values()
-            .next()
-            .unwrap()
-            .executor
-            .ledger()
-            .get_blocks()
-            .len()
-            > num_blocks_before + num_block_after
-        {
-            break;
-        }
-    }
+    let term = UntilTerminator::new().until_block(num_blocks_before + num_block_after);
+    while nodes_recovered.step_until(&term).is_some() {}
 
     node_ledger_verification(
         &nodes_recovered
