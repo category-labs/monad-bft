@@ -34,6 +34,8 @@ use monad_executor_glue::{
     LedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget,
     StateRootHashCommand, TimerCommand,
 };
+#[cfg(feature = "monad_test")]
+use monad_types::Round;
 use monad_types::{Epoch, NodeId, Stake, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
@@ -574,5 +576,10 @@ where
     #[cfg(feature = "monad_test")]
     fn consensus(&self) -> &Self::ConsensusState {
         &self.consensus
+    }
+
+    #[cfg(feature = "monad_test")]
+    fn round(&self) -> Round {
+        self.consensus.get_current_round()
     }
 }

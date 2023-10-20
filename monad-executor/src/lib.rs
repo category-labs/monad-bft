@@ -3,7 +3,8 @@ pub mod timed_event;
 
 use monad_consensus_types::block::BlockType;
 use monad_executor_glue::{Command, Message};
-
+#[cfg(feature = "monad_test")]
+use monad_types::Round;
 pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
@@ -48,4 +49,6 @@ pub trait State: Sized {
     >;
     #[cfg(feature = "monad_test")]
     fn consensus(&self) -> &Self::ConsensusState;
+    #[cfg(feature = "monad_test")]
+    fn round(&self) -> Round;
 }

@@ -5,12 +5,13 @@ mod test {
     use monad_executor::State;
     use monad_executor_glue::{Identifiable, Message};
     use monad_testutil::block::MockBlock;
+    #[cfg(feature = "monad_test")]
+    use monad_types::Round;
     use monad_types::{Deserializable, Serializable};
     use monad_wal::{
         wal::{WALogger, WALoggerConfig},
         PersistenceLogger,
     };
-
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEvent {
         data: i32,
@@ -120,6 +121,11 @@ mod test {
         #[cfg(feature = "monad_test")]
         fn consensus(&self) -> &Self::ConsensusState {
             unimplemented!()
+        }
+
+        #[cfg(feature = "monad_test")]
+        fn round(&self) -> Round {
+            Round(0)
         }
     }
 
