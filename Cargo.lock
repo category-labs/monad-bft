@@ -2016,7 +2016,7 @@ checksum = "a4b1e0c257a9e9f25f90ff76d7a68360ed497ee519c8e428d1825ef0000799d4"
 dependencies = [
  "der 0.7.8",
  "digest 0.10.7",
- "elliptic-curve 0.13.6",
+ "elliptic-curve 0.13.7",
  "rfc6979 0.4.0",
  "signature 2.1.0",
  "spki 0.7.2",
@@ -2075,9 +2075,9 @@ dependencies = [
 
 [[package]]
 name = "elliptic-curve"
-version = "0.13.6"
+version = "0.13.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d97ca172ae9dc9f9b779a6e3a65d308f2af74e5b8c921299075bdb4a0370e914"
+checksum = "e9775b22bc152ad86a0cf23f0f348b884b26add12bf741e7ffc4d4ab2ab4d205"
 dependencies = [
  "base16ct 0.2.0",
  "crypto-bigint 0.5.4",
@@ -2168,9 +2168,9 @@ checksum = "5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5"
 
 [[package]]
 name = "errno"
-version = "0.3.6"
+version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c18ee0ed65a5f1f81cac6b1d213b69c35fa47d4252ad41f1486dbd8226fe36e"
+checksum = "f258a7194e7f7c2a7837a8913aeab7fd8c383457034fa20ce4dd3dcb813e8eb8"
 dependencies = [
  "libc",
  "windows-sys 0.48.0",
@@ -2244,7 +2244,7 @@ dependencies = [
  "bytes",
  "chrono",
  "const-hex",
- "elliptic-curve 0.13.6",
+ "elliptic-curve 0.13.7",
  "ethabi",
  "generic-array",
  "k256",
@@ -3452,13 +3452,13 @@ dependencies = [
 
 [[package]]
 name = "k256"
-version = "0.13.1"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cadb76004ed8e97623117f3df85b17aaa6626ab0b0831e6573f104df16cd1bcc"
+checksum = "3f01b677d82ef7a676aa37e099defd83a28e15687112cafdd112d60236b6115b"
 dependencies = [
  "cfg-if",
  "ecdsa 0.16.8",
- "elliptic-curve 0.13.6",
+ "elliptic-curve 0.13.7",
  "once_cell",
  "sha2 0.10.8",
 ]
@@ -4282,12 +4282,16 @@ name = "monad-gossip"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "criterion",
+ "fastrand 2.0.1",
  "monad-crypto",
+ "monad-mock-swarm",
  "monad-transformer",
  "monad-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde",
+ "test-case",
 ]
 
 [[package]]
@@ -9445,9 +9449,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.6.0"
+version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a0956f1ba7c7909bfb66c2e9e4124ab6f6482560f6628b5aaeba39207c9aad9"
+checksum = "12a3946ecfc929b583800f4629b6c25b88ac6e92a40ea5670f77112a85d40a8b"
 dependencies = [
  "zeroize_derive",
 ]

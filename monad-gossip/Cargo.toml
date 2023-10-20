@@ -18,3 +18,15 @@ bincode = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+monad-crypto = { path = "../monad-crypto" }
+monad-mock-swarm = { path = "../monad-mock-swarm" }
+
+criterion = { workspace = true }
+fastrand = "2.0.1"
+test-case = { workspace = true }
+
+[[bench]]
+name = "rand_shuffle_bench"
+harness = false

@@ -2,10 +2,12 @@ use std::{ops::DerefMut, pin::Pin, time::Duration};
 
 use monad_types::{NodeId, RouterTarget};
 
+pub mod broadcasttree;
 pub mod gossipsub;
 pub mod mock;
 mod testutil;
 
+#[derive(Debug)]
 pub enum GossipEvent<GM> {
     /// Send gossip_message to peer
     Send(NodeId, GM), // send gossip_message

@@ -193,9 +193,11 @@ pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, m
     // some random extra messages to flush pipeline transformers
     for _ in 0..10 {
         for tx_peer in &peer_ids {
-            let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-            let target = RouterTarget::Broadcast;
-            swarm.send(tx_peer, target, &message);
+            let message: Vec<u8> = (0..34).map(|_| rng.gen()).collect();
+            for rx_peer in &peer_ids {
+                let target = RouterTarget::PointToPoint(*rx_peer);
+                swarm.send(tx_peer, target, &message);
+            }
         }
     }
 
