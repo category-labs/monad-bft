@@ -17,6 +17,7 @@ monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
 bitvec = { workspace = true, features = ["serde"] }
+blake3 = { workspace = true }
 log = { workspace = true }
 prost = { workspace = true }
 serde_cbor = { workspace = true }

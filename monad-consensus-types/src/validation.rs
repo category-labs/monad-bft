@@ -47,3 +47,16 @@ impl Hasher for Sha256Hash {
         Hash(self.0.finalize().into())
     }
 }
+
+pub struct Blake3Hash(blake3::Hasher);
+impl Hasher for Blake3Hash {
+    fn new() -> Self {
+        Self(blake3::Hasher::new())
+    }
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        self.0.update(data.as_ref());
+    }
+    fn hash(self) -> Hash {
+        Hash(self.0.finalize().into())
+    }
+}
