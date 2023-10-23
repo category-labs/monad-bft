@@ -540,7 +540,7 @@ impl<ST, SCT> MockMempool<ST, SCT> {
         } else {
             // Random non-empty value with size = num_fetch_txs
             TransactionList(
-                (0..self.num_fetch_txs)
+                (0..self.num_fetch_txs * 32)
                     .map(|_| self.rng.gen::<u8>())
                     .collect(),
             )
@@ -924,7 +924,7 @@ mod tests {
                 panic!("wrong event returned")
             }
         };
-        assert_eq!(txs_list_2.0.len(), 10);
+        assert_eq!(txs_list_2.0.len(), 320);
         assert_eq!(txs_list_2.0.len(), txs_list_1.0.len());
         assert_ne!(txs_list_2.0, txs_list_1.0);
     }

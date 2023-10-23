@@ -4864,11 +4864,15 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-gossip",
  "monad-mock-swarm",
+ "monad-quic",
  "monad-state",
  "monad-testutil",
  "monad-validator",
  "monad-wal",
+ "rcgen 0.11.3",
 ]
 
 [[package]]

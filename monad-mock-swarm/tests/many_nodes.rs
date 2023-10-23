@@ -67,7 +67,7 @@ fn many_nodes_noser() {
 }
 
 #[test]
-fn many_nodes_quic() {
+fn many_nodes_quic_vanilla() {
     let zero_instant = Instant::now();
 
     create_and_run_nodes::<
@@ -108,7 +108,7 @@ fn many_nodes_quic() {
         UntilTerminator::new().until_tick(Duration::from_secs(4)),
         SwarmTestConfig {
             num_nodes: 40,
-            consensus_delta: Duration::from_millis(10),
+            consensus_delta: Duration::from_millis(100),
             parallelize: true,
             expected_block: 10,
             state_root_delay: 4,
@@ -133,7 +133,7 @@ fn many_nodes_quic_bw() {
 
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-        BytesTransformer::Bw(BwTransformer::new(5)),
+        BytesTransformer::Bw(BwTransformer::new(20)),
     ];
 
     create_and_run_nodes::<
@@ -169,7 +169,7 @@ fn many_nodes_quic_bw() {
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         xfmrs,
-        UntilTerminator::new().until_tick(Duration::from_secs(100)),
+        UntilTerminator::new().until_tick(Duration::from_secs(80)),
         swarm_config,
     );
 
@@ -194,7 +194,7 @@ fn many_nodes_quic_deterministic() {
 
     let swarm_config = SwarmTestConfig {
         num_nodes: 40,
-        consensus_delta: Duration::from_millis(1000),
+        consensus_delta: Duration::from_millis(10000),
         parallelize: false,
         expected_block: 35,
         state_root_delay: u64::MAX,
