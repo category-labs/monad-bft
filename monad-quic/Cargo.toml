@@ -25,3 +25,4 @@ quinn = { workspace = true }
 quinn-proto = { workspace = true }
 
 x509-parser = { workspace = true }
+rand = { workspace = true }

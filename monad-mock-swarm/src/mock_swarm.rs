@@ -172,6 +172,7 @@ where
     fn should_terminate(&self, nodes: &Nodes<S, RS, P, LGR, ME, ST, SCT>) -> bool;
 }
 
+#[derive(Clone, Copy)]
 pub struct UntilTerminator {
     until_tick: Duration,
     until_block: usize,
