@@ -75,10 +75,10 @@ prost-types = "0.11.8"
 protobuf-src = "1.1.0"
 ptree = { version = "0.4.0", default-features = false }
 
-# the important commit: "307d80b9398d4e1e305c0131f2c3989090ec9432"
+# the important commit: "dd34d57a0a184ae23707d5ae045ec62d8f0b6ecb"
 # we can use latest release once it includes that
-quinn = { git = "https://github.com/quinn-rs/quinn.git", rev = "307d80b9" }
-quinn-proto = { git = "https://github.com/quinn-rs/quinn.git", rev = "307d80b9" }
+quinn = { git = "https://github.com/quinn-rs/quinn.git", rev = "dd34d57a" }
+quinn-proto = { git = "https://github.com/quinn-rs/quinn.git", rev = "dd34d57a" }
 
 rand = "0.8.5"
 rand_chacha = "0.3.1"

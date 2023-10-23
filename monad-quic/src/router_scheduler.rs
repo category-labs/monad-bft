@@ -13,6 +13,7 @@ use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
     TransportConfig, WriteError,
 };
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 use crate::timeout_queue::TimeoutQueue;
 
@@ -21,6 +22,9 @@ pub struct QuicRouterSchedulerConfig<GC> {
 
     pub all_peers: BTreeSet<PeerId>,
     pub me: PeerId,
+
+    pub tls_key_der: Vec<u8>,
+    pub master_seed: u64,
 
     pub gossip_config: GC,
 }
@@ -42,6 +46,8 @@ pub struct QuicRouterScheduler<G: Gossip> {
 
     pending_events: BTreeMap<Duration, Vec<RouterEvent<Vec<u8>, Vec<u8>>>>,
     pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
+
+    master_rng: StdRng,
 }
 
 const SERVER_NAME: &str = "MONAD";
@@ -52,24 +58,31 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
     type Serialized = Vec<u8>;
 
     fn new(config: Self::Config) -> Self {
+        let mut master_rng = StdRng::seed_from_u64(config.master_seed);
         let transport_config = {
             let mut config = TransportConfig::default();
             config.max_idle_timeout(None);
             // TODO reasonable initial window sizes
             Arc::new(config)
         };
+        let mut seed = [0; 32];
+        master_rng.fill_bytes(&mut seed);
         let mut endpoint = quinn_proto::Endpoint::new(
             Arc::new(EndpointConfig::default()),
             Some(Arc::new(
                 {
                     let mut server_config = quinn_proto::ServerConfig::with_crypto(Arc::new(
-                        UnsafeTlsVerifier::make_server_config(Vec::new()),
+                        UnsafeTlsVerifier::make_server_config(
+                            Vec::new(),
+                            config.tls_key_der.as_ref(),
+                        ),
                     ));
                     server_config.transport_config(transport_config.clone());
                     server_config
                 }, // TODO use_retry ?
             )),
             false,
+            Some(seed),
         );
 
         let mut connections = HashMap::new();
@@ -85,8 +98,9 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
                 SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000 + idx as u16));
             peer_ids.insert(*peer, sock_addr);
 
-            let mut client_config =
-                ClientConfig::new(Arc::new(UnsafeTlsVerifier::make_client_config(Vec::new())));
+            let mut client_config = ClientConfig::new(Arc::new(
+                UnsafeTlsVerifier::make_client_config(Vec::new(), config.tls_key_der.as_ref()),
+            ));
             client_config.transport_config(transport_config.clone());
 
             let (connection_handle, connection) = endpoint
@@ -113,6 +127,8 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
             timeouts: Default::default(),
             pending_events: Default::default(),
             pending_outbound_messages: HashMap::new(),
+
+            master_rng,
         };
 
         let mut handles: Vec<_> = scheduler.connections.keys().cloned().collect();

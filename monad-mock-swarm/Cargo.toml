@@ -39,12 +39,12 @@ monad-gossip = { path = "../monad-gossip" }
 monad-quic = { path = "../monad-quic" }
 monad-state = { path = "../monad-state", features = ["monad_test"] }
 monad-testutil = { path = "../monad-testutil" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-validator = { path = "../monad-validator" }
 
 criterion = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+rcgen = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }
 tracing = { workspace = true }

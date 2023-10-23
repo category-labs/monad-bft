@@ -8,8 +8,13 @@ use rustls::{
 
 fn make_certificate(
     extension_content: Vec<u8>,
+    tls_key: &[u8],
 ) -> Result<(rustls::Certificate, rustls::PrivateKey), Box<dyn Error>> {
-    let rcgen_key = rcgen::KeyPair::generate(&rcgen::PKCS_ED25519)?;
+    let rcgen_key = if tls_key.is_empty() {
+        rcgen::KeyPair::generate(&rcgen::PKCS_ED25519)?
+    } else {
+        rcgen::KeyPair::from_der(tls_key)?
+    };
     let key = rustls::PrivateKey(rcgen_key.serialize_der());
 
     let mut params = rcgen::CertificateParams::new(Vec::new());
@@ -29,9 +34,9 @@ fn make_certificate(
 pub struct UnsafeTlsVerifier;
 
 impl UnsafeTlsVerifier {
-    pub fn make_server_config(extension_content: Vec<u8>) -> rustls::ServerConfig {
-        let (certificate, cert_keypair) =
-            make_certificate(extension_content).expect("making certificate should always succed");
+    pub fn make_server_config(extension_content: Vec<u8>, tls_key: &[u8]) -> rustls::ServerConfig {
+        let (certificate, cert_keypair) = make_certificate(extension_content, tls_key)
+            .expect("making certificate should always succeed");
         rustls::ServerConfig::builder()
             .with_safe_defaults()
             .with_client_cert_verifier(Arc::new(Self))
@@ -39,9 +44,9 @@ impl UnsafeTlsVerifier {
             .expect("building ServerConfig should always succed")
     }
 
-    pub fn make_client_config(extension_content: Vec<u8>) -> rustls::ClientConfig {
-        let (certificate, cert_keypair) =
-            make_certificate(extension_content).expect("making certificate should always succed");
+    pub fn make_client_config(extension_content: Vec<u8>, tls_key: &[u8]) -> rustls::ClientConfig {
+        let (certificate, cert_keypair) = make_certificate(extension_content, tls_key)
+            .expect("making certificate should always succeed");
         rustls::ClientConfig::builder()
             .with_safe_defaults()
             .with_custom_certificate_verifier(Arc::new(Self))

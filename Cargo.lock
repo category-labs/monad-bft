@@ -4614,6 +4614,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
+ "rcgen 0.11.3",
  "tempfile",
  "test-case",
  "tracing",
@@ -4692,6 +4693,7 @@ dependencies = [
  "monad-types",
  "quinn",
  "quinn-proto 0.11.0",
+ "rand 0.8.5",
  "tokio",
  "x509-parser 0.15.1",
 ]
@@ -6183,7 +6185,7 @@ dependencies = [
 [[package]]
 name = "quinn"
 version = "0.11.0"
-source = "git+https://github.com/quinn-rs/quinn.git?rev=307d80b9#307d80b9398d4e1e305c0131f2c3989090ec9432"
+source = "git+https://github.com/quinn-rs/quinn.git?rev=dd34d57a#dd34d57a0a184ae23707d5ae045ec62d8f0b6ecb"
 dependencies = [
  "bytes",
  "pin-project-lite 0.2.13",
@@ -6217,7 +6219,7 @@ dependencies = [
 [[package]]
 name = "quinn-proto"
 version = "0.11.0"
-source = "git+https://github.com/quinn-rs/quinn.git?rev=307d80b9#307d80b9398d4e1e305c0131f2c3989090ec9432"
+source = "git+https://github.com/quinn-rs/quinn.git?rev=dd34d57a#dd34d57a0a184ae23707d5ae045ec62d8f0b6ecb"
 dependencies = [
  "bytes",
  "rand 0.8.5",
@@ -6234,7 +6236,7 @@ dependencies = [
 [[package]]
 name = "quinn-udp"
 version = "0.5.0"
-source = "git+https://github.com/quinn-rs/quinn.git?rev=307d80b9#307d80b9398d4e1e305c0131f2c3989090ec9432"
+source = "git+https://github.com/quinn-rs/quinn.git?rev=dd34d57a#dd34d57a0a184ae23707d5ae045ec62d8f0b6ecb"
 dependencies = [
  "bytes",
  "libc",

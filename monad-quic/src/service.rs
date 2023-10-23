@@ -447,7 +447,7 @@ impl UnsafeNoAuthQuinnConfig {
     pub fn new(me: PeerId) -> Self {
         Self {
             me,
-            client: Arc::new(UnsafeTlsVerifier::make_client_config(me.0.bytes())),
+            client: Arc::new(UnsafeTlsVerifier::make_client_config(me.0.bytes(), &[])),
             transport: Arc::new(TransportConfig::default()),
         }
     }
@@ -463,7 +463,10 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
     }
 
     fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig> {
-        Arc::new(UnsafeTlsVerifier::make_server_config(self.me.0.bytes()))
+        Arc::new(UnsafeTlsVerifier::make_server_config(
+            self.me.0.bytes(),
+            &[],
+        ))
     }
 
     fn remote_peer_id(connection: &quinn::Connection) -> Result<PeerId, Box<dyn Error>> {

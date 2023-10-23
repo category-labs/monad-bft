@@ -23,6 +23,7 @@ use monad_wal::PersistenceLogger;
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
+#[derive(Debug, Clone, Copy)]
 pub struct SwarmTestConfig {
     pub num_nodes: u16,
     pub consensus_delta: Duration,
