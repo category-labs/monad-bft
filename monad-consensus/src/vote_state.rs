@@ -16,8 +16,8 @@ use crate::messages::message::VoteMessage;
 // accumulate votes and create a QC if enough votes are received
 // only one QC should be created in a round using the first supermajority of votes received
 // At the end of a round, older rounds can be cleaned up
-#[derive(Debug)]
 #[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(Debug)]
 pub struct VoteState<SCT: SignatureCollection> {
     pending_votes:
         BTreeMap<Round, HashMap<Hash, (Vec<(NodeId, SCT::SignatureType)>, HashSet<NodeId>)>>,

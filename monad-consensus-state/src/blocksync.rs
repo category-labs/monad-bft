@@ -17,8 +17,8 @@ use crate::command::ConsensusCommand;
 
 const DEFAULT_PEER_INDEX: usize = 0;
 
-#[derive(Debug, Clone)]
 #[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(Debug, Clone)]
 pub struct InFlightBlockSync<SCT> {
     pub req_target: NodeId,
     pub retry_cnt: usize,
@@ -68,9 +68,8 @@ impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
         }
     }
 }
-
-#[derive(Debug, Clone)]
 #[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(Debug, Clone)]
 pub struct BlockSyncManager<SCT> {
     requests: HashMap<BlockId, InFlightBlockSync<SCT>>,
     id: NodeId,

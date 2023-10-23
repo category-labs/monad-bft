@@ -81,8 +81,6 @@ mod test {
         type Block = MockBlock;
         type Checkpoint = ();
         type SignatureCollection = ();
-        #[cfg(feature = "monad_test")]
-        type ConsensusState = ();
 
         fn init(
             _config: Self::Config,
@@ -116,10 +114,6 @@ mod test {
         > {
             self.events.push(event);
             Vec::new()
-        }
-        #[cfg(feature = "monad_test")]
-        fn consensus(&self) -> &Self::ConsensusState {
-            unimplemented!()
         }
     }
 

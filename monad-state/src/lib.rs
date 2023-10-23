@@ -213,16 +213,9 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub genesis_signatures: SCT,
 }
 
-impl<
-        #[cfg(feature = "monad_test")] CT: ConsensusProcess<SCT> + Eq,
-        #[cfg(not(feature = "monad_test"))] CT: ConsensusProcess<SCT>,
-        ST,
-        SCT,
-        VT,
-        LT,
-        BST,
-    > State for MonadState<CT, ST, SCT, VT, LT, BST>
+impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
 where
+    CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
@@ -236,8 +229,6 @@ where
     type Block = FullBlock<SCT>;
     type Checkpoint = Checkpoint<SCT>;
     type SignatureCollection = SCT;
-    #[cfg(feature = "monad_test")]
-    type ConsensusState = CT;
 
     fn init(
         config: Self::Config,
@@ -571,8 +562,30 @@ where
             }
         }
     }
-    #[cfg(feature = "monad_test")]
-    fn consensus(&self) -> &Self::ConsensusState {
-        &self.consensus
+}
+
+#[cfg(feature = "monad_test")]
+mod monad_test {
+    use monad_block_sync::BlockSyncProcess;
+    use monad_consensus_state::ConsensusProcess;
+    use monad_consensus_types::{
+        message_signature::MessageSignature, signature_collection::SignatureCollection,
+    };
+    use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+
+    use crate::MonadState;
+
+    impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
+    where
+        CT: ConsensusProcess<SCT> + Eq,
+        ST: MessageSignature,
+        SCT: SignatureCollection,
+        VT: ValidatorSetType,
+        LT: LeaderElection,
+        BST: BlockSyncProcess<SCT, VT>,
+    {
+        pub fn consensus(&self) -> &CT {
+            &self.consensus
+        }
     }
 }

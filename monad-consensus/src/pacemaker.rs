@@ -17,8 +17,8 @@ use crate::{
     validation::{message::well_formed, safety::Safety},
 };
 
-#[derive(Debug)]
 #[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(Debug)]
 pub struct Pacemaker<SCT: SignatureCollection> {
     delta: Duration,
 

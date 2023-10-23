@@ -33,8 +33,8 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
-#[derive(Debug, Clone)]
 #[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(Debug, Clone)]
 pub struct BlockTreeBlock<T> {
     block: FullBlock<T>,
     parent: Option<BlockId>,
