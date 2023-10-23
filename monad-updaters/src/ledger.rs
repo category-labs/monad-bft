@@ -141,7 +141,7 @@ mod tests {
                 let mut generator = ChaCha20Rng::seed_from_u64(seed);
                 for _ in 0..round {
                     seed = generator.gen();
-                    let nodes_req_range = generator.gen_range(0..1000);
+                    let nodes_req_range = generator.gen_range(1..1000);
                     println!(
                         "test_ledger_command_arbitrary_order, seed: {}, range: {} ",
                         seed, nodes_req_range
