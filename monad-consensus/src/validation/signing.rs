@@ -503,6 +503,26 @@ impl ValidatorPubKey for PubKey {
     }
 }
 
+#[cfg(feature = "monad_test")]
+mod monad_test {
+    use monad_consensus_types::{
+        message_signature::MessageSignature, signature_collection::SignatureCollection,
+    };
+
+    use super::Unverified;
+    use crate::messages::consensus_message::ConsensusMessage;
+
+    impl<S, SCT> Unverified<S, ConsensusMessage<SCT>>
+    where
+        S: MessageSignature,
+        SCT: SignatureCollection,
+    {
+        pub fn spy_internal(&self) -> &ConsensusMessage<SCT> {
+            &self.obj
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{

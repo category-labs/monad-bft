@@ -239,6 +239,7 @@ where
     states: BTreeMap<ID, Node<S>>,
     tick: Duration,
     must_deliver: bool,
+    no_duplicate_peers: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -270,6 +271,7 @@ where
             states: BTreeMap::new(),
             tick: Duration::ZERO,
             must_deliver: true,
+            no_duplicate_peers: true,
         };
 
         for peer in peers {
@@ -281,6 +283,11 @@ where
 
     pub fn can_fail_deliver(mut self) -> Self {
         self.must_deliver = false;
+        self
+    }
+
+    pub fn can_have_duplicate_peer(mut self) -> Self {
+        self.no_duplicate_peers = false;
         self
     }
 
@@ -408,6 +415,8 @@ where
 
         // No duplicate ID insertion should be allowed
         assert!(!self.states.contains_key(&id));
+        // if nodes only want to run with unique ids
+        assert!(!self.no_duplicate_peers || id.is_unique());
 
         let mut executor: MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT> = MockExecutor::new(
             S::RS::new(router_scheduler_config),

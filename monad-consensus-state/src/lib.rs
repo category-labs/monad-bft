@@ -62,7 +62,7 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     beneficiary: EthAddress,
 }
 
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq, Clone))]
 #[derive(Debug)]
 pub struct ConsensusConfig {
     pub proposal_size: usize,

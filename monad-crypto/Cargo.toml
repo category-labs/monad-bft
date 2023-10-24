@@ -30,6 +30,7 @@ tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
 libp2p-identity = ["dep:libp2p-identity", "dep:multihash"]
+monad_test = []
 rustls = ["dep:rcgen", "dep:rustls"]
 
 [[bench]]

@@ -9,7 +9,7 @@ edition = "2021"
 bench = false
 
 [features]
-monad_test = []
+monad_test = ["monad-consensus-state/monad_test", "monad-consensus-types/monad_test", "monad-crypto/monad_test"]
 
 [dependencies]
 monad-blocktree = { path = "../monad-blocktree" }

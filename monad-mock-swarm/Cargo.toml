@@ -10,9 +10,13 @@ edition = "2021"
 [lib]
 bench = false
 
+[features]
+monad_test = ["monad-consensus/monad_test", "monad-executor-glue/monad_test", "monad-state/monad_test"]
+
 [dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus-state = { path = "../monad-consensus-state" }
+monad-consensus = { path = "../monad-consensus"}
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
@@ -33,12 +37,17 @@ tracing = { workspace = true }
 itertools = { workspace = true }
 
 [dev-dependencies]
-monad-consensus = { path = "../monad-consensus" }
+monad-crypto = { path = "../monad-crypto" }
+monad-block-sync = { path = "../monad-block-sync" }
+monad-consensus = { path = "../monad-consensus", features = [
+    "monad_test",
+] }
 monad-consensus-state = { path = "../monad-consensus-state", features = [
     "monad_test",
 ] }
 monad-executor = { path = "../monad-executor", features = ["monad_test"] }
 monad-gossip = { path = "../monad-gossip" }
+monad-mock-swarm = { path = ".", features = ["monad_test"] }
 monad-quic = { path = "../monad-quic" }
 monad-state = { path = "../monad-state", features = ["monad_test"] }
 monad-testutil = { path = "../monad-testutil" }

@@ -10,22 +10,27 @@ use monad_tracing_counter::inc_count;
 use rand::{prelude::SliceRandom, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
-const DEFAULT_ID: usize = 0;
+const UNIQUE_ID: usize = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ID(usize, PeerId);
 
 impl ID {
     pub fn new(peer_id: PeerId) -> Self {
-        Self(DEFAULT_ID, peer_id)
+        Self(UNIQUE_ID, peer_id)
     }
 
-    pub fn with_identifier(mut self, identifier: usize) -> Self {
+    pub fn as_non_unique(mut self, identifier: usize) -> Self {
+        assert_ne!(identifier, UNIQUE_ID);
         self.0 = identifier;
         self
     }
 
     pub fn get_peer_id(&self) -> &PeerId {
         &self.1
+    }
+
+    pub fn is_unique(&self) -> bool {
+        self.0 == UNIQUE_ID
     }
 }
 
@@ -85,7 +90,6 @@ pub trait Transformer<M> {
         Box::new(self)
     }
 }
-
 /// adds constant latency
 #[derive(Clone, Debug)]
 pub struct LatencyTransformer(pub Duration);
@@ -506,6 +510,188 @@ impl Transformer<Vec<u8>> for BytesTransformer {
 }
 
 pub type BytesTransformerPipeline = Vec<BytesTransformer>;
+#[cfg(feature = "monad_test")]
+pub mod monad_test {
+    use std::{collections::BTreeMap, time::Duration};
+
+    use itertools::Itertools;
+    use monad_consensus::messages::consensus_message::ConsensusMessage;
+    use monad_consensus_types::{
+        message_signature::MessageSignature, signature_collection::SignatureCollection,
+    };
+    use monad_executor_glue::PeerId;
+    use monad_state::MonadMessage;
+    use monad_types::Round;
+
+    use super::{
+        LatencyTransformer, LinkMessage, RandLatencyTransformer, Transformer, TransformerStream,
+        XorLatencyTransformer, ID,
+    };
+    use crate::transformer::UNIQUE_ID;
+
+    #[derive(Debug, Clone)]
+    pub struct TwinsTransformer {
+        // PeerId -> All Duplicate
+        dups: BTreeMap<PeerId, Vec<usize>>,
+        // Round -> Deliver target
+        partition: BTreeMap<Round, Vec<ID>>,
+        // when rounds cannot be found within partition
+        default_part: Vec<ID>,
+        // block sync and associated message is dropped by default
+        ban_block_sync: bool,
+    }
+
+    impl TwinsTransformer {
+        pub fn new(
+            dups: BTreeMap<PeerId, Vec<usize>>,
+            partition: BTreeMap<Round, Vec<ID>>,
+            default_part: Vec<ID>,
+        ) -> Self {
+            Self {
+                dups,
+                partition,
+                default_part,
+                ban_block_sync: true,
+            }
+        }
+
+        pub fn allow_block_sync(mut self) -> Self {
+            self.ban_block_sync = false;
+            self
+        }
+    }
+
+    enum TwinsCapture {
+        Spread(PeerId),         // spread to all target given PeerId
+        Process(PeerId, Round), // spread to all target given PeerId and Round
+        Drop,                   // Drop the message
+    }
+    impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for TwinsTransformer
+    where
+        ST: MessageSignature,
+        SCT: SignatureCollection,
+    {
+        fn transform(
+            &mut self,
+            message: LinkMessage<MonadMessage<ST, SCT>>,
+        ) -> TransformerStream<MonadMessage<ST, SCT>> {
+            let LinkMessage {
+                to: ID(dup_identifier, pid),
+                from,
+                message,
+                from_tick,
+            } = message;
+            // only process messages that came in as default_id and spread to non-unique-ids
+            assert_eq!(dup_identifier, UNIQUE_ID);
+
+            let spy: &ConsensusMessage<SCT> = message.spy_internal();
+            let capture = match spy {
+                ConsensusMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.round),
+                ConsensusMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
+                // timeout naturally spread because liveness
+                ConsensusMessage::Timeout(_) => TwinsCapture::Spread(pid),
+                ConsensusMessage::RequestBlockSync(_) | ConsensusMessage::BlockSync(_) => {
+                    if self.ban_block_sync {
+                        TwinsCapture::Drop
+                    } else {
+                        TwinsCapture::Spread(pid)
+                    }
+                }
+            };
+
+            match capture {
+                TwinsCapture::Drop => TransformerStream::Complete(vec![]),
+                TwinsCapture::Spread(pid) => {
+                    let duplicate = self.dups.get(&pid).expect(
+                        "PeerId to duplicate mapping provided to TwinTransformer is incomplete",
+                    );
+                    TransformerStream::Continue(
+                        duplicate
+                            .iter()
+                            .map(|id| {
+                                (
+                                    Duration::ZERO,
+                                    LinkMessage {
+                                        from,
+                                        to: ID::new(pid).as_non_unique(*id),
+                                        message: message.clone(),
+                                        from_tick,
+                                    },
+                                )
+                            })
+                            .collect_vec(),
+                    )
+                }
+                TwinsCapture::Process(pid, round) => {
+                    // round unspecified is naturally treated as drop
+                    let round_dups = self.partition.get(&round).unwrap_or(&self.default_part);
+
+                    TransformerStream::Continue(
+                        round_dups
+                            .iter()
+                            .filter_map(|id| {
+                                if *id.get_peer_id() == pid {
+                                    let msg = LinkMessage {
+                                        from,
+                                        to: *id,
+                                        message: message.clone(),
+                                        from_tick,
+                                    };
+                                    Some((Duration::ZERO, msg))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum MonadMessageTransformer {
+        Latency(LatencyTransformer),
+        XorLatency(XorLatencyTransformer),
+        RandLatency(RandLatencyTransformer),
+        Twins(TwinsTransformer),
+    }
+
+    impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for MonadMessageTransformer
+    where
+        ST: MessageSignature,
+        SCT: SignatureCollection,
+    {
+        fn transform(
+            &mut self,
+            message: LinkMessage<MonadMessage<ST, SCT>>,
+        ) -> TransformerStream<MonadMessage<ST, SCT>> {
+            match self {
+                MonadMessageTransformer::Latency(t) => t.transform(message),
+                MonadMessageTransformer::XorLatency(t) => t.transform(message),
+                MonadMessageTransformer::RandLatency(t) => t.transform(message),
+                MonadMessageTransformer::Twins(t) => t.transform(message),
+            }
+        }
+
+        fn min_external_delay(&self) -> Option<Duration> {
+            match self {
+                MonadMessageTransformer::Latency(t) => {
+                    <LatencyTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
+                }
+                MonadMessageTransformer::XorLatency(t) => {
+                    <XorLatencyTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
+                }
+                MonadMessageTransformer::RandLatency(t) => <RandLatencyTransformer as Transformer<
+                    MonadMessage<ST, SCT>,
+                >>::min_external_delay(t),
+                MonadMessageTransformer::Twins(t) => {
+                    <TwinsTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
+                }
+            }
+        }
+    }
+}
 
 /**
  * pipeline consist of transformers that goes through all the output
@@ -581,22 +767,14 @@ mod test {
     use rand_chacha::ChaCha20Rng;
 
     use super::{GenericTransformer, LatencyTransformer, Pipeline, Transformer, ID};
-    use crate::transformer::{
-        BytesSplitterTransformer, DropTransformer, LinkMessage, PartitionTransformer,
-        PeriodicTransformer, RandLatencyTransformer, ReplayTransformer, TransformerStream,
-        XorLatencyTransformer,
+    use crate::{
+        transformer::{
+            BytesSplitterTransformer, DropTransformer, LinkMessage, PartitionTransformer,
+            PeriodicTransformer, RandLatencyTransformer, ReplayTransformer, TransformerStream,
+            XorLatencyTransformer,
+        },
+        utils::test_tool::*,
     };
-
-    /// FIXME these should take in from/to/from_tick as params, not have defaults
-    fn get_mock_message() -> LinkMessage<String> {
-        let keys = create_keys(2);
-        LinkMessage {
-            from: ID::new(PeerId(keys[0].pubkey())),
-            to: ID::new(PeerId(keys[1].pubkey())),
-            message: "Dummy Message".to_string(),
-            from_tick: Duration::from_millis(10),
-        }
-    }
 
     #[test]
     fn test_latency_transformer() {
@@ -789,6 +967,211 @@ mod test {
     }
 
     #[test]
+    fn test_twins_transformer() {
+        use std::collections::BTreeMap;
+
+        use itertools::Itertools;
+        use monad_types::Round;
+
+        use crate::transformer::monad_test::TwinsTransformer;
+
+        let keys = create_keys(2);
+
+        let pid = PeerId(keys[0].pubkey());
+        let dups = (1..4)
+            .map(|i| ID::new(pid).as_non_unique(i))
+            .collect::<Vec<_>>();
+        let default_id: ID = ID::new(PeerId(keys[0].pubkey()));
+        let mut pid_to_dups = BTreeMap::new();
+        pid_to_dups.insert(pid, (1..4).collect_vec());
+        let mut filter = BTreeMap::new();
+        filter.insert(Round(1), dups.iter().take(2).copied().collect());
+        filter.insert(Round(2), dups.iter().skip(1).take(2).copied().collect());
+
+        let mut t = TwinsTransformer::new(pid_to_dups, filter, vec![]);
+
+        for i in 3..30 {
+            // messages that is not part of the specified round result in default
+            for msg in vec![
+                fake_proposal_message(&keys[0], Round(i)),
+                fake_vote_message(&keys[0], Round(i)),
+            ] {
+                let TransformerStream::Continue(c) = t.transform(LinkMessage {
+                    from: default_id,
+                    to: default_id,
+                    message: msg,
+                    from_tick: Duration::ZERO,
+                }) else {
+                    panic!("twins_transformer returned wrong type")
+                };
+                assert_eq!(c.len(), 0);
+            }
+        }
+
+        // timeout message gets spread regardless of rounds
+        let TransformerStream::Continue(c) = t.transform(LinkMessage {
+            from: default_id,
+            to: default_id,
+            message: fake_timeout_message(&keys[0]),
+            from_tick: Duration::ZERO,
+        }) else {
+            panic!("twins_transformer returned wrong type")
+        };
+        assert_eq!(c.len(), 3);
+        for (
+            i,
+            (
+                t,
+                LinkMessage {
+                    from,
+                    to,
+                    message,
+                    from_tick,
+                },
+            ),
+        ) in c.into_iter().enumerate()
+        {
+            assert_eq!(t, Duration::ZERO);
+            assert_eq!(from, default_id);
+            assert_eq!(to, dups[i]);
+            assert_eq!(message, fake_timeout_message(&keys[0]));
+            assert_eq!(from_tick, Duration::ZERO)
+        }
+
+        // on round 1, message sent to correct pid split into 2 new messages
+        for msg in vec![
+            fake_proposal_message(&keys[0], Round(1)),
+            fake_vote_message(&keys[0], Round(1)),
+        ] {
+            let TransformerStream::Continue(c) = t.transform(LinkMessage {
+                from: default_id,
+                to: default_id,
+                message: msg.clone(),
+                from_tick: Duration::ZERO,
+            }) else {
+                panic!("twins_transformer returned wrong type")
+            };
+            assert_eq!(c.len(), 2);
+
+            for (
+                i,
+                (
+                    t,
+                    LinkMessage {
+                        from,
+                        to,
+                        message,
+                        from_tick,
+                    },
+                ),
+            ) in c.into_iter().enumerate()
+            {
+                assert_eq!(t, Duration::ZERO);
+                assert_eq!(from, default_id);
+                assert_eq!(to, dups[i]);
+                assert_eq!(message, msg);
+                assert_eq!(from_tick, Duration::ZERO)
+            }
+        }
+
+        // on round 2, message sent to correct pid split into 2 new messages (later 2 dups)
+        for msg in vec![
+            fake_proposal_message(&keys[0], Round(2)),
+            fake_vote_message(&keys[0], Round(2)),
+        ] {
+            let TransformerStream::Continue(c) = t.transform(LinkMessage {
+                from: default_id,
+                to: default_id,
+                message: msg.clone(),
+                from_tick: Duration::ZERO,
+            }) else {
+                panic!("twins_transformer returned wrong type")
+            };
+            assert_eq!(c.len(), 2);
+
+            for (
+                i,
+                (
+                    t,
+                    LinkMessage {
+                        from,
+                        to,
+                        message,
+                        from_tick,
+                    },
+                ),
+            ) in c.into_iter().enumerate()
+            {
+                assert_eq!(t, Duration::ZERO);
+                assert_eq!(from, default_id);
+                assert_eq!(to, dups[i + 1]);
+                assert_eq!(message, msg);
+                assert_eq!(from_tick, Duration::ZERO)
+            }
+        }
+
+        // Sending Message to any round Key that is not logged will have no impact
+        let wrong_id: ID = ID::new(PeerId(keys[1].pubkey()));
+
+        for r in 0..30 {
+            for msg in vec![
+                fake_proposal_message(&keys[1], Round(r)),
+                fake_vote_message(&keys[1], Round(r)),
+            ] {
+                let stream = t.transform(LinkMessage {
+                    from: wrong_id,
+                    to: wrong_id,
+                    message: msg.clone(),
+                    from_tick: Duration::ZERO,
+                });
+                // no matter stage is drop triggered, it should be empty always
+                match stream {
+                    TransformerStream::Complete(c) => assert_eq!(c.len(), 0),
+                    TransformerStream::Continue(c) => assert_eq!(c.len(), 0),
+                };
+            }
+        }
+
+        // throwing it block sync message should get rejected
+
+        for msg in vec![
+            fake_request_block_sync(&keys[1]),
+            fake_block_sync(&keys[1]),
+            fake_request_block_sync(&keys[0]),
+            fake_block_sync(&keys[0]),
+        ] {
+            let TransformerStream::Complete(c) = t.transform(LinkMessage {
+                from: default_id,
+                to: default_id,
+                message: msg,
+                from_tick: Duration::ZERO,
+            }) else {
+                panic!("twins_transformer returned wrong type")
+            };
+            assert_eq!(c.len(), 0);
+        }
+
+        // however if we enable block_sync then it should be broadcasted
+        t = t.allow_block_sync();
+        for msg in vec![
+            fake_request_block_sync(&keys[1]),
+            fake_block_sync(&keys[1]),
+            fake_request_block_sync(&keys[0]),
+            fake_block_sync(&keys[0]),
+        ] {
+            let TransformerStream::Continue(c) = t.transform(LinkMessage {
+                from: default_id,
+                to: default_id,
+                message: msg,
+                from_tick: Duration::ZERO,
+            }) else {
+                panic!("twins_transformer returned wrong type")
+            };
+            assert_eq!(c.len(), 3);
+        }
+    }
+
+    #[test]
     fn test_pipeline_basic_flow() {
         let mut pipe = vec![LatencyTransformer(Duration::from_millis(30))];
 
@@ -846,7 +1229,6 @@ mod test {
             assert_eq!(result[0].0, Duration::from_millis(60));
             assert!(result[0].1 == mock_message);
         }
-        // and then you nver get extra mili
         for idx in 7..1000 {
             let mut mock_message = get_mock_message();
             mock_message.from_tick = Duration::from_millis(idx);

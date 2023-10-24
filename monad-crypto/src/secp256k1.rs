@@ -5,6 +5,7 @@ use crate::hasher::{Hashable, Hasher, HasherType};
 
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
+#[cfg_attr(feature = "monad_test", derive(Clone))]
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);

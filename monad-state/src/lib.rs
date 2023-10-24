@@ -567,13 +567,31 @@ where
 #[cfg(feature = "monad_test")]
 mod monad_test {
     use monad_block_sync::BlockSyncProcess;
+    use monad_consensus::{
+        messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
+    };
     use monad_consensus_state::ConsensusProcess;
     use monad_consensus_types::{
-        message_signature::MessageSignature, signature_collection::SignatureCollection,
+        certificate_signature::CertificateKeyPair, message_signature::MessageSignature,
+        signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
     };
     use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
-    use crate::MonadState;
+    use crate::{MonadConfig, MonadMessage, MonadState, SignatureCollectionKeyPairType};
+
+    impl<ST, SCT> MonadMessage<ST, SCT>
+    where
+        ST: MessageSignature,
+        SCT: SignatureCollection,
+    {
+        pub fn spy_internal(&self) -> &ConsensusMessage<SCT> {
+            return self.0.spy_internal();
+        }
+
+        pub fn new(msg: Unverified<ST, ConsensusMessage<SCT>>) -> Self {
+            Self(msg)
+        }
+    }
 
     impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
     where
@@ -586,6 +604,28 @@ mod monad_test {
     {
         pub fn consensus(&self) -> &CT {
             &self.consensus
+        }
+    }
+
+    impl<SCT, TVT> MonadConfig<SCT, TVT>
+    where
+        SCT: SignatureCollection,
+        TVT: TransactionValidator,
+    {
+        fn dup(&self, secret: [u8; 32]) -> Self {
+            Self {
+                transaction_validator: self.transaction_validator.clone(),
+                validators: self.validators.clone(),
+                key: self.key.clone(),
+                certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(secret).unwrap(),
+                beneficiary: self.beneficiary,
+
+                delta: self.delta,
+                consensus_config: self.consensus_config.clone(),
+                genesis_block: self.genesis_block.clone(),
+                genesis_vote_info: self.genesis_vote_info,
+                genesis_signatures: self.genesis_signatures.clone(),
+            }
         }
     }
 }
