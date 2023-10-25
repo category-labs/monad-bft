@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use monad_executor::Executor;
 use monad_executor_glue::{
     CheckpointCommand, Command, ExecutionLedgerCommand, LedgerCommand, MempoolCommand,
@@ -64,14 +64,14 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        // FIXME boxing is unnecessary
-        futures::stream::select_all(vec![
-            this.router.by_ref().boxed_local(),
-            this.timer.by_ref().boxed_local(),
-            this.mempool.by_ref().boxed_local(),
-            this.ledger.by_ref().boxed_local(),
+        futures::future::select_all(vec![
+            this.timer.next().boxed_local(),
+            this.mempool.next().boxed_local(),
+            this.ledger.next().boxed_local(),
+            this.router.next().boxed_local(),
         ])
-        .poll_next_unpin(cx)
+        .map(|(event, _, _)| event)
+        .poll_unpin(cx)
     }
 }
 
