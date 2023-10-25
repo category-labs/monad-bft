@@ -1,0 +1,24 @@
+{
+    "description": "happy_path, no twins just 4 nodes, all connected",
+    "nodes": ["Alice", "Bob", "Carol", "David"],    
+    "twins": [],
+    "expected_block_default": 7,
+    "round": 10,
+    "liveness": 30,
+    "timeout_ms": 1000,
+    "delta_ms": 10,
+    "allow_block_sync": false,
+    "partition": [
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol", "David"]]
+    ],
+    "default_partition": [["Alice"], ["Bob"], ["Carol"], ["David"]]
+}

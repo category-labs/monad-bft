@@ -4810,6 +4810,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-twins"
+version = "0.1.0"
+dependencies = [
+ "monad-block-sync",
+ "monad-consensus",
+ "monad-consensus-state",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-mock-swarm",
+ "monad-state",
+ "monad-testutil",
+ "monad-twins-utils",
+ "monad-types",
+ "monad-validator",
+ "monad-wal",
+ "serde",
+ "serde_json",
+ "test-case",
+]
+
+[[package]]
+name = "monad-twins-utils"
+version = "0.1.0"
+dependencies = [
+ "itertools",
+ "monad-consensus-types",
+ "monad-executor-glue",
+ "monad-mock-swarm",
+ "monad-state",
+ "monad-testutil",
+ "monad-types",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "monad-types"
 version = "0.1.0"
 dependencies = [
@@ -7191,6 +7231,7 @@ version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b420ce6e3d8bd882e9b243c6eed35dbc9a6110c9769e74b584e0d68d1f20c65"
 dependencies = [
+ "indexmap 2.0.2",
  "itoa",
  "ryu",
  "serde",

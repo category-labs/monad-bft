@@ -30,6 +30,7 @@ members = [
     "monad-testground",
     "monad-testutil",
     "monad-tracing-counter",
+    "monad-twins",
     "monad-types",
     "monad-updaters",
     "monad-validator",

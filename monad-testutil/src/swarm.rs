@@ -2,8 +2,12 @@ use std::time::Duration;
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::BlockType, message_signature::MessageSignature, quorum_certificate::genesis_vote_info,
-    signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
+    block::BlockType,
+    message_signature::MessageSignature,
+    quorum_certificate::genesis_vote_info,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    transaction_validator::TransactionValidator,
+    voting::ValidatorMapping,
 };
 use monad_crypto::{
     hasher::HasherType,
@@ -41,6 +45,28 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
+    complete_config::<ST, SCT, TVT>(
+        tvt,
+        keys,
+        cert_keys,
+        validator_mapping,
+        delta,
+        state_root_delay,
+    )
+}
+
+pub fn complete_config<
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    TVT: TransactionValidator,
+>(
+    tvt: TVT,
+    keys: Vec<KeyPair>,
+    cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
+    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    delta: Duration,
+    state_root_delay: u64,
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let voting_keys = keys
         .iter()

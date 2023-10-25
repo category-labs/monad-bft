@@ -149,6 +149,10 @@ pub fn create_certificate_keys<SCT: SignatureCollection>(
     res
 }
 
+pub fn create_seed_for_certificate_keys<SCT: SignatureCollection>(num_keys: u32) -> Vec<u64> {
+    (0..num_keys).map(|i| i as u64 + u32::MAX as u64).collect()
+}
+
 pub fn get_genesis_config<'k, H, SCT, TVT>(
     keys: impl Iterator<Item = &'k (NodeId, &'k SignatureCollectionKeyPairType<SCT>)>,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -221,4 +225,10 @@ pub fn get_certificate_key<SCT: SignatureCollection>(
     hasher.update(seed.to_le_bytes());
     let mut hash = hasher.hash();
     <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash.0).unwrap()
+}
+
+pub fn get_certificate_key_secret(seed: u64) -> [u8; 32] {
+    let mut hasher = HasherType::new();
+    hasher.update(seed.to_le_bytes());
+    hasher.hash().0
 }

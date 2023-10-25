@@ -1,0 +1,16 @@
+{
+    "description": "no twins, david is never connected to the rest, but rest should make progress",
+    "nodes": ["Alice", "Bob", "Carol", "David"],    
+    "twins": [],
+    "liveness": 30,
+    "expected_block_default": 10,
+    "expected_block": {
+        "David": 0
+    },
+    "round": 10,
+    "timeout_ms": 2000,
+    "delta_ms": 10,
+    "partition": [
+    ],
+    "default_partition": [["Alice", "Bob", "Carol"], ["David"]]
+}

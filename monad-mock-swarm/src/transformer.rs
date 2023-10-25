@@ -25,6 +25,10 @@ impl ID {
         self
     }
 
+    pub fn get_identifier(&self) -> &usize {
+        &self.0
+    }
+
     pub fn get_peer_id(&self) -> &PeerId {
         &self.1
     }
@@ -546,18 +550,14 @@ pub mod monad_test {
             dups: BTreeMap<PeerId, Vec<usize>>,
             partition: BTreeMap<Round, Vec<ID>>,
             default_part: Vec<ID>,
+            ban_block_sync: bool,
         ) -> Self {
             Self {
                 dups,
                 partition,
                 default_part,
-                ban_block_sync: true,
+                ban_block_sync,
             }
-        }
-
-        pub fn allow_block_sync(mut self) -> Self {
-            self.ban_block_sync = false;
-            self
         }
     }
 
@@ -691,6 +691,8 @@ pub mod monad_test {
             }
         }
     }
+
+    pub type MonadMessageTransformerPipeline = Vec<MonadMessageTransformer>;
 }
 
 /**
@@ -988,7 +990,7 @@ mod test {
         filter.insert(Round(1), dups.iter().take(2).copied().collect());
         filter.insert(Round(2), dups.iter().skip(1).take(2).copied().collect());
 
-        let mut t = TwinsTransformer::new(pid_to_dups, filter, vec![]);
+        let mut t = TwinsTransformer::new(pid_to_dups.clone(), filter.clone(), vec![], true);
 
         for i in 3..30 {
             // messages that is not part of the specified round result in default
@@ -1152,7 +1154,7 @@ mod test {
         }
 
         // however if we enable block_sync then it should be broadcasted
-        t = t.allow_block_sync();
+        t = TwinsTransformer::new(pid_to_dups, filter, vec![], false);
         for msg in vec![
             fake_request_block_sync(&keys[1]),
             fake_block_sync(&keys[1]),

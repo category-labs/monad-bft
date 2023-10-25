@@ -1,0 +1,15 @@
+{
+    "description": "malformed json",
+    "nodes": ["Alice", "Bob", "Carol", "David"],    
+    "twins": [],
+    "expected_block_default": 10,
+    "round": 10,
+    "timeout_ms": 1000,
+    "delta_ms": 10,
+    "partition": [
+        [["Alice", "Bob", "Carol", "David"]],
+        [["Alice", "Bob", "Carol"]],
+        [["Alice", "Bob", "Carol", "David"]]
+    ],
+    "default_partition": [["Alice"], ["Bob"], ["Carol"], ["David"]]
+}

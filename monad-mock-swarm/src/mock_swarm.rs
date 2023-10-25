@@ -205,6 +205,13 @@ impl ProgressTerminator {
             timeout,
         }
     }
+
+    pub fn extend_all(&mut self, progress: usize) {
+        // extend the required termination progress of all monitor
+        for original_progress in self.nodes_monitor.values_mut() {
+            *original_progress += progress;
+        }
+    }
 }
 
 impl<S> NodesTerminator<S> for ProgressTerminator
@@ -226,13 +233,45 @@ where
             );
         }
 
-        nodes.states.iter().all(|(peer_id, node)| {
-            if let Some(expected_len) = self.nodes_monitor.get(peer_id) {
-                node.executor.ledger().get_blocks().len() > *expected_len
-            } else {
-                true
+        let mut block_ref = None;
+        for (peer_id, expected_len) in &self.nodes_monitor {
+            let blocks = nodes
+                .states
+                .get(peer_id)
+                .expect("node must exists")
+                .executor
+                .ledger()
+                .get_blocks();
+            if blocks.len() < *expected_len {
+                return false;
             }
-        })
+            match block_ref {
+                None => block_ref = Some(blocks),
+                Some(reference) => {
+                    if reference.len() < blocks.len() {
+                        block_ref = Some(blocks);
+                    }
+                }
+            }
+        }
+
+        // reference to the longest ledger
+        let block_ref = block_ref.expect("must have at least 1 entry");
+        // once termination condition is met, all the ledger should also have identical blocks
+        for (peer_id, expected_len) in &self.nodes_monitor {
+            let blocks = nodes
+                .states
+                .get(peer_id)
+                .expect("node must exists")
+                .executor
+                .ledger()
+                .get_blocks();
+            for i in 0..(*expected_len) {
+                assert!(block_ref[i] == blocks[i]);
+            }
+        }
+
+        true
     }
 }
 
@@ -272,8 +311,6 @@ where
             u64,
         )>,
     ) -> Self {
-        assert!(!peers.is_empty());
-
         let mut nodes = Self {
             states: BTreeMap::new(),
             tick: Duration::ZERO,
@@ -453,5 +490,9 @@ where
                 current_seed: rng.gen(),
             },
         );
+    }
+
+    pub fn update_pipeline(&mut self, id: &ID, pipeline: S::P) {
+        self.states.get_mut(id).map(|node| node.pipeline = pipeline);
     }
 }

@@ -1,0 +1,29 @@
+[package]
+name = "monad-twins"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dev-dependencies]
+monad-block-sync = { path = "../monad-block-sync" }
+monad-consensus = { path = "../monad-consensus", features = ["monad_test"] }
+monad-consensus-state = { path = "../monad-consensus-state", features = ["monad_test"] }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-executor = { path = "../monad-executor", features = ["monad_test"] }
+monad-executor-glue = { path = "../monad-executor-glue", features = ["monad_test"] }
+monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-state = { path = "../monad-state", features = ["monad_test"]}
+monad-testutil = { path = "../monad-testutil" }
+monad-twins-utils = { path = "utils" }
+monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
+monad-wal = { path = "../monad-wal" }
+
+serde = {version = "1.0.130", features= ["derive"] }
+serde_json = {version = "1.0.68", features= ["preserve_order"] }
+test-case = { workspace = true }

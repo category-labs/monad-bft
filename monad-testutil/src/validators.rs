@@ -19,7 +19,18 @@ pub fn create_keys_w_validators<SCT: SignatureCollection>(
 ) {
     let keys = create_keys(num_nodes);
     let certificate_keys = create_certificate_keys::<SCT>(num_nodes);
+    let (validators, validator_mapping) =
+        complete_keys_w_validators::<SCT>(&keys, &certificate_keys);
+    (keys, certificate_keys, validators, validator_mapping)
+}
 
+pub fn complete_keys_w_validators<SCT: SignatureCollection>(
+    keys: &[KeyPair],
+    certificate_keys: &[SignatureCollectionKeyPairType<SCT>],
+) -> (
+    ValidatorSet,
+    ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+) {
     let staking_list = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))
@@ -35,5 +46,5 @@ pub fn create_keys_w_validators<SCT: SignatureCollection>(
     let validators = ValidatorSet::new(staking_list).expect("create validator set");
     let validator_mapping = ValidatorMapping::new(voting_identity);
 
-    (keys, certificate_keys, validators, validator_mapping)
+    (validators, validator_mapping)
 }

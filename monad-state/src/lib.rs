@@ -612,7 +612,7 @@ mod monad_test {
         SCT: SignatureCollection,
         TVT: TransactionValidator,
     {
-        fn dup(&self, secret: [u8; 32]) -> Self {
+        pub fn dup(&self, secret: [u8; 32]) -> Self {
             Self {
                 transaction_validator: self.transaction_validator.clone(),
                 validators: self.validators.clone(),
