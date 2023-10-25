@@ -10,3 +10,6 @@ pub mod mempool;
 
 #[cfg(feature = "tokio")]
 pub mod timer;
+
+#[cfg(feature = "tokio")]
+pub mod local_router;
