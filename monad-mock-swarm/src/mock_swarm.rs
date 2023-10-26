@@ -6,8 +6,9 @@ use std::{
 };
 
 use itertools::Itertools;
+use monad_consensus_state::ConsensusProcess;
 use monad_executor::{timed_event::TimedEvent, Executor, State};
-use monad_types::{Deserializable, Serializable};
+use monad_types::{Deserializable, Round, Serializable};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -152,6 +153,7 @@ where
 pub struct UntilTerminator {
     until_tick: Duration,
     until_block: usize,
+    until_round: Round,
 }
 
 impl Default for UntilTerminator {
@@ -165,6 +167,7 @@ impl UntilTerminator {
         UntilTerminator {
             until_tick: Duration::MAX,
             until_block: usize::MAX,
+            until_round: Round(u64::MAX),
         }
     }
 
@@ -175,6 +178,11 @@ impl UntilTerminator {
 
     pub fn until_block(mut self, b_cnt: usize) -> Self {
         self.until_block = b_cnt;
+        self
+    }
+
+    pub fn until_round(mut self, round: Round) -> Self {
+        self.until_round = round;
         self
     }
 }
@@ -189,6 +197,10 @@ where
                 .states
                 .values()
                 .any(|node| node.executor.ledger().get_blocks().len() > self.until_block)
+            || nodes
+                .states
+                .values()
+                .any(|node| node.state.consensus().get_current_round() > self.until_round)
     }
 }
 // observe and monitor progress of certain nodes until commit progress is achieved for all
