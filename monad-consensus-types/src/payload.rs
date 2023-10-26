@@ -125,6 +125,8 @@ impl Hashable for Payload {
         state.update(self.txns.0.as_bytes());
         self.header.hash(state);
         state.update(self.seq_num.as_bytes());
+        state.update(self.beneficiary.0.as_bytes());
+        state.update(self.randao_reveal.0.as_bytes());
     }
 }
 

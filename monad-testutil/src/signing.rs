@@ -106,6 +106,8 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.update(b.payload.header.gas_used);
     hasher.update(b.payload.seq_num.as_bytes());
     hasher.update(b.qc.info.vote.id.0);
+    hasher.update(b.payload.beneficiary.0.as_bytes());
+    hasher.update(b.payload.randao_reveal.0.as_bytes());
     hasher.update(b.qc.signatures.get_hash::<HasherType>());
 
     hasher.hash()
