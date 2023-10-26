@@ -3,8 +3,7 @@ pub mod convert;
 use std::{fmt::Debug, hash::Hash};
 
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage, pacemaker::PacemakerTimerExpire,
-    validation::signing::Unverified,
+    messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
 };
 use monad_consensus_types::{
     block::FullBlock,
@@ -14,7 +13,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, Epoch, NodeId, ValidatorData};
+use monad_types::{BlockId, Epoch, NodeId, TimeoutVariant, ValidatorData};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId(pub PubKey);
@@ -61,9 +60,10 @@ pub enum TimerCommand<E> {
     // TODO create test to demonstrate faulty behavior if written improperly
     Schedule {
         duration: std::time::Duration,
+        variant: TimeoutVariant,
         on_timeout: E,
     },
-    ScheduleReset,
+    ScheduleReset(TimeoutVariant),
 }
 
 pub enum MempoolCommand<SCT> {
@@ -171,7 +171,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         sender: PubKey,
         unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
     },
-    Timeout(PacemakerTimerExpire),
+    Timeout(TimeoutVariant),
     FetchedTxs(FetchTxParams<SCT>, TransactionList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),

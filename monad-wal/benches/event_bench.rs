@@ -6,7 +6,6 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    pacemaker::PacemakerTimerExpire,
     validation::signing::Unverified,
 };
 use monad_consensus_types::{
@@ -29,7 +28,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, NodeId, Round, Serializable};
+use monad_types::{BlockId, NodeId, Round, Serializable, TimeoutVariant};
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
     PersistenceLogger,
@@ -241,7 +240,7 @@ fn bench_timeout(c: &mut Criterion) {
 
 fn bench_local_timeout(c: &mut Criterion) {
     let event: MonadEvent<SecpSignature, MultiSig<SecpSignature>> =
-        MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(PacemakerTimerExpire {}));
+        MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(TimeoutVariant::Pacemaker));
 
     let mut bencher = MonadEventBencher::new(event);
 

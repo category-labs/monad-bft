@@ -384,10 +384,10 @@ where
                 let node = self.states.get_mut(&message.to);
                 // if message must be delivered, then node must exists
                 assert!(!self.must_deliver || node.is_some());
-                node.map(|node| {
+                if let Some(node) = node {
                     node.pending_inbound_messages
                         .push(Reverse((sched_tick, message)))
-                });
+                };
             }
             if let Some((tick, _)) = emitted_event {
                 return Some(tick);
@@ -430,10 +430,11 @@ where
                 let node = self.states.get_mut(&message.to);
                 // if message must be delivered, then node must exists
                 assert!(!self.must_deliver || node.is_some());
-                node.map(|node| {
+
+                if let Some(node) = node {
                     node.pending_inbound_messages
                         .push(Reverse((sched_tick, message)))
-                });
+                };
             }
         }
         None

@@ -5,7 +5,6 @@ package monad_proto.event;
 import "basic.proto";
 import "block.proto";
 import "message.proto";
-import "pacemaker.proto";
 import "quorum_certificate.proto";
 import "signing.proto";
 import "timeout.proto";
@@ -20,6 +19,21 @@ message ProtoPeerId {
 message ProtoMessageWithSender {
   monad_proto.basic.ProtoPubkey sender = 1;
   monad_proto.message.ProtoUnverifiedConsensusMessage unverified_message = 2;
+}
+
+message ProtoPaceMakerTimeout {
+  // left empty on purpose
+}
+
+message ProtoBlockSyncTimeout {
+    monad_proto.basic.ProtoBlockId block_id = 1;
+}
+
+message ProtoScheduleTimeout {
+  oneof event {
+    ProtoPaceMakerTimeout pacemaker = 1;
+    ProtoBlockSyncTimeout block_sync = 2;
+  }
 }
 
 message ProtoFetchedTxs {
@@ -65,7 +79,7 @@ message ProtoStateUpdateEvent {
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
-    monad_proto.pacemaker.ProtoPacemakerTimerExpire timeout = 2;
+    ProtoScheduleTimeout timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
     ProtoFetchedFullTxs fetched_full_txs = 4;
     ProtoAdvanceEpochEvent advance_epoch = 5;

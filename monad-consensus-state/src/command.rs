@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
-    pacemaker::{PacemakerCommand, PacemakerTimerExpire},
+    messages::consensus_message::ConsensusMessage, pacemaker::PacemakerCommand,
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
@@ -12,7 +11,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_executor_glue::RouterTarget;
-use monad_types::{BlockId, Epoch, NodeId};
+use monad_types::{BlockId, Epoch, NodeId, TimeoutVariant};
 
 use crate::blocksync::InFlightBlockSync;
 
@@ -23,9 +22,9 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     },
     Schedule {
         duration: Duration,
-        on_timeout: PacemakerTimerExpire,
+        on_timeout: TimeoutVariant,
     },
-    ScheduleReset,
+    ScheduleReset(TimeoutVariant),
     FetchTxs(usize, Vec<TransactionList>, FetchTxParams<SCT>),
     FetchTxsReset,
     FetchFullTxs(TransactionList, FetchFullTxParams<SCT>),
@@ -58,14 +57,13 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
                 target: RouterTarget::Broadcast,
                 message: ConsensusMessage::Timeout(message),
             },
-            PacemakerCommand::Schedule {
+            PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
                 duration,
-                on_timeout,
-            } => ConsensusCommand::Schedule {
-                duration,
-                on_timeout,
+                on_timeout: TimeoutVariant::Pacemaker,
             },
-            PacemakerCommand::ScheduleReset => ConsensusCommand::ScheduleReset,
+            PacemakerCommand::ScheduleReset => {
+                ConsensusCommand::ScheduleReset(TimeoutVariant::Pacemaker)
+            }
         }
     }
 }

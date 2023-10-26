@@ -33,4 +33,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
 
+ntest = { workspace = true }
 test-case = { workspace = true }

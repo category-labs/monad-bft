@@ -34,11 +34,12 @@ monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
 futures = { workspace = true }
+itertools = { workspace = true }
+priority-queue = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
-itertools = { workspace = true }
 
 [dev-dependencies]
 monad-block-sync = { path = "../monad-block-sync" }

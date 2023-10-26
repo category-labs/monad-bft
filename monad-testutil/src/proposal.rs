@@ -98,7 +98,7 @@ where
 
     // next_tc uses the keys to generate a timeout certificate
     // to ensure that the consensus state is consistent with the ProposalGen state
-    // call state.pacemaker.handle_event(&mut state.safety, &state.high_qc, PacemakerTimerExpire);
+    // call state.pacemaker.handle_event(&mut state.safety, &state.high_qc);
     // before adding the state's key to keys
     pub fn next_tc<VT: ValidatorSetType>(
         &mut self,
