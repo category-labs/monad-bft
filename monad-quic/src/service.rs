@@ -1,20 +1,16 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::HashMap,
     error::Error,
     marker::PhantomData,
     net::SocketAddr,
     ops::DerefMut,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll},
+    task::{Poll, Waker},
     time::{Duration, Instant},
 };
 
-use futures::{
-    future::BoxFuture,
-    stream::{FuturesUnordered, SelectAll},
-    Future, FutureExt, Stream, StreamExt,
-};
+use futures::{future::BoxFuture, stream::SelectAll, FutureExt, Stream, StreamExt};
 use monad_crypto::{
     rustls::{self, UnsafeTlsVerifier},
     secp256k1::PubKey,
@@ -23,8 +19,9 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, PeerId, RouterCommand};
 use monad_gossip::{Gossip, GossipEvent};
 use monad_types::{Deserializable, Serializable};
-use quinn::{Connecting, Connection, Endpoint, RecvStream, SendStream};
-use quinn_proto::{ClientConfig, TransportConfig};
+use quinn::{Connecting, RecvStream};
+use quinn_proto::{congestion::CubicConfig, ClientConfig, TransportConfig};
+use tokio::sync::mpsc::error::TrySendError;
 
 // used for TLS self-signed cert
 const SERVER_NAME: &str = "MONAD";
@@ -45,14 +42,10 @@ where
 
     accept: BoxFuture<'static, Option<Connecting>>,
     inbound_connections: SelectAll<InboundConnection>,
-
-    idle_outbound_connections: HashMap<PeerId, IdleOutboundConnection>,
-    busy_outbound_connections: FuturesUnordered<BusyOutboundConnection>,
-    // invariant: if outbound connection to a peer exists in {idle | busy}, there must exist an
-    // entry in pending_outbound_messages
-    pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
+    outbound_messages: HashMap<PeerId, tokio::sync::mpsc::Sender<Vec<u8>>>,
 
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
+    waker: Option<Waker>,
 
     _pd: PhantomData<(M, OM)>,
 }
@@ -84,8 +77,11 @@ where
     pub fn new(config: ServiceConfig<QC>, gossip_config: G::Config) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
         server_config.transport_config(config.quinn_config.transport());
-        let endpoint = quinn::Endpoint::server(server_config, config.server_address)
-            .expect("Endpoint initialization shouldn't fail");
+        let endpoint =
+            quinn::Endpoint::server(server_config, config.server_address).expect(&format!(
+                "Endpoint initialization shouldn't fail: {:?}",
+                config.server_address
+            ));
 
         let accept = {
             let endpoint = endpoint.clone();
@@ -106,12 +102,10 @@ where
 
             accept,
             inbound_connections: SelectAll::new(),
-
-            idle_outbound_connections: HashMap::new(),
-            busy_outbound_connections: FuturesUnordered::new(),
-            pending_outbound_messages: HashMap::new(),
+            outbound_messages: HashMap::new(),
 
             gossip_timeout: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            waker: None,
 
             _pd: PhantomData,
         }
@@ -138,6 +132,10 @@ where
                 RouterCommand::Publish { target, message } => {
                     let message = message.serialize();
                     self.gossip.send(time, target, &message);
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
             }
         }
@@ -163,6 +161,9 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
+        if this.waker.is_none() {
+            this.waker = Some(cx.waker().clone());
+        }
         let time = this.zero_instant.elapsed();
 
         loop {
@@ -173,6 +174,7 @@ where
                 let connecting = connecting.expect("endpoint shouldn't close");
                 this.inbound_connections
                     .push(InboundConnection::pending::<QC>(connecting));
+                continue;
             }
 
             if !this.inbound_connections.is_empty() {
@@ -181,85 +183,89 @@ where
                         message.expect("inbound stream should never be exhausted");
                     this.gossip
                         .handle_gossip_message(time, from, &gossip_message);
-                }
-            }
-
-            if !this.busy_outbound_connections.is_empty() {
-                if let Poll::Ready(idle_connection) =
-                    this.busy_outbound_connections.poll_next_unpin(cx)
-                {
-                    let idle_connection =
-                        idle_connection.expect("outbound connections stream shouldn't close");
-                    let pending_messages = this.pending_outbound_messages.get_mut(&idle_connection.peer_id).expect("invariant: if connection exists, pending_outbound_messages should be non_empty");
-                    if let Some(outbound_message) = pending_messages.pop_front() {
-                        this.busy_outbound_connections
-                            .push(BusyOutboundConnection::send(
-                                idle_connection,
-                                outbound_message,
-                            ));
-                        continue;
-                    } else {
-                        let replaced = this
-                            .idle_outbound_connections
-                            .insert(idle_connection.peer_id, idle_connection);
-                        assert!(replaced.is_none())
-                    }
+                    continue;
                 }
             }
 
             if let Some(timeout) = this.gossip.peek_tick() {
-                if this.zero_instant + timeout > this.gossip_timeout.deadline().into_std() {
-                    tokio::time::Sleep::reset(
-                        this.gossip_timeout.as_mut(),
-                        (this.zero_instant + timeout).into(),
-                    );
+                let deadline = this.zero_instant + timeout;
+                if deadline > this.gossip_timeout.deadline().into_std() {
+                    tokio::time::Sleep::reset(this.gossip_timeout.as_mut(), deadline.into());
                 }
-                if let Poll::Ready(()) = this.gossip_timeout.poll_unpin(cx) {
+                if this.gossip_timeout.poll_unpin(cx).is_ready() || timeout <= time {
                     match this.gossip.poll(time) {
                         Some(GossipEvent::Send(to, gossip_message)) => {
                             if to == this.me {
                                 this.gossip
-                                    .handle_gossip_message(time, this.me, &gossip_message)
+                                    .handle_gossip_message(time, this.me, &gossip_message);
                             } else {
-                                match this.pending_outbound_messages.entry(to) {
-                                    Entry::Occupied(mut e) => {
-                                        // connection is either in idle_outbound_connections or
-                                        // in busy_outbound_connections
+                                let maybe_unsent_gossip_message = match this
+                                    .outbound_messages
+                                    .get_mut(&to)
+                                {
+                                    Some(sender) => {
+                                        let result = sender.try_send(gossip_message);
 
-                                        if let Some(active_connection) =
-                                            this.idle_outbound_connections.remove(&to)
-                                        {
-                                            this.busy_outbound_connections.push(
-                                                BusyOutboundConnection::send(
-                                                    active_connection,
-                                                    gossip_message,
-                                                ),
-                                            );
-                                            continue;
-                                        } else {
-                                            // currently in process of connecting, queue up message
-                                            e.get_mut().push_back(gossip_message);
+                                        match result {
+                                            Ok(()) => None,
+                                            Err(TrySendError::Full(gossip_message)) => {
+                                                todo!("channel full, how should we handle this?")
+                                            }
+                                            Err(TrySendError::Closed(gossip_message)) => {
+                                                // this implies that the connection died
+                                                this.outbound_messages.remove(&to);
+                                                Some(gossip_message)
+                                            }
                                         }
                                     }
-                                    Entry::Vacant(e) => {
-                                        // no active connection - must dial
-                                        e.insert(Default::default()).push_back(gossip_message);
+                                    None => Some(gossip_message),
+                                };
 
-                                        let known_address = match this.known_addresses.get(&to) {
-                                            Some(address) => address,
-                                            None => todo!("what do we do for peer discovery?"),
+                                if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
+                                    const MAX_BUFFERED_MESSAGES: usize = 10;
+                                    let (sender, mut receiver) =
+                                        tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
+                                    sender
+                                        .try_send(unsent_gossip_message)
+                                        .expect("try_send should always succeed on new chan");
+                                    this.outbound_messages.insert(to, sender);
+
+                                    let known_address = match this.known_addresses.get(&to) {
+                                        Some(address) => *address,
+                                        None => todo!("what do we do for peer discovery?"),
+                                    };
+
+                                    let endpoint = this.endpoint.clone();
+                                    let client_config = {
+                                        let mut c = ClientConfig::new(this.quinn_config.client());
+                                        c.transport_config(this.quinn_config.transport());
+                                        c
+                                    };
+                                    tokio::spawn(async move {
+                                        let fut = async move {
+                                            let connection = endpoint
+                                                .connect_with(
+                                                    client_config,
+                                                    known_address,
+                                                    SERVER_NAME,
+                                                )?
+                                                .await?;
+
+                                            if QC::remote_peer_id(&connection)? != to {
+                                                todo!("unexpected peer_id, return and retry?");
+                                            }
+
+                                            let mut stream = connection.open_uni().await?;
+
+                                            while let Some(gossip_message) = receiver.recv().await {
+                                                stream.write_all(&gossip_message).await?;
+                                            }
+                                            Ok::<_, OutboundConnectionError>(())
                                         };
-
-                                        this.busy_outbound_connections.push(
-                                            BusyOutboundConnection::connect(
-                                                &this.quinn_config,
-                                                &this.endpoint,
-                                                *known_address,
-                                                to,
-                                            ),
-                                        );
-                                        continue;
-                                    }
+                                        if let Err(e) = fut.await {
+                                            todo!("handle outbound connection err: {:?}", e);
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -272,9 +278,9 @@ where
                         }
                         None => {}
                     }
+                    // loop if don't return value, because need to re-poll timeout
+                    continue;
                 }
-                // loop if don't return value, because need to re-poll timeout
-                continue;
             }
 
             return Poll::Pending;
@@ -301,8 +307,9 @@ impl InboundConnection {
         Self::Pending(fut)
     }
     fn active(peer: PeerId, mut stream: RecvStream) -> Self {
+        const RX_MESSAGE_BUFFER_SIZE: usize = 64 * 1024;
         let fut = async move {
-            let mut buf = vec![0_u8; 1024];
+            let mut buf = vec![0_u8; RX_MESSAGE_BUFFER_SIZE];
             let bytes = stream.read(&mut buf).await?;
             buf.truncate(bytes.unwrap_or(0));
             Ok((peer, stream, buf))
@@ -358,85 +365,6 @@ where
 
 type OutboundConnectionError = Box<dyn Error>;
 
-struct IdleOutboundConnection {
-    peer_id: PeerId,
-    connection: Connection,
-    stream: SendStream,
-}
-
-struct BusyOutboundConnection(
-    BoxFuture<'static, Result<IdleOutboundConnection, OutboundConnectionError>>,
-);
-
-impl BusyOutboundConnection {
-    fn connect<QC: QuinnConfig>(
-        config: &QC,
-        endpoint: &Endpoint,
-        address: SocketAddr,
-        expected_peer_id: PeerId,
-    ) -> Self {
-        let endpoint = endpoint.clone();
-        let client_config = {
-            let mut c = ClientConfig::new(config.client());
-            c.transport_config(config.transport());
-            c
-        };
-        let fut = async move {
-            let connection = endpoint
-                .connect_with(client_config, address, SERVER_NAME)?
-                .await?;
-
-            if QC::remote_peer_id(&connection)? != expected_peer_id {
-                return Err("unexpected peer_id".into());
-            }
-
-            let stream = connection.open_uni().await?;
-
-            Ok(IdleOutboundConnection {
-                peer_id: expected_peer_id,
-                connection,
-                stream,
-            })
-        }
-        .boxed();
-        Self(fut)
-    }
-
-    fn send(mut connection: IdleOutboundConnection, message: Vec<u8>) -> Self {
-        let fut = async move {
-            connection.stream.write_all(&message).await?;
-            Ok(connection)
-        }
-        .boxed();
-        Self(fut)
-    }
-}
-
-impl Future for BusyOutboundConnection
-where
-    Self: Unpin,
-{
-    type Output = IdleOutboundConnection;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.deref_mut();
-
-        if let Poll::Ready(maybe_connection) = this.0.poll_unpin(cx) {
-            match maybe_connection {
-                Ok(connection) => {
-                    return Poll::Ready(connection);
-                }
-                Err(e) => todo!(
-                    "TODO error connecting/sending, should we ignore and log this? err={:?}",
-                    e
-                ),
-            }
-        }
-
-        Poll::Pending
-    }
-}
-
 pub struct UnsafeNoAuthQuinnConfig {
     me: PeerId,
     transport: Arc<TransportConfig>,
@@ -444,11 +372,25 @@ pub struct UnsafeNoAuthQuinnConfig {
 }
 
 impl UnsafeNoAuthQuinnConfig {
-    pub fn new(me: PeerId) -> Self {
+    /// bandwidth_Mbps is in Megabit/s
+    pub fn new(me: PeerId, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
+        let mut transport_config = TransportConfig::default();
+        let bandwidth_Bps = bandwidth_Mbps as u64 * 125_000;
+        let rwnd = bandwidth_Bps * max_rtt.as_millis() as u64 / 1000;
+        transport_config
+            .stream_receive_window(u32::try_from(rwnd).unwrap().into())
+            .send_window(8 * rwnd)
+            .initial_rtt(max_rtt) // not exactly initial.... because of quinn pacer
+            .congestion_controller_factory(Arc::new({
+                // this is necessary for seeding the quinn pacer correctly on init
+                let mut cubic_config = CubicConfig::default();
+                cubic_config.initial_window(rwnd);
+                cubic_config
+            }));
         Self {
             me,
             client: Arc::new(UnsafeTlsVerifier::make_client_config(me.0.bytes(), &[])),
-            transport: Arc::new(TransportConfig::default()),
+            transport: Arc::new(transport_config),
         }
     }
 }
