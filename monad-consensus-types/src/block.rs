@@ -1,4 +1,4 @@
-use monad_crypto::hasher::{Hash as HashType, Hashable, Hasher};
+use monad_crypto::hasher::{Hashable, Hasher};
 use monad_types::{BlockId, NodeId, Round};
 use zerocopy::AsBytes;
 
@@ -50,11 +50,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Block<T> {
 
 impl<T: SignatureCollection> Hashable for Block<T> {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.author.0.bytes());
-        state.update(self.round.as_bytes());
-        self.payload.hash(state);
-        state.update(self.qc.info.vote.id.0.as_bytes());
-        state.update(self.qc.get_hash().as_bytes());
+        state.update(self.id.0);
     }
 }
 
@@ -65,16 +61,22 @@ impl<T: SignatureCollection> Block<T> {
         payload: &Payload,
         qc: &QuorumCertificate<T>,
     ) -> Self {
-        let mut b = Block {
+        Self {
             author,
             round,
             payload: payload.clone(),
             qc: qc.clone(),
-            id: BlockId(HashType([0x00_u8; 32])),
-        };
-        // FIXME make this less jank
-        b.id = BlockId(H::hash_object(&b));
-        b
+            id: {
+                let mut state = H::new();
+                state.update(author.0.bytes());
+                state.update(round.as_bytes());
+                payload.hash(&mut state);
+                state.update(qc.info.vote.id.0.as_bytes());
+                state.update(qc.get_hash().as_bytes());
+
+                BlockId(state.hash())
+            },
+        }
     }
 }
 

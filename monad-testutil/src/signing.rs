@@ -94,22 +94,29 @@ impl SignatureCollection for MockSignatures {
 }
 
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
-    let mut hasher = HasherType::new();
-    hasher.update(b.author.0.bytes());
-    hasher.update(b.round);
-    hasher.update(&b.payload.txns.0);
-    hasher.update(b.payload.header.parent_hash);
-    hasher.update(b.payload.header.state_root);
-    hasher.update(b.payload.header.transactions_root);
-    hasher.update(b.payload.header.receipts_root);
-    hasher.update(b.payload.header.logs_bloom);
-    hasher.update(b.payload.header.gas_used);
-    hasher.update(b.payload.seq_num.as_bytes());
-    hasher.update(b.qc.info.vote.id.0);
-    hasher.update(b.payload.beneficiary.0.as_bytes());
-    hasher.update(b.payload.randao_reveal.0.as_bytes());
-    hasher.update(b.qc.signatures.get_hash::<HasherType>());
+    let block_id = {
+        let mut hasher = HasherType::new();
+        hasher.update(b.author.0.bytes());
+        hasher.update(b.round);
+        hasher.update(&b.payload.txns.0);
+        hasher.update(b.payload.header.parent_hash);
+        hasher.update(b.payload.header.state_root);
+        hasher.update(b.payload.header.transactions_root);
+        hasher.update(b.payload.header.receipts_root);
+        hasher.update(b.payload.header.logs_bloom);
+        hasher.update(b.payload.header.gas_used);
+        hasher.update(b.payload.seq_num.as_bytes());
+        hasher.update(b.qc.info.vote.id.0);
+        hasher.update(b.payload.beneficiary.0.as_bytes());
+        hasher.update(b.payload.randao_reveal.0.as_bytes());
+        hasher.update(b.qc.signatures.get_hash::<HasherType>());
 
+        hasher.hash()
+    };
+
+    // Hash of a block is actually a hash of its cached BlockId
+    let mut hasher = HasherType::new();
+    hasher.update(block_id);
     hasher.hash()
 }
 
