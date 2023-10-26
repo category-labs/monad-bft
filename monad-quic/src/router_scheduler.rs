@@ -46,8 +46,6 @@ pub struct QuicRouterScheduler<G: Gossip> {
 
     pending_events: BTreeMap<Duration, Vec<RouterEvent<Vec<u8>, Vec<u8>>>>,
     pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
-
-    master_rng: StdRng,
 }
 
 const SERVER_NAME: &str = "MONAD";
@@ -58,7 +56,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
     type Serialized = Vec<u8>;
 
     fn new(config: Self::Config) -> Self {
-        let mut master_rng = StdRng::seed_from_u64(config.master_seed);
+        let mut rng = StdRng::seed_from_u64(config.master_seed);
         let transport_config = {
             let mut config = TransportConfig::default();
             config.max_idle_timeout(None);
@@ -66,7 +64,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
             Arc::new(config)
         };
         let mut seed = [0; 32];
-        master_rng.fill_bytes(&mut seed);
+        rng.fill_bytes(&mut seed);
         let mut endpoint = quinn_proto::Endpoint::new(
             Arc::new(EndpointConfig::default()),
             Some(Arc::new(
@@ -127,8 +125,6 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
             timeouts: Default::default(),
             pending_events: Default::default(),
             pending_outbound_messages: HashMap::new(),
-
-            master_rng,
         };
 
         let mut handles: Vec<_> = scheduler.connections.keys().cloned().collect();
