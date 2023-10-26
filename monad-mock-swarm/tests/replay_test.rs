@@ -9,13 +9,17 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{
+        MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler,
+        RouterScheduler,
+    },
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
     transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
+use monad_types::{Deserializable, Serializable};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockMemLogger, MockMemLoggerConfig},
@@ -58,7 +62,10 @@ fn run_nodes_until<S>(
 where
     S: SwarmRelation,
 
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
 {
     let mut max_tick = start_tick;
@@ -78,7 +85,10 @@ fn liveness<S>(nodes: &Nodes<S>, last_ledger_len: usize) -> bool
 where
     S: SwarmRelation,
 
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
 {
     let max_ledger_len = nodes

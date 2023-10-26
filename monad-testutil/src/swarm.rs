@@ -12,13 +12,13 @@ use monad_crypto::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::MockExecutor,
+    mock::{MockExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes, NodesTerminator},
     swarm_relation::SwarmRelation,
     transformer::ID,
 };
-use monad_state::MonadConfig;
-use monad_types::NodeId;
+use monad_state::{MonadConfig, MonadMessage, VerifiedMonadMessage};
+use monad_types::{Deserializable, NodeId, Serializable};
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -121,7 +121,10 @@ pub fn create_and_run_nodes<S, RSC, TERM>(
 where
     S: SwarmRelation,
 
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
     RSC: Fn(Vec<PeerId>, PeerId) -> S::RSCFG,
     TERM: NodesTerminator<S>,
@@ -162,7 +165,10 @@ pub fn run_nodes_until<S, RSC, TERM>(
 where
     S: SwarmRelation,
 
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
     RSC: Fn(Vec<PeerId>, PeerId) -> S::RSCFG,
     TERM: NodesTerminator<S>,

@@ -8,7 +8,6 @@ name = "monad-viz"
 bench = false
 
 [dependencies]
-monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
@@ -19,10 +18,9 @@ monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
-monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
-clap = { workspace = true, features= ["derive"] }
+clap = { workspace = true, features = ["derive"] }
 iced = { version = "0.9", features = ["canvas"] }
 iced_native = { version = "0.10" }
 iced_lazy = { version = "0.6" }

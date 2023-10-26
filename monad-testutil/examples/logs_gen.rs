@@ -1,35 +1,23 @@
 use std::{path::PathBuf, time::Duration};
 
-use monad_block_sync::BlockSyncState;
-use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{
-    multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
-};
+use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Nodes, UntilTerminator},
-    swarm_relation::SwarmRelation,
+    swarm_relation::{SwarmRelation, SwarmStateType},
     transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
-use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_testutil::swarm::get_configs;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
 pub struct LogSwarm;
 
 impl SwarmRelation for LogSwarm {
-    type STATE = MonadState<
-        ConsensusState<Self::SCT, MockValidator, NopStateRoot>,
-        Self::ST,
-        Self::SCT,
-        ValidatorSet,
-        SimpleRoundRobin,
-        BlockSyncState,
-    >;
+    type STATE = SwarmStateType<Self>;
     type ST = NopSignature;
     type SCT = MultiSig<Self::ST>;
     type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;

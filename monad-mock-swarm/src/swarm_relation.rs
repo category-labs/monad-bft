@@ -62,14 +62,7 @@ pub trait SwarmRelation {
 pub struct NoSerSwarm;
 
 impl SwarmRelation for NoSerSwarm {
-    type STATE = MonadState<
-        ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
-        NopSignature,
-        MultiSig<NopSignature>,
-        ValidatorSet,
-        SimpleRoundRobin,
-        BlockSyncState,
-    >;
+    type STATE = SwarmStateType<Self>;
     type ST = NopSignature;
     type SCT = MultiSig<Self::ST>;
     type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
@@ -84,3 +77,12 @@ impl SwarmRelation for NoSerSwarm {
     type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
     type Message = MonadMessage<Self::ST, Self::SCT>;
 }
+
+pub type SwarmStateType<S> = MonadState<
+    ConsensusState<<S as SwarmRelation>::SCT, <S as SwarmRelation>::TVT, StateRoot>,
+    <S as SwarmRelation>::ST,
+    <S as SwarmRelation>::SCT,
+    ValidatorSet,
+    SimpleRoundRobin,
+    BlockSyncState,
+>;

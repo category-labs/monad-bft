@@ -4,11 +4,14 @@ use monad_crypto::secp256k1::PubKey;
 use monad_executor::State;
 use monad_executor_glue::{Identifiable, PeerId};
 use monad_mock_swarm::{
-    mock::MockExecutor,
+    mock::{MockExecutor, RouterScheduler},
     mock_swarm::{Node, Nodes, UntilTerminator},
-    swarm_relation::SwarmRelation,
+    swarm_relation::{SwarmRelation, SwarmStateType},
     transformer::ID,
 };
+use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_types::{Deserializable, Serializable};
+
 pub enum NodeEvent<'s, Id, M, E> {
     Message {
         tx_time: Duration,
@@ -23,11 +26,11 @@ pub enum NodeEvent<'s, Id, M, E> {
     },
 }
 
-pub struct NodeState<'s, Id, S, M, E> {
+pub struct NodeState<'s, Id, SWM: SwarmRelation, M> {
     pub id: &'s Id,
-    pub state: &'s S,
+    pub state: &'s SwarmStateType<SWM>,
 
-    pub pending_events: Vec<NodeEvent<'s, Id, M, E>>,
+    pub pending_events: Vec<NodeEvent<'s, Id, M, <SWM::STATE as State>::Event>>,
 }
 
 pub trait Graph {
@@ -36,8 +39,9 @@ pub trait Graph {
     type MessageId;
     type Event;
     type NodeId;
+    type Swarm: SwarmRelation;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::Event>>;
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::Message>>;
     fn tick(&self) -> Duration;
     fn min_tick(&self) -> Duration;
     fn max_tick(&self) -> Duration;
@@ -86,11 +90,14 @@ where
 impl<S, C> NodesSimulation<S, C>
 where
     S: SwarmRelation,
+    S::Message: Identifiable,
     C: SimulationConfig<S>,
 
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
-    S::Message: Identifiable,
 {
     pub fn new(config: C) -> Self {
         Self {
@@ -121,19 +128,23 @@ where
 impl<S, C> Graph for NodesSimulation<S, C>
 where
     S: SwarmRelation,
+    S::Message: Identifiable,
     C: SimulationConfig<S>,
 
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
-    S::Message: Identifiable,
 {
     type State = S::STATE;
     type Message = S::Message;
     type MessageId = <S::Message as Identifiable>::Id;
     type Event = <S::STATE as State>::Event;
     type NodeId = PeerId;
+    type Swarm = S;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::Event>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::Message>> {
         let mut state = self
             .nodes
             .states()

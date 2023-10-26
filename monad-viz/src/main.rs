@@ -21,12 +21,9 @@ use iced::{
     },
     Application, Color, Command, Event, Length, Settings, Theme, Vector,
 };
-use monad_block_sync::BlockSyncState;
-use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
     multi_sig::MultiSig,
-    payload::NopStateRoot,
     transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
@@ -34,14 +31,13 @@ use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
-    swarm_relation::SwarmRelation,
+    swarm_relation::{SwarmRelation, SwarmStateType},
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
         ID,
     },
 };
-use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
     wal::{WALogger, WALoggerConfig},
@@ -52,14 +48,7 @@ use replay_graph::{RepConfig, ReplayNodesSimulation};
 pub struct VizSwarm;
 
 impl SwarmRelation for VizSwarm {
-    type STATE = MonadState<
-        ConsensusState<Self::SCT, MockValidator, NopStateRoot>,
-        Self::ST,
-        Self::SCT,
-        ValidatorSet,
-        SimpleRoundRobin,
-        BlockSyncState,
-    >;
+    type STATE = SwarmStateType<Self>;
     type ST = NopSignature;
     type SCT = MultiSig<Self::ST>;
     type RS = NoSerRouterScheduler<<Self::STATE as State>::Message>;
@@ -75,13 +64,8 @@ impl SwarmRelation for VizSwarm {
     type Message = MonadMessage<Self::ST, Self::SCT>;
 }
 
-type NS<'a> = NodeState<
-    'a,
-    PeerId,
-    <VizSwarm as SwarmRelation>::STATE,
-    <VizSwarm as SwarmRelation>::Message,
-    <<VizSwarm as SwarmRelation>::STATE as State>::Event,
->;
+type NS<'a> =
+    NodeState<'a, PeerId, VizSwarm, <<VizSwarm as SwarmRelation>::STATE as State>::Message>;
 
 type Sim = NodesSimulation<VizSwarm, SimConfig>;
 type ReplaySim = ReplayNodesSimulation<VizSwarm, RepConfig>;

@@ -11,7 +11,7 @@ use monad_crypto::{
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
 use monad_executor_glue::{Identifiable, PeerId};
-use monad_mock_swarm::swarm_relation::SwarmRelation;
+use monad_mock_swarm::swarm_relation::{SwarmRelation, SwarmStateType};
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::NodeId;
@@ -86,11 +86,10 @@ impl ReplayConfig<MS> for RepConfig {
 pub struct ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
-    C: ReplayConfig<S::STATE>,
-
     S::Message: Identifiable,
+    C: ReplayConfig<S::STATE>,
 {
-    pub nodes: ReplayNodes<S::STATE>,
+    pub nodes: ReplayNodes<SwarmStateType<S>>,
     pub current_tick: Duration,
     config: C,
     pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::STATE as State>::Event>>>,
@@ -127,7 +126,13 @@ where
     fn get_pending_events(
         &self,
         node_id: &PeerId,
-    ) -> Vec<NodeEvent<PeerId, <S::STATE as State>::Message, <S::STATE as State>::Event>> {
+    ) -> Vec<
+        NodeEvent<
+            PeerId,
+            <SwarmStateType<S> as State>::Message,
+            <SwarmStateType<S> as State>::Event,
+        >,
+    > {
         let mut nes = vec![];
         for pmsg in self
             .nodes
@@ -163,12 +168,13 @@ where
     S::Message: Identifiable,
 {
     type State = S::STATE;
-    type Message = <S::STATE as State>::Message;
+    type Message = <SwarmStateType<S> as State>::Message;
     type MessageId = <S::Message as Identifiable>::Id;
     type Event = <S::STATE as State>::Event;
     type NodeId = PeerId;
+    type Swarm = S;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::State, Self::Message, Self::Event>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::Message>> {
         let mut state = self
             .nodes
             .replay_nodes_info

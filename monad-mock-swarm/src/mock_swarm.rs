@@ -7,6 +7,7 @@ use std::{
 
 use itertools::Itertools;
 use monad_executor::{timed_event::TimedEvent, Executor, State};
+use monad_types::{Deserializable, Serializable};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -15,7 +16,7 @@ use tracing::info_span;
 
 use crate::{
     mock::{MockExecutor, MockExecutorEvent, RouterScheduler},
-    swarm_relation::SwarmRelation,
+    swarm_relation::{SwarmRelation, SwarmStateType},
     transformer::{LinkMessage, Pipeline, ID},
 };
 
@@ -24,8 +25,8 @@ where
     S: SwarmRelation,
 {
     pub id: ID,
-    pub executor: MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>,
-    pub state: S::STATE,
+    pub executor: MockExecutor<S>,
+    pub state: SwarmStateType<S>,
     pub logger: S::LGR,
     pub pipeline: S::P,
     pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<S::Message>)>>,
@@ -36,7 +37,10 @@ where
 impl<S> Node<S>
 where
     S: SwarmRelation,
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+
+    <SwarmStateType<S> as State>::Message: Deserializable<<S::RS as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::OutboundMessage: Serializable<<S::RS as RouterScheduler>::M>,
+    MockExecutor<S>: Unpin,
 {
     fn update_rng(&mut self) {
         self.current_seed = self.rng.gen();
@@ -68,7 +72,7 @@ where
         &mut self,
         until: Duration,
         emitted_messages: &mut Vec<(Duration, LinkMessage<S::Message>)>,
-    ) -> Option<(Duration, <S::STATE as State>::Event)> {
+    ) -> Option<(Duration, <SwarmStateType<S> as State>::Event)> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
@@ -251,8 +255,11 @@ enum SwarmEventType {
 impl<S> Nodes<S>
 where
     S: SwarmRelation,
-    MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT>: Unpin,
+    MockExecutor<S>: Unpin,
     Node<S>: Send,
+
+    <SwarmStateType<S> as State>::Message: Deserializable<<S::RS as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::OutboundMessage: Serializable<<S::RS as RouterScheduler>::M>,
 {
     pub fn new(
         peers: Vec<(
@@ -418,13 +425,13 @@ where
         // if nodes only want to run with unique ids
         assert!(!self.no_duplicate_peers || id.is_unique());
 
-        let mut executor: MockExecutor<S::STATE, S::RS, S::ME, S::ST, S::SCT> = MockExecutor::new(
-            S::RS::new(router_scheduler_config),
+        let mut executor: MockExecutor<S> = MockExecutor::new(
+            <S::RS as RouterScheduler>::new(router_scheduler_config),
             mock_mempool_config,
             self.tick,
         );
         let (wal, replay_events) = S::LGR::new(logger_config).unwrap();
-        let (mut state, mut init_commands) = S::STATE::init(state_config);
+        let (mut state, mut init_commands) = SwarmStateType::<S>::init(state_config);
 
         for event in replay_events {
             init_commands.extend(state.update(event.event));
