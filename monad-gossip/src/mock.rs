@@ -14,7 +14,7 @@ pub struct MockGossipConfig {
 pub struct MockGossip {
     config: MockGossipConfig,
 
-    read_buffers: HashMap<PeerId, VecDeque<u8>>,
+    read_buffers: HashMap<PeerId, (Option<MessageLenType>, Vec<u8>)>,
     events: VecDeque<GossipEvent<Vec<u8>>>,
     current_tick: Duration,
 }
@@ -54,14 +54,11 @@ impl Gossip for MockGossip {
 
     fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
         self.current_tick = time;
-        let read_buffer = self.read_buffers.entry(from).or_default();
+        let (maybe_message_len, read_buffer) = self.read_buffers.entry(from).or_default();
         read_buffer.extend(gossip_message.iter());
-        while {
-            let buffer_len = read_buffer.len();
-            if buffer_len < MESSAGE_HEADER_LEN {
-                false
-            } else {
-                let message_len = MessageLenType::from_le_bytes(
+        loop {
+            if maybe_message_len.is_none() && read_buffer.len() >= MESSAGE_HEADER_LEN {
+                *maybe_message_len = Some(MessageLenType::from_le_bytes(
                     read_buffer
                         .iter()
                         .copied()
@@ -69,19 +66,19 @@ impl Gossip for MockGossip {
                         .collect::<Vec<_>>()
                         .try_into()
                         .unwrap(),
-                );
-                buffer_len >= MESSAGE_HEADER_LEN + message_len as usize
+                ));
+                read_buffer.drain(0..MESSAGE_HEADER_LEN);
             }
-        } {
-            let message_len = MessageLenType::from_le_bytes(
-                read_buffer
-                    .drain(..MESSAGE_HEADER_LEN)
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
-            let emit: Vec<u8> = read_buffer.drain(..message_len).collect();
-            self.events.push_back(GossipEvent::Emit(from, emit))
+            if let Some(message_len) = *maybe_message_len {
+                if read_buffer.len() >= message_len as usize {
+                    let remaining = read_buffer.split_off(message_len as usize);
+                    let message = std::mem::replace(read_buffer, remaining);
+                    self.events.push_back(GossipEvent::Emit(from, message));
+                    *maybe_message_len = None;
+                    continue;
+                }
+            }
+            break;
         }
     }
 
