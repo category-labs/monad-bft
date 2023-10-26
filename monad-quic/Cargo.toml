@@ -26,3 +26,11 @@ quinn-proto = { workspace = true }
 
 x509-parser = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[[example]]
+name = "service"

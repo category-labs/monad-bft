@@ -4686,7 +4686,9 @@ dependencies = [
 name = "monad-quic"
 version = "0.1.0"
 dependencies = [
+ "clap 4.4.6",
  "futures",
+ "futures-util",
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
