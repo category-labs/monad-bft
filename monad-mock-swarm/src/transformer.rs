@@ -748,7 +748,7 @@ pub mod monad_test {
                 }
                 MonadMessageTransformer::Partition(t) => {
                     <PartitionTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
-                }                
+                }
             }
         }
     }

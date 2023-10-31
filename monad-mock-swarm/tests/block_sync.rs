@@ -11,17 +11,121 @@ mod test {
     use monad_executor_glue::PeerId;
     use monad_mock_swarm::{
         mock::{MockMempoolConfig, NoSerRouterConfig},
-        mock_swarm::{ProgressTerminator, UntilTerminator},
+        mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
+        swarm_relation::{MonadMessageNoSerSwarm, SwarmRelation},
         transformer::{
+            monad_test::{FilterTransformer, MonadMessageTransformer},
             DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
             PeriodicTransformer, ID,
         },
     };
-    use monad_testutil::swarm::{get_configs, run_nodes_until};
+    use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
 
     use super::common::NoSerSwarm;
+
+    #[test]
+    fn bsync_timeout_recovery() {
+        let num_nodes = 4;
+        assert!(num_nodes >= 4, "test requires at least 4 nodes");
+
+        let delta = Duration::from_millis(2);
+        let (pubkeys, state_configs) = get_configs::<
+            <MonadMessageNoSerSwarm as SwarmRelation>::SignatureType,
+            <MonadMessageNoSerSwarm as SwarmRelation>::SignatureCollectionType,
+            _,
+        >(MockValidator, num_nodes, delta, u64::MAX, 0);
+
+        let filter_peers = HashSet::from([ID::new(PeerId(pubkeys[0]))]);
+
+        let mut pipeline = vec![
+            MonadMessageTransformer::Filter(FilterTransformer {
+                drop_block_sync: true,
+                ..Default::default()
+            }),
+            MonadMessageTransformer::Latency(LatencyTransformer(delta)),
+            MonadMessageTransformer::Partition(PartitionTransformer(filter_peers.clone())),
+            MonadMessageTransformer::Drop(DropTransformer()),
+        ];
+
+        let mut terminator = UntilTerminator::new().until_tick(Duration::from_secs(2));
+        let mut nodes = Nodes::<MonadMessageNoSerSwarm>::new(
+            pubkeys
+                .iter()
+                .copied()
+                .zip(state_configs)
+                .map(|(pubkey, state_config)| {
+                    (
+                        ID::new(PeerId(pubkey)),
+                        state_config,
+                        MockWALoggerConfig,
+                        NoSerRouterConfig {
+                            all_peers: pubkeys.iter().copied().map(PeerId).collect(),
+                        },
+                        MockMempoolConfig::default(),
+                        pipeline.clone(),
+                        1,
+                    )
+                })
+                .collect(),
+        );
+
+        let verify_but_first = |nodes: &Nodes<MonadMessageNoSerSwarm>| {
+            node_ledger_verification(
+                &nodes
+                    .states()
+                    .values()
+                    .filter_map(|node| {
+                        if filter_peers.contains(&node.id) {
+                            assert_eq!(node.executor.ledger().get_blocks().len(), 0);
+                            None
+                        } else {
+                            Some(node.executor.ledger().get_blocks().clone())
+                        }
+                    })
+                    .collect(),
+                10,
+            );
+        };
+
+        let verify_all = |nodes: &Nodes<MonadMessageNoSerSwarm>| {
+            node_ledger_verification(
+                &nodes
+                    .states()
+                    .values()
+                    .map(|node| node.executor.ledger().get_blocks().clone())
+                    .collect(),
+                10,
+            );
+        };
+
+        // first run for 2 seconds, all but first node makes progress
+        while nodes.step_until(&terminator).is_some() {}
+
+        verify_but_first(&nodes);
+
+        // remove blackout but still ban block sync
+        pipeline = pipeline[0..2].to_vec();
+        nodes.update_pipeline_for_all(pipeline.clone());
+
+        // run for 5 sec to allow the blackout node to be aware of the world state,
+        // however, it start to attempting block sync, but will not succeed
+        terminator = terminator.until_tick(Duration::from_secs(5));
+        while nodes.step_until(&terminator).is_some() {}
+
+        verify_but_first(&nodes);
+        // remove the block sync filter
+        pipeline = pipeline[1..2].to_vec();
+        nodes.update_pipeline_for_all(pipeline);
+
+        // run for sufficiently long
+        terminator = terminator.until_tick(Duration::from_secs(30));
+        while nodes.step_until(&terminator).is_some() {}
+
+        // first node should have caught up
+        verify_all(&nodes);
+    }
 
     #[test]
     #[should_panic]
@@ -60,8 +164,8 @@ mod test {
             MockWALoggerConfig,
             MockMempoolConfig::default(),
             vec![
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
-                GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
+                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Partition(PartitionTransformer(filter_peers)),
                 GenericTransformer::Drop(DropTransformer()),
             ],
             false,
@@ -104,8 +208,8 @@ mod test {
             MockWALoggerConfig,
             MockMempoolConfig::default(),
             vec![
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
-                GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
+                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Partition(PartitionTransformer(filter_peers)),
                 GenericTransformer::Periodic(PeriodicTransformer::new(
                     Duration::from_secs(1),
                     Duration::from_secs(2),
@@ -146,9 +250,7 @@ mod test {
             0,
         );
 
-        assert!(num_nodes >= 2, "test requires 2 or more nodes");
-
-        let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
+        assert!(num_nodes >= 4, "test requires 4 or more nodes");
 
         let filter_peers = HashSet::from_iter(
             pubkeys
@@ -156,8 +258,6 @@ mod test {
                 .take(black_out_cnt)
                 .map(|k| ID::new(PeerId(*k))),
         );
-
-        println!("delayed node ID: {:?}", first_node);
 
         run_nodes_until::<NoSerSwarm, _, _>(
             pubkeys,
@@ -168,8 +268,8 @@ mod test {
             MockWALoggerConfig,
             MockMempoolConfig::default(),
             vec![
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))), // everyone get delayed no matter what
-                GenericTransformer::Partition(PartitionTransformer(filter_peers)), // partition the victim node
+                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Partition(PartitionTransformer(filter_peers)),
                 GenericTransformer::Periodic(PeriodicTransformer::new(from, to)),
                 GenericTransformer::Drop(DropTransformer()),
             ],
