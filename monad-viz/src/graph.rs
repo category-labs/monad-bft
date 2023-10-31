@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use monad_block_sync::BlockSyncProcess;
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
@@ -90,10 +89,10 @@ where
     current_tick: Duration,
 }
 
-impl<S, C, CT, ST, SCT, VT, LT, BST> NodesSimulation<S, C>
+impl<S, C, CT, ST, SCT, VT, LT> NodesSimulation<S, C>
 where
     S: SwarmRelation<
-        State = MonadState<CT, ST, SCT, VT, LT, BST>,
+        State = MonadState<CT, ST, SCT, VT, LT>,
         TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
@@ -103,7 +102,6 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<SCT, VT>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -134,10 +132,10 @@ where
     }
 }
 
-impl<S, C, CT, ST, SCT, VT, LT, BST> Graph for NodesSimulation<S, C>
+impl<S, C, CT, ST, SCT, VT, LT> Graph for NodesSimulation<S, C>
 where
     S: SwarmRelation<
-        State = MonadState<CT, ST, SCT, VT, LT, BST>,
+        State = MonadState<CT, ST, SCT, VT, LT>,
         TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
@@ -147,7 +145,6 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<SCT, VT>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,

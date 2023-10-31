@@ -11,7 +11,6 @@ name = "monad-node"
 bench = false
 
 [dependencies]
-monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }

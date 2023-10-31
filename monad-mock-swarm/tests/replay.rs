@@ -1,6 +1,5 @@
 use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::BlockType, multi_sig::MultiSig, payload::NopStateRoot,
@@ -43,7 +42,6 @@ impl SwarmRelation for ReplaySwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;

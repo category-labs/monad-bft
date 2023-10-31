@@ -1,4 +1,3 @@
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::FullBlock,
@@ -86,7 +85,6 @@ impl SwarmRelation for NoSerSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -119,7 +117,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;

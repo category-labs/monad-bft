@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use monad_block_sync::{BlockSyncProcess, BlockSyncState};
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
     message_signature::MessageSignature, multi_sig::MultiSig, payload::StateRoot,
@@ -48,7 +47,6 @@ impl SwarmRelation for ReplaySwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -64,21 +62,20 @@ impl SwarmRelation for ReplaySwarm {
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
-fn run_nodes_until<S, CT, ST, SCT, VT, LT, BST>(
+fn run_nodes_until<S, CT, ST, SCT, VT, LT>(
     nodes: &mut Nodes<S>,
     start_tick: Duration,
     until_tick: Duration,
     until_block: usize,
 ) -> Duration
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, BST>>,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT>>,
 
     CT: ConsensusProcess<SCT> + PartialEq + Eq,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<SCT, VT>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,

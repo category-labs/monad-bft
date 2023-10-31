@@ -1,11 +1,10 @@
 use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
-use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage},
+        message::{BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unverified, Verified},
 };
@@ -38,9 +37,12 @@ use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorD
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 
+use crate::blocksync::BlockSyncResponder;
+
+pub mod blocksync;
 pub mod convert;
 
-pub struct MonadState<CT, ST, SCT, VT, LT, BST>
+pub struct MonadState<CT, ST, SCT, VT, LT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
@@ -51,18 +53,17 @@ where
     validator_set: VT,
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     upcoming_validator_set: Option<VT>,
-    block_sync: BST,
+    block_sync_respond: BlockSyncResponder,
 
     _pd: PhantomData<ST>,
 }
 
-impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
+impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
 where
     CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
-    BST: BlockSyncProcess<SCT, VT>,
 {
     pub fn consensus(&self) -> &CT {
         &self.consensus
@@ -230,14 +231,13 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub genesis_signatures: SCT,
 }
 
-impl<CT, ST, SCT, VT, LT, BST> State for MonadState<CT, ST, SCT, VT, LT, BST>
+impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
 where
     CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<SCT, VT>,
 {
     type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
     type Event = MonadEvent<ST, SCT>;
@@ -284,7 +284,7 @@ where
             config.genesis_signatures,
         );
 
-        let mut monad_state: MonadState<CT, ST, SCT, VT, LT, BST> = Self {
+        let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             validator_set: val_set,
             validator_mapping: val_mapping,
             upcoming_validator_set: None,
@@ -301,7 +301,7 @@ where
                 config.certkey,
                 config.beneficiary,
             ),
-            block_sync: BST::new(),
+            block_sync_respond: BlockSyncResponder {},
 
             _pd: PhantomData,
         };
@@ -411,8 +411,10 @@ where
                                 target: RouterTarget::PointToPoint(NodeId(fetched_b.requester.0)),
                                 message: ConsensusMessage::BlockSync(
                                     match fetched_b.unverified_full_block {
-                                        Some(b) => BlockSyncMessage::BlockFound(b),
-                                        None => BlockSyncMessage::NotAvailable(fetched_b.block_id),
+                                        Some(b) => BlockSyncResponseMessage::BlockFound(b),
+                                        None => BlockSyncResponseMessage::NotAvailable(
+                                            fetched_b.block_id,
+                                        ),
                                     },
                                 ),
                             },
@@ -461,12 +463,14 @@ where
                                     vec![ConsensusCommand::Publish {
                                         target: RouterTarget::PointToPoint(author),
                                         message: ConsensusMessage::BlockSync(
-                                            BlockSyncMessage::BlockFound(block.clone().into()),
+                                            BlockSyncResponseMessage::BlockFound(
+                                                block.clone().into(),
+                                            ),
                                         ),
                                     }]
                                 } else {
                                     // else ask ledger
-                                    self.block_sync
+                                    self.block_sync_respond
                                         .handle_request_block_sync_message(author, msg)
                                 }
                             }

@@ -25,7 +25,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
         },
     },
     validation::message::well_formed,
@@ -319,7 +320,7 @@ impl<S: MessageSignature> Unverified<S, RequestBlockSyncMessage> {
     }
 }
 
-impl<S, SCT> Unverified<S, BlockSyncMessage<SCT>>
+impl<S, SCT> Unverified<S, BlockSyncResponseMessage<SCT>>
 where
     S: MessageSignature,
     SCT: SignatureCollection,
@@ -329,7 +330,7 @@ where
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, BlockSyncMessage<SCT>>, Error> {
+    ) -> Result<Verified<S, BlockSyncResponseMessage<SCT>>, Error> {
         let msg = H::hash_object(&self.obj);
 
         let author = verify_author(
@@ -339,7 +340,7 @@ where
             &self.author_signature,
         )?;
 
-        if let BlockSyncMessage::BlockFound(b) = &self.obj {
+        if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
             verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &b.block.qc)?;
         }
 

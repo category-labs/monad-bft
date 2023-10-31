@@ -6,7 +6,6 @@ use std::{
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
@@ -50,7 +49,6 @@ type MonadState = monad_state::MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
-    BlockSyncState,
 >;
 type MonadConfig = <MonadState as State>::Config;
 

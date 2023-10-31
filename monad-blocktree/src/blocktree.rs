@@ -226,7 +226,7 @@ impl<T: SignatureCollection> BlockTree<T> {
     }
 
     pub fn add(&mut self, b: FullBlock<T>) -> Result<()> {
-        if !self.is_valid(&b) {
+        if !self.is_valid_to_insert(&b) {
             inc_count!(blocktree.add.duplicate);
             return Ok(());
         }
@@ -350,7 +350,10 @@ impl<T: SignatureCollection> BlockTree<T> {
         self.tree.contains_key(&b.get_parent_id())
     }
 
-    pub fn is_valid(&self, b: &FullBlock<T>) -> bool {
+    /// a block is valid to insert if it does not already exist
+    /// in the block tree and its round is greater than the round
+    /// of the root
+    pub fn is_valid_to_insert(&self, b: &FullBlock<T>) -> bool {
         return !self.tree.contains_key(&b.get_id()) && {
             match self.root {
                 RootKind::Rooted(root_id) => {
@@ -1743,11 +1746,11 @@ mod test {
         .unwrap();
 
         // genesis should not be valid since its round is lower than root
-        assert!(!blocktree.is_valid(&g));
+        assert!(!blocktree.is_valid_to_insert(&g));
         // block 4 should va valid, since the tree is unrooted and is one round 4
-        assert!(blocktree.is_valid(&b4));
+        assert!(blocktree.is_valid_to_insert(&b4));
         // b5 will be valid because its at least (root round) + 1
-        assert!(blocktree.is_valid(&b5))
+        assert!(blocktree.is_valid_to_insert(&b5))
     }
 
     #[test]

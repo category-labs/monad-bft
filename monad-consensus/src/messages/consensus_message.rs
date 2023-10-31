@@ -10,7 +10,8 @@ use monad_crypto::{
 
 use crate::{
     messages::message::{
-        BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+        BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+        VoteMessage,
     },
     validation::signing::Verified,
 };
@@ -21,7 +22,7 @@ pub enum ConsensusMessage<SCT: SignatureCollection> {
     Vote(VoteMessage<SCT>),
     Timeout(TimeoutMessage<SCT>),
     RequestBlockSync(RequestBlockSyncMessage),
-    BlockSync(BlockSyncMessage<SCT>),
+    BlockSync(BlockSyncResponseMessage<SCT>),
 }
 
 impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {

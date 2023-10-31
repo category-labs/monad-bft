@@ -1,7 +1,6 @@
 [workspace]
 
 members = [
-    "monad-block-sync",
     "monad-blocktree",
     "monad-compress",
     "monad-consensus",

@@ -2,34 +2,14 @@ use monad_consensus::messages::message::RequestBlockSyncMessage;
 use monad_consensus_state::command::ConsensusCommand;
 use monad_consensus_types::{command::FetchedBlock, signature_collection::SignatureCollection};
 use monad_types::NodeId;
-use monad_validator::validator_set::ValidatorSetType;
+
+/// Responds to BlockSync requests from other nodes
 #[derive(Debug)]
-pub struct BlockSyncState {}
+pub(crate) struct BlockSyncResponder {}
 
-pub trait BlockSyncProcess<SCT, VT>
-where
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
-{
-    fn new() -> Self;
-
-    fn handle_request_block_sync_message(
-        &mut self,
-        author: NodeId,
-        s: RequestBlockSyncMessage,
-    ) -> Vec<ConsensusCommand<SCT>>;
-}
-
-impl<SCT, VT> BlockSyncProcess<SCT, VT> for BlockSyncState
-where
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
-{
-    fn new() -> Self {
-        BlockSyncState {}
-    }
-
-    fn handle_request_block_sync_message(
+impl BlockSyncResponder {
+    /// Send a command to Ledger to fetch the block to respond with
+    pub(crate) fn handle_request_block_sync_message<SCT: SignatureCollection>(
         &mut self,
         author: NodeId,
         s: RequestBlockSyncMessage,
@@ -54,28 +34,23 @@ mod test {
     use monad_crypto::{hasher::Hash, NopSignature};
     use monad_testutil::signing::get_key;
     use monad_types::{BlockId, NodeId};
-    use monad_validator::validator_set::ValidatorSet;
 
-    use crate::{BlockSyncProcess, BlockSyncState};
+    use crate::BlockSyncResponder;
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
-    type ValidatorSetT = ValidatorSet;
 
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
-        let mut process: BlockSyncState =
-            BlockSyncProcess::<SignatureCollectionType, ValidatorSetT>::new();
+        let mut responder = BlockSyncResponder {};
         let keypair = get_key(6);
-        let command: Vec<ConsensusCommand<SignatureCollectionType>> = <BlockSyncState as BlockSyncProcess<
-            SignatureCollectionType,
-            ValidatorSetT,
-        >>::handle_request_block_sync_message(
-            &mut process,
-            NodeId(keypair.pubkey()),
-            RequestBlockSyncMessage {
-                block_id: BlockId(Hash([0x00_u8; 32])),
-            },
-        );
+        let command: Vec<ConsensusCommand<SignatureCollectionType>> =
+            <BlockSyncResponder>::handle_request_block_sync_message(
+                &mut responder,
+                NodeId(keypair.pubkey()),
+                RequestBlockSyncMessage {
+                    block_id: BlockId(Hash([0x00_u8; 32])),
+                },
+            );
         assert_eq!(command.len(), 1);
         let res = command
             .iter()

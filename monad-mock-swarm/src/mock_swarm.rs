@@ -5,7 +5,6 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_block_sync::BlockSyncProcess;
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
@@ -204,16 +203,15 @@ impl UntilTerminator {
     }
 }
 
-impl<S, CT, ST, SCT, VT, LT, BST> NodesTerminator<S> for UntilTerminator
+impl<S, CT, ST, SCT, VT, LT> NodesTerminator<S> for UntilTerminator
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, BST>>,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT>>,
 
     CT: ConsensusProcess<SCT> + PartialEq + Eq,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<SCT, VT>,
 {
     fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         nodes.tick > self.until_tick

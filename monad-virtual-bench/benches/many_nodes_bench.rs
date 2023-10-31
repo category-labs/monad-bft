@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     bls::BlsSignatureCollection, multi_sig::MultiSig, payload::StateRoot,
@@ -77,7 +76,6 @@ impl SwarmRelation for NopSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
@@ -112,7 +110,6 @@ impl SwarmRelation for BlsSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterScheduler =

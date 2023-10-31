@@ -6,7 +6,8 @@ pub mod test_tool {
     use monad_consensus::messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
         },
     };
     use monad_consensus_types::{
@@ -137,7 +138,7 @@ pub mod test_tool {
     }
 
     pub fn fake_block_sync(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
-        let internal_msg = BlockSyncMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
+        let internal_msg = BlockSyncResponseMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
         ConsensusMessage::BlockSync(internal_msg)
             .sign::<HasherType, NopSignature>(kp)
             .into()

@@ -4,7 +4,7 @@ use monad_blocktree::blocktree::{BlockTree, RootKind};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncMessage, ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
     pacemaker::{Pacemaker, PacemakerCommand},
     validation::safety::Safety,
@@ -31,7 +31,7 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 use tracing::{debug, trace, warn};
 
 use crate::{
-    blocksync::{BlockSyncManager, BlockSyncResult},
+    blocksync::{BlockSyncRequester, BlockSyncResult},
     command::ConsensusCommand,
 };
 
@@ -52,7 +52,7 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     config: ConsensusConfig,
 
     transaction_validator: TV,
-    block_sync_manager: BlockSyncManager<SCT>,
+    block_sync_requester: BlockSyncRequester<SCT>,
 
     // TODO-2 deprecate
     keypair: KeyPair,
@@ -72,7 +72,7 @@ where
             && self.safety.eq(&other.safety)
             && self.nodeid.eq(&other.nodeid)
             && self.config.eq(&other.config)
-            && self.block_sync_manager.eq(&other.block_sync_manager)
+            && self.block_sync_requester.eq(&other.block_sync_requester)
     }
 }
 impl<SCT, TVT, SVT> std::fmt::Debug for ConsensusState<SCT, TVT, SVT>
@@ -88,7 +88,7 @@ where
             .field("safety", &self.safety)
             .field("nodeid", &self.nodeid)
             .field("config", &self.config)
-            .field("block_sync_manager", &self.block_sync_manager)
+            .field("block_sync_requester", &self.block_sync_requester)
             .finish()
     }
 }
@@ -169,7 +169,7 @@ where
     fn handle_block_sync<VT: ValidatorSetType>(
         &mut self,
         author: NodeId,
-        msg: BlockSyncMessage<SCT>,
+        msg: BlockSyncResponseMessage<SCT>,
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -186,12 +186,6 @@ where
     fn get_keypair(&self) -> &KeyPair;
 
     fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>>;
-
-    fn request_sync<VT: ValidatorSetType>(
-        &mut self,
-        qc: QuorumCertificate<SCT>,
-        validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>;
 }
 
 impl<SCT, TVT, SVT> ConsensusProcess<SCT> for ConsensusState<SCT, TVT, SVT>
@@ -230,7 +224,7 @@ where
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
             // as 1 * delta for original ask, 2 * delta for reaction from peer
-            block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey), delta * 3),
+            block_sync_requester: BlockSyncRequester::new(NodeId(my_pubkey), delta * 3),
             keypair,
             cert_keypair,
             beneficiary,
@@ -509,47 +503,47 @@ where
         cmds
     }
 
-    /**
-     * Handle_block_sync only respond to blocks that was previously requested.
-     * Once successfully removed from requested dict, it then checks if its valid to add to
-     * pending_block_tree.
-     *
-     * Note, that it is possible that a requested block failed to be added to the tree
-     * due to the original proposal arrived before requested block is able to be returned,
-     * or the requested block is no longer relevant due to prune
-     *
-     */
+    /// Handle_block_sync only respond to blocks that was previously requested.
+    /// Once successfully removed from requested dict, it then checks if its valid to add to
+    /// pending_block_tree.
+    ///
+    /// it is possible that a requested block failed to be added to the tree
+    /// due to the original proposal arriving before the requested block is returned,
+    /// or the requested block is no longer relevant due to prune
     fn handle_block_sync<VT: ValidatorSetType>(
         &mut self,
         author: NodeId,
-        msg: BlockSyncMessage<SCT>,
+        msg: BlockSyncResponseMessage<SCT>,
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = vec![];
 
-        match self.block_sync_manager.handle_retrieval(
+        let bid = msg.get_block_id();
+        let block_sync_result = self.block_sync_requester.handle_response(
             &author,
             msg,
             validators,
             &self.transaction_validator,
-        ) {
+        );
+        block_sync_result.log(bid);
+
+        match block_sync_result {
             BlockSyncResult::Success(full_block) => {
-                if self.pending_block_tree.is_valid(&full_block) {
-                    // check if this block will extend into root
-                    if let Some(qc) = self
-                        .pending_block_tree
-                        .get_missing_ancestor(&full_block.get_block().qc)
-                    {
-                        cmds.extend(self.request_sync(qc, validators));
-                    }
+                if self.pending_block_tree.is_valid_to_insert(&full_block) {
+                    cmds.extend(
+                        self.request_block_if_missing_ancestor(
+                            &full_block.get_block().qc,
+                            validators,
+                        ),
+                    );
                     self.pending_block_tree
                         .add(full_block)
                         .expect("failed to add block to tree during block sync");
                 }
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
-            BlockSyncResult::IllegalResponse => {
-                debug!("Block sync illegal response: author={:?}", author);
+            BlockSyncResult::UnexpectedResponse => {
+                debug!("Block sync unexpected response: author={:?}", author);
             }
         }
         cmds
@@ -567,15 +561,7 @@ where
         bid: BlockId,
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>> {
-        self.block_sync_manager.handle_timeout(bid, validators)
-    }
-
-    fn request_sync<VT: ValidatorSetType>(
-        &mut self,
-        qc: QuorumCertificate<SCT>,
-        validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
-        self.block_sync_manager.request(&qc, validators)
+        self.block_sync_requester.handle_timeout(bid, validators)
     }
 
     fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash) {
@@ -678,8 +664,7 @@ where
 
         cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
 
-        // block sync
-        cmds.extend(self.get_blocks_if_missing(qc, validators));
+        cmds.extend(self.request_block_if_missing_ancestor(qc, validators));
         cmds
     }
 
@@ -773,13 +758,13 @@ where
         ConsensusAction::Abstain
     }
 
-    fn get_blocks_if_missing<VT: ValidatorSetType>(
+    fn request_block_if_missing_ancestor<VT: ValidatorSetType>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>> {
         if let Some(qc) = self.pending_block_tree.get_missing_ancestor(qc) {
-            self.request_sync::<VT>(qc, validators)
+            self.block_sync_requester.request::<VT>(&qc, validators)
         } else {
             vec![]
         }
@@ -798,7 +783,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus::{
-        messages::message::{BlockSyncMessage, TimeoutMessage, VoteMessage},
+        messages::message::{BlockSyncResponseMessage, TimeoutMessage, VoteMessage},
         pacemaker::PacemakerCommand,
         validation::signing::Verified,
     };
@@ -1888,7 +1873,7 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(res.is_some());
 
-        let msg = BlockSyncMessage::BlockFound(block_1);
+        let msg = BlockSyncResponseMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
         second_state.handle_block_sync(routing_target, msg, &valset);
 
@@ -1972,7 +1957,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let mal_sync = BlockSyncMessage::NotAvailable(block_2.block.get_id());
+        let mal_sync = BlockSyncResponseMessage::NotAvailable(block_2.block.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
         let cmds3 = third_state.handle_block_sync(author_2, mal_sync, &valset);
 
@@ -1988,7 +1973,7 @@ mod test {
         });
         assert!(res.is_none());
 
-        let sync = BlockSyncMessage::BlockFound(block_3);
+        let sync = BlockSyncResponseMessage::BlockFound(block_3);
 
         let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), &valset);
 
@@ -2045,7 +2030,7 @@ mod test {
         });
         assert!(res.is_none());
 
-        let sync = BlockSyncMessage::BlockFound(block_2);
+        let sync = BlockSyncResponseMessage::BlockFound(block_2);
         // request sync which did not arrive in time should be ignored.
         let cmds3 = third_state.handle_block_sync(*peer_2, sync, &valset);
 
