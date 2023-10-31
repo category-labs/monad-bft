@@ -9,7 +9,7 @@ use monad_consensus_types::{
     block::FullBlock,
     command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionList},
+    payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
@@ -74,19 +74,19 @@ pub enum MempoolCommand<SCT> {
         /// max number of txns to fetch
         usize,
         /// list of txns to avoid fetching (as they are already in pending blocks)
-        Vec<TransactionList>,
+        Vec<TransactionHashList>,
         /// params of the proposal of this fetch
         FetchTxParams<SCT>,
     ),
     FetchReset,
     FetchFullTxs(
         /// Transaction hashes of the Full transaction to be fetched
-        TransactionList,
+        TransactionHashList,
         /// params of the proposal of this fetch
         FetchFullTxParams<SCT>,
     ),
     FetchFullReset,
-    DrainTxs(Vec<TransactionList>),
+    DrainTxs(Vec<TransactionHashList>),
 }
 
 pub enum LedgerCommand<B, E> {
@@ -172,7 +172,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
     },
     Timeout(TimeoutVariant),
-    FetchedTxs(FetchTxParams<SCT>, TransactionList),
+    FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),

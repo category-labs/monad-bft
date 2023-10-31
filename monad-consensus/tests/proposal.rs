@@ -2,7 +2,7 @@ use monad_consensus::messages::message::ProposalMessage;
 use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::Error,
     voting::{ValidatorMapping, VoteInfo},
@@ -27,7 +27,7 @@ fn setup_block(
     qc_round: Round,
     signers: &[PubKey],
 ) -> Block<MockSignatures> {
-    let txns = TransactionList(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList(vec![1, 2, 3, 4]);
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: qc_round,

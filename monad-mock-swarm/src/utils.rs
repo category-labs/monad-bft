@@ -18,7 +18,7 @@ pub mod test_tool {
         certificate_signature::CertificateSignature,
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
-        payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
+        payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
         quorum_certificate::{QcInfo, QuorumCertificate},
         timeout::{Timeout, TimeoutInfo},
         voting::{Vote, VoteInfo},
@@ -76,7 +76,7 @@ pub mod test_tool {
 
     pub fn fake_block(round: Round) -> Block<SC> {
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),

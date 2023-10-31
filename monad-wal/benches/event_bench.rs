@@ -12,7 +12,7 @@ use monad_consensus_types::{
     certificate_signature::CertificateSignature,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, TransactionList},
+    payload::{ExecutionArtifacts, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -72,7 +72,7 @@ impl MonadEventBencher {
 }
 
 fn bench_proposal(c: &mut Criterion) {
-    let txns = TransactionList(vec![0x23_u8; 32 * 10000]);
+    let txns = TransactionHashList(vec![0x23_u8; 32 * 10000]);
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
         create_keys_w_validators::<MultiSig<SecpSignature>>(1);
     let author_keypair = &keypairs[0];

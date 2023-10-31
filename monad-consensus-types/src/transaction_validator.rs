@@ -1,16 +1,16 @@
 use core::fmt::Debug;
 
-use crate::payload::{FullTransactionList, TransactionList};
+use crate::payload::{FullTransactionList, TransactionHashList};
 
 pub trait TransactionValidator: Clone + Default {
-    fn validate(&self, txs: &TransactionList, full_txs: &FullTransactionList) -> bool;
+    fn validate(&self, txs: &TransactionHashList, full_txs: &FullTransactionList) -> bool;
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
 impl TransactionValidator for MockValidator {
-    fn validate(&self, _txs: &TransactionList, _full_txs: &FullTransactionList) -> bool {
+    fn validate(&self, _txs: &TransactionHashList, _full_txs: &FullTransactionList) -> bool {
         true
     }
 }
@@ -19,7 +19,7 @@ impl TransactionValidator for MockValidator {
 pub struct EthereumValidator;
 
 impl TransactionValidator for EthereumValidator {
-    fn validate(&self, _txs: &TransactionList, _full_txs: &FullTransactionList) -> bool {
+    fn validate(&self, _txs: &TransactionHashList, _full_txs: &FullTransactionList) -> bool {
         unimplemented!()
     }
 }

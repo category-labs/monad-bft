@@ -5,7 +5,9 @@ use monad_consensus_types::{
     block::{Block, BlockType, FullBlock},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList},
+    payload::{
+        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
+    },
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -163,7 +165,7 @@ where
     SCT: SignatureCollection,
     TVT: TransactionValidator,
 {
-    let genesis_txn = TransactionList::default();
+    let genesis_txn = TransactionHashList::default();
     let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc::<H>();
     let genesis_block = Block::<SCT>::new::<H>(
         // FIXME init from genesis config, don't use random key

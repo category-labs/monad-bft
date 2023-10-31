@@ -11,23 +11,24 @@ use monad_proto::{
 use crate::{
     block::{Block, FullBlock, UnverifiedFullBlock},
     payload::{
-        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal, TransactionList,
+        Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
+        TransactionHashList,
     },
     signature_collection::SignatureCollection,
 };
 
-impl From<&TransactionList> for ProtoTransactionList {
-    fn from(value: &TransactionList) -> Self {
+impl From<&TransactionHashList> for ProtoTransactionList {
+    fn from(value: &TransactionHashList) -> Self {
         Self {
             data: value.0.clone(),
         }
     }
 }
 
-impl TryFrom<ProtoTransactionList> for TransactionList {
+impl TryFrom<ProtoTransactionList> for TransactionHashList {
     type Error = ProtoError;
-    fn try_from(value: ProtoTransactionList) -> Result<Self, Self::Error> {
-        Ok(Self(value.data))
+    fn try_from(value: ProtoTransactionList) -> Result<TransactionHashList, Self::Error> {
+        Ok(TransactionHashList(value.data))
     }
 }
 

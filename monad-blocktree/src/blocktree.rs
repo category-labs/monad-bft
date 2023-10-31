@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt, result::Result as StdResult};
 
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
-    payload::TransactionList,
+    payload::TransactionHashList,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
@@ -307,7 +307,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         self.get_txs_on_path_to_root(b).is_some()
     }
 
-    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<TransactionList>> {
+    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<TransactionHashList>> {
         let mut txs = Vec::default();
 
         let mut bid = b;
@@ -397,7 +397,7 @@ mod test {
         block::{Block as ConsensusBlock, BlockType, FullBlock},
         ledger::LedgerCommitInfo,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList,
+            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
@@ -425,7 +425,7 @@ mod test {
     #[test]
     fn test_prune() {
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -742,7 +742,7 @@ mod test {
     #[test]
     fn test_add_parent_not_exist() {
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -854,7 +854,7 @@ mod test {
                 node_id(),
                 Round(0),
                 &Payload {
-                    txns: TransactionList::default(),
+                    txns: TransactionHashList::default(),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -892,7 +892,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionList(vec![1]),
+                    txns: TransactionHashList(vec![1]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -916,7 +916,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionList(vec![2]),
+                    txns: TransactionHashList(vec![2]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -948,7 +948,7 @@ mod test {
                 node_id(),
                 Round(2),
                 &Payload {
-                    txns: TransactionList(vec![3]),
+                    txns: TransactionHashList(vec![3]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -999,7 +999,7 @@ mod test {
                 node_id(),
                 Round(0),
                 &Payload {
-                    txns: TransactionList::default(),
+                    txns: TransactionHashList::default(),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -1037,7 +1037,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionList(vec![1]),
+                    txns: TransactionHashList(vec![1]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -1074,7 +1074,7 @@ mod test {
     #[test]
     fn paths_to_root() {
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -1233,7 +1233,7 @@ mod test {
         let mut blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
 
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -1368,7 +1368,7 @@ mod test {
         let mut blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
 
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -1561,7 +1561,7 @@ mod test {
     #[test]
     fn test_has_parent() {
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -1661,7 +1661,7 @@ mod test {
     fn test_is_valid() {
         let blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -1761,7 +1761,7 @@ mod test {
         //  b2    b3    b4
 
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),

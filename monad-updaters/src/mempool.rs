@@ -9,7 +9,7 @@ use futures::{Stream, StreamExt};
 use monad_consensus_types::{
     command::{FetchFullTxParams, FetchTxParams},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionList},
+    payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
 };
 use monad_eth_types::EthTransactionList;
@@ -40,13 +40,13 @@ enum ControllerTaskError {
 
 #[derive(Debug)]
 enum ControllerTaskCommand {
-    FetchTxs(usize, Vec<TransactionList>),
-    FetchFullTxs(TransactionList),
-    DrainTxs(Vec<TransactionList>),
+    FetchTxs(usize, Vec<TransactionHashList>),
+    FetchFullTxs(TransactionHashList),
+    DrainTxs(Vec<TransactionHashList>),
 }
 
 enum ControllerTaskResult {
-    FetchTxs(TransactionList),
+    FetchTxs(TransactionHashList),
     FetchFullTxs(Option<FullTransactionList>),
 }
 
@@ -116,7 +116,7 @@ where
 
                             let proposal = controller.create_proposal(num_max_txs, pending_txs).await;
 
-                            tx.send(ControllerTaskResult::FetchTxs(TransactionList(proposal.rlp_encode())))
+                            tx.send(ControllerTaskResult::FetchTxs(TransactionHashList(proposal.rlp_encode())))
                                 .await?;
                         }
                         ControllerTaskCommand::FetchFullTxs(txs) => {

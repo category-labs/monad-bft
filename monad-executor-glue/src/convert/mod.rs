@@ -1,6 +1,6 @@
 use monad_consensus_types::{
     message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionList},
+    payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
 };
 use monad_proto::{error::ProtoError, proto::event::*};
@@ -187,7 +187,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                             .map(TryInto::try_into)
                             .transpose()?,
                     },
-                    TransactionList(fetched_txs.tx_hashes),
+                    TransactionHashList(fetched_txs.tx_hashes),
                 )
             }
             Some(proto_consensus_event::Event::FetchedFullTxs(fetched_full_txs)) => {

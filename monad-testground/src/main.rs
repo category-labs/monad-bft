@@ -11,7 +11,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     payload::{
         ExecutionArtifacts, FullTransactionList, NopStateRoot, Payload, RandaoReveal,
-        TransactionList,
+        TransactionHashList,
     },
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{
@@ -228,7 +228,7 @@ fn testnet(
         .collect::<Vec<_>>();
 
     let genesis_block = {
-        let genesis_txn = TransactionList(vec![EMPTY_RLP_TX_LIST]);
+        let genesis_txn = TransactionHashList(vec![EMPTY_RLP_TX_LIST]);
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(

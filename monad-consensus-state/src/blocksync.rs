@@ -236,7 +236,7 @@ mod test {
         block::{Block, UnverifiedFullBlock},
         ledger::LedgerCommitInfo,
         payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList,
+            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
@@ -458,7 +458,7 @@ mod test {
         assert!(bid == qc_3.info.vote.id);
 
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),
@@ -809,7 +809,7 @@ mod test {
 
         // if somehow we sync up on the block, timeout should be ignored
         let payload = Payload {
-            txns: TransactionList::default(),
+            txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
             seq_num: 0,
             beneficiary: EthAddress::default(),

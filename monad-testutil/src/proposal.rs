@@ -9,7 +9,7 @@ use monad_consensus_types::{
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
     message_signature::MessageSignature,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -53,7 +53,7 @@ where
         valset: &VT,
         election: &LT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        txns: TransactionList,
+        txns: TransactionHashList,
         execution_header: ExecutionArtifacts,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal

@@ -4,7 +4,9 @@ use clap::error::ErrorKind;
 use monad_consensus_types::{
     block::{Block, BlockType, FullBlock},
     ledger::LedgerCommitInfo,
-    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionList},
+    payload::{
+        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
+    },
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::SignatureCollection,
     voting::{ValidatorMapping, VoteInfo},
@@ -56,7 +58,7 @@ fn build_genesis_block(
 ) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
     // TODO: Deserialize transactions from GenesisConfig
     let (genesis_txs, genesis_full_txs) = (
-        TransactionList(vec![EMPTY_RLP_TX_LIST]),
+        TransactionHashList(vec![EMPTY_RLP_TX_LIST]),
         FullTransactionList(vec![EMPTY_RLP_TX_LIST]),
     );
 

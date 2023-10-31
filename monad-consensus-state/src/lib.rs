@@ -14,7 +14,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
     command::{FetchFullTxParams, FetchTxParams},
-    payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionList},
+    payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionHashList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
@@ -226,11 +226,11 @@ where
         p: ProposalMessage<SCT>,
     ) -> Vec<ConsensusCommand<SCT>> {
         // NULL blocks are not required to have state root hashes
-        if p.block.payload.txns == TransactionList(vec![EMPTY_RLP_TX_LIST]) {
+        if p.block.payload.txns == TransactionHashList(vec![EMPTY_RLP_TX_LIST]) {
             debug!("Received empty block: block={:?}", p.block);
             inc_count!(rx_empty_block);
             return vec![ConsensusCommand::FetchFullTxs(
-                TransactionList::default(),
+                TransactionHashList::default(),
                 FetchFullTxParams {
                     author,
                     p_block: p.block,
@@ -749,7 +749,7 @@ where
 }
 
 pub enum ConsensusAction {
-    Propose(Hash, Vec<TransactionList>),
+    Propose(Hash, Vec<TransactionHashList>),
     ProposeEmpty,
     Abstain,
 }
@@ -812,7 +812,7 @@ mod test {
         multi_sig::MultiSig,
         payload::{
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, NopStateRoot, StateRoot,
-            StateRootValidator, TransactionList,
+            StateRootValidator, TransactionHashList,
         },
         quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -1658,7 +1658,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList::default(),
+            TransactionHashList::default(),
             ExecutionArtifacts::zero(),
         );
         let mp1 = mal_proposal_gen.next_proposal(
@@ -1667,7 +1667,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![5]),
+            TransactionHashList(vec![5]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2082,7 +2082,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList::default(),
+            TransactionHashList::default(),
             ExecutionArtifacts::zero(),
         );
 
@@ -2122,7 +2122,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![0xaa]),
+            TransactionHashList(vec![0xaa]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2132,7 +2132,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![0xaa]),
+            TransactionHashList(vec![0xaa]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2171,7 +2171,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList::default(),
+            TransactionHashList::default(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p0.destructure();
@@ -2198,7 +2198,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![0xaa]),
+            TransactionHashList(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0x99; 32]),
@@ -2234,7 +2234,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![0xaa]),
+            TransactionHashList(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0xbb; 32]),
@@ -2272,7 +2272,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![0xaa]),
+            TransactionHashList(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0xcc; 32]),
@@ -2331,7 +2331,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList::default(),
+            TransactionHashList::default(),
             ExecutionArtifacts::zero(),
         );
 
@@ -2362,7 +2362,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionList(vec![13, 32]),
+            TransactionHashList(vec![13, 32]),
             ExecutionArtifacts::zero(),
         );
 

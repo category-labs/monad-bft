@@ -69,16 +69,15 @@ impl Hashable for ExecutionArtifacts {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-// TODO rename to TransactionHashList or something
-pub struct TransactionList(pub Vec<u8>);
+pub struct TransactionHashList(pub Vec<u8>);
 
-impl Default for TransactionList {
-    fn default() -> Self {
+impl Default for TransactionHashList {
+    fn default() -> TransactionHashList {
         Self(vec![EMPTY_RLP_TX_LIST])
     }
 }
 
-impl std::fmt::Debug for TransactionList {
+impl std::fmt::Debug for TransactionHashList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("TxnHashes").field(&self.0).finish()
     }
@@ -113,7 +112,7 @@ impl RandaoReveal {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
-    pub txns: TransactionList,
+    pub txns: TransactionHashList,
     pub header: ExecutionArtifacts,
     pub seq_num: u64,
     pub beneficiary: EthAddress,

@@ -4,7 +4,7 @@ use monad_consensus_types::{
     certificate_signature::CertificateKeyPair,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionList},
+    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -169,7 +169,7 @@ fn timeout_msg_hash() {
 fn proposal_msg_hash() {
     use monad_testutil::signing::hash;
 
-    let txns = TransactionList(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList(vec![1, 2, 3, 4]);
 
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();

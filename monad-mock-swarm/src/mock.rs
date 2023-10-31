@@ -13,7 +13,7 @@ use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::{
     command::{FetchFullTxParams, FetchTxParams},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionList},
+    payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
 };
 use monad_eth_types::EMPTY_RLP_TX_LIST;
@@ -579,15 +579,15 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
 }
 
 impl<ST, SCT> MockMempool<ST, SCT> {
-    fn get_fetched_txs_list(&mut self) -> TransactionList {
+    fn get_fetched_txs_list(&mut self) -> TransactionHashList {
         if self.num_fetch_txs == 0 {
-            TransactionList(vec![EMPTY_RLP_TX_LIST])
+            TransactionHashList(vec![EMPTY_RLP_TX_LIST])
         } else {
             // Random non-empty value with size = num_fetch_txs * hash_size
             let mut buf = Vec::with_capacity(self.num_fetch_txs * 32);
             buf.resize(self.num_fetch_txs * 32, 0);
             self.rng.fill_bytes(buf.as_mut_slice());
-            TransactionList(buf)
+            TransactionHashList(buf)
         }
     }
 }
