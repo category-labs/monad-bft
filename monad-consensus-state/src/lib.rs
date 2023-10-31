@@ -331,6 +331,8 @@ where
             .add(full_block.clone())
             .expect("Failed to add block to blocktree");
 
+        self.block_sync_manager.remove(full_block.get_id());
+
         if full_block.get_round() != round || author != leader || full_block.get_author() != leader
         {
             debug!(
@@ -832,7 +834,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round, TimeoutVariant};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -2049,8 +2051,21 @@ mod test {
         });
         assert!(res.is_none());
 
-        let sync = BlockSyncMessage::BlockFound(block_2);
+        // since proposal already fixed the block, the action of timing out or failure doesn't do anything
+        let sync = BlockSyncMessage::NotAvailable(block_2.block.get_id());
+        let cmds3 = third_state.handle_block_sync(*peer_2, sync, &valset);
+        assert_eq!(cmds3.len(), 0);
+
+        // similarly, timeout is also silent
+        let cmds3 = third_state.handle_block_sync_tmo(block_2.block.get_id(), &valset);
+        assert_eq!(cmds3.len(), 1);
+        let ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSync(id)) = cmds3[0] else {
+            panic!("reset is not correct");
+        };
+        assert_eq!(id, block_2.block.get_id());
+
         // request sync which did not arrive in time should be ignored.
+        let sync = BlockSyncMessage::BlockFound(block_2);
         let cmds3 = third_state.handle_block_sync(*peer_2, sync, &valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 5);

@@ -225,6 +225,10 @@ where
         }
         cmds
     }
+
+    pub fn remove(&mut self, bid: BlockId) {
+        self.requests.remove(&bid);
+    }
 }
 
 #[cfg(test)]
