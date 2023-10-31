@@ -509,6 +509,11 @@ where
         );
     }
 
+    pub fn update_pipeline_for_all(&mut self, pipeline: S::Pipeline) {
+        for node in &mut self.states.values_mut() {
+            node.pipeline = pipeline.clone();
+        }
+    }
     pub fn update_pipeline(&mut self, id: &ID, pipeline: S::Pipeline) {
         self.states.get_mut(id).map(|node| node.pipeline = pipeline);
     }

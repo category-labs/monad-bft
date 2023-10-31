@@ -528,11 +528,57 @@ pub mod monad_test {
     use monad_types::Round;
 
     use super::{
-        LatencyTransformer, LinkMessage, RandLatencyTransformer, Transformer, TransformerStream,
-        XorLatencyTransformer, ID,
+        DropTransformer, LatencyTransformer, LinkMessage, PartitionTransformer,
+        RandLatencyTransformer, Transformer, TransformerStream, XorLatencyTransformer, ID,
     };
     use crate::transformer::UNIQUE_ID;
 
+    #[derive(Debug, Clone)]
+
+    pub struct FilterTransformer {
+        pub drop_proposal: bool,
+        pub drop_vote: bool,
+        pub drop_timeout: bool,
+        pub drop_block_sync: bool,
+    }
+
+    impl Default for FilterTransformer {
+        fn default() -> Self {
+            Self {
+                drop_proposal: false,
+                drop_vote: false,
+                drop_timeout: false,
+                drop_block_sync: false,
+            }
+        }
+    }
+
+    impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for FilterTransformer
+    where
+        ST: MessageSignature,
+        SCT: SignatureCollection,
+    {
+        fn transform(
+            &mut self,
+            link_m: LinkMessage<MonadMessage<ST, SCT>>,
+        ) -> TransformerStream<MonadMessage<ST, SCT>> {
+            let spy: &ConsensusMessage<SCT> = link_m.message.spy_internal();
+            let should_drop = match spy {
+                ConsensusMessage::Proposal(_) => self.drop_proposal,
+                ConsensusMessage::Vote(_) => self.drop_vote,
+                ConsensusMessage::Timeout(_) => self.drop_timeout,
+                ConsensusMessage::RequestBlockSync(_) | ConsensusMessage::BlockSync(_) => {
+                    self.drop_block_sync
+                }
+            };
+
+            if should_drop {
+                TransformerStream::Complete(vec![])
+            } else {
+                TransformerStream::Continue(vec![(Duration::ZERO, link_m)])
+            }
+        }
+    }
     #[derive(Debug, Clone)]
     pub struct TwinsTransformer {
         // PeerId -> All Duplicate
@@ -655,6 +701,9 @@ pub mod monad_test {
         XorLatency(XorLatencyTransformer),
         RandLatency(RandLatencyTransformer),
         Twins(TwinsTransformer),
+        Filter(FilterTransformer),
+        Partition(PartitionTransformer),
+        Drop(DropTransformer),
     }
 
     impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for MonadMessageTransformer
@@ -671,6 +720,9 @@ pub mod monad_test {
                 MonadMessageTransformer::XorLatency(t) => t.transform(message),
                 MonadMessageTransformer::RandLatency(t) => t.transform(message),
                 MonadMessageTransformer::Twins(t) => t.transform(message),
+                MonadMessageTransformer::Filter(t) => t.transform(message),
+                MonadMessageTransformer::Partition(t) => t.transform(message),
+                MonadMessageTransformer::Drop(t) => t.transform(message),
             }
         }
 
@@ -688,6 +740,15 @@ pub mod monad_test {
                 MonadMessageTransformer::Twins(t) => {
                     <TwinsTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
                 }
+                MonadMessageTransformer::Filter(t) => {
+                    <FilterTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
+                }
+                MonadMessageTransformer::Drop(t) => {
+                    <DropTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
+                }
+                MonadMessageTransformer::Partition(t) => {
+                    <PartitionTransformer as Transformer<MonadMessage<ST, SCT>>>::min_external_delay(t)
+                }                
             }
         }
     }

@@ -24,7 +24,9 @@ use crate::{
         MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig, NoSerRouterScheduler,
         RouterScheduler,
     },
-    transformer::{GenericTransformerPipeline, Pipeline},
+    transformer::{
+        monad_test::MonadMessageTransformerPipeline, GenericTransformerPipeline, Pipeline,
+    },
 };
 
 pub trait SwarmRelation {
@@ -74,6 +76,36 @@ impl SwarmRelation for NoSerSwarm {
     type Pipeline = GenericTransformerPipeline<
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
+    type Logger =
+        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = MockWALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+}
+
+// no NoSerSwarm but pipeline is specialized
+pub struct MonadMessageNoSerSwarm;
+
+impl SwarmRelation for MonadMessageNoSerSwarm {
+    type State = MonadState<
+        ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
+        NopSignature,
+        MultiSig<NopSignature>,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = MonadMessageTransformerPipeline;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
