@@ -29,6 +29,7 @@ fn two_nodes_virtual() -> u128 {
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     )
     .as_millis()

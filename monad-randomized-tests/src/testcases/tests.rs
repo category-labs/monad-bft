@@ -36,6 +36,7 @@ fn random_latency_test(seed: u64) {
             expected_block: 2048,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }
@@ -43,8 +44,13 @@ fn random_latency_test(seed: u64) {
 fn delayed_message_test(seed: u64) {
     let num_nodes = 4;
     let delta = Duration::from_millis(2);
-    let (pubkeys, state_configs) =
-        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta, 4);
+    let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
+        MockValidator,
+        num_nodes,
+        delta,
+        4,
+        0,
+    );
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 

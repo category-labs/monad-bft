@@ -57,7 +57,7 @@ impl SwarmRelation for ReplaySwarm {
 
 #[test]
 fn test_replay() {
-    recover_nodes_msg_delays(4, 10, 5, 4);
+    recover_nodes_msg_delays(4, 10, 5, 4, 0);
 }
 
 pub fn recover_nodes_msg_delays(
@@ -65,6 +65,7 @@ pub fn recover_nodes_msg_delays(
     num_blocks_before: usize,
     num_block_after: usize,
     state_root_delay: u64,
+    proposal_size: usize,
 ) {
     let (pubkeys, state_configs) = get_configs::<
         <ReplaySwarm as SwarmRelation>::SignatureType,
@@ -75,6 +76,7 @@ pub fn recover_nodes_msg_delays(
         num_nodes,
         Duration::from_millis(101),
         state_root_delay,
+        proposal_size,
     );
 
     // create the log file path
@@ -134,12 +136,17 @@ pub fn recover_nodes_msg_delays(
     // drop the nodes -> close the files
     drop(nodes);
 
-    let (pubkeys_clone, state_configs_clone) =
-        get_configs::<
-            <ReplaySwarm as SwarmRelation>::SignatureType,
-            <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
-            _,
-        >(MockValidator {}, num_nodes, Duration::from_millis(2), 4);
+    let (pubkeys_clone, state_configs_clone) = get_configs::<
+        <ReplaySwarm as SwarmRelation>::SignatureType,
+        <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
+        _,
+    >(
+        MockValidator {},
+        num_nodes,
+        Duration::from_millis(2),
+        4,
+        proposal_size,
+    );
 
     let peers_clone = pubkeys_clone
         .iter()

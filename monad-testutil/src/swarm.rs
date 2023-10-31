@@ -35,6 +35,7 @@ pub struct SwarmTestConfig {
     pub expected_block: usize,
     pub state_root_delay: u64,
     pub seed: u64,
+    pub proposal_size: usize,
 }
 
 pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
@@ -42,6 +43,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     num_nodes: u16,
     delta: Duration,
     state_root_delay: u64,
+    proposal_size: usize,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
@@ -52,6 +54,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
         validator_mapping,
         delta,
         state_root_delay,
+        proposal_size,
     )
 }
 
@@ -66,6 +69,7 @@ pub fn complete_config<
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     delta: Duration,
     state_root_delay: u64,
+    proposal_size: usize,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let voting_keys = keys
@@ -92,7 +96,7 @@ pub fn complete_config<
                 .collect::<Vec<_>>(),
             delta,
             consensus_config: ConsensusConfig {
-                proposal_size: 5000,
+                proposal_size,
                 state_root_delay,
                 propose_with_missing_blocks: false,
             },
@@ -162,6 +166,7 @@ where
             swarm_config.num_nodes,
             swarm_config.consensus_delta,
             swarm_config.state_root_delay,
+            swarm_config.proposal_size,
         );
     run_nodes_until::<S, _, _>(
         peers,

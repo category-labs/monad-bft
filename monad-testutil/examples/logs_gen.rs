@@ -38,12 +38,24 @@ impl SwarmRelation for LogSwarm {
     type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
-pub fn generate_log(num_nodes: u16, num_blocks: usize, delta: Duration, state_root_delay: u64) {
+pub fn generate_log(
+    num_nodes: u16,
+    num_blocks: usize,
+    delta: Duration,
+    state_root_delay: u64,
+    proposal_size: usize,
+) {
     let (pubkeys, state_configs) = get_configs::<
         <LogSwarm as SwarmRelation>::SignatureType,
         <LogSwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, num_nodes, delta, state_root_delay);
+    >(
+        MockValidator,
+        num_nodes,
+        delta,
+        state_root_delay,
+        proposal_size,
+    );
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
         sync: false,
@@ -78,6 +90,6 @@ pub fn generate_log(num_nodes: u16, num_blocks: usize, delta: Duration, state_ro
 }
 
 fn main() {
-    generate_log(4, 10, Duration::from_millis(101), 4);
+    generate_log(4, 10, Duration::from_millis(101), 4, 0);
     println!("Logs Generated!");
 }

@@ -37,6 +37,7 @@ fn two_nodes() {
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }
@@ -70,6 +71,7 @@ fn two_nodes_quic() {
             expected_block: 256,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 150,
         },
     );
 }
@@ -95,7 +97,7 @@ fn two_nodes_quic_bw() {
         MockMempoolConfig::default(),
         vec![
             BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            BytesTransformer::Bw(BwTransformer::new(3)),
+            BytesTransformer::Bw(BwTransformer::new(4)),
         ],
         UntilTerminator::new().until_tick(Duration::from_secs(5)),
         SwarmTestConfig {
@@ -105,6 +107,7 @@ fn two_nodes_quic_bw() {
             expected_block: 100,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 100,
         },
     );
 

@@ -15,7 +15,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("two_nodes", |b| b.iter(two_nodes));
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().sample_size(10);
+    targets = criterion_benchmark
+}
 criterion_main!(benches);
 
 fn two_nodes() {
@@ -37,6 +41,7 @@ fn two_nodes() {
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 5_000,
         },
     );
 }

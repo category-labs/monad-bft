@@ -74,6 +74,7 @@ fn two_nodes_bls() {
             expected_block: 128,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }

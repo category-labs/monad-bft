@@ -33,6 +33,7 @@ fn two_nodes() {
             expected_block: 40,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }

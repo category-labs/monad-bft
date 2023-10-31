@@ -77,6 +77,7 @@ fn nodes_with_random_latency(seed: u64) {
             // TODO, cover cases with low state_root_delay once state_sync is done
             state_root_delay: u64::MAX,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }

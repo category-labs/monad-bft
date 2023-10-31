@@ -33,6 +33,7 @@ fn many_nodes_noser() {
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }
@@ -66,6 +67,7 @@ fn many_nodes_quic() {
             expected_block: 10,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 150,
         },
     );
 }
@@ -81,6 +83,7 @@ fn many_nodes_quic_bw() {
         expected_block: 10,
         state_root_delay: u64::MAX,
         seed: 1,
+        proposal_size: 150,
     };
 
     let xfmrs = vec![

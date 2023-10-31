@@ -121,12 +121,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
         <ReplaySwarm as SwarmRelation>::SignatureType,
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4);
+    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0);
     let (_, mut state_configs_duplicate) = get_configs::<
         <ReplaySwarm as SwarmRelation>::SignatureType,
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4);
+    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0);
 
     let pubkeys = peers;
     let router_scheduler_config = |all_peers: Vec<PeerId>, _: PeerId| NoSerRouterConfig {

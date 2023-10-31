@@ -33,6 +33,7 @@ mod test {
             num_nodes,
             delta,
             u64::MAX,
+            0,
         );
 
         let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
@@ -82,6 +83,7 @@ mod test {
             num_nodes,
             delta,
             u64::MAX,
+            0,
         );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
@@ -141,6 +143,7 @@ mod test {
             num_nodes,
             delta,
             u64::MAX,
+            0,
         );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");

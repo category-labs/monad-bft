@@ -28,7 +28,7 @@ use monad_updaters::{
     state_root_hash::MockStateRootHash,
 };
 use priority_queue::PriorityQueue;
-use rand::Rng;
+use rand::{Rng, RngCore};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 use crate::swarm_relation::{SwarmRelation, SwarmStateType};
@@ -583,12 +583,11 @@ impl<ST, SCT> MockMempool<ST, SCT> {
         if self.num_fetch_txs == 0 {
             TransactionList(vec![EMPTY_RLP_TX_LIST])
         } else {
-            // Random non-empty value with size = num_fetch_txs
-            TransactionList(
-                (0..self.num_fetch_txs)
-                    .map(|_| self.rng.gen::<u8>())
-                    .collect(),
-            )
+            // Random non-empty value with size = num_fetch_txs * hash_size
+            let mut buf = Vec::with_capacity(self.num_fetch_txs * 32);
+            buf.resize(self.num_fetch_txs * 32, 0);
+            self.rng.fill_bytes(buf.as_mut_slice());
+            TransactionList(buf)
         }
     }
 }
@@ -1138,7 +1137,7 @@ mod tests {
                 panic!("wrong event returned")
             }
         };
-        assert_eq!(txs_list_2.0.len(), 10);
+        assert_eq!(txs_list_2.0.len(), 10 * 32);
         assert_eq!(txs_list_2.0.len(), txs_list_1.0.len());
         assert_ne!(txs_list_2.0, txs_list_1.0);
     }

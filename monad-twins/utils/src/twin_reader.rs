@@ -203,6 +203,7 @@ where
         validator_mapping,
         Duration::from_millis(delta_ms),
         TWINS_STATE_ROOT_DELAY,
+        10,
     );
 
     let mut nodes = BTreeMap::new();

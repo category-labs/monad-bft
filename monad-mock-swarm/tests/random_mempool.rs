@@ -74,6 +74,7 @@ fn random_mempool_failures() {
             expected_block: 1024,
             state_root_delay: 4,
             seed: 1,
+            proposal_size: 0,
         },
     );
 }

@@ -33,6 +33,7 @@ fn setup() -> (
         expected_block: 0,
         state_root_delay: u64::MAX,
         seed: 1,
+        proposal_size: 0,
     };
     let rsc = move |all_peers: Vec<PeerId>, me: PeerId| QuicRouterSchedulerConfig {
         zero_instant,
