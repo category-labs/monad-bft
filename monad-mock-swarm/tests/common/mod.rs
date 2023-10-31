@@ -15,18 +15,20 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 pub struct QuicSwarm;
 impl SwarmRelation for QuicSwarm {
-    type STATE = SwarmStateType<Self>;
-    type ST = NopSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = QuicRouterScheduler<MockGossip>;
-    type P = BytesTransformerPipeline;
-    type LGR = MockWALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = MockWALoggerConfig;
-    type RSCFG = QuicRouterSchedulerConfig<MockGossipConfig>;
-    type MPCFG = MockMempoolConfig;
+    type State = SwarmStateType<Self>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler = QuicRouterScheduler<MockGossip>;
+    type Pipeline = BytesTransformerPipeline;
+    type Logger =
+        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = MockWALoggerConfig;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type MempoolConfig = MockMempoolConfig;
     type Message = Vec<u8>;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }

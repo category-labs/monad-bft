@@ -48,24 +48,25 @@ use replay_graph::{RepConfig, ReplayNodesSimulation};
 pub struct VizSwarm;
 
 impl SwarmRelation for VizSwarm {
-    type STATE = SwarmStateType<Self>;
-    type ST = NopSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = NoSerRouterScheduler<<Self::STATE as State>::Message>;
-    type P = GenericTransformerPipeline<<Self::STATE as State>::Message>;
-    type LGR = MockWALogger<TimedEvent<<Self::STATE as State>::Event>>;
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = MockWALoggerConfig;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolConfig;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type State = SwarmStateType<Self>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler = NoSerRouterScheduler<<Self::State as State>::Message>;
+    type Pipeline = GenericTransformerPipeline<<Self::State as State>::Message>;
+    type Logger = MockWALogger<TimedEvent<<Self::State as State>::Event>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = MockWALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 type NS<'a> =
-    NodeState<'a, PeerId, VizSwarm, <<VizSwarm as SwarmRelation>::STATE as State>::Message>;
+    NodeState<'a, PeerId, VizSwarm, <<VizSwarm as SwarmRelation>::State as State>::Message>;
 
 type Sim = NodesSimulation<VizSwarm, SimConfig>;
 type ReplaySim = ReplayNodesSimulation<VizSwarm, RepConfig>;
@@ -121,7 +122,7 @@ impl Application for Viz {
                     sync: false,
                 };
                 let (_, event_vec) = WALogger::<
-                    TimedEvent<<<VizSwarm as SwarmRelation>::STATE as State>::Event>,
+                    TimedEvent<<<VizSwarm as SwarmRelation>::State as State>::Event>,
                 >::new(log_config)
                 .unwrap();
                 replay_events.insert(PeerId(*pk), event_vec.clone());

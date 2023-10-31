@@ -18,21 +18,22 @@ use rand_chacha::ChaChaRng;
 
 use crate::twin_reader::{TwinsNodeConfig, TwinsTestCase};
 
-pub fn run_twins_test<S, LGRC, RSC, MPC>(
-    get_logger_config: LGRC,
-    get_router_cfg: RSC,
-    get_mempool_cfg: MPC,
+pub fn run_twins_test<S, L, R, M>(
+    get_logger_config: L,
+    get_router_cfg: R,
+    get_mempool_cfg: M,
     seed: u64,
     test_case: TwinsTestCase<S>,
 ) where
-    S: SwarmRelation<P = MonadMessageTransformerPipeline>,
+    S: SwarmRelation<Pipeline = MonadMessageTransformerPipeline>,
     MockExecutor<S>: Unpin,
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
     Node<S>: Send,
-    LGRC: Fn(&ID, &Vec<ID>) -> S::LGRCFG,
-    RSC: Fn(&ID, &Vec<ID>) -> S::RSCFG,
-    MPC: Fn(&ID, &Vec<ID>) -> S::MPCFG,
+    L: Fn(&ID, &Vec<ID>) -> S::LoggerConfig,
+    R: Fn(&ID, &Vec<ID>) -> S::RouterSchedulerConfig,
+    M: Fn(&ID, &Vec<ID>) -> S::MempoolConfig,
 {
     let TwinsTestCase {
         description: _,

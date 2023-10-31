@@ -27,11 +27,11 @@ use monad_types::NodeId;
 use crate::{graph::SimulationConfig, VizSwarm};
 
 type MM = <VizSwarm as SwarmRelation>::Message;
-type MC = <<VizSwarm as SwarmRelation>::STATE as State>::Config;
-type LoggerConfig = <VizSwarm as SwarmRelation>::LGRCFG;
-type RouterSchedulerConfig = <VizSwarm as SwarmRelation>::RSCFG;
-type MempoolConfig = <VizSwarm as SwarmRelation>::MPCFG;
-type Pipe = <VizSwarm as SwarmRelation>::P;
+type MC = <<VizSwarm as SwarmRelation>::State as State>::Config;
+type LoggerConfig = <VizSwarm as SwarmRelation>::LoggerConfig;
+type RouterSchedulerConfig = <VizSwarm as SwarmRelation>::RouterSchedulerConfig;
+type MempoolConfig = <VizSwarm as SwarmRelation>::MempoolConfig;
+type Pipe = <VizSwarm as SwarmRelation>::Pipeline;
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
@@ -70,8 +70,9 @@ impl SimulationConfig<VizSwarm> for SimConfig {
         Pipe,
         u64,
     )> {
-        let (keys, cert_keys, _validators, validator_mapping) =
-            create_keys_w_validators::<<VizSwarm as SwarmRelation>::SCT>(self.num_nodes);
+        let (keys, cert_keys, _validators, validator_mapping) = create_keys_w_validators::<
+            <VizSwarm as SwarmRelation>::SignatureCollectionType,
+        >(self.num_nodes);
 
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
         let voting_keys = keys
@@ -79,12 +80,15 @@ impl SimulationConfig<VizSwarm> for SimConfig {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<Sha256Hash, <VizSwarm as SwarmRelation>::SCT, _>(
-                voting_keys.iter(),
-                &validator_mapping,
-                &MockValidator::default(),
-            );
+        let (genesis_block, genesis_sigs) = get_genesis_config::<
+            Sha256Hash,
+            <VizSwarm as SwarmRelation>::SignatureCollectionType,
+            _,
+        >(
+            voting_keys.iter(),
+            &validator_mapping,
+            &MockValidator::default(),
+        );
 
         let state_configs = keys
             .into_iter()

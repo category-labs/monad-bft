@@ -30,7 +30,7 @@ pub struct NodeState<'s, Id, SWM: SwarmRelation, M> {
     pub id: &'s Id,
     pub state: &'s SwarmStateType<SWM>,
 
-    pub pending_events: Vec<NodeEvent<'s, Id, M, <SWM::STATE as State>::Event>>,
+    pub pending_events: Vec<NodeEvent<'s, Id, M, <SWM::State as State>::Event>>,
 }
 
 pub trait Graph {
@@ -66,11 +66,11 @@ where
         &self,
     ) -> Vec<(
         ID,
-        <S::STATE as State>::Config,
-        S::LGRCFG,
-        S::RSCFG,
-        S::MPCFG,
-        S::P,
+        <S::State as State>::Config,
+        S::LoggerConfig,
+        S::RouterSchedulerConfig,
+        S::MempoolConfig,
+        S::Pipeline,
         u64,
     )>;
 }
@@ -93,8 +93,9 @@ where
     S::Message: Identifiable,
     C: SimulationConfig<S>,
 
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -131,16 +132,17 @@ where
     S::Message: Identifiable,
     C: SimulationConfig<S>,
 
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
 {
-    type State = S::STATE;
+    type State = S::State;
     type Message = S::Message;
     type MessageId = <S::Message as Identifiable>::Id;
-    type Event = <S::STATE as State>::Event;
+    type Event = <S::State as State>::Event;
     type NodeId = PeerId;
     type Swarm = S;
 

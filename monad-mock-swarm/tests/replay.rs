@@ -26,28 +26,33 @@ use tempfile::tempdir;
 
 struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
-    type STATE = MonadState<
-        ConsensusState<Self::SCT, MockValidator, NopStateRoot>,
-        Self::ST,
-        Self::SCT,
+    type State = MonadState<
+        ConsensusState<Self::SignatureCollectionType, MockValidator, NopStateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type ST = SecpSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
-    type LGR = WALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
+    type SignatureType = SecpSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+    type Logger =
+        WALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = WALoggerConfig;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolConfig;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = WALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]
@@ -61,13 +66,16 @@ pub fn recover_nodes_msg_delays(
     num_block_after: usize,
     state_root_delay: u64,
 ) {
-    let (pubkeys, state_configs) =
-        get_configs::<<ReplaySwarm as SwarmRelation>::ST, <ReplaySwarm as SwarmRelation>::SCT, _>(
-            MockValidator {},
-            num_nodes,
-            Duration::from_millis(101),
-            state_root_delay,
-        );
+    let (pubkeys, state_configs) = get_configs::<
+        <ReplaySwarm as SwarmRelation>::SignatureType,
+        <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
+        _,
+    >(
+        MockValidator {},
+        num_nodes,
+        Duration::from_millis(101),
+        state_root_delay,
+    );
 
     // create the log file path
     let mut logger_configs = Vec::new();
@@ -127,12 +135,11 @@ pub fn recover_nodes_msg_delays(
     drop(nodes);
 
     let (pubkeys_clone, state_configs_clone) =
-        get_configs::<<ReplaySwarm as SwarmRelation>::ST, <ReplaySwarm as SwarmRelation>::SCT, _>(
-            MockValidator {},
-            num_nodes,
-            Duration::from_millis(2),
-            4,
-        );
+        get_configs::<
+            <ReplaySwarm as SwarmRelation>::SignatureType,
+            <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
+            _,
+        >(MockValidator {}, num_nodes, Duration::from_millis(2), 4);
 
     let peers_clone = pubkeys_clone
         .iter()

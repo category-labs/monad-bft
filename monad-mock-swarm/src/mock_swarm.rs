@@ -28,8 +28,8 @@ where
     pub id: ID,
     pub executor: MockExecutor<S>,
     pub state: SwarmStateType<S>,
-    pub logger: S::LGR,
-    pub pipeline: S::P,
+    pub logger: S::Logger,
+    pub pipeline: S::Pipeline,
     pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<S::Message>)>>,
     pub rng: ChaCha20Rng,
     pub current_seed: usize,
@@ -39,8 +39,10 @@ impl<S> Node<S>
 where
     S: SwarmRelation,
 
-    <SwarmStateType<S> as State>::Message: Deserializable<<S::RS as RouterScheduler>::M>,
-    <SwarmStateType<S> as State>::OutboundMessage: Serializable<<S::RS as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::Message:
+        Deserializable<<S::RouterScheduler as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::OutboundMessage:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
     MockExecutor<S>: Unpin,
 {
     fn update_rng(&mut self) {
@@ -309,17 +311,19 @@ where
     MockExecutor<S>: Unpin,
     Node<S>: Send,
 
-    <SwarmStateType<S> as State>::Message: Deserializable<<S::RS as RouterScheduler>::M>,
-    <SwarmStateType<S> as State>::OutboundMessage: Serializable<<S::RS as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::Message:
+        Deserializable<<S::RouterScheduler as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::OutboundMessage:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 {
     pub fn new(
         peers: Vec<(
             ID,
-            <S::STATE as State>::Config,
-            S::LGRCFG,
-            S::RSCFG,
-            S::MPCFG,
-            S::P,
+            <S::State as State>::Config,
+            S::LoggerConfig,
+            S::RouterSchedulerConfig,
+            S::MempoolConfig,
+            S::Pipeline,
             u64,
         )>,
     ) -> Self {
@@ -452,11 +456,11 @@ where
         &mut self,
         peer: (
             ID,
-            <S::STATE as State>::Config,
-            S::LGRCFG,
-            S::RSCFG,
-            S::MPCFG,
-            S::P,
+            <S::State as State>::Config,
+            S::LoggerConfig,
+            S::RouterSchedulerConfig,
+            S::MempoolConfig,
+            S::Pipeline,
             u64,
         ),
     ) {
@@ -476,11 +480,11 @@ where
         assert!(!self.no_duplicate_peers || id.is_unique());
 
         let mut executor: MockExecutor<S> = MockExecutor::new(
-            <S::RS as RouterScheduler>::new(router_scheduler_config),
+            <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
             mock_mempool_config,
             self.tick,
         );
-        let (wal, replay_events) = S::LGR::new(logger_config).unwrap();
+        let (wal, replay_events) = S::Logger::new(logger_config).unwrap();
         let (mut state, mut init_commands) = SwarmStateType::<S>::init(state_config);
 
         for event in replay_events {
@@ -505,7 +509,7 @@ where
         );
     }
 
-    pub fn update_pipeline(&mut self, id: &ID, pipeline: S::P) {
+    pub fn update_pipeline(&mut self, id: &ID, pipeline: S::Pipeline) {
         self.states.get_mut(id).map(|node| node.pipeline = pipeline);
     }
 }

@@ -135,32 +135,34 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
     }
 }
 
-pub fn create_and_run_nodes<S, RSC, TERM>(
-    tvt: S::TVT,
-    router_scheduler_config: RSC,
-    logger_config: S::LGRCFG,
-    mock_mempool_config: S::MPCFG,
-    pipeline: S::P,
-    terminator: TERM,
+pub fn create_and_run_nodes<S, R, T>(
+    tvt: S::TransactionValidator,
+    router_scheduler_config: R,
+    logger_config: S::LoggerConfig,
+    mock_mempool_config: S::MempoolConfig,
+    pipeline: S::Pipeline,
+    terminator: T,
     swarm_config: SwarmTestConfig,
 ) -> Duration
 where
     S: SwarmRelation,
 
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    RSC: Fn(Vec<PeerId>, PeerId) -> S::RSCFG,
-    TERM: NodesTerminator<S>,
+    R: Fn(Vec<PeerId>, PeerId) -> S::RouterSchedulerConfig,
+    T: NodesTerminator<S>,
 {
-    let (peers, state_configs) = get_configs::<S::ST, S::SCT, S::TVT>(
-        tvt,
-        swarm_config.num_nodes,
-        swarm_config.consensus_delta,
-        swarm_config.state_root_delay,
-    );
+    let (peers, state_configs) =
+        get_configs::<S::SignatureType, S::SignatureCollectionType, S::TransactionValidator>(
+            tvt,
+            swarm_config.num_nodes,
+            swarm_config.consensus_delta,
+            swarm_config.state_root_delay,
+        );
     run_nodes_until::<S, _, _>(
         peers,
         state_configs,
@@ -175,29 +177,30 @@ where
     )
 }
 
-pub fn run_nodes_until<S, RSC, TERM>(
+pub fn run_nodes_until<S, R, T>(
     pubkeys: Vec<PubKey>,
-    state_configs: Vec<MonadConfig<S::SCT, S::TVT>>,
-    router_scheduler_config: RSC,
-    logger_config: S::LGRCFG,
-    mock_mempool_config: S::MPCFG,
-    pipeline: S::P,
+    state_configs: Vec<MonadConfig<S::SignatureCollectionType, S::TransactionValidator>>,
+    router_scheduler_config: R,
+    logger_config: S::LoggerConfig,
+    mock_mempool_config: S::MempoolConfig,
+    pipeline: S::Pipeline,
     parallelize: bool,
 
-    terminator: TERM,
+    terminator: T,
     min_ledger_len: usize,
     seed: u64,
 ) -> Duration
 where
     S: SwarmRelation,
 
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    RSC: Fn(Vec<PeerId>, PeerId) -> S::RSCFG,
-    TERM: NodesTerminator<S>,
+    R: Fn(Vec<PeerId>, PeerId) -> S::RouterSchedulerConfig,
+    T: NodesTerminator<S>,
 {
     let mut nodes = Nodes::<S>::new(
         pubkeys

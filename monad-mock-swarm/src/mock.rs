@@ -148,16 +148,20 @@ pub struct MockExecutor<S>
 where
     S: SwarmRelation,
 {
-    mempool: S::ME,
+    mempool: S::MempoolExecutor,
     ledger: MockLedger<<SwarmStateType<S> as State>::Block, <SwarmStateType<S> as State>::Event>,
-    execution_ledger: MockExecutionLedger<S::SCT>,
+    execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<<SwarmStateType<S> as State>::Checkpoint>,
-    epoch: MockEpoch<S::ST, S::SCT>,
-    state_root_hash: MockStateRootHash<<SwarmStateType<S> as State>::Block, S::ST, S::SCT>,
+    epoch: MockEpoch<S::SignatureType, S::SignatureCollectionType>,
+    state_root_hash: MockStateRootHash<
+        <SwarmStateType<S> as State>::Block,
+        S::SignatureType,
+        S::SignatureCollectionType,
+    >,
     tick: Duration,
 
     timer: PriorityQueue<TimerEvent<<SwarmStateType<S> as State>::Event>, Reverse<Duration>>,
-    router: S::RS,
+    router: S::RouterScheduler,
 }
 
 pub struct TimerEvent<E> {
@@ -238,15 +242,15 @@ where
     S: SwarmRelation,
 {
     pub fn new(
-        router: S::RS,
-        mempool_config: <S::ME as MockableExecutor>::Config,
+        router: S::RouterScheduler,
+        mempool_config: <S::MempoolExecutor as MockableExecutor>::Config,
         tick: Duration,
     ) -> Self {
         Self {
             checkpoint: Default::default(),
             ledger: Default::default(),
             execution_ledger: Default::default(),
-            mempool: <S::ME as MockableExecutor>::new(mempool_config),
+            mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
             epoch: Default::default(),
             state_root_hash: Default::default(),
 
@@ -264,7 +268,7 @@ where
         &mut self,
         tick: Duration,
         from: PeerId,
-        message: <S::RS as RouterScheduler>::Serialized,
+        message: <S::RouterScheduler as RouterScheduler>::Serialized,
     ) {
         assert!(tick >= self.tick);
 
@@ -315,7 +319,8 @@ impl<S> Executor for MockExecutor<S>
 where
     S: SwarmRelation,
 
-    <SwarmStateType<S> as State>::OutboundMessage: Serializable<<S::RS as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::OutboundMessage:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 {
     type Command = Command<
         <SwarmStateType<S> as State>::Event,
@@ -378,7 +383,8 @@ impl<S> MockExecutor<S>
 where
     S: SwarmRelation,
 
-    <SwarmStateType<S> as State>::Message: Deserializable<<S::RS as RouterScheduler>::M>,
+    <SwarmStateType<S> as State>::Message:
+        Deserializable<<S::RouterScheduler as RouterScheduler>::M>,
     <SwarmStateType<S> as State>::Block: Unpin,
     Self: Unpin,
 {
@@ -388,7 +394,7 @@ where
     ) -> Option<
         MockExecutorEvent<
             <SwarmStateType<S> as State>::Event,
-            <S::RS as RouterScheduler>::Serialized,
+            <S::RouterScheduler as RouterScheduler>::Serialized,
         >,
     > {
         while let Some((tick, event_type)) = self.peek_event() {
@@ -444,7 +450,7 @@ impl<S> MockExecutor<S>
 where
     S: SwarmRelation,
 {
-    pub fn ledger(&self) -> &MockLedger<<S::STATE as State>::Block, <S::STATE as State>::Event> {
+    pub fn ledger(&self) -> &MockLedger<<S::State as State>::Block, <S::State as State>::Event> {
         &self.ledger
     }
 }

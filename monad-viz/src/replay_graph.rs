@@ -28,12 +28,13 @@ pub struct RepConfig {
     pub delta: Duration,
 }
 
-type MS = <VizSwarm as SwarmRelation>::STATE;
+type MS = <VizSwarm as SwarmRelation>::State;
 
 impl ReplayConfig<MS> for RepConfig {
     fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
-        let (keys, cert_keys, _validators, validator_mapping) =
-            create_keys_w_validators::<<VizSwarm as SwarmRelation>::SCT>(self.num_nodes);
+        let (keys, cert_keys, _validators, validator_mapping) = create_keys_w_validators::<
+            <VizSwarm as SwarmRelation>::SignatureCollectionType,
+        >(self.num_nodes);
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
 
         let voting_keys = keys
@@ -43,8 +44,8 @@ impl ReplayConfig<MS> for RepConfig {
             .collect::<Vec<_>>();
         let (genesis_block, genesis_sigs) = get_genesis_config::<
             Sha256Hash,
-            <VizSwarm as SwarmRelation>::SCT,
-            <VizSwarm as SwarmRelation>::TVT,
+            <VizSwarm as SwarmRelation>::SignatureCollectionType,
+            <VizSwarm as SwarmRelation>::TransactionValidator,
         >(
             voting_keys.iter(),
             &validator_mapping,
@@ -87,24 +88,24 @@ pub struct ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
     S::Message: Identifiable,
-    C: ReplayConfig<S::STATE>,
+    C: ReplayConfig<S::State>,
 {
     pub nodes: ReplayNodes<SwarmStateType<S>>,
     pub current_tick: Duration,
     config: C,
-    pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::STATE as State>::Event>>>,
+    pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::State as State>::Event>>>,
 }
 
 impl<S, C> ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
-    C: ReplayConfig<S::STATE>,
+    C: ReplayConfig<S::State>,
 
     S::Message: Identifiable,
 {
     pub fn new(
         config: C,
-        replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::STATE as State>::Event>>>,
+        replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::State as State>::Event>>>,
     ) -> Self {
         Self {
             nodes: ReplayNodes::new(config.nodes()),
@@ -163,14 +164,14 @@ where
 impl<S, C> Graph for ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
-    C: ReplayConfig<S::STATE>,
+    C: ReplayConfig<S::State>,
 
     S::Message: Identifiable,
 {
-    type State = S::STATE;
+    type State = S::State;
     type Message = <SwarmStateType<S> as State>::Message;
     type MessageId = <S::Message as Identifiable>::Id;
-    type Event = <S::STATE as State>::Event;
+    type Event = <S::State as State>::Event;
     type NodeId = PeerId;
     type Swarm = S;
 

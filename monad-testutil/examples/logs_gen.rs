@@ -17,26 +17,31 @@ use monad_wal::wal::{WALogger, WALoggerConfig};
 pub struct LogSwarm;
 
 impl SwarmRelation for LogSwarm {
-    type STATE = SwarmStateType<Self>;
-    type ST = NopSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
-    type LGR = WALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = WALoggerConfig;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolConfig;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type State = SwarmStateType<Self>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+    type Logger =
+        WALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = WALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub fn generate_log(num_nodes: u16, num_blocks: usize, delta: Duration, state_root_delay: u64) {
     let (pubkeys, state_configs) = get_configs::<
-        <LogSwarm as SwarmRelation>::ST,
-        <LogSwarm as SwarmRelation>::SCT,
+        <LogSwarm as SwarmRelation>::SignatureType,
+        <LogSwarm as SwarmRelation>::SignatureCollectionType,
         _,
     >(MockValidator, num_nodes, delta, state_root_delay);
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {

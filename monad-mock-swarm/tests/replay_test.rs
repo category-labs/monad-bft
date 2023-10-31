@@ -30,27 +30,32 @@ const CONSENSUS_DELTA: Duration = Duration::from_millis(10);
 
 struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
-    type STATE = MonadState<
-        ConsensusState<Self::SCT, MockValidator, StateRoot>,
-        Self::ST,
-        Self::SCT,
+    type State = MonadState<
+        ConsensusState<Self::SignatureCollectionType, MockValidator, StateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type ST = NopSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
-    type LGR = MockMemLogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = <Self::LGR as PersistenceLogger>::Config;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolConfig;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+    type Logger =
+        MockMemLogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = <Self::Logger as PersistenceLogger>::Config;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn run_nodes_until<S>(
@@ -62,8 +67,9 @@ fn run_nodes_until<S>(
 where
     S: SwarmRelation,
 
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -85,8 +91,9 @@ fn liveness<S>(nodes: &Nodes<S>, last_ledger_len: usize) -> bool
 where
     S: SwarmRelation,
 
-    MonadMessage<S::ST, S::SCT>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::ST, S::SCT>: Serializable<<S::RS as RouterScheduler>::M>,
+    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
+    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
+        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -111,13 +118,13 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let default_seed = 1;
     // setup 4 nodes
     let (peers, state_configs) = get_configs::<
-        <ReplaySwarm as SwarmRelation>::ST,
-        <ReplaySwarm as SwarmRelation>::SCT,
+        <ReplaySwarm as SwarmRelation>::SignatureType,
+        <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
     >(MockValidator, 4, CONSENSUS_DELTA, 4);
     let (_, mut state_configs_duplicate) = get_configs::<
-        <ReplaySwarm as SwarmRelation>::ST,
-        <ReplaySwarm as SwarmRelation>::SCT,
+        <ReplaySwarm as SwarmRelation>::SignatureType,
+        <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
     >(MockValidator, 4, CONSENSUS_DELTA, 4);
 

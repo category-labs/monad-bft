@@ -23,7 +23,7 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct RandFailSwarm;
 impl SwarmRelation for RandFailSwarm {
-    type STATE = MonadState<
+    type State = MonadState<
         ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
         NopSignature,
         MultiSig<NopSignature>,
@@ -31,19 +31,24 @@ impl SwarmRelation for RandFailSwarm {
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type ST = NopSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
-    type LGR = MockWALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-    type ME = MockMempoolRandFail<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = MockWALoggerConfig;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolRandFailConfig;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+    type Logger =
+        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempoolRandFail<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = MockWALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolRandFailConfig;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]

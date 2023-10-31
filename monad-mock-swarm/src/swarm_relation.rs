@@ -28,60 +28,73 @@ use crate::{
 };
 
 pub trait SwarmRelation {
-    type STATE: State<
-        Event = MonadEvent<Self::ST, Self::SCT>,
-        SignatureCollection = Self::SCT,
+    type State: State<
+        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        SignatureCollection = Self::SignatureCollectionType,
         Message = Self::StateMessage,
         OutboundMessage = Self::OutboundStateMessage,
-        Block = FullBlock<Self::SCT>,
-        Config = MonadConfig<Self::SCT, Self::TVT>,
+        Block = FullBlock<Self::SignatureCollectionType>,
+        Config = MonadConfig<Self::SignatureCollectionType, Self::TransactionValidator>,
     >;
-    type ST: MessageSignature + Unpin;
-    type SCT: SignatureCollection + Unpin;
-    type RS: RouterScheduler<M = Self::Message, Serialized = Self::Message, Config = Self::RSCFG>;
-    type P: Pipeline<Self::Message> + Clone;
-    type LGR: PersistenceLogger<
-        Config = Self::LGRCFG,
-        Event = TimedEvent<MonadEvent<Self::ST, Self::SCT>>,
+    type SignatureType: MessageSignature + Unpin;
+    type SignatureCollectionType: SignatureCollection + Unpin;
+    type RouterScheduler: RouterScheduler<
+        M = Self::Message,
+        Serialized = Self::Message,
+        Config = Self::RouterSchedulerConfig,
     >;
-    type ME: MockableExecutor<
-        Event = MonadEvent<Self::ST, Self::SCT>,
-        SignatureCollection = Self::SCT,
-        Config = Self::MPCFG,
+    type Pipeline: Pipeline<Self::Message> + Clone;
+    type Logger: PersistenceLogger<
+        Config = Self::LoggerConfig,
+        Event = TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
+    >;
+    type MempoolExecutor: MockableExecutor<
+        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        SignatureCollection = Self::SignatureCollectionType,
+        Config = Self::MempoolConfig,
     >;
 
-    type TVT: TransactionValidator + Clone;
+    type TransactionValidator: TransactionValidator + Clone;
     type StateMessage: Deserializable<Self::Message>;
     type OutboundStateMessage: Serializable<Self::Message>;
     type Message: Clone + PartialEq + Eq + Send;
-    type LGRCFG: Clone;
-    type RSCFG;
-    type MPCFG: Copy;
+    type LoggerConfig: Clone;
+    type RouterSchedulerConfig;
+    type MempoolConfig: Copy;
 }
 // default swarm relation impl
 pub struct NoSerSwarm;
 
 impl SwarmRelation for NoSerSwarm {
-    type STATE = SwarmStateType<Self>;
-    type ST = NopSignature;
-    type SCT = MultiSig<Self::ST>;
-    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
-    type LGR = MockWALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = MockWALoggerConfig;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolConfig;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type State = SwarmStateType<Self>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+    type Logger =
+        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = MockWALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub type SwarmStateType<S> = MonadState<
-    ConsensusState<<S as SwarmRelation>::SCT, <S as SwarmRelation>::TVT, StateRoot>,
-    <S as SwarmRelation>::ST,
-    <S as SwarmRelation>::SCT,
+    ConsensusState<
+        <S as SwarmRelation>::SignatureCollectionType,
+        <S as SwarmRelation>::TransactionValidator,
+        StateRoot,
+    >,
+    <S as SwarmRelation>::SignatureType,
+    <S as SwarmRelation>::SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
     BlockSyncState,

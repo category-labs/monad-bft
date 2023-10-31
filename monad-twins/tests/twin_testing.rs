@@ -26,7 +26,7 @@ mod test {
     struct TwinsSwarm;
 
     impl SwarmRelation for TwinsSwarm {
-        type STATE = MonadState<
+        type State = MonadState<
             ConsensusState<MultiSig<NopSignature>, MockValidator, NopStateRoot>,
             NopSignature,
             MultiSig<NopSignature>,
@@ -34,19 +34,23 @@ mod test {
             SimpleRoundRobin,
             BlockSyncState,
         >;
-        type ST = NopSignature;
-        type SCT = MultiSig<Self::ST>;
-        type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-        type P = MonadMessageTransformerPipeline;
-        type LGR = MockWALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-        type ME = MockMempool<Self::ST, Self::SCT>;
-        type TVT = MockValidator;
-        type LGRCFG = MockWALoggerConfig;
-        type RSCFG = NoSerRouterConfig;
-        type MPCFG = MockMempoolConfig;
-        type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-        type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
-        type Message = MonadMessage<Self::ST, Self::SCT>;
+        type SignatureType = NopSignature;
+        type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type RouterScheduler =
+            NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+        type Pipeline = MonadMessageTransformerPipeline;
+        type Logger = MockWALogger<
+            TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
+        >;
+        type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransactionValidator = MockValidator;
+        type LoggerConfig = MockWALoggerConfig;
+        type RouterSchedulerConfig = NoSerRouterConfig;
+        type MempoolConfig = MockMempoolConfig;
+        type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type OutboundStateMessage =
+            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     }
 
     #[test_case("./tests/happy_path.json"; "happy_path")]

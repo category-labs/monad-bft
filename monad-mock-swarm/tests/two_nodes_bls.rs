@@ -21,27 +21,32 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct BLSSwarm;
 impl SwarmRelation for BLSSwarm {
-    type STATE = MonadState<
-        ConsensusState<Self::SCT, MockValidator, StateRoot>,
-        Self::ST,
-        Self::SCT,
+    type State = MonadState<
+        ConsensusState<Self::SignatureCollectionType, MockValidator, StateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type ST = SecpSignature;
-    type SCT = BlsSignatureCollection;
-    type RS = NoSerRouterScheduler<MonadMessage<Self::ST, Self::SCT>>;
-    type P = GenericTransformerPipeline<MonadMessage<Self::ST, Self::SCT>>;
-    type LGR = MockWALogger<TimedEvent<MonadEvent<Self::ST, Self::SCT>>>;
-    type ME = MockMempool<Self::ST, Self::SCT>;
-    type TVT = MockValidator;
-    type LGRCFG = MockWALoggerConfig;
-    type RSCFG = NoSerRouterConfig;
-    type MPCFG = MockMempoolConfig;
-    type StateMessage = MonadMessage<Self::ST, Self::SCT>;
-    type OutboundStateMessage = VerifiedMonadMessage<Self::ST, Self::SCT>;
-    type Message = MonadMessage<Self::ST, Self::SCT>;
+    type SignatureType = SecpSignature;
+    type SignatureCollectionType = BlsSignatureCollection;
+    type RouterScheduler =
+        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+    type Logger =
+        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransactionValidator = MockValidator;
+    type LoggerConfig = MockWALoggerConfig;
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolConfig = MockMempoolConfig;
+    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundStateMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 type SignatureType = SecpSignature;

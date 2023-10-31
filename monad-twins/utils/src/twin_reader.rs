@@ -155,10 +155,10 @@ where
     pub allow_block_sync: bool,
     pub liveness: Option<usize>,
     pub duplicates: BTreeMap<PeerId, Vec<usize>>,
-    pub nodes: BTreeMap<ID, TwinsNodeConfig<S::SCT, S::TVT>>,
+    pub nodes: BTreeMap<ID, TwinsNodeConfig<S::SignatureCollectionType, S::TransactionValidator>>,
 }
 
-pub fn read_twins_test<S>(tvt: S::TVT, path: &str) -> TwinsTestCase<S>
+pub fn read_twins_test<S>(tvt: S::TransactionValidator, path: &str) -> TwinsTestCase<S>
 where
     S: SwarmRelation,
 {
@@ -180,10 +180,11 @@ where
 
     let expected_block = expected_block.unwrap_or(BTreeMap::new());
     let keys = create_keys(names.len() as u32);
-    let cert_key_secrete: Vec<_> = create_seed_for_certificate_keys::<S::SCT>(names.len() as u32)
-        .into_iter()
-        .map(get_certificate_key_secret)
-        .collect();
+    let cert_key_secrete: Vec<_> =
+        create_seed_for_certificate_keys::<S::SignatureCollectionType>(names.len() as u32)
+            .into_iter()
+            .map(get_certificate_key_secret)
+            .collect();
 
     let cert_keys: Vec<_> = cert_key_secrete
         .iter()
@@ -193,8 +194,9 @@ where
         })
         .collect();
 
-    let (_, validator_mapping) = complete_keys_w_validators::<S::SCT>(&keys, &cert_keys);
-    let (pubkeys, state_configs) = complete_config::<S::ST, S::SCT, _>(
+    let (_, validator_mapping) =
+        complete_keys_w_validators::<S::SignatureCollectionType>(&keys, &cert_keys);
+    let (pubkeys, state_configs) = complete_config::<S::SignatureType, S::SignatureCollectionType, _>(
         tvt,
         keys,
         cert_keys,
