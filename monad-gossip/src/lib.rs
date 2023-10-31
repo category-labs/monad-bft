@@ -2,6 +2,7 @@ use std::{error::Error, time::Duration};
 
 use monad_executor_glue::{PeerId, RouterTarget};
 
+pub mod gossipsub;
 pub mod mock;
 #[cfg(test)]
 mod testutil;

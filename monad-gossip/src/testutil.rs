@@ -140,7 +140,10 @@ pub(crate) fn test_broadcast<G: Gossip>(
     rng: &mut impl Rng,
     swarm: &mut Swarm<G>,
     max_tick: Duration,
+    // expected_delivery_rate of 1.0 == everything delivered
+    expected_delivery_rate: f64,
 ) {
+    assert!((0.0..=1.0).contains(&expected_delivery_rate));
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
     for tx_peer in &peer_ids {
@@ -162,13 +165,18 @@ pub(crate) fn test_broadcast<G: Gossip>(
         }
     }
 
+    let num_expected = pending_messages.len();
     while let Some((tick, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
-        if pending_messages.is_empty() {
+        let num_delivered = num_expected - pending_messages.len();
+        if num_delivered as f64 / num_expected as f64 >= expected_delivery_rate {
             return;
         }
     }
-    unreachable!("stepped until max_tick without all pending_messages being received");
+    let num_delivered = num_expected - pending_messages.len();
+    let expected_percentage = expected_delivery_rate * 100.0;
+    let received_percentage = (num_delivered as f64 / num_expected as f64) * 100.0;
+    unreachable!("stepped until max_tick without {expected_percentage}% percentage of messages being received. received percentage: {received_percentage}%");
 }
 
 pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, max_tick: Duration) {

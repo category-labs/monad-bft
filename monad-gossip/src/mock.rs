@@ -133,7 +133,7 @@ mod tests {
         }));
 
         let mut rng = ChaCha20Rng::from_seed([0; 32]);
-        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1));
+        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1), 1.0);
         test_direct(&mut rng, &mut swarm, Duration::from_secs(1));
     }
 
@@ -160,7 +160,7 @@ mod tests {
         }));
 
         let mut rng = ChaCha20Rng::from_seed([0; 32]);
-        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1));
+        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1), 1.0);
         test_direct(&mut rng, &mut swarm, Duration::from_secs(1));
     }
 }
