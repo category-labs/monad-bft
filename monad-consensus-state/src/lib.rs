@@ -226,7 +226,7 @@ where
         p: ProposalMessage<SCT>,
     ) -> Vec<ConsensusCommand<SCT>> {
         // NULL blocks are not required to have state root hashes
-        if p.block.payload.txns == TransactionHashList(vec![EMPTY_RLP_TX_LIST]) {
+        if p.block.payload.txns == TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]) {
             debug!("Received empty block: block={:?}", p.block);
             inc_count!(rx_empty_block);
             return vec![ConsensusCommand::FetchFullTxs(
@@ -1667,7 +1667,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![5]),
+            TransactionHashList::new(vec![5]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2122,7 +2122,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![0xaa]),
+            TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2132,7 +2132,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![0xaa]),
+            TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2198,7 +2198,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![0xaa]),
+            TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0x99; 32]),
@@ -2234,7 +2234,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![0xaa]),
+            TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0xbb; 32]),
@@ -2272,7 +2272,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![0xaa]),
+            TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0xcc; 32]),
@@ -2362,7 +2362,7 @@ mod test {
             &valset,
             &election,
             &valmap,
-            TransactionHashList(vec![13, 32]),
+            TransactionHashList::new(vec![13, 32]),
             ExecutionArtifacts::zero(),
         );
 
@@ -2460,7 +2460,7 @@ mod test {
                 let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
-                    FullTransactionList(Vec::new()),
+                    FullTransactionList::new(Vec::new()),
                     &valset,
                     &valmap,
                     &election,
@@ -2501,7 +2501,7 @@ mod test {
                 let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
-                    FullTransactionList(Vec::new()),
+                    FullTransactionList::new(Vec::new()),
                     &valset,
                     &valmap,
                     &election,
@@ -2581,7 +2581,7 @@ mod test {
                 let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
-                    FullTransactionList(Vec::new()),
+                    FullTransactionList::new(Vec::new()),
                     &valset,
                     &valmap,
                     &election,

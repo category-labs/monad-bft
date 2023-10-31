@@ -130,7 +130,7 @@ impl<T> From<FullBlock<T>> for UnverifiedFullBlock<T> {
 impl<T: SignatureCollection> Hashable for UnverifiedFullBlock<T> {
     fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
-        state.update(self.full_txs.0.as_bytes());
+        state.update(self.full_txs.as_bytes());
     }
 }
 

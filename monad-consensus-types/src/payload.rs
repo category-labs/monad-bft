@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
@@ -69,11 +69,21 @@ impl Hashable for ExecutionArtifacts {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct TransactionHashList(pub Vec<u8>);
+pub struct TransactionHashList(Arc<Vec<u8>>);
+
+impl TransactionHashList {
+    pub fn new(tx_hashes: Vec<u8>) -> Self {
+        Self(Arc::new(tx_hashes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 impl Default for TransactionHashList {
     fn default() -> TransactionHashList {
-        Self(vec![EMPTY_RLP_TX_LIST])
+        Self::new(vec![EMPTY_RLP_TX_LIST])
     }
 }
 
@@ -84,7 +94,17 @@ impl std::fmt::Debug for TransactionHashList {
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
-pub struct FullTransactionList(pub Vec<u8>);
+pub struct FullTransactionList(Arc<Vec<u8>>);
+
+impl FullTransactionList {
+    pub fn new(txs: Vec<u8>) -> Self {
+        Self(Arc::new(txs))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 impl std::fmt::Debug for FullTransactionList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

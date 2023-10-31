@@ -20,7 +20,7 @@ use crate::{
 impl From<&TransactionHashList> for ProtoTransactionList {
     fn from(value: &TransactionHashList) -> Self {
         Self {
-            data: value.0.clone(),
+            data: value.as_bytes().to_vec(),
         }
     }
 }
@@ -28,7 +28,7 @@ impl From<&TransactionHashList> for ProtoTransactionList {
 impl TryFrom<ProtoTransactionList> for TransactionHashList {
     type Error = ProtoError;
     fn try_from(value: ProtoTransactionList) -> Result<TransactionHashList, Self::Error> {
-        Ok(TransactionHashList(value.data))
+        Ok(Self::new(value.data))
     }
 }
 
@@ -80,7 +80,7 @@ impl<SCT: SignatureCollection> From<&UnverifiedFullBlock<SCT>> for ProtoUnverifi
     fn from(value: &UnverifiedFullBlock<SCT>) -> Self {
         Self {
             block: Some((&value.block).into()),
-            full_txs: value.full_txs.0.clone(),
+            full_txs: value.full_txs.as_bytes().to_vec(),
         }
     }
 }
@@ -96,7 +96,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoUnverifiedFullBlock> for UnverifiedF
                     "UnverifiedFullBlock<AggregateSignatures>.block".to_owned(),
                 ))?
                 .try_into()?,
-            full_txs: FullTransactionList(value.full_txs),
+            full_txs: FullTransactionList::new(value.full_txs),
         })
     }
 }
@@ -105,7 +105,7 @@ impl<SCT: SignatureCollection> From<&FullBlock<SCT>> for ProtoUnverifiedFullBloc
     fn from(value: &FullBlock<SCT>) -> Self {
         Self {
             block: Some(value.get_block().into()),
-            full_txs: value.get_full_txs().0.clone(),
+            full_txs: value.get_full_txs().as_bytes().to_vec(),
         }
     }
 }

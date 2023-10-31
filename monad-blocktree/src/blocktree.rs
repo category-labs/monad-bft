@@ -892,7 +892,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionHashList(vec![1]),
+                    txns: TransactionHashList::new(vec![1]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -916,7 +916,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionHashList(vec![2]),
+                    txns: TransactionHashList::new(vec![2]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -948,7 +948,7 @@ mod test {
                 node_id(),
                 Round(2),
                 &Payload {
-                    txns: TransactionHashList(vec![3]),
+                    txns: TransactionHashList::new(vec![3]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),
@@ -1037,7 +1037,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionHashList(vec![1]),
+                    txns: TransactionHashList::new(vec![1]),
                     header: ExecutionArtifacts::zero(),
                     seq_num: 0,
                     beneficiary: EthAddress::default(),

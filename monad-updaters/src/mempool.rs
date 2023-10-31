@@ -109,18 +109,18 @@ where
 
                     match task {
                         ControllerTaskCommand::FetchTxs(num_max_txs, pending_txs) => {
-                            let Ok(pending_txs) = pending_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.0)).collect::<Result<Vec<_>, _>>() else {
+                            let Ok(pending_txs) = pending_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.as_bytes().to_vec())).collect::<Result<Vec<_>, _>>() else {
                                 error!("Invalid pending_txs!");
                                 continue;
                             };
 
                             let proposal = controller.create_proposal(num_max_txs, pending_txs).await;
 
-                            tx.send(ControllerTaskResult::FetchTxs(TransactionHashList(proposal.rlp_encode())))
+                            tx.send(ControllerTaskResult::FetchTxs(TransactionHashList::new(proposal.rlp_encode())))
                                 .await?;
                         }
                         ControllerTaskCommand::FetchFullTxs(txs) => {
-                            let txs = match EthTransactionList::rlp_decode(txs.0) {
+                            let txs = match EthTransactionList::rlp_decode(txs.as_bytes().to_vec()) {
                                 Ok(txs) => txs,
                                 Err(_) => {
                                     // TODO: warn
@@ -131,12 +131,12 @@ where
                             let full_txs = controller.fetch_full_txs(txs).await;
 
                             tx.send(ControllerTaskResult::FetchFullTxs(
-                                full_txs.map(|full_txs| FullTransactionList(full_txs.rlp_encode())),
+                                full_txs.map(|full_txs| FullTransactionList::new(full_txs.rlp_encode())),
                             ))
                             .await?;
                         }
                         ControllerTaskCommand::DrainTxs(drain_txs) => {
-                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.0)).collect::<Result<Vec<EthTransactionList>, _>>() else {
+                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.as_bytes().to_vec())).collect::<Result<Vec<EthTransactionList>, _>>() else {
                                 error!("Invalid drain_txs!");
                                 continue;
                             };

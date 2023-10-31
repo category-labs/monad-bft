@@ -58,8 +58,8 @@ fn build_genesis_block(
 ) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
     // TODO: Deserialize transactions from GenesisConfig
     let (genesis_txs, genesis_full_txs) = (
-        TransactionHashList(vec![EMPTY_RLP_TX_LIST]),
-        FullTransactionList(vec![EMPTY_RLP_TX_LIST]),
+        TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]),
+        FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
     );
 
     let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();

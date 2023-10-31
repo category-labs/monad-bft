@@ -18,6 +18,7 @@ impl EthTransactionList {
         buf
     }
 
+    // FIXME does this need to take ownership?
     pub fn rlp_decode(rlp_data: Vec<u8>) -> Result<Self, reth_rlp::DecodeError> {
         Vec::<TxHash>::decode(&mut rlp_data.as_slice()).map(Self)
     }

@@ -100,7 +100,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         let mut hasher = HasherType::new();
         hasher.update(b.author.0.bytes());
         hasher.update(b.round);
-        hasher.update(&b.payload.txns.0);
+        hasher.update(b.payload.txns.as_bytes());
         hasher.update(b.payload.header.parent_hash);
         hasher.update(b.payload.header.state_root);
         hasher.update(b.payload.header.transactions_root);

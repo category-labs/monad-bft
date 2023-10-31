@@ -25,7 +25,7 @@ pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SC
 }
 
 fn generate_block_body(monad_full_txs: FullTransactionList) -> BlockBody {
-    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.0)
+    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.as_bytes().to_vec())
         .unwrap()
         .0
         .into_iter()

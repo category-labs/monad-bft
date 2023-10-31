@@ -228,7 +228,7 @@ fn testnet(
         .collect::<Vec<_>>();
 
     let genesis_block = {
-        let genesis_txn = TransactionHashList(vec![EMPTY_RLP_TX_LIST]);
+        let genesis_txn = TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]);
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(
@@ -245,7 +245,7 @@ fn testnet(
                 },
                 &genesis_prime_qc,
             ),
-            FullTransactionList(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &TransactionValidatorType::default(),
         )
         .unwrap()

@@ -12,7 +12,7 @@ use monad_types::*;
 
 #[test]
 fn block_hash_id() {
-    let txns = TransactionHashList(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList::new(vec![1, 2, 3, 4]);
     let author = node_id();
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(

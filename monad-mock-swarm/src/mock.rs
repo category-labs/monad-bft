@@ -581,13 +581,13 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
 impl<ST, SCT> MockMempool<ST, SCT> {
     fn get_fetched_txs_list(&mut self) -> TransactionHashList {
         if self.num_fetch_txs == 0 {
-            TransactionHashList(vec![EMPTY_RLP_TX_LIST])
+            TransactionHashList::new(vec![EMPTY_RLP_TX_LIST])
         } else {
             // Random non-empty value with size = num_fetch_txs * hash_size
             let mut buf = Vec::with_capacity(self.num_fetch_txs * 32);
             buf.resize(self.num_fetch_txs * 32, 0);
             self.rng.fill_bytes(buf.as_mut_slice());
-            TransactionHashList(buf)
+            TransactionHashList::new(buf)
         }
     }
 }
@@ -613,7 +613,7 @@ where
             return Poll::Ready(Some(MonadEvent::ConsensusEvent(
                 monad_executor_glue::ConsensusEvent::FetchedFullTxs(
                     s,
-                    Some(FullTransactionList(Vec::new())),
+                    Some(FullTransactionList::new(Vec::new())),
                 ),
             )));
         }
@@ -737,7 +737,7 @@ where
             return Poll::Ready(Some(MonadEvent::ConsensusEvent(
                 monad_executor_glue::ConsensusEvent::FetchedFullTxs(
                     s,
-                    Some(FullTransactionList(Vec::new())),
+                    Some(FullTransactionList::new(Vec::new())),
                 ),
             )));
         }
@@ -1137,9 +1137,9 @@ mod tests {
                 panic!("wrong event returned")
             }
         };
-        assert_eq!(txs_list_2.0.len(), 10 * 32);
-        assert_eq!(txs_list_2.0.len(), txs_list_1.0.len());
-        assert_ne!(txs_list_2.0, txs_list_1.0);
+        assert_eq!(txs_list_2.as_bytes().len(), 10 * 32);
+        assert_eq!(txs_list_2.as_bytes().len(), txs_list_1.as_bytes().len());
+        assert_ne!(txs_list_2, txs_list_1);
     }
     #[test]
     fn test_reset() {

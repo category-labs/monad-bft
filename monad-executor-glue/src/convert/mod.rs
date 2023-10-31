@@ -69,7 +69,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                     high_qc: Some((&fetched.high_qc).into()),
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
-                    tx_hashes: txns.0.clone(),
+                    tx_hashes: txns.as_bytes().to_vec(),
                     seq_num: fetched.seq_num,
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
@@ -79,7 +79,10 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                     author: Some((&fetched_full.author).into()),
                     p_block: Some((&fetched_full.p_block).into()),
                     p_last_round_tc: fetched_full.p_last_round_tc.as_ref().map(Into::into),
-                    full_txs: txns.as_ref().map(|txns| txns.0.clone()).unwrap_or_default(),
+                    full_txs: txns
+                        .as_ref()
+                        .map(|txns| txns.as_bytes().to_vec())
+                        .unwrap_or_default(),
                 })
             }
             ConsensusEvent::FetchedBlock(fetched_block) => {
@@ -187,7 +190,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                             .map(TryInto::try_into)
                             .transpose()?,
                     },
-                    TransactionHashList(fetched_txs.tx_hashes),
+                    TransactionHashList::new(fetched_txs.tx_hashes),
                 )
             }
             Some(proto_consensus_event::Event::FetchedFullTxs(fetched_full_txs)) => {
@@ -210,7 +213,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                             .map(TryInto::try_into)
                             .transpose()?,
                     },
-                    Some(FullTransactionList(fetched_full_txs.full_txs)),
+                    Some(FullTransactionList::new(fetched_full_txs.full_txs)),
                 )
             }
             Some(proto_consensus_event::Event::FetchedBlock(fetched_block)) => {
