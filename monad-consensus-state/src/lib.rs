@@ -1,3 +1,4 @@
+use core::panic;
 use std::time::Duration;
 
 use log::{debug, warn};
@@ -198,7 +199,7 @@ where
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
             // as 1 * delta for original ask, 2 * delta for reaction from peer
-            block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey), delta * 3),
+            block_sync_manager: BlockSyncManager::new(NodeId(my_pubkey), delta * 3, 8),
             keypair,
             cert_keypair,
             beneficiary,
@@ -515,9 +516,12 @@ where
                         .expect("failed to add block to tree during block sync");
                 }
             }
-            BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
+            BlockSyncResult::Retry(cmd) | BlockSyncResult::GiveUp(cmd) => cmds.extend(cmd),
             BlockSyncResult::IllegalResponse => {
-                debug!("Block sync illegal response: author={:?}", author);
+                debug!(
+                    "Block sync illegal response or is too late: author={:?}",
+                    author
+                );
             }
         }
         cmds
@@ -535,7 +539,10 @@ where
         bid: BlockId,
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>> {
-        self.block_sync_manager.handle_timeout(bid, validators)
+        match self.block_sync_manager.handle_timeout(bid, validators) {
+            BlockSyncResult::GiveUp(cmds) | BlockSyncResult::Retry(cmds) => cmds,
+            _ => panic!("only giveup or retry should be emitted from timeout"),
+        }
     }
 
     fn request_sync<VT: ValidatorSetType>(
