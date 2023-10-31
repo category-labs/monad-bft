@@ -15,7 +15,6 @@ use monad_consensus_state::{
 };
 use monad_consensus_types::{
     block::{Block, FullBlock},
-    certificate_signature::CertificateSignatureRecoverable,
     message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload, RandaoReveal},
     quorum_certificate::QuorumCertificate,
@@ -141,8 +140,8 @@ impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable
     }
 }
 
-impl<MS: MessageSignature, CS: CertificateSignatureRecoverable> monad_types::Deserializable<Vec<u8>>
-    for MonadMessage<MS, monad_consensus_types::multi_sig::MultiSig<CS>>
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<Vec<u8>>
+    for MonadMessage<MS, SCT>
 {
     type ReadError = monad_proto::error::ProtoError;
 

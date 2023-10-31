@@ -4906,9 +4906,13 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-gossip",
  "monad-mock-swarm",
+ "monad-quic",
  "monad-state",
  "monad-testutil",
+ "monad-types",
  "monad-validator",
  "monad-wal",
 ]
