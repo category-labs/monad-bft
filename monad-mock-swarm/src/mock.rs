@@ -51,7 +51,7 @@ pub trait RouterScheduler {
     fn new(config: Self::Config) -> Self;
 
     fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized);
-    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM);
+    fn outbound(&mut self, time: Duration, to: RouterTarget, message: impl Into<Self::M>);
 
     fn peek_tick(&self) -> Option<Duration>;
     fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>>;
@@ -94,7 +94,7 @@ where
             .push_back((time, RouterEvent::Rx(from, message)))
     }
 
-    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM) {
+    fn outbound(&mut self, time: Duration, to: RouterTarget, message: impl Into<Self::M>) {
         assert!(
             time >= self
                 .events

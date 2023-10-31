@@ -201,7 +201,7 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         }
     }
 
-    fn outbound<OM: Into<Self::M>>(&mut self, time: Duration, to: RouterTarget, message: OM) {
+    fn outbound(&mut self, time: Duration, to: RouterTarget, message: impl Into<Self::M>) {
         let message = message.into();
         self.gossip.send(time, to, &message);
         self.poll_gossip(time);
