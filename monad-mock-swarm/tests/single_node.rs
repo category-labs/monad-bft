@@ -9,17 +9,16 @@ use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
     mock_swarm::UntilTerminator,
-    transformer::{BytesTransformer, GenericTransformer, LatencyTransformer},
+    transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer},
 };
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_state::MonadMessage;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_wal::mock::MockWALoggerConfig;
+use tracing_test::traced_test;
 
 #[test]
 fn two_nodes() {
-    tracing_subscriber::fmt::init();
-
     create_and_run_nodes::<NoSerSwarm, _, _>(
         MockValidator,
         |all_peers, _| NoSerRouterConfig {
@@ -73,4 +72,52 @@ fn two_nodes_quic() {
             seed: 1,
         },
     );
+}
+
+#[traced_test]
+#[test]
+fn two_nodes_quic_bw() {
+    let zero_instant = Instant::now();
+
+    create_and_run_nodes::<QuicSwarm, _, _>(
+        MockValidator,
+        |all_peers, me| QuicRouterSchedulerConfig {
+            zero_instant,
+            all_peers: all_peers.iter().cloned().collect(),
+            me,
+
+            tls_key_der: Vec::new(),
+            master_seed: 7,
+
+            gossip_config: MockGossipConfig { all_peers },
+        },
+        MockWALoggerConfig,
+        MockMempoolConfig::default(),
+        vec![
+            BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            BytesTransformer::Bw(BwTransformer::new(3)),
+        ],
+        UntilTerminator::new().until_tick(Duration::from_secs(5)),
+        SwarmTestConfig {
+            num_nodes: 2,
+            consensus_delta: Duration::from_millis(1000),
+            parallelize: false,
+            expected_block: 100,
+            state_root_delay: 4,
+            seed: 1,
+        },
+    );
+
+    logs_assert(|lines| {
+        if lines
+            .iter()
+            .filter(|line| line.contains("monotonic_counter.bwtransfomer_dropped_msg"))
+            .count()
+            > 0
+        {
+            Ok(())
+        } else {
+            Err("Expected msg to be dropped".to_owned())
+        }
+    });
 }
