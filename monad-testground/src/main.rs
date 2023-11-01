@@ -25,12 +25,13 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey, SecpSignature},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_executor::{Executor, State};
+use monad_executor::{BoxExecutor, Executor, State};
+use monad_executor_glue::{ExecutionLedgerCommand, MempoolCommand, RouterCommand, TimerCommand};
 use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
+    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, BoxUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -328,12 +329,19 @@ async fn run(
     // we can delete this once we support retry at the monad-p2p executor level
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    let mut executor = ParentExecutor {
-        router,
-        timer: TokioTimer::default(),
-        mempool: MonadMempool::default(),
+    let mut executor = ParentExecutor::<
+        BoxUpdater<RouterCommand<_>, _>,
+        BoxUpdater<TimerCommand<_>, _>,
+        BoxUpdater<MempoolCommand<_>, _>,
+        MockLedger<_, _>,
+        BoxExecutor<ExecutionLedgerCommand<_>>,
+        MockCheckpoint<_>,
+    > {
+        router: Box::pin(router),
+        timer: Box::pin(TokioTimer::default()),
+        mempool: Box::pin(MonadMempool::default()),
         ledger: MockLedger::default(),
-        execution_ledger: MonadFileLedger::default(),
+        execution_ledger: Box::pin(MonadFileLedger::default()),
         checkpoint: MockCheckpoint::default(),
     };
 

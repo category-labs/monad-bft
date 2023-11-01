@@ -4767,6 +4767,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor",
+ "monad-executor-glue",
  "monad-p2p",
  "monad-state",
  "monad-types",

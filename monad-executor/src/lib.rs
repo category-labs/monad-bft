@@ -1,6 +1,8 @@
 pub mod replay_nodes;
 pub mod timed_event;
 
+use std::{ops::DerefMut, pin::Pin};
+
 use monad_consensus_types::block::BlockType;
 use monad_executor_glue::{Command, Message};
 
@@ -8,6 +10,28 @@ pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
 }
+
+impl<E: Executor + ?Sized> Executor for Box<E> {
+    type Command = E::Command;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        (**self).exec(commands)
+    }
+}
+
+impl<P> Executor for Pin<P>
+where
+    P: DerefMut,
+    P::Target: Executor + Unpin,
+{
+    type Command = <P::Target as Executor>::Command;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        Pin::get_mut(Pin::as_mut(self)).exec(commands)
+    }
+}
+
+pub type BoxExecutor<C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin>>;
 
 pub trait State: Sized {
     type Config;
