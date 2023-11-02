@@ -23,32 +23,35 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct RandFailSwarm;
 impl SwarmRelation for RandFailSwarm {
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+
+    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = Self::InboundMessage;
+
+    type TransactionValidator = MockValidator;
+
     type State = MonadState<
-        ConsensusState<MultiSig<NopSignature>, MockValidator, StateRoot>,
-        NopSignature,
-        MultiSig<NopSignature>,
+        ConsensusState<MultiSig<Self::SignatureType>, Self::TransactionValidator, StateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type SignatureType = NopSignature;
-    type SignatureCollectionType = MultiSig<Self::SignatureType>;
-    type RouterScheduler =
-        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
-    type Pipeline = GenericTransformerPipeline<
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+
+    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+
+    type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-    type MempoolExecutor = MockMempoolRandFail<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransactionValidator = MockValidator;
-    type LoggerConfig = MockWALoggerConfig;
-    type RouterSchedulerConfig = NoSerRouterConfig;
+
     type MempoolConfig = MockMempoolRandFailConfig;
-    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundStateMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolExecutor = MockMempoolRandFail<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]

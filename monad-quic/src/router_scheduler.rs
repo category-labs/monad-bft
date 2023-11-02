@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    marker::PhantomData,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::{Duration, Instant},
@@ -9,6 +10,7 @@ use monad_crypto::rustls::UnsafeTlsVerifier;
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_gossip::{Gossip, GossipEvent};
 use monad_mock_swarm::mock::{RouterEvent, RouterScheduler};
+use monad_types::{Deserializable, Serializable};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
     TransportConfig, WriteError,
@@ -29,7 +31,7 @@ pub struct QuicRouterSchedulerConfig<GC> {
     pub gossip_config: GC,
 }
 
-pub struct QuicRouterScheduler<G: Gossip> {
+pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     zero_instant: Instant,
 
     me: PeerId,
@@ -44,16 +46,24 @@ pub struct QuicRouterScheduler<G: Gossip> {
 
     timeouts: TimeoutQueue,
 
-    pending_events: BTreeMap<Duration, Vec<RouterEvent<Vec<u8>, Vec<u8>>>>,
+    pending_events: BTreeMap<Duration, Vec<RouterEvent<IM, Vec<u8>>>>,
     pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
+
+    phantom: PhantomData<OM>,
 }
 
 const SERVER_NAME: &str = "MONAD";
 
-impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
+impl<G: Gossip, IM, OM> RouterScheduler for QuicRouterScheduler<G, IM, OM>
+where
+    IM: Deserializable<Vec<u8>>,
+    OM: Serializable<Vec<u8>>,
+{
     type Config = QuicRouterSchedulerConfig<G::Config>;
-    type M = Vec<u8>;
-    type Serialized = Vec<u8>;
+
+    type InboundMessage = IM;
+    type OutboundMessage = OM;
+    type TransportMessage = Vec<u8>;
 
     fn new(config: Self::Config) -> Self {
         let mut rng = StdRng::seed_from_u64(config.master_seed);
@@ -125,6 +135,8 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
             timeouts: Default::default(),
             pending_events: Default::default(),
             pending_outbound_messages: HashMap::new(),
+
+            phantom: PhantomData,
         };
 
         let mut handles: Vec<_> = scheduler.connections.keys().cloned().collect();
@@ -137,11 +149,11 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         scheduler
     }
 
-    fn inbound(
+    fn process_inbound(
         &mut self,
         time: std::time::Duration,
         from: monad_executor_glue::PeerId,
-        message: Self::Serialized,
+        message: Self::TransportMessage,
     ) {
         if from == self.me {
             self.gossip.handle_gossip_message(time, from, &message);
@@ -201,9 +213,8 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         }
     }
 
-    fn outbound(&mut self, time: Duration, to: RouterTarget, message: impl Into<Self::M>) {
-        let message = message.into();
-        self.gossip.send(time, to, &message);
+    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
+        self.gossip.send(time, to, &message.serialize());
         self.poll_gossip(time);
     }
 
@@ -211,11 +222,15 @@ impl<G: Gossip> RouterScheduler for QuicRouterScheduler<G> {
         self.peek_event().map(|(tick, _)| tick)
     }
 
-    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>> {
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>> {
         while let Some((min_tick, event_type)) = self.peek_event() {
             if min_tick > until {
                 break;
             }
+
             match event_type {
                 QuicEventType::Event => {
                     let mut entry = self.pending_events.first_entry().unwrap();
@@ -259,7 +274,11 @@ enum QuicEventType {
     Event,
 }
 
-impl<G: Gossip> QuicRouterScheduler<G> {
+impl<G: Gossip, IM, OM> QuicRouterScheduler<G, IM, OM>
+where
+    IM: Deserializable<Vec<u8>>,
+    OM: Serializable<Vec<u8>>,
+{
     fn peek_event(&self) -> Option<(Duration, QuicEventType)> {
         std::iter::empty()
             .chain(
@@ -474,8 +493,18 @@ impl<G: Gossip> QuicRouterScheduler<G> {
                             .map(|(time, _)| *time)
                             .unwrap_or(Duration::ZERO)
                     );
-                    let event = RouterEvent::Rx(peer_id, message);
-                    self.pending_events.entry(time).or_default().push(event)
+
+                    match IM::deserialize(&message) {
+                        Ok(message) => self
+                            .pending_events
+                            .entry(time)
+                            .or_default()
+                            .push(RouterEvent::Rx(peer_id, message)),
+
+                        Err(e) => {
+                            todo!("Message deserialization should never fail! Error: {:?}", e)
+                        }
+                    }
                 }
             }
         }

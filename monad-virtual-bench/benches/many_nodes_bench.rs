@@ -1,7 +1,10 @@
 use std::time::{Duration, Instant};
 
+use monad_block_sync::BlockSyncState;
+use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    bls::BlsSignatureCollection, multi_sig::MultiSig, transaction_validator::MockValidator,
+    bls::BlsSignatureCollection, multi_sig::MultiSig, payload::StateRoot,
+    transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
@@ -10,13 +13,14 @@ use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig},
     mock_swarm::UntilTerminator,
-    swarm_relation::{SwarmRelation, SwarmStateType},
+    swarm_relation::SwarmRelation,
     transformer::{BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer},
 };
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
-use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_types::Round;
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 fn setup() -> (
@@ -55,43 +59,71 @@ fn setup() -> (
 struct NopSwarm;
 
 impl SwarmRelation for NopSwarm {
-    type State = SwarmStateType<Self>;
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
-    type RouterScheduler = QuicRouterScheduler<MockGossip>;
+
+    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = Vec<u8>;
+
+    type TransactionValidator = MockValidator;
+
+    type State = MonadState<
+        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterScheduler =
+        QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
+
     type Pipeline = BytesTransformerPipeline;
+
+    type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransactionValidator = MockValidator;
-    type LoggerConfig = MockWALoggerConfig;
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+
     type MempoolConfig = MockMempoolConfig;
-    type Message = Vec<u8>;
-    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundStateMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 struct BlsSwarm;
 
 impl SwarmRelation for BlsSwarm {
-    type State = SwarmStateType<Self>;
     type SignatureType = NopSignature;
     type SignatureCollectionType = BlsSignatureCollection;
-    type RouterScheduler = QuicRouterScheduler<MockGossip>;
+
+    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = Vec<u8>;
+
+    type TransactionValidator = MockValidator;
+
+    type State = MonadState<
+        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+
+    type RouterScheduler =
+        QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+
     type Pipeline = BytesTransformerPipeline;
+
+    type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransactionValidator = MockValidator;
-    type LoggerConfig = MockWALoggerConfig;
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+
     type MempoolConfig = MockMempoolConfig;
-    type Message = Vec<u8>;
-    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundStateMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn many_nodes_nop_timeout() -> u128 {

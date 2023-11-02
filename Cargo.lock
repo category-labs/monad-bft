@@ -4928,6 +4928,7 @@ dependencies = [
  "iced",
  "iced_lazy",
  "iced_native",
+ "monad-block-sync",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -4938,6 +4939,7 @@ dependencies = [
  "monad-state",
  "monad-testutil",
  "monad-types",
+ "monad-validator",
  "monad-wal",
 ]
 

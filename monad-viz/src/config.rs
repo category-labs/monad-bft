@@ -15,10 +15,7 @@ use monad_executor::State;
 use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     swarm_relation::SwarmRelation,
-    transformer::{
-        GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
-        ID,
-    },
+    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
 };
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
@@ -26,19 +23,18 @@ use monad_types::NodeId;
 
 use crate::{graph::SimulationConfig, VizSwarm};
 
-type MM = <VizSwarm as SwarmRelation>::Message;
-type MC = <<VizSwarm as SwarmRelation>::State as State>::Config;
+type MonadStateConfig = <<VizSwarm as SwarmRelation>::State as State>::Config;
 type LoggerConfig = <VizSwarm as SwarmRelation>::LoggerConfig;
 type RouterSchedulerConfig = <VizSwarm as SwarmRelation>::RouterSchedulerConfig;
 type MempoolConfig = <VizSwarm as SwarmRelation>::MempoolConfig;
-type Pipe = <VizSwarm as SwarmRelation>::Pipeline;
+type Pipeline = <VizSwarm as SwarmRelation>::Pipeline;
 
 #[derive(Debug, Clone)]
 pub struct SimConfig {
     pub num_nodes: u32,
     pub delta: Duration,
     pub max_tick: Duration,
-    pub pipeline: GenericTransformerPipeline<MM>,
+    pub pipeline: Pipeline,
 }
 
 impl SimConfig {
@@ -63,11 +59,11 @@ impl SimulationConfig<VizSwarm> for SimConfig {
         &self,
     ) -> Vec<(
         ID,
-        MC,
+        MonadStateConfig,
         LoggerConfig,
         RouterSchedulerConfig,
         MempoolConfig,
-        Pipe,
+        Pipeline,
         u64,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) = create_keys_w_validators::<

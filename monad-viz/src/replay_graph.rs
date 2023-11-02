@@ -10,8 +10,8 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
-use monad_executor_glue::{Identifiable, PeerId};
-use monad_mock_swarm::swarm_relation::{SwarmRelation, SwarmStateType};
+use monad_executor_glue::PeerId;
+use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_types::NodeId;
@@ -87,10 +87,9 @@ impl ReplayConfig<MS> for RepConfig {
 pub struct ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
-    S::Message: Identifiable,
     C: ReplayConfig<S::State>,
 {
-    pub nodes: ReplayNodes<SwarmStateType<S>>,
+    pub nodes: ReplayNodes<S::State>,
     pub current_tick: Duration,
     config: C,
     pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::State as State>::Event>>>,
@@ -100,8 +99,6 @@ impl<S, C> ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
     C: ReplayConfig<S::State>,
-
-    S::Message: Identifiable,
 {
     pub fn new(
         config: C,
@@ -127,13 +124,7 @@ where
     fn get_pending_events(
         &self,
         node_id: &PeerId,
-    ) -> Vec<
-        NodeEvent<
-            PeerId,
-            <SwarmStateType<S> as State>::Message,
-            <SwarmStateType<S> as State>::Event,
-        >,
-    > {
+    ) -> Vec<NodeEvent<PeerId, <S::State as State>::Message, <S::State as State>::Event>> {
         let mut nes = vec![];
         for pmsg in self
             .nodes
@@ -165,17 +156,13 @@ impl<S, C> Graph for ReplayNodesSimulation<S, C>
 where
     S: SwarmRelation,
     C: ReplayConfig<S::State>,
-
-    S::Message: Identifiable,
 {
     type State = S::State;
-    type Message = <SwarmStateType<S> as State>::Message;
-    type MessageId = <S::Message as Identifiable>::Id;
-    type Event = <S::State as State>::Event;
+    type InboundMessage = S::InboundMessage;
     type NodeId = PeerId;
     type Swarm = S;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::Message>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {
         let mut state = self
             .nodes
             .replay_nodes_info
@@ -186,7 +173,9 @@ where
                 pending_events: self.get_pending_events(peer_id),
             })
             .collect::<Vec<_>>();
+
         state.sort_by_key(|node| node.id);
+
         state
     }
 

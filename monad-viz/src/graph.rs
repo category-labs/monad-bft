@@ -1,16 +1,21 @@
 use std::{cmp::Reverse, time::Duration};
 
+use monad_block_sync::BlockSyncProcess;
+use monad_consensus_state::ConsensusProcess;
+use monad_consensus_types::{
+    message_signature::MessageSignature, signature_collection::SignatureCollection,
+};
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::State;
-use monad_executor_glue::{Identifiable, PeerId};
+use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::{MockExecutor, RouterScheduler},
+    mock::MockExecutor,
     mock_swarm::{Node, Nodes, UntilTerminator},
-    swarm_relation::{SwarmRelation, SwarmStateType},
+    swarm_relation::SwarmRelation,
     transformer::ID,
 };
-use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_types::{Deserializable, Serializable};
+use monad_state::MonadState;
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 pub enum NodeEvent<'s, Id, M, E> {
     Message {
@@ -26,22 +31,20 @@ pub enum NodeEvent<'s, Id, M, E> {
     },
 }
 
-pub struct NodeState<'s, Id, SWM: SwarmRelation, M> {
+pub struct NodeState<'s, Id, S: SwarmRelation, M> {
     pub id: &'s Id,
-    pub state: &'s SwarmStateType<SWM>,
+    pub state: &'s S::State,
 
-    pub pending_events: Vec<NodeEvent<'s, Id, M, <SWM::State as State>::Event>>,
+    pub pending_events: Vec<NodeEvent<'s, Id, M, <S::State as State>::Event>>,
 }
 
 pub trait Graph {
     type State;
-    type Message;
-    type MessageId;
-    type Event;
+    type InboundMessage;
     type NodeId;
     type Swarm: SwarmRelation;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::Message>>;
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>>;
     fn tick(&self) -> Duration;
     fn min_tick(&self) -> Duration;
     fn max_tick(&self) -> Duration;
@@ -87,15 +90,20 @@ where
     current_tick: Duration,
 }
 
-impl<S, C> NodesSimulation<S, C>
+impl<S, C, CT, ST, SCT, VT, LT, BST> NodesSimulation<S, C>
 where
-    S: SwarmRelation,
-    S::Message: Identifiable,
+    S: SwarmRelation<
+        State = MonadState<CT, ST, SCT, VT, LT, BST>,
+        TransportMessage = <S as SwarmRelation>::InboundMessage,
+    >,
     C: SimulationConfig<S>,
 
-    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
+    CT: ConsensusProcess<SCT> + PartialEq + Eq,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    VT: ValidatorSetType,
+    LT: LeaderElection,
+    BST: BlockSyncProcess<SCT, VT>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -126,27 +134,30 @@ where
     }
 }
 
-impl<S, C> Graph for NodesSimulation<S, C>
+impl<S, C, CT, ST, SCT, VT, LT, BST> Graph for NodesSimulation<S, C>
 where
-    S: SwarmRelation,
-    S::Message: Identifiable,
+    S: SwarmRelation<
+        State = MonadState<CT, ST, SCT, VT, LT, BST>,
+        TransportMessage = <S as SwarmRelation>::InboundMessage,
+    >,
     C: SimulationConfig<S>,
 
-    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
+    CT: ConsensusProcess<SCT> + PartialEq + Eq,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    VT: ValidatorSetType,
+    LT: LeaderElection,
+    BST: BlockSyncProcess<SCT, VT>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
 {
     type State = S::State;
-    type Message = S::Message;
-    type MessageId = <S::Message as Identifiable>::Id;
-    type Event = <S::State as State>::Event;
+    type InboundMessage = S::InboundMessage;
     type NodeId = PeerId;
     type Swarm = S;
 
-    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::Message>> {
+    fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {
         let mut state = self
             .nodes
             .states()
@@ -166,7 +177,9 @@ where
                     .collect(),
             })
             .collect::<Vec<_>>();
+
         state.sort_by_key(|node| node.id);
+
         state
     }
 

@@ -25,7 +25,17 @@ use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
 
 struct ReplaySwarm;
+
 impl SwarmRelation for ReplaySwarm {
+    type SignatureType = SecpSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+
+    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = Self::InboundMessage;
+
+    type TransactionValidator = MockValidator;
+
     type State = MonadState<
         ConsensusState<Self::SignatureCollectionType, MockValidator, NopStateRoot>,
         Self::SignatureType,
@@ -34,25 +44,18 @@ impl SwarmRelation for ReplaySwarm {
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type SignatureType = SecpSignature;
-    type SignatureCollectionType = MultiSig<Self::SignatureType>;
-    type RouterScheduler =
-        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
-    type Pipeline = GenericTransformerPipeline<
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+
+    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+
+    type LoggerConfig = WALoggerConfig;
     type Logger =
         WALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransactionValidator = MockValidator;
-    type LoggerConfig = WALoggerConfig;
-    type RouterSchedulerConfig = NoSerRouterConfig;
     type MempoolConfig = MockMempoolConfig;
-    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundStateMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]

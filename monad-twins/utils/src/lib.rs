@@ -3,7 +3,7 @@ pub mod twin_reader;
 use std::collections::BTreeMap;
 
 use monad_mock_swarm::{
-    mock::{MockExecutor, RouterScheduler},
+    mock::MockExecutor,
     mock_swarm::{Node, Nodes},
     swarm_relation::SwarmRelation,
     transformer::{
@@ -11,8 +11,6 @@ use monad_mock_swarm::{
         RandLatencyTransformer, ID,
     },
 };
-use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_types::{Deserializable, Serializable};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 
@@ -27,9 +25,6 @@ pub fn run_twins_test<S, L, R, M>(
 ) where
     S: SwarmRelation<Pipeline = MonadMessageTransformerPipeline>,
     MockExecutor<S>: Unpin,
-    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
     Node<S>: Send,
     L: Fn(&ID, &Vec<ID>) -> S::LoggerConfig,
     R: Fn(&ID, &Vec<ID>) -> S::RouterSchedulerConfig,

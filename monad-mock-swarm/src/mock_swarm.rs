@@ -6,9 +6,15 @@ use std::{
 };
 
 use itertools::Itertools;
+use monad_block_sync::BlockSyncProcess;
 use monad_consensus_state::ConsensusProcess;
+use monad_consensus_types::{
+    message_signature::MessageSignature, signature_collection::SignatureCollection,
+};
 use monad_executor::{timed_event::TimedEvent, Executor, State};
-use monad_types::{Deserializable, Round, Serializable};
+use monad_state::MonadState;
+use monad_types::Round;
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -17,7 +23,7 @@ use tracing::info_span;
 
 use crate::{
     mock::{MockExecutor, MockExecutorEvent, RouterScheduler},
-    swarm_relation::{SwarmRelation, SwarmStateType},
+    swarm_relation::SwarmRelation,
     transformer::{LinkMessage, Pipeline, ID},
 };
 
@@ -27,10 +33,10 @@ where
 {
     pub id: ID,
     pub executor: MockExecutor<S>,
-    pub state: SwarmStateType<S>,
+    pub state: S::State,
     pub logger: S::Logger,
     pub pipeline: S::Pipeline,
-    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<S::Message>)>>,
+    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<S::TransportMessage>)>>,
     pub rng: ChaCha20Rng,
     pub current_seed: usize,
 }
@@ -39,10 +45,6 @@ impl<S> Node<S>
 where
     S: SwarmRelation,
 
-    <SwarmStateType<S> as State>::Message:
-        Deserializable<<S::RouterScheduler as RouterScheduler>::M>,
-    <SwarmStateType<S> as State>::OutboundMessage:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
     MockExecutor<S>: Unpin,
 {
     fn update_rng(&mut self) {
@@ -74,8 +76,8 @@ where
     fn step_until(
         &mut self,
         until: Duration,
-        emitted_messages: &mut Vec<(Duration, LinkMessage<S::Message>)>,
-    ) -> Option<(Duration, <SwarmStateType<S> as State>::Event)> {
+        emitted_messages: &mut Vec<(Duration, LinkMessage<S::TransportMessage>)>,
+    ) -> Option<(Duration, <S::State as State>::Event)> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
@@ -112,6 +114,7 @@ where
                             let transformed = self.pipeline.process(lm);
                             for (delay, msg) in transformed {
                                 let sched_tick = tick + delay;
+
                                 // FIXME: do we need to transform msg to self?
                                 if msg.to == self.id {
                                     self.pending_inbound_messages
@@ -129,12 +132,15 @@ where
                         .pending_inbound_messages
                         .pop()
                         .expect("logic error, should be nonempty");
+
                     assert_eq!(tick, scheduled_tick);
+
                     self.executor.send_message(
                         scheduled_tick,
                         *message.from.get_peer_id(),
                         message.message,
                     );
+
                     continue;
                 }
             };
@@ -189,9 +195,16 @@ impl UntilTerminator {
     }
 }
 
-impl<S> NodesTerminator<S> for UntilTerminator
+impl<S, CT, ST, SCT, VT, LT, BST> NodesTerminator<S> for UntilTerminator
 where
-    S: SwarmRelation,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, BST>>,
+
+    CT: ConsensusProcess<SCT> + PartialEq + Eq,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    VT: ValidatorSetType,
+    LT: LeaderElection,
+    BST: BlockSyncProcess<SCT, VT>,
 {
     fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         nodes.tick > self.until_tick
@@ -205,6 +218,7 @@ where
                 .any(|node| node.state.consensus().get_current_round() > self.until_round)
     }
 }
+
 // observe and monitor progress of certain nodes until commit progress is achieved for all
 pub struct ProgressTerminator {
     // PeerId -> Ledger len
@@ -310,11 +324,6 @@ where
     S: SwarmRelation,
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-
-    <SwarmStateType<S> as State>::Message:
-        Deserializable<<S::RouterScheduler as RouterScheduler>::M>,
-    <SwarmStateType<S> as State>::OutboundMessage:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 {
     pub fn new(
         peers: Vec<(
@@ -421,7 +430,8 @@ where
                 return Some(self.tick);
             }
 
-            let mut emitted_messages: Vec<(Duration, LinkMessage<S::Message>)> = Vec::new();
+            let mut emitted_messages: Vec<(Duration, LinkMessage<S::TransportMessage>)> =
+                Vec::new();
 
             emitted_messages.par_extend(self.states.par_iter_mut().flat_map_iter(|(_id, node)| {
                 let mut emitted = Vec::new();
@@ -485,7 +495,7 @@ where
             self.tick,
         );
         let (wal, replay_events) = S::Logger::new(logger_config).unwrap();
-        let (mut state, mut init_commands) = SwarmStateType::<S>::init(state_config);
+        let (mut state, mut init_commands) = S::State::init(state_config);
 
         for event in replay_events {
             init_commands.extend(state.update(event.event));

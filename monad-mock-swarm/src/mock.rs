@@ -31,35 +31,44 @@ use priority_queue::PriorityQueue;
 use rand::{Rng, RngCore};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
-use crate::swarm_relation::{SwarmRelation, SwarmStateType};
+use crate::swarm_relation::SwarmRelation;
 
 const MOCK_DEFAULT_SEED: u64 = 1;
 
 #[derive(Debug)]
-pub enum RouterEvent<M, Serialized> {
-    Rx(PeerId, M),
-    Tx(PeerId, Serialized),
+pub enum RouterEvent<InboundMessage, TransportMessage> {
+    Rx(PeerId, InboundMessage),
+    Tx(PeerId, TransportMessage),
 }
 
 /// RouterScheduler describes HOW gossip messages get delivered
 pub trait RouterScheduler {
     type Config;
-    /// transport-level message type - usually will be bytes
-    type M;
-    type Serialized;
+
+    // Transport level message type (usually bytes)
+    type TransportMessage;
+
+    // Application level data
+    type InboundMessage: Deserializable<Self::TransportMessage>;
+    type OutboundMessage: Serializable<Self::TransportMessage>;
 
     fn new(config: Self::Config) -> Self;
 
-    fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized);
-    fn outbound(&mut self, time: Duration, to: RouterTarget, message: impl Into<Self::M>);
+    fn process_inbound(&mut self, time: Duration, from: PeerId, message: Self::TransportMessage);
+    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage);
 
     fn peek_tick(&self) -> Option<Duration>;
-    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>>;
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>>;
 }
 
-pub struct NoSerRouterScheduler<M> {
+pub struct NoSerRouterScheduler<IM, OM> {
     all_peers: BTreeSet<PeerId>,
-    events: VecDeque<(Duration, RouterEvent<M, M>)>,
+    events: VecDeque<(Duration, RouterEvent<IM, IM>)>,
+
+    phantom: PhantomData<OM>,
 }
 
 #[derive(Clone)]
@@ -67,22 +76,26 @@ pub struct NoSerRouterConfig {
     pub all_peers: BTreeSet<PeerId>,
 }
 
-impl<M> RouterScheduler for NoSerRouterScheduler<M>
+impl<IM, OM> RouterScheduler for NoSerRouterScheduler<IM, OM>
 where
-    M: Clone,
+    IM: Clone,
+    OM: Serializable<IM>,
 {
     type Config = NoSerRouterConfig;
-    type M = M;
-    type Serialized = M;
+    type TransportMessage = IM;
+    type InboundMessage = IM;
+    type OutboundMessage = OM;
 
     fn new(config: NoSerRouterConfig) -> Self {
         Self {
             all_peers: config.all_peers,
             events: Default::default(),
+
+            phantom: PhantomData,
         }
     }
 
-    fn inbound(&mut self, time: Duration, from: PeerId, message: Self::Serialized) {
+    fn process_inbound(&mut self, time: Duration, from: PeerId, message: Self::InboundMessage) {
         assert!(
             time >= self
                 .events
@@ -94,7 +107,7 @@ where
             .push_back((time, RouterEvent::Rx(from, message)))
     }
 
-    fn outbound(&mut self, time: Duration, to: RouterTarget, message: impl Into<Self::M>) {
+    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
         assert!(
             time >= self
                 .events
@@ -104,7 +117,7 @@ where
         );
         match to {
             RouterTarget::Broadcast => {
-                let message: Self::M = message.into();
+                let message: Self::TransportMessage = message.serialize();
                 self.events.extend(
                     self.all_peers
                         .iter()
@@ -113,7 +126,7 @@ where
             }
             RouterTarget::PointToPoint(to) => {
                 self.events
-                    .push_back((time, RouterEvent::Tx(to, message.into())));
+                    .push_back((time, RouterEvent::Tx(to, message.serialize())));
             }
         }
     }
@@ -122,7 +135,10 @@ where
         self.events.front().map(|(tick, _)| *tick)
     }
 
-    fn step_until(&mut self, until: Duration) -> Option<RouterEvent<Self::M, Self::Serialized>> {
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>> {
         if self.peek_tick().unwrap_or(Duration::MAX) <= until {
             let (_, event) = self.events.pop_front().expect("must exist");
             Some(event)
@@ -135,9 +151,9 @@ where
 pub trait MockableExecutor:
     Executor<Command = MempoolCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
 {
+    type Config: Copy;
     type Event;
     type SignatureCollection;
-    type Config: Copy;
 
     fn new(config: Self::Config) -> Self;
 
@@ -149,18 +165,15 @@ where
     S: SwarmRelation,
 {
     mempool: S::MempoolExecutor,
-    ledger: MockLedger<<SwarmStateType<S> as State>::Block, <SwarmStateType<S> as State>::Event>,
+    ledger: MockLedger<<S::State as State>::Block, <S::State as State>::Event>,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
-    checkpoint: MockCheckpoint<<SwarmStateType<S> as State>::Checkpoint>,
+    checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
     epoch: MockEpoch<S::SignatureType, S::SignatureCollectionType>,
-    state_root_hash: MockStateRootHash<
-        <SwarmStateType<S> as State>::Block,
-        S::SignatureType,
-        S::SignatureCollectionType,
-    >,
+    state_root_hash:
+        MockStateRootHash<<S::State as State>::Block, S::SignatureType, S::SignatureCollectionType>,
     tick: Duration,
 
-    timer: PriorityQueue<TimerEvent<<SwarmStateType<S> as State>::Event>, Reverse<Duration>>,
+    timer: PriorityQueue<TimerEvent<<S::State as State>::Event>, Reverse<Duration>>,
     router: S::RouterScheduler,
 }
 
@@ -264,15 +277,16 @@ where
     pub fn tick(&self) -> Duration {
         self.tick
     }
+
     pub fn send_message(
         &mut self,
         tick: Duration,
         from: PeerId,
-        message: <S::RouterScheduler as RouterScheduler>::Serialized,
+        message: <S::RouterScheduler as RouterScheduler>::TransportMessage,
     ) {
         assert!(tick >= self.tick);
 
-        self.router.inbound(tick, from, message);
+        self.router.process_inbound(tick, from, message);
     }
 
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
@@ -318,16 +332,13 @@ where
 impl<S> Executor for MockExecutor<S>
 where
     S: SwarmRelation,
-
-    <SwarmStateType<S> as State>::OutboundMessage:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 {
     type Command = Command<
-        <SwarmStateType<S> as State>::Event,
-        <SwarmStateType<S> as State>::OutboundMessage,
-        <SwarmStateType<S> as State>::Block,
-        <SwarmStateType<S> as State>::Checkpoint,
-        <SwarmStateType<S> as State>::SignatureCollection,
+        <S::State as State>::Event,
+        <S::State as State>::OutboundMessage,
+        <S::State as State>::Block,
+        <S::State as State>::Checkpoint,
+        <S::State as State>::SignatureCollection,
     >;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (
@@ -367,41 +378,33 @@ where
         for command in router_cmds {
             match command {
                 RouterCommand::Publish { target, message } => {
-                    self.router.outbound(self.tick, target, message.serialize());
+                    self.router.send_outbound(self.tick, target, message);
                 }
             }
         }
     }
 }
 
-pub enum MockExecutorEvent<E, Ser> {
+pub enum MockExecutorEvent<E, TransportMessage> {
     Event(E),
-    Send(PeerId, Ser),
+    Send(PeerId, TransportMessage),
 }
 
 impl<S> MockExecutor<S>
 where
     S: SwarmRelation,
-
-    <SwarmStateType<S> as State>::Message:
-        Deserializable<<S::RouterScheduler as RouterScheduler>::M>,
-    <SwarmStateType<S> as State>::Block: Unpin,
-    Self: Unpin,
 {
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<
-        MockExecutorEvent<
-            <SwarmStateType<S> as State>::Event,
-            <S::RouterScheduler as RouterScheduler>::Serialized,
-        >,
-    > {
+    ) -> Option<MockExecutorEvent<<S::State as State>::Event, S::TransportMessage>> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
             }
+
             self.tick = tick;
+
             let event = match event_type {
                 ExecutorEventType::Router => {
                     let maybe_router_event = self.router.step_until(tick);
@@ -409,9 +412,6 @@ where
                     match maybe_router_event {
                         None => continue, // try next tick
                         Some(RouterEvent::Rx(from, message)) => {
-                            let message =
-                                <<SwarmStateType<S> as State>::Message>::deserialize(&message)
-                                    .expect("all messages should deserialize in mock executor");
                             MockExecutorEvent::Event(message.event(from))
                         }
                         Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
@@ -439,6 +439,7 @@ where
                         .map(MockExecutorEvent::Event)
                 }
             };
+
             return Some(event);
         }
 

@@ -21,23 +21,27 @@ use iced::{
     },
     Application, Color, Command, Event, Length, Settings, Theme, Vector,
 };
+use monad_block_sync::BlockSyncState;
+use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
     multi_sig::MultiSig,
+    payload::StateRoot,
     transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::PeerId;
+use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
-    swarm_relation::{SwarmRelation, SwarmStateType},
+    swarm_relation::SwarmRelation,
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
         ID,
     },
 };
-use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
     wal::{WALogger, WALoggerConfig},
@@ -48,21 +52,37 @@ use replay_graph::{RepConfig, ReplayNodesSimulation};
 pub struct VizSwarm;
 
 impl SwarmRelation for VizSwarm {
-    type State = SwarmStateType<Self>;
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
-    type RouterScheduler = NoSerRouterScheduler<<Self::State as State>::Message>;
-    type Pipeline = GenericTransformerPipeline<<Self::State as State>::Message>;
-    type Logger = MockWALogger<TimedEvent<<Self::State as State>::Event>>;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = Self::InboundMessage;
+
     type TransactionValidator = MockValidator;
-    type LoggerConfig = MockWALoggerConfig;
+
+    type State = MonadState<
+        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+        ValidatorSet,
+        SimpleRoundRobin,
+        BlockSyncState,
+    >;
+
     type RouterSchedulerConfig = NoSerRouterConfig;
+    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+
+    type Pipeline = GenericTransformerPipeline<
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+
+    type LoggerConfig = MockWALoggerConfig;
+    type Logger =
+        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+
     type MempoolConfig = MockMempoolConfig;
-    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundStateMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 type NS<'a> =

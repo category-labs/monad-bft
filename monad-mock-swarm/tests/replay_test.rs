@@ -1,26 +1,27 @@
 use std::time::Duration;
 
-use monad_block_sync::BlockSyncState;
-use monad_consensus_state::ConsensusState;
+use monad_block_sync::{BlockSyncProcess, BlockSyncState};
+use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
+    message_signature::MessageSignature, multi_sig::MultiSig, payload::StateRoot,
+    signature_collection::SignatureCollection, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{
-        MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler,
-        RouterScheduler,
-    },
+    mock::{MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
     transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
-use monad_types::{Deserializable, Serializable};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetType},
+};
 use monad_wal::{
     mock::{MockMemLogger, MockMemLoggerConfig},
     PersistenceLogger,
@@ -30,6 +31,15 @@ const CONSENSUS_DELTA: Duration = Duration::from_millis(10);
 
 struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+
+    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type TransportMessage = Self::InboundMessage;
+
+    type TransactionValidator = MockValidator;
+
     type State = MonadState<
         ConsensusState<Self::SignatureCollectionType, MockValidator, StateRoot>,
         Self::SignatureType,
@@ -38,38 +48,35 @@ impl SwarmRelation for ReplaySwarm {
         SimpleRoundRobin,
         BlockSyncState,
     >;
-    type SignatureType = NopSignature;
-    type SignatureCollectionType = MultiSig<Self::SignatureType>;
-    type RouterScheduler =
-        NoSerRouterScheduler<MonadMessage<Self::SignatureType, Self::SignatureCollectionType>>;
-    type Pipeline = GenericTransformerPipeline<
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+
+    type RouterSchedulerConfig = NoSerRouterConfig;
+    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+
+    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+
+    type LoggerConfig = <Self::Logger as PersistenceLogger>::Config;
     type Logger =
         MockMemLogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransactionValidator = MockValidator;
-    type LoggerConfig = <Self::Logger as PersistenceLogger>::Config;
-    type RouterSchedulerConfig = NoSerRouterConfig;
+
     type MempoolConfig = MockMempoolConfig;
-    type Message = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type StateMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundStateMessage =
-        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
-fn run_nodes_until<S>(
+fn run_nodes_until<S, CT, ST, SCT, VT, LT, BST>(
     nodes: &mut Nodes<S>,
     start_tick: Duration,
     until_tick: Duration,
     until_block: usize,
 ) -> Duration
 where
-    S: SwarmRelation,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, BST>>,
 
-    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
+    CT: ConsensusProcess<SCT> + PartialEq + Eq,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+    VT: ValidatorSetType,
+    LT: LeaderElection,
+    BST: BlockSyncProcess<SCT, VT>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -90,10 +97,6 @@ where
 fn liveness<S>(nodes: &Nodes<S>, last_ledger_len: usize) -> bool
 where
     S: SwarmRelation,
-
-    MonadMessage<S::SignatureType, S::SignatureCollectionType>: Deserializable<S::Message>,
-    VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>:
-        Serializable<<S::RouterScheduler as RouterScheduler>::M>,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,

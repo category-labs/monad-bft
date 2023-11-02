@@ -35,9 +35,10 @@ pub type BoxExecutor<C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin>>;
 
 pub trait State: Sized {
     type Config;
+    type Message: Message<Event = Self::Event>;
+
     type Event: Clone;
     type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
-    type Message: Message<Event = Self::Event>;
     type Block: BlockType;
     type Checkpoint;
     type SignatureCollection;
