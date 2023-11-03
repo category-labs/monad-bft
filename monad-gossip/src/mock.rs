@@ -11,6 +11,18 @@ pub struct MockGossipConfig {
     pub all_peers: Vec<PeerId>,
 }
 
+impl MockGossipConfig {
+    pub fn build(self) -> MockGossip {
+        MockGossip {
+            config: self,
+
+            read_buffers: Default::default(),
+            events: VecDeque::default(),
+            current_tick: Duration::ZERO,
+        }
+    }
+}
+
 pub struct MockGossip {
     config: MockGossipConfig,
 
@@ -23,18 +35,6 @@ type MessageLenType = u32;
 const MESSAGE_HEADER_LEN: usize = std::mem::size_of::<MessageLenType>();
 
 impl Gossip for MockGossip {
-    type Config = MockGossipConfig;
-
-    fn new(config: Self::Config) -> Self {
-        Self {
-            config,
-
-            read_buffers: Default::default(),
-            events: VecDeque::default(),
-            current_tick: Duration::ZERO,
-        }
-    }
-
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
         self.current_tick = time;
         let mut gossip_message = Vec::from((message.len() as MessageLenType).to_le_bytes());
@@ -125,7 +125,8 @@ mod tests {
                 *peer_id,
                 MockGossipConfig {
                     all_peers: peers.clone(),
-                },
+                }
+                .build(),
                 vec![BytesTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(5),
                 ))],
@@ -151,7 +152,8 @@ mod tests {
                 *peer_id,
                 MockGossipConfig {
                     all_peers: peers.clone(),
-                },
+                }
+                .build(),
                 vec![
                     BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
                     BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),

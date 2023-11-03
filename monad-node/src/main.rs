@@ -229,7 +229,8 @@ where
                 .iter()
                 .map(|peer| PeerId(peer.pubkey.to_owned()))
                 .collect(),
-        },
+        }
+        .build(),
     )
 }
 

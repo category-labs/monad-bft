@@ -71,7 +71,8 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                 },
                 MockGossipConfig {
                     all_peers: peers.clone(),
-                },
+                }
+                .build(),
             )
         })
         .collect::<Vec<Service<_, MockGossip, MockMessage, MockMessage>>>();

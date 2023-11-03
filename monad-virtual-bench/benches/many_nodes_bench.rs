@@ -25,7 +25,7 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 fn setup() -> (
     SwarmTestConfig,
-    impl Fn(Vec<PeerId>, PeerId) -> QuicRouterSchedulerConfig<MockGossipConfig>,
+    impl Fn(Vec<PeerId>, PeerId) -> QuicRouterSchedulerConfig<MockGossip>,
     Vec<BytesTransformer>,
     UntilTerminator,
 ) {
@@ -45,7 +45,7 @@ fn setup() -> (
         me,
         tls_key_der: Vec::new(),
         master_seed: 7,
-        gossip_config: MockGossipConfig { all_peers },
+        gossip: MockGossipConfig { all_peers }.build(),
     };
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
@@ -77,7 +77,7 @@ impl SwarmRelation for NopSwarm {
         BlockSyncState,
     >;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
     type RouterScheduler =
         QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
 
@@ -114,7 +114,7 @@ impl SwarmRelation for BlsSwarm {
 
     type RouterScheduler =
         QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
 
     type Pipeline = BytesTransformerPipeline;
 

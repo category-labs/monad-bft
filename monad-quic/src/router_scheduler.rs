@@ -19,7 +19,7 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 use crate::timeout_queue::TimeoutQueue;
 
-pub struct QuicRouterSchedulerConfig<GC> {
+pub struct QuicRouterSchedulerConfig<G> {
     pub zero_instant: Instant,
 
     pub all_peers: BTreeSet<PeerId>,
@@ -28,7 +28,7 @@ pub struct QuicRouterSchedulerConfig<GC> {
     pub tls_key_der: Vec<u8>,
     pub master_seed: u64,
 
-    pub gossip_config: GC,
+    pub gossip: G,
 }
 
 pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
@@ -59,7 +59,7 @@ where
     IM: Deserializable<Vec<u8>>,
     OM: Serializable<Vec<u8>>,
 {
-    type Config = QuicRouterSchedulerConfig<G::Config>;
+    type Config = QuicRouterSchedulerConfig<G>;
 
     type InboundMessage = IM;
     type OutboundMessage = OM;
@@ -130,7 +130,7 @@ where
             peer_ids,
             addresses,
 
-            gossip: G::new(config.gossip_config),
+            gossip: config.gossip,
 
             timeouts: Default::default(),
             pending_events: Default::default(),

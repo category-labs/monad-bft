@@ -74,7 +74,7 @@ where
     G: Gossip,
     M: Message,
 {
-    pub fn new(config: ServiceConfig<QC>, gossip_config: G::Config) -> Self {
+    pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
         server_config.transport_config(config.quinn_config.transport());
         let endpoint =
@@ -87,8 +87,6 @@ where
             let endpoint = endpoint.clone();
             async move { endpoint.accept().await }.boxed()
         };
-
-        let gossip = G::new(gossip_config);
 
         Self {
             zero_instant: config.zero_instant,

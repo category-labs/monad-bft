@@ -56,7 +56,7 @@ fn two_nodes_quic() {
             tls_key_der: Vec::new(),
             master_seed: 7,
 
-            gossip_config: MockGossipConfig { all_peers },
+            gossip: MockGossipConfig { all_peers }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -91,7 +91,7 @@ fn two_nodes_quic_bw() {
             tls_key_der: Vec::new(),
             master_seed: 7,
 
-            gossip_config: MockGossipConfig { all_peers },
+            gossip: MockGossipConfig { all_peers }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),

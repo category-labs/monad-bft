@@ -1,4 +1,4 @@
-use std::{error::Error, time::Duration};
+use std::{ops::DerefMut, pin::Pin, time::Duration};
 
 use monad_executor_glue::{PeerId, RouterTarget};
 
@@ -39,15 +39,58 @@ impl<GM> GossipEvent<GM> {
 /// `message` and `gossip_message` are both typed as bytes intentionally, because that's the atomic
 /// unit of transfer.
 pub trait Gossip {
-    type Config;
-
-    fn new(config: Self::Config) -> Self;
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]);
     fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]);
 
     fn peek_tick(&self) -> Option<Duration>;
     fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>>;
+
+    fn boxed<'a>(self) -> BoxGossip<'a>
+    where
+        Self: Sized + Send + Unpin + 'a,
+    {
+        Box::pin(self)
+    }
 }
 
-// placeholder
-pub type GossipError = Box<dyn Error>;
+impl<G: Gossip + ?Sized> Gossip for Box<G> {
+    fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
+        (**self).send(time, to, message)
+    }
+
+    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+        (**self).handle_gossip_message(time, from, gossip_message)
+    }
+
+    fn peek_tick(&self) -> Option<Duration> {
+        (**self).peek_tick()
+    }
+
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>> {
+        (**self).poll(time)
+    }
+}
+
+impl<P> Gossip for Pin<P>
+where
+    P: DerefMut,
+    P::Target: Gossip + Unpin,
+{
+    fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
+        Pin::get_mut(Pin::as_mut(self)).send(time, to, message)
+    }
+
+    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+        Pin::get_mut(Pin::as_mut(self)).handle_gossip_message(time, from, gossip_message)
+    }
+
+    fn peek_tick(&self) -> Option<Duration> {
+        Pin::get_ref(Pin::as_ref(self)).peek_tick()
+    }
+
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>> {
+        Pin::get_mut(Pin::as_mut(self)).poll(time)
+    }
+}
+
+pub type BoxGossip<'a> = Pin<Box<dyn Gossip + Send + Unpin + 'a>>;

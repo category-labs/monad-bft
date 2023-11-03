@@ -26,11 +26,9 @@ pub enum SwarmEventType {
 }
 
 impl<G: Gossip> Swarm<G> {
-    pub fn new(
-        configs: impl Iterator<Item = (PeerId, G::Config, BytesTransformerPipeline)>,
-    ) -> Self {
+    pub fn new(configs: impl Iterator<Item = (PeerId, G, BytesTransformerPipeline)>) -> Self {
         let nodes = configs
-            .map(|(peer_id, config, pipeline)| (peer_id, (G::new(config), pipeline)))
+            .map(|(peer_id, gossip, pipeline)| (peer_id, (gossip, pipeline)))
             .collect();
 
         Self {

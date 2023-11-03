@@ -1,0 +1,216 @@
+use std::time::Duration;
+
+use monad_block_sync::BlockSyncState;
+use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
+use monad_consensus_types::{
+    block::FullBlock,
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
+    message_signature::MessageSignature,
+    payload::NopStateRoot,
+    signature_collection::SignatureCollection,
+    transaction_validator::MockValidator,
+    voting::VoteInfo,
+};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_eth_types::EthAddress;
+use monad_executor::{BoxExecutor, Executor, State};
+use monad_executor_glue::{
+    Command, ExecutionLedgerCommand, MempoolCommand, MonadEvent, RouterCommand,
+};
+use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
+use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
+use monad_p2p::Multiaddr;
+use monad_quic::service::UnsafeNoAuthQuinnConfig;
+use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_updaters::{
+    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
+    local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
+    timer::TokioTimer, BoxUpdater, Updater,
+};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+
+pub enum MonadP2PGossipConfig {
+    Simple(MockGossipConfig),
+    Gossipsub(UnsafeGossipsubConfig),
+}
+
+pub enum RouterConfig<MessageSignatureType, SignatureCollectionType>
+where
+    MessageSignatureType: MessageSignature,
+    SignatureCollectionType: SignatureCollection,
+{
+    Local(
+        /// Must be passed ahead-of-time because they can't be instantiated individually
+        LocalPeerRouter<
+            MonadMessage<MessageSignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
+        >,
+    ),
+    MonadP2P {
+        config: monad_quic::service::ServiceConfig<UnsafeNoAuthQuinnConfig>,
+        gossip_config: MonadP2PGossipConfig,
+    },
+    LibP2P {
+        identity: libp2p::identity::Keypair,
+        bind_address: Multiaddr,
+        timeout: Duration,
+        keepalive: Duration,
+        peers: Vec<(Multiaddr, libp2p::PeerId)>,
+    },
+}
+
+pub enum ExecutionLedgerConfig {
+    Mock,
+    File,
+}
+
+pub enum MempoolConfig {
+    Mock,
+    LibP2P,
+}
+
+pub struct ExecutorConfig<MessageSignatureType, SignatureCollectionType>
+where
+    MessageSignatureType: MessageSignature,
+    SignatureCollectionType: SignatureCollection,
+{
+    pub router_config: RouterConfig<MessageSignatureType, SignatureCollectionType>,
+    pub mempool_config: MempoolConfig,
+    pub execution_ledger_config: ExecutionLedgerConfig,
+}
+
+pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
+    config: ExecutorConfig<MessageSignatureType, SignatureCollectionType>,
+) -> ParentExecutor<
+    BoxUpdater<
+        'static,
+        RouterCommand<VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>>,
+        MonadEvent<MessageSignatureType, SignatureCollectionType>,
+    >,
+    TokioTimer<MonadEvent<MessageSignatureType, SignatureCollectionType>>,
+    BoxUpdater<
+        'static,
+        MempoolCommand<SignatureCollectionType>,
+        MonadEvent<MessageSignatureType, SignatureCollectionType>,
+    >,
+    MockLedger<
+        FullBlock<SignatureCollectionType>,
+        MonadEvent<MessageSignatureType, SignatureCollectionType>,
+    >,
+    BoxExecutor<'static, ExecutionLedgerCommand<SignatureCollectionType>>,
+    MockCheckpoint<Checkpoint<SignatureCollectionType>>,
+>
+where
+    MessageSignatureType: MessageSignature + Unpin,
+    SignatureCollectionType: SignatureCollection + Unpin,
+    <SignatureCollectionType as SignatureCollection>::SignatureType: Unpin,
+{
+    ParentExecutor {
+        router: match config.router_config {
+            RouterConfig::MonadP2P {
+                config,
+                gossip_config,
+            } => Updater::boxed(monad_quic::service::Service::new(
+                config,
+                match gossip_config {
+                    MonadP2PGossipConfig::Simple(mock_config) => Gossip::boxed(mock_config.build()),
+                    MonadP2PGossipConfig::Gossipsub(gossipsub_config) => {
+                        Gossip::boxed(gossipsub_config.build())
+                    }
+                },
+            )),
+            RouterConfig::Local(router) => Updater::boxed(router),
+            RouterConfig::LibP2P {
+                identity,
+                bind_address,
+                timeout,
+                keepalive,
+                peers,
+            } => {
+                let mut router = monad_p2p::Service::with_tokio_executor(
+                    identity,
+                    bind_address,
+                    timeout,
+                    keepalive,
+                )
+                .await;
+                for (address, peer) in peers {
+                    router.add_peer(&peer, address)
+                }
+
+                // FIXME hack so all tcp sockets are bound before they try and send mesages
+                // we can delete this once we support retry at the monad-p2p executor level
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                Updater::boxed(router)
+            }
+        },
+        timer: TokioTimer::default(),
+        mempool: match config.mempool_config {
+            MempoolConfig::Mock => Updater::boxed(MockMempool::default()),
+            MempoolConfig::LibP2P => Updater::boxed(MonadMempool::default()),
+        },
+        ledger: MockLedger::default(),
+        execution_ledger: match config.execution_ledger_config {
+            ExecutionLedgerConfig::Mock => Executor::boxed(MockExecutionLedger::default()),
+            ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::default()),
+        },
+        checkpoint: MockCheckpoint::default(),
+    }
+}
+
+type MonadStateType<MessageSignatureType, SignatureCollectionType> = MonadState<
+    ConsensusState<SignatureCollectionType, MockValidator, NopStateRoot>,
+    MessageSignatureType,
+    SignatureCollectionType,
+    ValidatorSet,
+    SimpleRoundRobin,
+    BlockSyncState,
+>;
+
+pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
+    pub key: KeyPair,
+
+    pub cert_key: <SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType,
+
+    pub genesis_peers: Vec<(
+        PubKey,
+        <<SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
+    )>,
+    pub delta: Duration,
+    pub consensus_config: ConsensusConfig,
+    pub genesis_block: FullBlock<SignatureCollectionType>,
+    pub genesis_vote_info: VoteInfo,
+    pub genesis_signatures: SignatureCollectionType,
+}
+
+pub fn make_monad_state<MessageSignatureType, SignatureCollectionType>(
+    config: StateConfig<SignatureCollectionType>,
+) -> (
+    MonadStateType<MessageSignatureType, SignatureCollectionType>,
+    Vec<
+        Command<
+            MonadEvent<MessageSignatureType, SignatureCollectionType>,
+            VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
+            FullBlock<SignatureCollectionType>,
+            Checkpoint<SignatureCollectionType>,
+            SignatureCollectionType,
+        >,
+    >,
+)
+where
+    MessageSignatureType: MessageSignature,
+    SignatureCollectionType: SignatureCollection,
+{
+    MonadStateType::init(MonadConfig {
+        transaction_validator: MockValidator {},
+        validators: config.genesis_peers,
+        key: config.key,
+        certkey: config.cert_key,
+        beneficiary: EthAddress::default(),
+        delta: config.delta,
+        consensus_config: config.consensus_config,
+        genesis_block: config.genesis_block,
+        genesis_vote_info: config.genesis_vote_info,
+        genesis_signatures: config.genesis_signatures,
+    })
+}

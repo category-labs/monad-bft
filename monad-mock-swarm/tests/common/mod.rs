@@ -6,7 +6,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
-use monad_gossip::mock::{MockGossip, MockGossipConfig};
+use monad_gossip::mock::MockGossip;
 pub use monad_mock_swarm::swarm_relation::NoSerSwarm;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig},
@@ -39,7 +39,7 @@ impl SwarmRelation for QuicSwarm {
         BlockSyncState,
     >;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
     type RouterScheduler =
         QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
 

@@ -15,7 +15,10 @@ monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-gossip = { path = "../monad-gossip" }
+monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
+monad-quic = { path = "../monad-quic" }
 monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
@@ -24,6 +27,7 @@ monad-validator = { path = "../monad-validator" }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 futures-util = { workspace = true }
+libp2p = { workspace = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry_api = { workspace = true }
 opentelemetry-otlp = { workspace = true }

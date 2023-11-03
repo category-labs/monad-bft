@@ -21,6 +21,21 @@ pub struct UnsafeGossipsubConfig {
     pub fanout: usize,
 }
 
+impl UnsafeGossipsubConfig {
+    pub fn build(self) -> UnsafeGossipsub {
+        UnsafeGossipsub {
+            rng: ChaCha20Rng::from_seed(self.seed),
+            config: self,
+
+            read_buffers: Default::default(),
+            events: VecDeque::default(),
+            current_tick: Duration::ZERO,
+
+            message_cache: Default::default(),
+        }
+    }
+}
+
 pub struct UnsafeGossipsub {
     config: UnsafeGossipsubConfig,
     rng: ChaCha20Rng,
@@ -94,21 +109,6 @@ impl UnsafeGossipsub {
 }
 
 impl Gossip for UnsafeGossipsub {
-    type Config = UnsafeGossipsubConfig;
-
-    fn new(config: Self::Config) -> Self {
-        Self {
-            rng: ChaCha20Rng::from_seed(config.seed),
-            config,
-
-            read_buffers: Default::default(),
-            events: VecDeque::default(),
-            current_tick: Duration::ZERO,
-
-            message_cache: Default::default(),
-        }
-    }
-
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
         self.current_tick = time;
         match to {
@@ -239,7 +239,8 @@ mod tests {
                         me: *peer_id,
                         all_peers: peers.clone(),
                         fanout: 7,
-                    },
+                    }
+                    .build(),
                     vec![BytesTransformer::Latency(LatencyTransformer(
                         Duration::from_millis(5),
                     ))],
@@ -269,7 +270,8 @@ mod tests {
                         me: *peer_id,
                         all_peers: peers.clone(),
                         fanout: 7,
-                    },
+                    }
+                    .build(),
                     vec![
                         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
                         BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
