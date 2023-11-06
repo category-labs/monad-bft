@@ -5,7 +5,7 @@ mod test {
     use monad_consensus_types::transaction_validator::MockValidator;
     use monad_mock_swarm::{
         mock::{MockMempoolConfig, NoSerRouterConfig},
-        swarm_relation::MonadMessageNoSerSwarm,
+        swarm_relation::monad_test::MonadMessageNoSerSwarm,
         transformer::ID,
     };
     use monad_twins_utils::{run_twins_test, twin_reader::read_twins_test};

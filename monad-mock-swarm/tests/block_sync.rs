@@ -12,7 +12,7 @@ mod test {
     use monad_mock_swarm::{
         mock::{MockMempoolConfig, NoSerRouterConfig},
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
-        swarm_relation::{MonadMessageNoSerSwarm, SwarmRelation},
+        swarm_relation::{monad_test::MonadMessageNoSerSwarm, SwarmRelation},
         transformer::{
             monad_test::{FilterTransformer, MonadMessageTransformer},
             DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,

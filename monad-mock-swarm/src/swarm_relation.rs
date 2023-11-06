@@ -24,9 +24,7 @@ use crate::{
         MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig, NoSerRouterScheduler,
         RouterScheduler,
     },
-    transformer::{
-        monad_test::MonadMessageTransformerPipeline, GenericTransformerPipeline, Pipeline,
-    },
+    transformer::{GenericTransformerPipeline, Pipeline},
 };
 
 pub trait SwarmRelation {
@@ -108,37 +106,45 @@ impl SwarmRelation for NoSerSwarm {
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
-// no NoSerSwarm but pipeline is specialized
-pub struct MonadMessageNoSerSwarm;
+#[cfg(feature = "monad_test")]
+pub mod monad_test {
+    use super::*;
+    use crate::transformer::monad_test::MonadMessageTransformerPipeline;
 
-impl SwarmRelation for MonadMessageNoSerSwarm {
-    type SignatureType = NopSignature;
-    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    // no NoSerSwarm but pipeline is specialized
+    pub struct MonadMessageNoSerSwarm;
 
-    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::InboundMessage;
+    impl SwarmRelation for MonadMessageNoSerSwarm {
+        type SignatureType = NopSignature;
+        type SignatureCollectionType = MultiSig<Self::SignatureType>;
 
-    type TransactionValidator = MockValidator;
+        type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type OutboundMessage =
+            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
+        type TransportMessage = Self::InboundMessage;
 
-    type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-        ValidatorSet,
-        SimpleRoundRobin,
-        BlockSyncState,
-    >;
+        type TransactionValidator = MockValidator;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+        type State = MonadState<
+            ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            ValidatorSet,
+            SimpleRoundRobin,
+            BlockSyncState,
+        >;
 
-    type Pipeline = MonadMessageTransformerPipeline;
+        type RouterSchedulerConfig = NoSerRouterConfig;
+        type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
 
-    type LoggerConfig = MockWALoggerConfig;
-    type Logger =
-        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+        type Pipeline = MonadMessageTransformerPipeline;
 
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
-    type MempoolConfig = MockMempoolConfig;
+        type LoggerConfig = MockWALoggerConfig;
+        type Logger = MockWALogger<
+            TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
+        >;
+
+        type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+        type MempoolConfig = MockMempoolConfig;
+    }
 }
