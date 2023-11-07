@@ -123,7 +123,7 @@ where
                             let txs = match EthTransactionList::rlp_decode(txs.as_bytes().to_vec()) {
                                 Ok(txs) => txs,
                                 Err(_) => {
-                                    // TODO: warn
+                                    // TODO-1: add warn log
                                     continue;
                                 }
                             };

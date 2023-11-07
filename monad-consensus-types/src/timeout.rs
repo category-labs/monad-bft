@@ -110,7 +110,7 @@ impl<SCT> TimeoutCertificate<SCT> {
             .iter()
             .map(|v| v.high_qc_round.qc_round)
             .max()
-            // TODO can we unwrap here?
+            // TODO-2 can we unwrap here?
             .unwrap_or(Round(0))
     }
 }

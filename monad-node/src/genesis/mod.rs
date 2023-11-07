@@ -56,7 +56,7 @@ impl GenesisState {
 fn build_genesis_block(
     author: PubKey,
 ) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
-    // TODO: Deserialize transactions from GenesisConfig
+    // TODO-2: Deserialize transactions from GenesisConfig
     let (genesis_txs, genesis_full_txs) = (
         TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]),
         FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),

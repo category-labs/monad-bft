@@ -388,7 +388,7 @@ where
             return Err(Error::InvalidTcRound);
         }
 
-        // TODO fix this hashing..
+        // TODO-1 fix this hashing..
         let mut h = H::new();
         h.update(tc.round);
         t.high_qc_round.hash(&mut h);
@@ -420,7 +420,7 @@ where
     VT: ValidatorSetType,
 {
     if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
-        // TODO: collect author for evidence?
+        // TODO-3: collect author for evidence?
         return Err(Error::InvalidSignature);
     }
 

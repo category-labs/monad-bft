@@ -80,7 +80,7 @@ pub enum TransformerStream<M> {
 pub trait Transformer<M> {
     #[must_use]
     /// note that the output Duration should be a delay, not an absolute time
-    // TODO smallvec? resulting Vec will almost always be len 1
+    // TODO-3 smallvec? resulting Vec will almost always be len 1
     fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M>;
 
     fn min_external_delay(&self) -> Option<Duration> {

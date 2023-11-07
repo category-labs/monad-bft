@@ -56,7 +56,7 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     transaction_validator: TV,
     block_sync_manager: BlockSyncManager<SCT>,
 
-    // TODO deprecate
+    // TODO-2 deprecate
     keypair: KeyPair,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
     beneficiary: EthAddress,
@@ -178,7 +178,7 @@ where
         delta: Duration,
         config: ConsensusConfig,
 
-        // TODO deprecate
+        // TODO-2 deprecate
         keypair: KeyPair,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
         beneficiary: EthAddress,
@@ -247,7 +247,7 @@ where
             .state_root_validator
             .validate(p.block.payload.seq_num, p.block.payload.header.state_root)
         {
-            // TODO execution lagging too far behind should be a trigger for something
+            // TODO-1 execution lagging too far behind should be a trigger for something
             // to try and catch up faster. For now, just wait
             StateRootResult::OutOfRange => {
                 inc_count!(rx_execution_lagging);
@@ -686,7 +686,7 @@ where
             }
             ConsensusAction::Abstain => {
                 inc_count!(abstain_proposal);
-                // TODO: This could potentially be an empty block
+                // TODO-2: This could potentially be an empty block
                 vec![]
             }
             ConsensusAction::ProposeEmpty => {

@@ -21,7 +21,7 @@ impl TryFrom<UnverifiedEthTxBatch> for EthTxBatch {
                     return Err(Self::Error::TooLarge(size));
                 }
 
-                // TODO: Intrinsic gas check
+                // TODO-2: Intrinsic gas check
                 // geth checks that gas limit is above intrinsic gas cost for tx
                 // reth doesn't do this (yet?)
 

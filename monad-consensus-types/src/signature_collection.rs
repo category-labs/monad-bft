@@ -79,7 +79,7 @@ pub trait SignatureCollection:
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> HashSet<NodeId>;
-    // TODO: deprecate this function: only used by tests
+    // TODO-4: deprecate this function: only used by tests
     fn num_signatures(&self) -> usize;
 
     fn serialize(&self) -> Vec<u8>;

@@ -118,7 +118,7 @@ macro_rules! test_all_combination {
     };
 }
 
-// TODO: revisit to cleanup
+// TODO-4: revisit to cleanup
 test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
@@ -193,7 +193,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     // timeout certificate for Round(2)
     // timeout message for Round(3)
-    // TODO: add more high_qc_rounds
+    // TODO-3: add more high_qc_rounds
     let tc = make_tc::<SCT>(
         Round(2),
         HighQcRound { qc_round: Round(1) },

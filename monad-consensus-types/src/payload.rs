@@ -203,12 +203,12 @@ impl StateRootValidator for StateRoot {
     }
 
     fn validate(&self, seq_num: u64, block_state_root_hash: Hash) -> StateRootResult {
-        // FIXME:
+        // FIXME-1:
         // for the first N blocks, there are no state roots so we need to decide
         // how to validate them -- right now, assuming anything with hash=0x0 is
         // fine
         if self.delay > seq_num {
-            // TODO: Magic Value Hash to keep network moving?
+            // TODO-1: Magic Value Hash to keep network moving?
             if Hash([0; 32]) == block_state_root_hash {
                 return StateRootResult::Success;
             } else {

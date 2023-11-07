@@ -64,10 +64,10 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
         logs_bloom: Bloom(logs_bloom.0),
         difficulty: U256::ZERO,
         number: monad_block.payload.seq_num,
-        // TODO
+        // TODO-1
         gas_limit: u64::MAX,
         gas_used: gas_used.0,
-        // TODO: Add to BFT proposal
+        // TODO-1: Add to BFT proposal
         timestamp: 0,
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,

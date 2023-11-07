@@ -80,7 +80,7 @@ impl KeyPair {
 
     #[cfg(feature = "libp2p-identity")]
     /// Special implementation for creating both a (monad_crypto::KeyPair, lib2p::KeyPair)
-    /// TODO Once we've unified those, hopefully we can deprecate this
+    /// TODO-4 Once we've unified those, hopefully we can deprecate this
     pub fn libp2p_from_bytes(
         mut secret: impl AsMut<[u8]>,
     ) -> Result<(Self, libp2p_identity::secp256k1::Keypair), Error> {

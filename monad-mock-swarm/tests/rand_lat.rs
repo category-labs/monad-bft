@@ -74,7 +74,7 @@ fn nodes_with_random_latency(seed: u64) {
             parallelize: false,
             expected_block: 2048,
             // avoid state_root trigger in rand latency setting
-            // TODO, cover cases with low state_root_delay once state_sync is done
+            // TODO-1, cover cases with low state_root_delay once state_sync is done
             state_root_delay: u64::MAX,
             seed: 1,
             proposal_size: 0,

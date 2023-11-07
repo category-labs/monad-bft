@@ -164,7 +164,7 @@ where
                 qc: _,
             } = entry.get_mut();
 
-            // TODO: remove this check and check it at router level
+            // TODO-3: remove this check and check it at router level
             if author != req_target {
                 return BlockSyncResult::IllegalResponse;
             }

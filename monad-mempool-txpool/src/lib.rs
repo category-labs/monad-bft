@@ -52,7 +52,7 @@ impl Pool {
     ) -> Result<(), PoolError> {
         let hash = tx.hash();
 
-        // TODO: try_insert when stable
+        // TODO-4: try_insert when stable
         if self.map.contains_key(&hash) {
             return Err(PoolError::DuplicateTransactionError);
         }
@@ -81,7 +81,7 @@ impl Pool {
     }
 
     fn determine_tx_priority(_tx: &TransactionSignedEcRecovered) -> i64 {
-        // TODOs
+        // TODO-2
         0
     }
 

@@ -37,14 +37,14 @@ pub enum RouterTarget {
 }
 
 pub enum RouterCommand<OM> {
-    // TODO add a RouterCommand for setting peer set for broadcast
+    // TODO-2 add a RouterCommand for setting peer set for broadcast
     Publish { target: RouterTarget, message: OM },
 }
 
 pub trait Message: Identifiable + Clone {
     type Event;
 
-    // TODO PeerId -> &PeerId
+    // TODO-3 PeerId -> &PeerId
     fn event(self, from: PeerId) -> Self::Event;
 }
 
@@ -57,7 +57,7 @@ pub trait Identifiable {
 pub enum TimerCommand<E> {
     /// ScheduleReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
-    // TODO create test to demonstrate faulty behavior if written improperly
+    // TODO-2 create test to demonstrate faulty behavior if written improperly
     Schedule {
         duration: std::time::Duration,
         variant: TimeoutVariant,
@@ -69,7 +69,7 @@ pub enum TimerCommand<E> {
 pub enum MempoolCommand<SCT> {
     /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
-    // TODO create test to demonstrate faulty behavior if written improperly
+    // TODO-2 create test to demonstrate faulty behavior if written improperly
     FetchTxs(
         /// max number of txns to fetch
         usize,

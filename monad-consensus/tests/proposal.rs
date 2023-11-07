@@ -111,7 +111,7 @@ fn test_proposal_missing_tc() {
     );
 }
 
-// TODO: refactor these test with create_keys_w_valdiator
+// TODO-4: refactor these test with create_keys_w_valdiator
 #[test]
 fn test_proposal_author_not_sender() {
     let mut vlist = Vec::new();

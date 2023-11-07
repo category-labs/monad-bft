@@ -45,7 +45,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
     StateRootHash(FullBlock<SCT>),
-    // TODO add command for updating validator_set/round
+    // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }
 
@@ -79,6 +79,7 @@ impl<SCT: SignatureCollection> From<&InFlightBlockSync<SCT>> for ConsensusComman
 
 impl<SCT: SignatureCollection> From<VoteStateCommand> for ConsensusCommand<SCT> {
     fn from(value: VoteStateCommand) -> Self {
+        //TODO-3 VoteStateCommand used for evidence collection
         todo!()
     }
 }

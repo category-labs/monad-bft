@@ -118,13 +118,13 @@ impl Stream for MempoolTxIpcReceiver {
         if let Poll::Ready(result) = self.listener.poll_accept(cx) {
             match result {
                 Ok((stream, _)) => {
-                    // TODO: log new socket connection
+                    // TODO-2: log new socket connection
 
                     self.readers
                         .push(FramedRead::new(stream, LengthDelimitedCodec::default()));
                 }
                 Err(_) => {
-                    // TODO: handle error
+                    // TODO-2: handle error
 
                     return Poll::Ready(None);
                 }
