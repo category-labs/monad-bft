@@ -4505,6 +4505,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-types",
  "reth-primitives",
  "reth-rlp",
 ]

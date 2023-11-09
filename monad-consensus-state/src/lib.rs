@@ -829,7 +829,7 @@ mod test {
         secp256k1::KeyPair,
         NopSignature,
     };
-    use monad_eth_types::EthAddress;
+    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_executor_glue::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
@@ -1016,7 +1016,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1056,7 +1056,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1087,7 +1087,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1129,7 +1129,7 @@ mod test {
         state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1160,7 +1160,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1181,7 +1181,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1219,7 +1219,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1251,7 +1251,7 @@ mod test {
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1296,7 +1296,7 @@ mod test {
         state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1312,7 +1312,7 @@ mod test {
             cmds.extend(state.handle_proposal_message_full::<HasherType, _, _>(
                 author,
                 verified_message,
-                FullTransactionList::default(),
+                FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
                 &valset,
                 &valmap,
                 &election,
@@ -1351,7 +1351,7 @@ mod test {
                     proposals.extend(state.handle_proposal_message_full::<HasherType, _, _>(
                         m.block.author,
                         m.clone(),
-                        FullTransactionList::default(),
+                        FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
                         &valset,
                         &valmap,
                         &election,
@@ -1378,7 +1378,7 @@ mod test {
         state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1415,7 +1415,7 @@ mod test {
         let p1_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1453,7 +1453,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1497,7 +1497,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1530,7 +1530,7 @@ mod test {
         state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1550,7 +1550,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1609,7 +1609,7 @@ mod test {
         let p3_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1678,12 +1678,12 @@ mod test {
         let (author, _, verified_message) = cp1.destructure();
         let block_1 = UnverifiedFullBlock {
             block: verified_message.block.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         };
         let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1702,7 +1702,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1721,7 +1721,7 @@ mod test {
         let cmds4 = fourth_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1741,7 +1741,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1817,12 +1817,12 @@ mod test {
         let (author_2, _, verified_message_2) = cp2.destructure();
         let block_2 = UnverifiedFullBlock {
             block: verified_message_2.block.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         };
         second_state.handle_proposal_message_full::<HasherType, _, _>(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1832,7 +1832,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1861,13 +1861,13 @@ mod test {
         let (author, _, verified_message) = cp3.destructure();
         let block_3 = UnverifiedFullBlock {
             block: verified_message.block.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         };
 
         let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1875,7 +1875,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1914,7 +1914,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1934,7 +1934,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message.clone(),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -1960,7 +1960,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2036,7 +2036,7 @@ mod test {
         let cmds2 = third_state.handle_proposal_message_full::<HasherType, _, _>(
             author_2,
             verified_message_2,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2190,7 +2190,7 @@ mod test {
         state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2224,7 +2224,7 @@ mod test {
         state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2260,7 +2260,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2298,7 +2298,7 @@ mod test {
         let p3_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2342,7 +2342,7 @@ mod test {
         let (author, _, verified_message) = cp1.destructure();
         let block_1 = UnverifiedFullBlock {
             block: verified_message.block.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         };
         let bid_correct = block_1.block.get_id();
         // requesting a block that's doesn't exists should yield None
@@ -2351,7 +2351,7 @@ mod test {
         first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2373,7 +2373,7 @@ mod test {
         let (author, _, verified_message) = bp1.destructure();
         let block_1 = UnverifiedFullBlock {
             block: verified_message.block.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         };
         let bid_branch = block_1.block.get_id();
         assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
@@ -2381,7 +2381,7 @@ mod test {
         first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
@@ -2404,7 +2404,7 @@ mod test {
             let (author, _, verified_message) = cp.destructure();
             let block = UnverifiedFullBlock {
                 block: verified_message.block.clone(),
-                full_txs: FullTransactionList::default(),
+                full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             };
             let bid = block.block.get_id();
             // requesting a block that's doesn't exists should yield None
@@ -2414,7 +2414,7 @@ mod test {
             first_state.handle_proposal_message_full::<HasherType, _, _>(
                 author,
                 verified_message,
-                FullTransactionList::default(),
+                FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
                 &valset,
                 &valmap,
                 &election,
@@ -2679,7 +2679,7 @@ mod test {
         let cmds = states[1].handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,

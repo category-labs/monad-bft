@@ -93,7 +93,9 @@ impl std::fmt::Debug for TransactionHashList {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+// Do NOT derive or implement Default!
+// Empty byte array is not valid RLP
+#[derive(Clone, PartialEq, Eq)]
 pub struct FullTransactionList(Arc<Vec<u8>>);
 
 impl FullTransactionList {

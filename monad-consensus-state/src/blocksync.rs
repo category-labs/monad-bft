@@ -244,7 +244,7 @@ mod test {
         voting::VoteInfo,
     };
     use monad_crypto::hasher::{Hash, Hasher, HasherType};
-    use monad_eth_types::EthAddress;
+    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_testutil::{
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
@@ -526,21 +526,21 @@ mod test {
 
         let msg_with_block_1 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_1.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
         let msg_no_block_2 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x02_u8; 32])));
 
         let msg_with_block_2 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_2.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
         let msg_no_block_3 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x03_u8; 32])));
 
         let msg_with_block_3 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_3.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
         // arbitrary response should be rejected
@@ -819,7 +819,7 @@ mod test {
 
         let msg_with_block = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block.clone(),
-            full_txs: FullTransactionList::default(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
         let BlockSyncResult::<SC>::Success(b) =

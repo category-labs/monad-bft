@@ -19,7 +19,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, PubKey, SecpSignature},
 };
-use monad_eth_types::EthAddress;
+use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{NodeId, Round};
 use zerocopy::AsBytes;
 
@@ -192,7 +192,12 @@ where
 
     let sigs = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
     (
-        FullBlock::from_block(genesis_block, FullTransactionList::default(), tvt).unwrap(),
+        FullBlock::from_block(
+            genesis_block,
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            tvt,
+        )
+        .unwrap(),
         sigs,
     )
 }

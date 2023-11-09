@@ -407,7 +407,7 @@ mod test {
         hasher::{Hash, HasherType},
         secp256k1::KeyPair,
     };
-    use monad_eth_types::EthAddress;
+    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, NodeId, Round};
 
@@ -450,7 +450,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -476,7 +476,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -502,7 +502,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -528,7 +528,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -554,7 +554,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -580,7 +580,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -606,7 +606,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -632,7 +632,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -730,7 +730,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -767,7 +767,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -793,7 +793,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -819,7 +819,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -874,7 +874,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -906,7 +906,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -930,7 +930,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -962,7 +962,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1019,7 +1019,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1051,7 +1051,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1099,7 +1099,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1125,7 +1125,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1151,7 +1151,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1169,7 +1169,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1187,7 +1187,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1259,7 +1259,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1285,7 +1285,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1311,7 +1311,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1337,7 +1337,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1393,7 +1393,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1419,7 +1419,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1445,7 +1445,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1471,7 +1471,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1497,7 +1497,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1523,7 +1523,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1587,7 +1587,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1613,7 +1613,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1639,7 +1639,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1686,7 +1686,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1712,7 +1712,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1738,7 +1738,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1786,7 +1786,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1812,7 +1812,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1838,7 +1838,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1856,7 +1856,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();
@@ -1874,7 +1874,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::default(),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &MockValidator {},
         )
         .unwrap();

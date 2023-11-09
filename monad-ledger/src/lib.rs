@@ -5,7 +5,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_eth_types::EthFullTransactionList;
-use reth_primitives::{BlockBody, Bloom, Bytes, Header, H256, U256};
+use reth_primitives::{keccak256, BlockBody, Bloom, Bytes, Header, H256, U256};
 use reth_rlp::Encodable;
 
 pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SCT>) -> Vec<u8> {
@@ -15,9 +15,14 @@ pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SC
 
     let header = generate_header(monad_block, &block_body);
 
+    let mut header_bytes = Vec::default();
+    header.encode(&mut header_bytes);
+
+    let header_hash = keccak256(header_bytes);
+
     let block = block_body.create_block(header);
 
-    let mut buf = Vec::default();
+    let mut buf = Vec::from(header_hash.0);
 
     block.encode(&mut buf);
 
@@ -76,5 +81,83 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
         excess_blob_gas: None,
         parent_beacon_block_root: None,
         extra_data: Bytes::default(),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use monad_consensus_types::{
+        block::{Block, FullBlock as MonadFullBlock},
+        ledger::LedgerCommitInfo,
+        multi_sig::MultiSig,
+        payload::{
+            Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
+            TransactionHashList,
+        },
+        quorum_certificate::{QcInfo, QuorumCertificate},
+        transaction_validator::MockValidator,
+        voting::VoteInfo,
+    };
+    use monad_crypto::{
+        hasher::{Hash, HasherType},
+        secp256k1::KeyPair,
+        NopSignature,
+    };
+    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+    use monad_types::{BlockId, NodeId, Round};
+
+    use crate::encode_full_block;
+
+    #[test]
+    fn encode_full_block_header_hash() {
+        let pubkey = KeyPair::from_bytes(&mut [127; 32]).unwrap().pubkey();
+
+        let full_block = MonadFullBlock::<MultiSig<NopSignature>>::from_block(
+            Block::new::<HasherType>(
+                NodeId(pubkey),
+                Round(0),
+                &Payload {
+                    txns: TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]),
+                    header: ExecutionArtifacts {
+                        parent_hash: Hash::default(),
+                        state_root: Hash::default(),
+                        transactions_root: Hash::default(),
+                        receipts_root: Hash::default(),
+                        logs_bloom: Bloom::zero(),
+                        gas_used: Gas::default(),
+                    },
+                    seq_num: 0,
+                    beneficiary: EthAddress::default(),
+                    randao_reveal: RandaoReveal::default(),
+                },
+                &QuorumCertificate::new::<HasherType>(
+                    QcInfo {
+                        vote: VoteInfo {
+                            id: BlockId(Hash([0x00_u8; 32])),
+                            round: Round(0),
+                            parent_id: BlockId(Hash([0x00_u8; 32])),
+                            parent_round: Round(0),
+                            seq_num: 0,
+                        },
+                        ledger_commit: LedgerCommitInfo {
+                            commit_state_hash: None,
+                            vote_info_hash: Hash::default(),
+                        },
+                    },
+                    MultiSig::default(),
+                ),
+            ),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            &MockValidator::default(),
+        )
+        .unwrap();
+
+        let bytes = encode_full_block(full_block);
+
+        // Check that encode_full_block starts with keccak header hash
+        assert!(bytes.starts_with(&[
+            212, 77, 82, 205, 229, 94, 135, 122, 87, 21, 202, 7, 45, 115, 186, 120, 39, 59, 86,
+            171, 170, 230, 157, 75, 208, 15, 84, 70, 30, 39, 187, 94,
+        ]));
     }
 }

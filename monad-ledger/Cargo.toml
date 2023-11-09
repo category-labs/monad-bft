@@ -15,3 +15,6 @@ monad-eth-types = { path = "../monad-eth-types" }
 
 reth-primitives = { workspace = true }
 reth-rlp = { workspace = true }
+
+[dev-dependencies]
+monad-types = { path = "../monad-types" }
