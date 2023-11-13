@@ -256,7 +256,7 @@ where
             validator_mapping: val_mapping,
             upcoming_validator_set: None,
             leader_election: election,
-            epoch: Epoch(0),
+            epoch: Epoch(1),
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),

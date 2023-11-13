@@ -484,6 +484,8 @@ where
             seed,
         ) = peer;
 
+        let peers: Vec<_> = state_config.validators.iter().map(|(key, _)| key.clone()).collect();
+
         // No duplicate ID insertion should be allowed
         assert!(!self.states.contains_key(&id));
         // if nodes only want to run with unique ids
@@ -492,6 +494,7 @@ where
         let mut executor: MockExecutor<S> = MockExecutor::new(
             <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
             mock_mempool_config,
+            peers,
             self.tick,
         );
         let (wal, replay_events) = S::Logger::new(logger_config).unwrap();

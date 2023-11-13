@@ -33,7 +33,10 @@ use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{
+        MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop,
+        NoSerRouterConfig, NoSerRouterScheduler
+    },
     swarm_relation::SwarmRelation,
     transformer::{
         GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
@@ -83,6 +86,11 @@ impl SwarmRelation for VizSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 type NS<'a> =

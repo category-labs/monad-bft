@@ -543,7 +543,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, NodeId, Round, Stake, Epoch};
+    use monad_types::{BlockId, NodeId, Round, Stake, Epoch};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
     use test_case::test_case;
 

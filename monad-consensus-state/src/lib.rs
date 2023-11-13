@@ -866,7 +866,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, Hash, NodeId, Round, EPOCH_LENGTH};
+    use monad_types::{BlockId, Epoch, NodeId, Round, EPOCH_LENGTH};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -2652,7 +2652,7 @@ mod test {
         }
         for (i, (author, v)) in votes.iter().enumerate() {
             let cmds = states[leader_index]
-                .handle_vote_message::<Sha256Hash, _, _>(*author, *v, &valset, &valmap, &upcoming_valset, &election);
+                .handle_vote_message::<HasherType, _, _>(*author, *v, &valset, &valmap, &upcoming_valset, &election);
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId, BlockId)> = cmds
                     .into_iter()
@@ -2857,10 +2857,10 @@ mod test {
 
         let (author, _, verified_message) = cp.destructure();
         // observe the QC in round EPOCH_LENGTH + 1, and generate epoch end command
-        let cmds = states[0].handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = states[0].handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(Vec::new()),
             &valset,
             &valmap,
             &upcoming_valset,
@@ -2900,10 +2900,10 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for state in states.iter_mut() {
-                let cmds = state.handle_proposal_message_full::<Sha256Hash, _, _>(
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
                     author,
                     verified_message.clone(),
-                    FullTransactionList(Vec::new()),
+                    FullTransactionList::new(Vec::new()),
                     &valset,
                     &valmap,
                     &upcoming_valset,
@@ -2963,10 +2963,10 @@ mod test {
 
         let (author, _, verified_message) = new_epoch_proposal.destructure();
         // advance round (and end epoch) through TC
-        let cmds = states[0].handle_proposal_message_full::<Sha256Hash, _, _>(
+        let cmds = states[0].handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::default(),
+            FullTransactionList::new(Vec::new()),
             &valset,
             &valmap,
             &upcoming_valset,

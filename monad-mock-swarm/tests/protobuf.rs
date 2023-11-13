@@ -26,7 +26,7 @@ use monad_testutil::{
     validators::create_keys_w_validators,
 };
 use monad_types::{BlockId, NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin};
+use monad_validator::{leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
 

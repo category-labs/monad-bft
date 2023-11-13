@@ -54,6 +54,11 @@ impl SwarmRelation for LogSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 pub fn generate_log(

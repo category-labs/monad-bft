@@ -11,7 +11,7 @@ use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
+    mock::{MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop},
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
     transformer::{BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer},
@@ -89,6 +89,11 @@ impl SwarmRelation for NopSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 struct BlsSwarm;
@@ -124,6 +129,11 @@ impl SwarmRelation for BlsSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 fn many_nodes_nop_timeout() -> u128 {

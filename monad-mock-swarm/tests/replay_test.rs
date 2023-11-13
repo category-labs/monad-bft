@@ -10,7 +10,10 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::{MonadEvent, PeerId};
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{
+        MockExecutor, MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop,
+        NoSerRouterConfig, NoSerRouterScheduler
+    },
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
     transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
@@ -60,6 +63,11 @@ impl SwarmRelation for ReplaySwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 fn run_nodes_until<S, CT, ST, SCT, VT, LT, BST>(

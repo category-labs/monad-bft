@@ -9,7 +9,7 @@ use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 pub use monad_mock_swarm::swarm_relation::NoSerSwarm;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
+    mock::{MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop},
     swarm_relation::SwarmRelation,
     transformer::BytesTransformerPipeline,
 };
@@ -51,4 +51,9 @@ impl SwarmRelation for QuicSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }

@@ -53,6 +53,11 @@ impl SwarmRelation for RandFailSwarm {
 
     type MempoolConfig = MockMempoolRandFailConfig;
     type MempoolExecutor = MockMempoolRandFail<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 #[test]

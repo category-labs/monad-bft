@@ -62,7 +62,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             last_round_tc,
             pending_timeouts: HashMap::new(),
 
-            // epoch: Epoch(current_round.0 / EPOCH_LENGTH + 1),
             phase: PhaseHonest::Zero,
         }
     }
@@ -70,10 +69,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn get_current_round(&self) -> Round {
         self.current_round
     }
-
-    // pub fn get_current_epoch(&self) -> Epoch { 
-    //     self.epoch
-    // }
 
     fn get_round_timer(&self) -> Duration {
         self.delta * 4
@@ -225,12 +220,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
         }
 
-        // let next_round_epoch = next_round.0 / EPOCH_LENGTH + 1;
-        // if next_round_epoch > self.epoch.0 {
-        //     self.epoch = Epoch(next_round_epoch);
-        //     cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
-        // }
-        
         cmds.push(self.start_timer(next_round));
 
         return cmds;
@@ -253,12 +242,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         if next_round.0 % EPOCH_LENGTH == 1 {
             cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
         }
-
-        // let next_round_epoch = next_round.0 / EPOCH_LENGTH + 1;
-        // if next_round_epoch > self.epoch.0 {
-        //     self.epoch = Epoch(next_round_epoch);
-        //     cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
-        // }
 
         cmds.push(self.start_timer(next_round));
 
@@ -286,7 +269,7 @@ mod test {
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Hash, Stake, Epoch};
+    use monad_types::{BlockId, Stake, Epoch};
     use monad_validator::validator_set::ValidatorSet;
     use zerocopy::AsBytes;
 

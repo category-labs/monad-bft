@@ -22,7 +22,7 @@ use monad_wal::{
 use crate::{
     mock::{
         MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig, NoSerRouterScheduler,
-        RouterScheduler,
+        RouterScheduler, MockableValidatorSet, MockValidatorSetUpdaterNop,
     },
     transformer::{GenericTransformerPipeline, Pipeline},
 };
@@ -69,6 +69,10 @@ pub trait SwarmRelation {
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         SignatureCollection = Self::SignatureCollectionType,
     >;
+
+    type ValidatorSetExecutor: MockableValidatorSet<
+        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
 }
 
 // default swarm relation impl
@@ -104,6 +108,11 @@ impl SwarmRelation for NoSerSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+        Self::SignatureType,
+        Self::SignatureCollectionType
+    >;
 }
 
 #[cfg(feature = "monad_test")]
@@ -146,5 +155,10 @@ pub mod monad_test {
 
         type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
         type MempoolConfig = MockMempoolConfig;
+
+        type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
+            Self::SignatureType,
+            Self::SignatureCollectionType
+        >;
     }
 }
