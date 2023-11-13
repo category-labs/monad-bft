@@ -1,6 +1,7 @@
 use std::{ops::DerefMut, pin::Pin, time::Duration};
 
-use monad_executor_glue::{PeerId, RouterTarget};
+use monad_executor_glue::RouterTarget;
+use monad_types::NodeId;
 
 pub mod gossipsub;
 pub mod mock;
@@ -9,24 +10,10 @@ mod testutil;
 
 pub enum GossipEvent<GM> {
     /// Send gossip_message to peer
-    Send(PeerId, GM), // send gossip_message
+    Send(NodeId, GM), // send gossip_message
 
     /// Emit app_message to executor (NOTE: not gossip_message)
-    Emit(PeerId, Vec<u8>),
-}
-
-impl<GM> GossipEvent<GM> {
-    fn map<U, F>(self, f: F) -> GossipEvent<U>
-    where
-        F: FnOnce(GM) -> U,
-    {
-        match self {
-            GossipEvent::Send(peer_id, gossip_message) => {
-                GossipEvent::Send(peer_id, f(gossip_message))
-            }
-            GossipEvent::Emit(peer_id, message) => GossipEvent::Emit(peer_id, message),
-        }
-    }
+    Emit(NodeId, Vec<u8>),
 }
 
 /// Gossip describes WHAT gossip messages get delivered (given application-level messages)
@@ -40,7 +27,7 @@ impl<GM> GossipEvent<GM> {
 /// unit of transfer.
 pub trait Gossip {
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]);
-    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]);
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]);
 
     fn peek_tick(&self) -> Option<Duration>;
     fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>>;
@@ -58,7 +45,7 @@ impl<G: Gossip + ?Sized> Gossip for Box<G> {
         (**self).send(time, to, message)
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
         (**self).handle_gossip_message(time, from, gossip_message)
     }
 
@@ -80,7 +67,7 @@ where
         Pin::get_mut(Pin::as_mut(self)).send(time, to, message)
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
         Pin::get_mut(Pin::as_mut(self)).handle_gossip_message(time, from, gossip_message)
     }
 

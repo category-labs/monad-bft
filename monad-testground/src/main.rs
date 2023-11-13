@@ -27,7 +27,6 @@ use monad_crypto::{
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor::{Executor, State};
-use monad_executor_glue::PeerId;
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
 use monad_types::{NodeId, Round};
@@ -290,7 +289,7 @@ where
             let local_routers = LocalRouterConfig {
                 all_peers: genesis_peers
                     .iter()
-                    .map(|(peer_id, _)| PeerId(*peer_id))
+                    .map(|(peer_id, _)| NodeId(*peer_id))
                     .collect(),
                 external_latency: Duration::from_millis(external_latency_ms),
             }
@@ -303,14 +302,14 @@ where
     let known_addresses: HashMap<_, _> = addresses
         .iter()
         .zip(configs.iter())
-        .map(|(address, (keypair, _))| (PeerId(keypair.pubkey()), address.parse().unwrap()))
+        .map(|(address, (keypair, _))| (NodeId(keypair.pubkey()), address.parse().unwrap()))
         .collect();
 
     addresses
         .iter()
         .zip(configs)
         .map(|(address, (keypair, cert_keypair))| {
-            let me = PeerId(keypair.pubkey());
+            let me = NodeId(keypair.pubkey());
             Config {
                 num_nodes: addresses.len(),
                 simulation_length: Duration::from_secs(args.simulation_length_s),
@@ -340,7 +339,7 @@ where
                                     MonadP2PGossipConfig::Simple(MockGossipConfig {
                                         all_peers: genesis_peers
                                             .iter()
-                                            .map(|(pubkey, _)| PeerId(*pubkey))
+                                            .map(|(pubkey, _)| NodeId(*pubkey))
                                             .collect(),
                                     })
                                 }
@@ -350,7 +349,7 @@ where
                                         me,
                                         all_peers: genesis_peers
                                             .iter()
-                                            .map(|(pubkey, _)| PeerId(*pubkey))
+                                            .map(|(pubkey, _)| NodeId(*pubkey))
                                             .collect(),
                                         fanout: *fanout,
                                     })

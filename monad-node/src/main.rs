@@ -13,10 +13,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{Executor, State};
-use monad_executor_glue::{Message, PeerId};
+use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_types::NodeId;
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -78,7 +79,7 @@ fn main() {
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router(
         node_state.config.network,
-        PeerId(node_state.identity.pubkey()),
+        NodeId(node_state.identity.pubkey()),
         &node_state.config.bootstrap.peers,
     )
     .await;
@@ -195,7 +196,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
 async fn build_router<M, OM>(
     network_config: NodeNetworkConfig,
-    me: PeerId,
+    me: NodeId,
     peers: &[NodeBootstrapPeerConfig],
 ) -> monad_quic::service::Service<UnsafeNoAuthQuinnConfig, MockGossip, M, OM>
 where
@@ -218,7 +219,7 @@ where
                 .iter()
                 .map(|peer| {
                     (
-                        PeerId(peer.pubkey.to_owned()),
+                        NodeId(peer.pubkey.to_owned()),
                         generate_bind_address(peer.ip, peer.port),
                     )
                 })
@@ -227,7 +228,7 @@ where
         MockGossipConfig {
             all_peers: peers
                 .iter()
-                .map(|peer| PeerId(peer.pubkey.to_owned()))
+                .map(|peer| NodeId(peer.pubkey.to_owned()))
                 .collect(),
         }
         .build(),

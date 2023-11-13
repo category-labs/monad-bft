@@ -7,10 +7,10 @@ use std::{
 };
 
 use monad_crypto::rustls::UnsafeTlsVerifier;
-use monad_executor_glue::{PeerId, RouterTarget};
+use monad_executor_glue::RouterTarget;
 use monad_gossip::{Gossip, GossipEvent};
 use monad_mock_swarm::mock::{RouterEvent, RouterScheduler};
-use monad_types::{Deserializable, Serializable};
+use monad_types::{Deserializable, NodeId, Serializable};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
     TransportConfig, WriteError,
@@ -22,8 +22,8 @@ use crate::timeout_queue::TimeoutQueue;
 pub struct QuicRouterSchedulerConfig<G> {
     pub zero_instant: Instant,
 
-    pub all_peers: BTreeSet<PeerId>,
-    pub me: PeerId,
+    pub all_peers: BTreeSet<NodeId>,
+    pub me: NodeId,
 
     pub tls_key_der: Vec<u8>,
     pub master_seed: u64,
@@ -34,20 +34,20 @@ pub struct QuicRouterSchedulerConfig<G> {
 pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     zero_instant: Instant,
 
-    me: PeerId,
+    me: NodeId,
     endpoint: quinn_proto::Endpoint,
     connections: HashMap<ConnectionHandle, Connection>,
-    outbound_connections: HashMap<PeerId, (ConnectionHandle, Option<StreamId>)>,
+    outbound_connections: HashMap<NodeId, (ConnectionHandle, Option<StreamId>)>,
 
-    peer_ids: HashMap<PeerId, SocketAddr>,
-    addresses: HashMap<SocketAddr, PeerId>,
+    peer_ids: HashMap<NodeId, SocketAddr>,
+    addresses: HashMap<SocketAddr, NodeId>,
 
     gossip: G,
 
     timeouts: TimeoutQueue,
 
     pending_events: BTreeMap<Duration, Vec<RouterEvent<IM, Vec<u8>>>>,
-    pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
+    pending_outbound_messages: HashMap<NodeId, VecDeque<Vec<u8>>>,
 
     phantom: PhantomData<OM>,
 }
@@ -152,7 +152,7 @@ where
     fn process_inbound(
         &mut self,
         time: std::time::Duration,
-        from: monad_executor_glue::PeerId,
+        from: NodeId,
         message: Self::TransportMessage,
     ) {
         if from == self.me {

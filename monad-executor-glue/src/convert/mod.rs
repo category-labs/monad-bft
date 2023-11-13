@@ -6,31 +6,10 @@ use monad_consensus_types::{
 use monad_proto::{error::ProtoError, proto::event::*};
 use monad_types::TimeoutVariant;
 
-use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock, PeerId};
+use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock};
 
 pub mod event;
 pub mod interface;
-
-impl From<&PeerId> for ProtoPeerId {
-    fn from(value: &PeerId) -> Self {
-        Self {
-            pubkey: Some((&(value.0)).into()),
-        }
-    }
-}
-
-impl TryFrom<ProtoPeerId> for PeerId {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPeerId) -> Result<Self, Self::Error> {
-        Ok(Self(
-            value
-                .pubkey
-                .ok_or(ProtoError::MissingRequiredField("PeerId.pubkey".to_owned()))?
-                .try_into()?,
-        ))
-    }
-}
 
 impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
     for ProtoConsensusEvent

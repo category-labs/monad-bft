@@ -221,7 +221,7 @@ where
 
 // observe and monitor progress of certain nodes until commit progress is achieved for all
 pub struct ProgressTerminator {
-    // PeerId -> Ledger len
+    // NodeId -> Ledger len
     nodes_monitor: BTreeMap<ID, usize>,
     timeout: Duration,
 }

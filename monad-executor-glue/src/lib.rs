@@ -15,25 +15,10 @@ use monad_consensus_types::{
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
 use monad_types::{BlockId, Epoch, NodeId, TimeoutVariant, ValidatorData};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PeerId(pub PubKey);
-
-impl std::fmt::Debug for PeerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<&NodeId> for PeerId {
-    fn from(id: &NodeId) -> Self {
-        PeerId(id.0)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RouterTarget {
     Broadcast,
-    PointToPoint(PeerId),
+    PointToPoint(NodeId),
 }
 
 pub enum RouterCommand<OM> {
@@ -44,8 +29,8 @@ pub enum RouterCommand<OM> {
 pub trait Message: Identifiable + Clone {
     type Event;
 
-    // TODO-3 PeerId -> &PeerId
-    fn event(self, from: PeerId) -> Self::Event;
+    // TODO-3 NodeId -> &NodeId
+    fn event(self, from: NodeId) -> Self::Event;
 }
 
 pub trait Identifiable {

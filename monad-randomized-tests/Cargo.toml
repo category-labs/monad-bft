@@ -8,9 +8,9 @@ edition = "2021"
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-executor-glue = { path = "../monad-executor-glue" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-testutil = { path = "../monad-testutil" }
+monad-types = { path = "../monad-types" }
 monad-wal = { path = "../monad-wal" }
 
 inventory = "0.3.6"

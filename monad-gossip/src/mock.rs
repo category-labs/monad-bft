@@ -3,12 +3,13 @@ use std::{
     time::Duration,
 };
 
-use monad_executor_glue::{PeerId, RouterTarget};
+use monad_executor_glue::RouterTarget;
+use monad_types::NodeId;
 
 use super::{Gossip, GossipEvent};
 
 pub struct MockGossipConfig {
-    pub all_peers: Vec<PeerId>,
+    pub all_peers: Vec<NodeId>,
 }
 
 impl MockGossipConfig {
@@ -26,7 +27,7 @@ impl MockGossipConfig {
 pub struct MockGossip {
     config: MockGossipConfig,
 
-    read_buffers: HashMap<PeerId, (Option<MessageLenType>, Vec<u8>)>,
+    read_buffers: HashMap<NodeId, (Option<MessageLenType>, Vec<u8>)>,
     events: VecDeque<GossipEvent<Vec<u8>>>,
     current_tick: Duration,
 }
@@ -52,7 +53,7 @@ impl Gossip for MockGossip {
         }
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
         self.current_tick = time;
         let (maybe_message_len, read_buffer) = self.read_buffers.entry(from).or_default();
         read_buffer.extend(gossip_message.iter());
@@ -101,10 +102,10 @@ mod tests {
     use std::time::Duration;
 
     use monad_crypto::secp256k1::KeyPair;
-    use monad_executor_glue::PeerId;
     use monad_mock_swarm::transformer::{
         BytesSplitterTransformer, BytesTransformer, LatencyTransformer,
     };
+    use monad_types::NodeId;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -117,7 +118,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                PeerId(keypair.pubkey())
+                NodeId(keypair.pubkey())
             })
             .collect();
         let mut swarm: Swarm<MockGossip> = Swarm::new(peers.iter().map(|peer_id| {
@@ -144,7 +145,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                PeerId(keypair.pubkey())
+                NodeId(keypair.pubkey())
             })
             .collect();
         let mut swarm: Swarm<MockGossip> = Swarm::new(peers.iter().map(|peer_id| {

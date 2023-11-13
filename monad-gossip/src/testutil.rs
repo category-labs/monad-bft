@@ -4,8 +4,9 @@ use std::{
     time::Duration,
 };
 
-use monad_executor_glue::{PeerId, RouterTarget};
+use monad_executor_glue::RouterTarget;
 use monad_mock_swarm::transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
+use monad_types::NodeId;
 use rand::Rng;
 
 use super::{Gossip, GossipEvent};
@@ -14,7 +15,7 @@ type BytesType = Vec<u8>;
 
 pub(crate) struct Swarm<G> {
     current_tick: Duration,
-    nodes: BTreeMap<PeerId, (G, BytesTransformerPipeline)>,
+    nodes: BTreeMap<NodeId, (G, BytesTransformerPipeline)>,
     pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<BytesType>)>>,
     seq_no: usize,
 }
@@ -26,7 +27,7 @@ pub enum SwarmEventType {
 }
 
 impl<G: Gossip> Swarm<G> {
-    pub fn new(configs: impl Iterator<Item = (PeerId, G, BytesTransformerPipeline)>) -> Self {
+    pub fn new(configs: impl Iterator<Item = (NodeId, G, BytesTransformerPipeline)>) -> Self {
         let nodes = configs
             .map(|(peer_id, gossip, pipeline)| (peer_id, (gossip, pipeline)))
             .collect();
@@ -39,7 +40,7 @@ impl<G: Gossip> Swarm<G> {
         }
     }
 
-    pub fn send(&mut self, from: &PeerId, to: RouterTarget, message: &[u8]) {
+    pub fn send(&mut self, from: &NodeId, to: RouterTarget, message: &[u8]) {
         self.nodes
             .get_mut(from)
             .expect("peer doesn't exist")
@@ -47,7 +48,7 @@ impl<G: Gossip> Swarm<G> {
             .send(self.current_tick, to, message)
     }
 
-    pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, PeerId)> {
+    pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, NodeId)> {
         self.nodes
             .iter()
             .filter_map(|(id, (node, _))| {
@@ -71,7 +72,7 @@ impl<G: Gossip> Swarm<G> {
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<(Duration, PeerId, (PeerId, BytesType))> {
+    ) -> Option<(Duration, NodeId, (NodeId, BytesType))> {
         while let Some((tick, event_type, id)) = self.peek_event() {
             if tick > until {
                 break;

@@ -8,7 +8,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig},
@@ -19,13 +19,13 @@ use monad_mock_swarm::{
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
-use monad_types::Round;
+use monad_types::{NodeId, Round};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 fn setup() -> (
     SwarmTestConfig,
-    impl Fn(Vec<PeerId>, PeerId) -> QuicRouterSchedulerConfig<MockGossip>,
+    impl Fn(Vec<NodeId>, NodeId) -> QuicRouterSchedulerConfig<MockGossip>,
     Vec<BytesTransformer>,
     UntilTerminator,
 ) {
@@ -39,7 +39,7 @@ fn setup() -> (
         seed: 1,
         proposal_size: 0,
     };
-    let rsc = move |all_peers: Vec<PeerId>, me: PeerId| QuicRouterSchedulerConfig {
+    let rsc = move |all_peers: Vec<NodeId>, me: NodeId| QuicRouterSchedulerConfig {
         zero_instant,
         all_peers: all_peers.iter().cloned().collect(),
         me,

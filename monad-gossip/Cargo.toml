@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-types = { path = "../monad-types" }
 bincode = "1.3"
 rand = { workspace = true }
 rand_chacha = { workspace = true }

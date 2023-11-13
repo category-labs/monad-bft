@@ -11,7 +11,6 @@ use monad_consensus_types::{
     certificate_signature::CertificateKeyPair, signature_collection::SignatureCollection,
     transaction_validator::TransactionValidator,
 };
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock_swarm::ProgressTerminator, swarm_relation::SwarmRelation, transformer::ID,
 };
@@ -21,7 +20,7 @@ use monad_testutil::{
     swarm::complete_config,
     validators::complete_keys_w_validators,
 };
-use monad_types::Round;
+use monad_types::{NodeId, Round};
 use serde::Deserialize;
 
 // following paramters don't matter too much for twins thus kept as constant
@@ -154,7 +153,7 @@ where
     pub delta: u64,
     pub allow_block_sync: bool,
     pub liveness: Option<usize>,
-    pub duplicates: BTreeMap<PeerId, Vec<usize>>,
+    pub duplicates: BTreeMap<NodeId, Vec<usize>>,
     pub nodes: BTreeMap<ID, TwinsNodeConfig<S::SignatureCollectionType, S::TransactionValidator>>,
 }
 
@@ -212,7 +211,7 @@ where
     for (name, pubkey, secret, state_config) in
         izip!(names.iter(), pubkeys, cert_key_secrete, state_configs)
     {
-        let pid = PeerId(pubkey);
+        let pid = NodeId(pubkey);
         let id = ID::new(pid).as_non_unique(TWINS_DEFAULT_IDENTIFIER);
         let expected_block = *expected_block.get(name).unwrap_or(&expected_block_default);
         nodes.insert(

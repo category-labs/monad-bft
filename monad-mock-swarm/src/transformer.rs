@@ -5,17 +5,17 @@ use std::{
     time::Duration,
 };
 
-use monad_executor_glue::PeerId;
 use monad_tracing_counter::inc_count;
+use monad_types::NodeId;
 use rand::{prelude::SliceRandom, Rng};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 const UNIQUE_ID: usize = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ID(usize, PeerId);
+pub struct ID(usize, NodeId);
 
 impl ID {
-    pub fn new(peer_id: PeerId) -> Self {
+    pub fn new(peer_id: NodeId) -> Self {
         Self(UNIQUE_ID, peer_id)
     }
 
@@ -29,7 +29,7 @@ impl ID {
         &self.0
     }
 
-    pub fn get_peer_id(&self) -> &PeerId {
+    pub fn get_peer_id(&self) -> &NodeId {
         &self.1
     }
 
@@ -523,9 +523,8 @@ pub mod monad_test {
     use monad_consensus_types::{
         message_signature::MessageSignature, signature_collection::SignatureCollection,
     };
-    use monad_executor_glue::PeerId;
     use monad_state::MonadMessage;
-    use monad_types::Round;
+    use monad_types::{NodeId, Round};
 
     use super::{
         DropTransformer, LatencyTransformer, LinkMessage, PartitionTransformer,
@@ -581,8 +580,8 @@ pub mod monad_test {
     }
     #[derive(Debug, Clone)]
     pub struct TwinsTransformer {
-        // PeerId -> All Duplicate
-        dups: BTreeMap<PeerId, Vec<usize>>,
+        // NodeId -> All Duplicate
+        dups: BTreeMap<NodeId, Vec<usize>>,
         // Round -> Deliver target
         partition: BTreeMap<Round, Vec<ID>>,
         // when rounds cannot be found within partition
@@ -593,7 +592,7 @@ pub mod monad_test {
 
     impl TwinsTransformer {
         pub fn new(
-            dups: BTreeMap<PeerId, Vec<usize>>,
+            dups: BTreeMap<NodeId, Vec<usize>>,
             partition: BTreeMap<Round, Vec<ID>>,
             default_part: Vec<ID>,
             ban_block_sync: bool,
@@ -608,8 +607,8 @@ pub mod monad_test {
     }
 
     enum TwinsCapture {
-        Spread(PeerId),         // spread to all target given PeerId
-        Process(PeerId, Round), // spread to all target given PeerId and Round
+        Spread(NodeId),         // spread to all target given NodeId
+        Process(NodeId, Round), // spread to all target given NodeId and Round
         Drop,                   // Drop the message
     }
     impl<ST, SCT> Transformer<MonadMessage<ST, SCT>> for TwinsTransformer
@@ -649,7 +648,7 @@ pub mod monad_test {
                 TwinsCapture::Drop => TransformerStream::Complete(vec![]),
                 TwinsCapture::Spread(pid) => {
                     let duplicate = self.dups.get(&pid).expect(
-                        "PeerId to duplicate mapping provided to TwinTransformer is incomplete",
+                        "NodeId to duplicate mapping provided to TwinTransformer is incomplete",
                     );
                     TransformerStream::Continue(
                         duplicate
@@ -824,8 +823,8 @@ where
 mod test {
     use std::{cmp::max, collections::HashSet, time::Duration};
 
-    use monad_executor_glue::PeerId;
     use monad_testutil::signing::create_keys;
+    use monad_types::NodeId;
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
@@ -885,7 +884,7 @@ mod test {
     fn test_partition_transformer() {
         let keys = create_keys(2);
         let mut peers = HashSet::new();
-        peers.insert(ID::new(PeerId(keys[0].pubkey())));
+        peers.insert(ID::new(NodeId(keys[0].pubkey())));
         let mut t = PartitionTransformer(peers.clone());
         let m = get_mock_message();
         let TransformerStream::Continue(c) = t.transform(m.clone()) else {
@@ -1008,8 +1007,8 @@ mod test {
             let bytes: Vec<u8> = (0..MESSAGE_LEN).map(|_| rng.gen()).collect();
             sent_stream.extend(bytes.iter().copied());
             let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
-                from: ID::new(PeerId(keys[0].pubkey())),
-                to: ID::new(PeerId(keys[1].pubkey())),
+                from: ID::new(NodeId(keys[0].pubkey())),
+                to: ID::new(NodeId(keys[1].pubkey())),
                 message: bytes,
                 from_tick: Duration::from_millis(idx),
             }) else {
@@ -1040,11 +1039,11 @@ mod test {
 
         let keys = create_keys(2);
 
-        let pid = PeerId(keys[0].pubkey());
+        let pid = NodeId(keys[0].pubkey());
         let dups = (1..4)
             .map(|i| ID::new(pid).as_non_unique(i))
             .collect::<Vec<_>>();
-        let default_id: ID = ID::new(PeerId(keys[0].pubkey()));
+        let default_id: ID = ID::new(NodeId(keys[0].pubkey()));
         let mut pid_to_dups = BTreeMap::new();
         pid_to_dups.insert(pid, (1..4).collect_vec());
         let mut filter = BTreeMap::new();
@@ -1174,7 +1173,7 @@ mod test {
         }
 
         // Sending Message to any round Key that is not logged will have no impact
-        let wrong_id: ID = ID::new(PeerId(keys[1].pubkey()));
+        let wrong_id: ID = ID::new(NodeId(keys[1].pubkey()));
 
         for r in 0..30 {
             for msg in vec![
@@ -1250,7 +1249,7 @@ mod test {
     fn test_pipeline_complex_flow() {
         let keys = create_keys(5);
         let mut peers = HashSet::new();
-        peers.insert(ID::new(PeerId(keys[0].pubkey())));
+        peers.insert(ID::new(NodeId(keys[0].pubkey())));
 
         let mut pipe = vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(30))),
@@ -1263,7 +1262,7 @@ mod test {
         ];
         for idx in 0..1000 {
             let mut mock_message = get_mock_message();
-            mock_message.from = ID::new(PeerId(keys[3].pubkey()));
+            mock_message.from = ID::new(NodeId(keys[3].pubkey()));
             mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);

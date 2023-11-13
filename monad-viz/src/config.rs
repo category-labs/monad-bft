@@ -12,7 +12,6 @@ use monad_consensus_types::{
 use monad_crypto::{hasher::Sha256Hash, secp256k1::KeyPair};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     swarm_relation::SwarmRelation,
     transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
@@ -118,11 +117,11 @@ impl SimulationConfig<VizSwarm> for SimConfig {
             .zip(state_configs)
             .map(|(a, b)| {
                 (
-                    ID::new(PeerId(a)),
+                    ID::new(NodeId(a)),
                     b,
                     LoggerConfig {},
                     RouterSchedulerConfig {
-                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                        all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                     },
                     MempoolConfig::default(),
                     self.pipeline.clone(),

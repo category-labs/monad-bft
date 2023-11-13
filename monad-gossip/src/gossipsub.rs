@@ -7,7 +7,8 @@ use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::PubKey,
 };
-use monad_executor_glue::{PeerId, RouterTarget};
+use monad_executor_glue::RouterTarget;
+use monad_types::NodeId;
 use rand::{seq::IteratorRandom, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
@@ -16,8 +17,8 @@ use super::{Gossip, GossipEvent};
 
 pub struct UnsafeGossipsubConfig {
     pub seed: [u8; 32],
-    pub me: PeerId,
-    pub all_peers: Vec<PeerId>,
+    pub me: NodeId,
+    pub all_peers: Vec<NodeId>,
     pub fanout: usize,
 }
 
@@ -40,7 +41,7 @@ pub struct UnsafeGossipsub {
     config: UnsafeGossipsubConfig,
     rng: ChaCha20Rng,
 
-    read_buffers: HashMap<PeerId, (BufferStatus, Vec<u8>)>,
+    read_buffers: HashMap<NodeId, (BufferStatus, Vec<u8>)>,
     events: VecDeque<GossipEvent<Vec<u8>>>,
     current_tick: Duration,
 
@@ -54,7 +55,7 @@ pub struct UnsafeGossipsub {
 #[derive(Clone, Serialize, Deserialize)]
 struct MessageHeader {
     id: [u8; 32],
-    creator: Vec<u8>, // serialized PeerId
+    creator: Vec<u8>, // serialized NodeId
     broadcast: bool,
     message_len: u32,
 }
@@ -74,7 +75,7 @@ impl Default for BufferStatus {
 }
 
 impl UnsafeGossipsub {
-    fn send_message(&mut self, to: PeerId, header: MessageHeader, message: &[u8]) {
+    fn send_message(&mut self, to: NodeId, header: MessageHeader, message: &[u8]) {
         assert_eq!(header.message_len, message.len() as u32);
         let header = bincode::serialize(&header).unwrap();
         let mut gossip_message = Vec::from((header.len() as MessageHeaderLenType).to_le_bytes());
@@ -83,12 +84,12 @@ impl UnsafeGossipsub {
         self.events.push_back(GossipEvent::Send(to, gossip_message));
     }
 
-    fn handle_message(&mut self, from: PeerId, header: MessageHeader, message: Vec<u8>) {
+    fn handle_message(&mut self, from: NodeId, header: MessageHeader, message: Vec<u8>) {
         if self.message_cache.contains(&Hash(header.id)) {
             return;
         }
         self.message_cache.insert(Hash(header.id));
-        let creator = PeerId(
+        let creator = NodeId(
             PubKey::from_slice(&header.creator).expect("invalid pubkey in GossipSub message"),
         );
 
@@ -144,7 +145,7 @@ impl Gossip for UnsafeGossipsub {
         }
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
         self.current_tick = time;
         let (_buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
         read_buffer.extend(gossip_message.iter());
@@ -211,10 +212,10 @@ mod tests {
     use std::time::Duration;
 
     use monad_crypto::secp256k1::KeyPair;
-    use monad_executor_glue::PeerId;
     use monad_mock_swarm::transformer::{
         BytesSplitterTransformer, BytesTransformer, LatencyTransformer,
     };
+    use monad_types::NodeId;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -227,7 +228,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                PeerId(keypair.pubkey())
+                NodeId(keypair.pubkey())
             })
             .collect();
         let mut swarm: Swarm<UnsafeGossipsub> =
@@ -258,7 +259,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                PeerId(keypair.pubkey())
+                NodeId(keypair.pubkey())
             })
             .collect();
         let mut swarm: Swarm<UnsafeGossipsub> =

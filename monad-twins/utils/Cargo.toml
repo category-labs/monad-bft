@@ -11,7 +11,6 @@ bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../../monad-consensus-types",  features = ["monad_test"]}
-monad-executor-glue = { path = "../../monad-executor-glue", features = ["monad_test"] }
 monad-mock-swarm = { path = "../../monad-mock-swarm", features = ["monad_test"] }
 monad-state = { path = "../../monad-state", features = ["monad_test"]}
 monad-testutil = { path = "../../monad-testutil" }

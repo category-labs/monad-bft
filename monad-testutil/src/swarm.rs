@@ -14,7 +14,6 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::EthAddress;
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes, NodesTerminator},
@@ -153,7 +152,7 @@ where
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    R: Fn(Vec<PeerId>, PeerId) -> S::RouterSchedulerConfig,
+    R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let (peers, state_configs) =
@@ -196,7 +195,7 @@ where
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    R: Fn(Vec<PeerId>, PeerId) -> S::RouterSchedulerConfig,
+    R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let mut nodes = Nodes::<S>::new(
@@ -206,12 +205,12 @@ where
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    ID::new(PeerId(pubkey)),
+                    ID::new(NodeId(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
-                        pubkeys.iter().copied().map(PeerId).collect(),
-                        PeerId(pubkey),
+                        pubkeys.iter().copied().map(NodeId).collect(),
+                        NodeId(pubkey),
                     ),
                     mock_mempool_config,
                     pipeline.clone(),

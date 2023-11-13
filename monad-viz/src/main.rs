@@ -31,7 +31,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     swarm_relation::SwarmRelation,
@@ -41,6 +41,7 @@ use monad_mock_swarm::{
     },
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_types::NodeId;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
@@ -86,7 +87,7 @@ impl SwarmRelation for VizSwarm {
 }
 
 type NS<'a> =
-    NodeState<'a, PeerId, VizSwarm, <<VizSwarm as SwarmRelation>::State as State>::Message>;
+    NodeState<'a, NodeId, VizSwarm, <<VizSwarm as SwarmRelation>::State as State>::Message>;
 
 type Sim = NodesSimulation<VizSwarm, SimConfig>;
 type ReplaySim = ReplayNodesSimulation<VizSwarm, RepConfig>;
@@ -145,7 +146,7 @@ impl Application for Viz {
                     TimedEvent<<<VizSwarm as SwarmRelation>::State as State>::Event>,
                 >::new(log_config)
                 .unwrap();
-                replay_events.insert(PeerId(*pk), event_vec.clone());
+                replay_events.insert(NodeId(*pk), event_vec.clone());
                 config.max_tick = max(
                     config.max_tick,
                     event_vec

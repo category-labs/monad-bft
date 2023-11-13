@@ -5,7 +5,7 @@ mod test {
     use monad_executor::State;
     use monad_executor_glue::{Identifiable, Message};
     use monad_testutil::block::MockBlock;
-    use monad_types::{Deserializable, Serializable};
+    use monad_types::{Deserializable, NodeId, Serializable};
     use monad_wal::{
         wal::{WALogger, WALoggerConfig},
         PersistenceLogger,
@@ -62,7 +62,7 @@ mod test {
     impl Message for MockMessage {
         type Event = TestEvent;
 
-        fn event(self, _from: monad_executor_glue::PeerId) -> Self::Event {
+        fn event(self, _from: NodeId) -> Self::Event {
             TestEvent { data: 0 }
         }
     }

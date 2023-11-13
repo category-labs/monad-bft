@@ -4289,6 +4289,7 @@ dependencies = [
  "monad-crypto",
  "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde",
@@ -4499,9 +4500,9 @@ dependencies = [
  "inventory",
  "monad-consensus-types",
  "monad-crypto",
- "monad-executor-glue",
  "monad-mock-swarm",
  "monad-testutil",
+ "monad-types",
  "monad-wal",
  "simple-xml-builder",
 ]
@@ -4631,7 +4632,6 @@ version = "0.1.0"
 dependencies = [
  "itertools",
  "monad-consensus-types",
- "monad-executor-glue",
  "monad-mock-swarm",
  "monad-state",
  "monad-testutil",

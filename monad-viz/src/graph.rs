@@ -7,7 +7,6 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::State;
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes, UntilTerminator},
@@ -15,6 +14,7 @@ use monad_mock_swarm::{
     transformer::ID,
 };
 use monad_state::MonadState;
+use monad_types::NodeId;
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 pub enum NodeEvent<'s, Id, M, E> {
@@ -154,7 +154,7 @@ where
 {
     type State = S::State;
     type InboundMessage = S::InboundMessage;
-    type NodeId = PeerId;
+    type NodeId = NodeId;
     type Swarm = S;
 
     fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {

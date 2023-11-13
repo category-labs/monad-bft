@@ -8,7 +8,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Nodes, UntilTerminator},
@@ -20,6 +20,7 @@ use monad_mock_swarm::{
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
+use monad_types::NodeId;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
@@ -100,11 +101,11 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs.clone())
         .map(|((a, b), c)| {
             (
-                ID::new(PeerId(a)),
+                ID::new(NodeId(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
                 MockMempoolConfig::default(),
                 vec![GenericTransformer::XorLatency(XorLatencyTransformer(
@@ -158,11 +159,11 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs)
         .map(|((a, b), c)| {
             (
-                ID::new(PeerId(a)),
+                ID::new(NodeId(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
                 MockMempoolConfig::default(),
                 vec![GenericTransformer::Latency(LatencyTransformer(

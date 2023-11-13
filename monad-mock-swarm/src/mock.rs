@@ -19,10 +19,10 @@ use monad_consensus_types::{
 use monad_eth_types::EMPTY_RLP_TX_LIST;
 use monad_executor::{Executor, State};
 use monad_executor_glue::{
-    Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand,
+    Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
     RouterTarget, TimerCommand,
 };
-use monad_types::{Deserializable, Serializable, TimeoutVariant};
+use monad_types::{Deserializable, NodeId, Serializable, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
     state_root_hash::MockStateRootHash,
@@ -37,8 +37,8 @@ const MOCK_DEFAULT_SEED: u64 = 1;
 
 #[derive(Debug)]
 pub enum RouterEvent<InboundMessage, TransportMessage> {
-    Rx(PeerId, InboundMessage),
-    Tx(PeerId, TransportMessage),
+    Rx(NodeId, InboundMessage),
+    Tx(NodeId, TransportMessage),
 }
 
 /// RouterScheduler describes HOW gossip messages get delivered
@@ -54,7 +54,7 @@ pub trait RouterScheduler {
 
     fn new(config: Self::Config) -> Self;
 
-    fn process_inbound(&mut self, time: Duration, from: PeerId, message: Self::TransportMessage);
+    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::TransportMessage);
     fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage);
 
     fn peek_tick(&self) -> Option<Duration>;
@@ -65,7 +65,7 @@ pub trait RouterScheduler {
 }
 
 pub struct NoSerRouterScheduler<IM, OM> {
-    all_peers: BTreeSet<PeerId>,
+    all_peers: BTreeSet<NodeId>,
     events: VecDeque<(Duration, RouterEvent<IM, IM>)>,
 
     phantom: PhantomData<OM>,
@@ -73,7 +73,7 @@ pub struct NoSerRouterScheduler<IM, OM> {
 
 #[derive(Clone)]
 pub struct NoSerRouterConfig {
-    pub all_peers: BTreeSet<PeerId>,
+    pub all_peers: BTreeSet<NodeId>,
 }
 
 impl<IM, OM> RouterScheduler for NoSerRouterScheduler<IM, OM>
@@ -95,7 +95,7 @@ where
         }
     }
 
-    fn process_inbound(&mut self, time: Duration, from: PeerId, message: Self::InboundMessage) {
+    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::InboundMessage) {
         assert!(
             time >= self
                 .events
@@ -213,7 +213,7 @@ impl<E> Eq for TimerEvent<E> {}
 
 pub struct SequencedPeerEvent<T> {
     pub tick: Duration,
-    pub from: PeerId,
+    pub from: NodeId,
     pub t: T,
 
     // When the event was sent - only used for observability
@@ -281,7 +281,7 @@ where
     pub fn send_message(
         &mut self,
         tick: Duration,
-        from: PeerId,
+        from: NodeId,
         message: <S::RouterScheduler as RouterScheduler>::TransportMessage,
     ) {
         assert!(tick >= self.tick);
@@ -387,7 +387,7 @@ where
 
 pub enum MockExecutorEvent<E, TransportMessage> {
     Event(E),
-    Send(PeerId, TransportMessage),
+    Send(NodeId, TransportMessage),
 }
 
 impl<S> MockExecutor<S>

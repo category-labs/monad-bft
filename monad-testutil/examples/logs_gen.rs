@@ -7,7 +7,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Nodes, UntilTerminator},
@@ -16,6 +16,7 @@ use monad_mock_swarm::{
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::get_configs;
+use monad_types::NodeId;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
@@ -85,11 +86,11 @@ pub fn generate_log(
         .zip(file_path_vec)
         .map(|((a, b), c)| {
             (
-                ID::new(PeerId(a)),
+                ID::new(NodeId(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
                 MockMempoolConfig::default(),
                 pipeline.clone(),

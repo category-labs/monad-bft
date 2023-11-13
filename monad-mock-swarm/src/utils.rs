@@ -29,7 +29,6 @@ pub mod test_tool {
         NopSignature,
     };
     use monad_eth_types::EthAddress;
-    use monad_executor_glue::PeerId;
     use monad_state::MonadMessage;
     use monad_testutil::signing::create_keys;
     use monad_types::{BlockId, NodeId, Round};
@@ -45,8 +44,8 @@ pub mod test_tool {
     pub fn get_mock_message() -> LinkMessage<String> {
         let keys = create_keys(2);
         LinkMessage {
-            from: ID::new(PeerId(keys[0].pubkey())),
-            to: ID::new(PeerId(keys[1].pubkey())),
+            from: ID::new(NodeId(keys[0].pubkey())),
+            to: ID::new(NodeId(keys[1].pubkey())),
             message: "Dummy Message".to_string(),
             from_tick: Duration::from_millis(10),
         }

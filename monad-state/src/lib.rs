@@ -31,7 +31,7 @@ use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget,
+    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, RouterTarget,
     StateRootHashCommand, TimerCommand,
 };
 use monad_types::{Epoch, NodeId, Stake, TimeoutVariant, ValidatorData};
@@ -185,8 +185,8 @@ where
 {
     type Event = MonadEvent<ST, SCT>;
 
-    fn event(self, from: PeerId) -> Self::Event {
-        // MUST assert that output is valid and came from the `from` PeerId
+    fn event(self, from: NodeId) -> Self::Event {
+        // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
 
@@ -389,7 +389,7 @@ where
                                 fetched_b.block_id,
                             ),
                             ConsensusCommand::Publish {
-                                target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
+                                target: RouterTarget::PointToPoint(NodeId(fetched_b.requester.0)),
                                 message: ConsensusMessage::BlockSync(
                                     match fetched_b.unverified_full_block {
                                         Some(b) => BlockSyncMessage::BlockFound(b),
@@ -440,7 +440,7 @@ where
                                 {
                                     // retrieve if currently cached in pending block tree
                                     vec![ConsensusCommand::Publish {
-                                        target: RouterTarget::PointToPoint((&author).into()),
+                                        target: RouterTarget::PointToPoint(author),
                                         message: ConsensusMessage::BlockSync(
                                             BlockSyncMessage::BlockFound(block.clone().into()),
                                         ),
@@ -522,7 +522,7 @@ where
 
                         ConsensusCommand::RequestSync { peer, block_id } => {
                             cmds.push(prepare_router_message(
-                                RouterTarget::PointToPoint((&peer).into()),
+                                RouterTarget::PointToPoint(peer),
                                 ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
                                     block_id,
                                 }),
