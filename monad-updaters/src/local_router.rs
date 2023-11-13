@@ -8,8 +8,8 @@ use std::{
 
 use futures::Stream;
 use monad_executor::Executor;
-use monad_executor_glue::{Message, RouterCommand, RouterTarget};
-use monad_types::NodeId;
+use monad_executor_glue::{Message, RouterCommand};
+use monad_types::{NodeId, RouterTarget};
 
 pub struct LocalRouterConfig {
     pub all_peers: Vec<NodeId>,

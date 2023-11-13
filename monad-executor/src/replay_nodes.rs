@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
-use monad_executor_glue::{Command, LedgerCommand, Message, RouterCommand, RouterTarget};
-use monad_types::NodeId;
+use monad_executor_glue::{Command, LedgerCommand, Message, RouterCommand};
+use monad_types::{NodeId, RouterTarget};
 
 use crate::State;
 

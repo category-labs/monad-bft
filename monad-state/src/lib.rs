@@ -31,10 +31,10 @@ use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, RouterTarget,
-    StateRootHashCommand, TimerCommand,
+    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
+    TimerCommand,
 };
-use monad_types::{Epoch, NodeId, Stake, TimeoutVariant, ValidatorData};
+use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 

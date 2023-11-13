@@ -13,13 +13,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, Epoch, NodeId, TimeoutVariant, ValidatorData};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RouterTarget {
-    Broadcast,
-    PointToPoint(NodeId),
-}
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant, ValidatorData};
 
 pub enum RouterCommand<OM> {
     // TODO-2 add a RouterCommand for setting peer set for broadcast

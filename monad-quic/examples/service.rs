@@ -9,10 +9,10 @@ use clap::Parser;
 use futures_util::{FutureExt, StreamExt};
 use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
-use monad_executor_glue::{Identifiable, Message, RouterCommand, RouterTarget};
+use monad_executor_glue::{Identifiable, Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_quic::service::{Service, ServiceConfig, UnsafeNoAuthQuinnConfig};
-use monad_types::{Deserializable, NodeId, Serializable};
+use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 
 #[derive(Parser, Debug)]
 struct Args {

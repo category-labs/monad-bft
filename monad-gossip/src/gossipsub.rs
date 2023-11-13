@@ -7,8 +7,7 @@ use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::PubKey,
 };
-use monad_executor_glue::RouterTarget;
-use monad_types::NodeId;
+use monad_types::{NodeId, RouterTarget};
 use rand::{seq::IteratorRandom, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};

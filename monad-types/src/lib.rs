@@ -79,6 +79,12 @@ impl std::fmt::Debug for NodeId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RouterTarget {
+    Broadcast,
+    PointToPoint(NodeId),
+}
+
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BlockId(pub Hash);

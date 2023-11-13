@@ -26,9 +26,8 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_executor_glue::RouterTarget;
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, RouterTarget};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use tracing::trace;
 
@@ -825,13 +824,12 @@ mod test {
         NopSignature,
     };
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-    use monad_executor_glue::RouterTarget;
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round, RouterTarget};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,

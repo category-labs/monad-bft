@@ -20,9 +20,9 @@ use monad_eth_types::EMPTY_RLP_TX_LIST;
 use monad_executor::{Executor, State};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
-    RouterTarget, TimerCommand,
+    TimerCommand,
 };
-use monad_types::{NodeId, TimeoutVariant};
+use monad_types::{NodeId, RouterTarget, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
     state_root_hash::MockStateRootHash,

@@ -4197,7 +4197,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
- "monad-executor-glue",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -4287,7 +4286,6 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "monad-crypto",
- "monad-executor-glue",
  "monad-mock-swarm",
  "monad-types",
  "rand 0.8.5",

@@ -1,7 +1,6 @@
 use std::{ops::DerefMut, pin::Pin, time::Duration};
 
-use monad_executor_glue::RouterTarget;
-use monad_types::NodeId;
+use monad_types::{NodeId, RouterTarget};
 
 pub mod gossipsub;
 pub mod mock;
