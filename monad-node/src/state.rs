@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{error::ErrorKind, FromArgMatches};
-use libp2p_identity::secp256k1::Keypair;
 use monad_consensus_types::voting::ValidatorMapping;
 use monad_crypto::secp256k1::KeyPair;
 use monad_types::NodeId;
@@ -21,7 +20,6 @@ pub struct NodeState {
     pub val_mapping: ValidatorMapping<KeyPair>,
 
     pub identity: KeyPair,
-    pub identity_libp2p: Keypair,
     pub certkey: KeyPair,
 
     pub execution_ledger_path: PathBuf,
@@ -39,9 +37,8 @@ impl NodeState {
 
         let genesis = GenesisState::setup(cli.genesis, &val_mapping)?;
 
-        let (identity, identity_libp2p) = load_secp256k1_keypairs_from_ec_pem(cli.identity)?;
-
-        let (certkey, _) = load_secp256k1_keypairs_from_ec_pem(cli.certkey)?;
+        let identity = load_secp256k1_keypair_from_ec_pem(cli.identity)?;
+        let certkey = load_secp256k1_keypair_from_ec_pem(cli.certkey)?;
 
         let otel_context = if let Some(otel_endpoint) = cli.otel_endpoint {
             Some(build_otel_context(otel_endpoint)?)
@@ -55,7 +52,6 @@ impl NodeState {
             val_mapping,
 
             identity,
-            identity_libp2p,
             certkey,
 
             execution_ledger_path: cli.execution_ledger_path,
@@ -75,9 +71,7 @@ fn build_validator_mapping(bootstrap_config: &NodeBootstrapConfig) -> ValidatorM
     ValidatorMapping::new(voting_identities)
 }
 
-fn load_secp256k1_keypairs_from_ec_pem(
-    path: PathBuf,
-) -> Result<(KeyPair, libp2p_identity::secp256k1::Keypair), NodeSetupError> {
+fn load_secp256k1_keypair_from_ec_pem(path: PathBuf) -> Result<KeyPair, NodeSetupError> {
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
 
@@ -97,7 +91,7 @@ fn load_secp256k1_keypairs_from_ec_pem(
         });
     }
 
-    Ok(KeyPair::libp2p_from_der(private_key_bytes)?)
+    Ok(KeyPair::from_der(private_key_bytes)?)
 }
 
 fn build_otel_context(otel_endpoint: String) -> Result<opentelemetry::Context, NodeSetupError> {

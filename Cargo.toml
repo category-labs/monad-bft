@@ -52,6 +52,7 @@ libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev
 reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 
+asn1_der = "=0.7.6"
 async-trait = "0.1"
 bitvec = "1.0.1"
 blake3 = "1.5"

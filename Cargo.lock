@@ -4409,6 +4409,7 @@ dependencies = [
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
+ "asn1_der",
  "blake3",
  "blst",
  "criterion",
@@ -4639,7 +4640,6 @@ dependencies = [
  "env_logger",
  "futures-util",
  "hex",
- "libp2p-identity",
  "log",
  "monad-block-sync",
  "monad-consensus-state",
@@ -4647,8 +4647,10 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor",
+ "monad-executor-glue",
+ "monad-gossip",
  "monad-mempool-controller",
- "monad-p2p",
+ "monad-quic",
  "monad-state",
  "monad-types",
  "monad-updaters",

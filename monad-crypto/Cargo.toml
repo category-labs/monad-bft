@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 monad-proto = { path = "../monad-proto" }
 
+asn1_der = { workspace = true }
 blake3 = { workspace = true }
 blst = { workspace = true }
 libp2p-identity = { workspace = true, features = ["secp256k1"], optional = true }

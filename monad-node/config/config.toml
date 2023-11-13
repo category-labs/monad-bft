@@ -20,5 +20,5 @@ certkey = "043e4b75bf044e2ad1cd5e56aa7867dda2e91ee59b067ae3e7b4c706bcf41bc15d739
 [network]
 bind_address_host = "0.0.0.0"
 bind_address_port = 8888
-libp2p_timeout_ms = 5000
-libp2p_keepalive_ms = 5000
+max_rtt_ms = 5000
+max_mbps = 1000

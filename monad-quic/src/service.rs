@@ -420,13 +420,16 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
             .expect("always is rustls cert for default quinn");
 
         let raw_cert = certificates
-            .get(0)
+            .first()
             .ok_or("no attached certificates".to_owned())?;
 
         use x509_parser::prelude::*;
         let (_, cert) = X509Certificate::from_der(&raw_cert.0)?;
 
-        let extension = cert.extensions().get(0).ok_or("no extensions".to_owned())?;
+        let extension = cert
+            .extensions()
+            .first()
+            .ok_or("no extensions".to_owned())?;
 
         let peer_id = PeerId(PubKey::from_slice(extension.value)?);
         Ok(peer_id)
