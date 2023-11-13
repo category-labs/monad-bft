@@ -11,7 +11,7 @@ bench = false
 [dependencies]
 monad-types = { path = "../monad-types" }
 
-log = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 monad-crypto = { path = "../monad-crypto" }

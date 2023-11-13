@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use log::debug;
 use monad_consensus::messages::message::BlockSyncMessage;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
@@ -15,6 +14,7 @@ use monad_consensus_types::{
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
+use tracing::debug;
 
 use crate::command::ConsensusCommand;
 

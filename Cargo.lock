@@ -4191,7 +4191,6 @@ version = "0.1.0"
 dependencies = [
  "env_logger",
  "itertools",
- "log",
  "monad-blocktree",
  "monad-consensus",
  "monad-consensus-types",
@@ -4213,7 +4212,6 @@ version = "0.1.0"
 dependencies = [
  "bitvec",
  "criterion",
- "log",
  "monad-crypto",
  "monad-eth-types",
  "monad-proto",
@@ -4224,6 +4222,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "serde_cbor",
  "test-case",
+ "tracing",
  "zerocopy 0.6.5",
 ]
 
@@ -4705,10 +4704,10 @@ dependencies = [
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
- "log",
  "monad-crypto",
  "monad-testutil",
  "monad-types",
+ "tracing",
 ]
 
 [[package]]

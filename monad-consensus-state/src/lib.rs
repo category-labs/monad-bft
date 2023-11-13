@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use log::{debug, warn};
 use monad_blocktree::blocktree::{BlockTree, RootKind};
 use monad_consensus::{
     messages::{
@@ -29,7 +28,7 @@ use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, Round, RouterTarget};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
-use tracing::trace;
+use tracing::{debug, trace, warn};
 
 use crate::{
     blocksync::{BlockSyncManager, BlockSyncResult},

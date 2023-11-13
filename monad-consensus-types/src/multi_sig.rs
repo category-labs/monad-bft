@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use log::{error, warn};
 use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_proto::proto::signing::ProtoMultiSig;
 use monad_types::NodeId;
 use prost::Message;
+use tracing::{error, warn};
 
 use crate::{
     certificate_signature::CertificateSignatureRecoverable,
