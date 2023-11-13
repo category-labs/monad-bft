@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, time::Duration};
+use std::time::Duration;
 
 use monad_block_sync::BlockSyncProcess;
 use monad_consensus_state::ConsensusProcess;
@@ -168,11 +168,13 @@ where
                 pending_events: node
                     .pending_inbound_messages
                     .iter()
-                    .map(|Reverse((rx_time, message))| NodeEvent::Message {
-                        tx_time: message.from_tick,
-                        rx_time: *rx_time,
-                        tx_peer: message.from.get_peer_id(),
-                        message: &message.message,
+                    .flat_map(|(rx_time, messages)| {
+                        messages.iter().map(|message| NodeEvent::Message {
+                            tx_time: message.from_tick,
+                            rx_time: *rx_time,
+                            tx_peer: message.from.get_peer_id(),
+                            message: &message.message,
+                        })
                     })
                     .collect(),
             })

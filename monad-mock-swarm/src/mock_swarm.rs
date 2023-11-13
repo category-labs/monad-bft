@@ -1,6 +1,5 @@
 use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BinaryHeap},
+    collections::{BTreeMap, VecDeque},
     time::Duration,
     usize,
 };
@@ -37,7 +36,7 @@ where
     pub state: S::State,
     pub logger: S::Logger,
     pub pipeline: S::Pipeline,
-    pub pending_inbound_messages: BinaryHeap<Reverse<(Duration, LinkMessage<S::TransportMessage>)>>,
+    pub pending_inbound_messages: BTreeMap<Duration, VecDeque<LinkMessage<S::TransportMessage>>>,
     pub rng: ChaCha20Rng,
     pub current_seed: usize,
 }
@@ -61,10 +60,8 @@ where
                     .iter()
                     .map(|tick| (*tick, SwarmEventType::ExecutorEvent)),
             )
-            .chain(self.pending_inbound_messages.peek().iter().map(
-                |Reverse((min_scheduled_tick, _))| {
-                    (*min_scheduled_tick, SwarmEventType::ScheduledMessage)
-                },
+            .chain(self.pending_inbound_messages.first_key_value().map(
+                |(min_scheduled_tick, _)| (*min_scheduled_tick, SwarmEventType::ScheduledMessage),
             ))
             .min_set();
         if !events.is_empty() {
@@ -119,7 +116,9 @@ where
                                 // FIXME: do we need to transform msg to self?
                                 if msg.to == self.id {
                                     self.pending_inbound_messages
-                                        .push(Reverse((sched_tick, msg)))
+                                        .entry(sched_tick)
+                                        .or_default()
+                                        .push_back(msg)
                                 } else {
                                     emitted_messages.push((sched_tick, msg))
                                 }
@@ -129,12 +128,21 @@ where
                     }
                 }
                 SwarmEventType::ScheduledMessage => {
-                    let Reverse((scheduled_tick, message)) = self
+                    let mut entry = self
                         .pending_inbound_messages
-                        .pop()
+                        .first_entry()
                         .expect("logic error, should be nonempty");
 
+                    let scheduled_tick = *entry.key();
+                    let msgs = entry.get_mut();
+
                     assert_eq!(tick, scheduled_tick);
+
+                    let message = msgs.pop_front().expect("logic error, should be nonempty");
+
+                    if msgs.is_empty() {
+                        entry.remove_entry();
+                    }
 
                     self.executor.send_message(
                         scheduled_tick,
@@ -400,7 +408,9 @@ where
                 assert!(!self.must_deliver || node.is_some());
                 if let Some(node) = node {
                     node.pending_inbound_messages
-                        .push(Reverse((sched_tick, message)))
+                        .entry(sched_tick)
+                        .or_default()
+                        .push_back(message);
                 };
             }
             if let Some((tick, _)) = emitted_event {
@@ -448,7 +458,9 @@ where
 
                 if let Some(node) = node {
                     node.pending_inbound_messages
-                        .push(Reverse((sched_tick, message)))
+                        .entry(sched_tick)
+                        .or_default()
+                        .push_back(message);
                 };
             }
         }

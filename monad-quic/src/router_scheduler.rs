@@ -11,8 +11,8 @@ use monad_gossip::{Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
-    ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
-    TransportConfig, WriteError,
+    congestion, ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig,
+    StreamId, TransportConfig, WriteError,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 
@@ -35,7 +35,7 @@ pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
 
     me: NodeId,
     endpoint: quinn_proto::Endpoint,
-    connections: HashMap<ConnectionHandle, Connection>,
+    connections: BTreeMap<ConnectionHandle, Connection>,
     outbound_connections: HashMap<NodeId, (ConnectionHandle, Option<StreamId>)>,
 
     peer_ids: HashMap<NodeId, SocketAddr>,
@@ -45,7 +45,7 @@ pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
 
     timeouts: TimeoutQueue,
 
-    pending_events: BTreeMap<Duration, Vec<RouterEvent<IM, Vec<u8>>>>,
+    pending_events: BTreeMap<Duration, VecDeque<RouterEvent<IM, Vec<u8>>>>,
     pending_outbound_messages: HashMap<NodeId, VecDeque<Vec<u8>>>,
 
     phantom: PhantomData<OM>,
@@ -70,6 +70,11 @@ where
             let mut config = TransportConfig::default();
             config.max_idle_timeout(None);
             // TODO-1 reasonable initial window sizes
+            config.congestion_controller_factory(Arc::new(
+                congestion::CubicConfig::default()
+                    .initial_window(u64::MAX)
+                    .to_owned(),
+            ));
             Arc::new(config)
         };
         let mut seed = [0; 32];
@@ -92,7 +97,7 @@ where
             Some(seed),
         );
 
-        let mut connections = HashMap::new();
+        let mut connections = BTreeMap::new();
         let mut outbound_connections = HashMap::new();
         let mut peer_ids = HashMap::new();
         for (idx, peer) in config
@@ -206,7 +211,7 @@ where
                     self.pending_events
                         .entry(time)
                         .or_default()
-                        .push(RouterEvent::Tx(to, contents.into()))
+                        .push_back(RouterEvent::Tx(to, contents.into()))
                 }
             };
         }
@@ -235,7 +240,7 @@ where
                     let mut entry = self.pending_events.first_entry().unwrap();
                     assert_eq!(min_tick, *entry.key());
                     let events = entry.get_mut();
-                    let event = events.pop().expect("events should never be empty");
+                    let event = events.pop_front().expect("events should never be empty");
 
                     if events.is_empty() {
                         self.pending_events.pop_first().unwrap();
@@ -323,7 +328,7 @@ where
                 self.pending_events
                     .entry(time)
                     .or_default()
-                    .push(RouterEvent::Tx(to, transmit.contents.into()))
+                    .push_back(RouterEvent::Tx(to, transmit.contents.into()))
             }
 
             if let Some(timeout) = connection.poll_timeout() {
@@ -352,6 +357,7 @@ where
                         .entry(*remote_peer_id)
                         .or_default();
                     while let Some(mut gossip_message) = pending_outbound.pop_front() {
+                        should_poll = true;
                         match connection.send_stream(*stream_id).write(&gossip_message) {
                             Ok(num_sent) => {
                                 if num_sent < gossip_message.len() {
@@ -468,13 +474,14 @@ where
                         self.pending_events
                             .entry(time)
                             .or_default()
-                            .push(RouterEvent::Tx(peer_id, gossip_message))
+                            .push_back(RouterEvent::Tx(peer_id, gossip_message))
                     } else {
                         let maybe_connection_handle = self
                             .outbound_connections
                             .get(&peer_id)
                             .map(|(handle, _)| handle)
                             .copied();
+                        assert!(maybe_connection_handle.is_some());
                         self.pending_outbound_messages
                             .entry(peer_id)
                             .or_default()
@@ -498,7 +505,7 @@ where
                             .pending_events
                             .entry(time)
                             .or_default()
-                            .push(RouterEvent::Rx(peer_id, message)),
+                            .push_back(RouterEvent::Rx(peer_id, message)),
 
                         Err(e) => {
                             todo!("Message deserialization should never fail! Error: {:?}", e)
