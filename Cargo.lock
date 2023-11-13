@@ -4337,6 +4337,7 @@ dependencies = [
  "monad-crypto",
  "monad-transformer",
  "monad-types",
+ "monad-virtual-bench",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "serde",

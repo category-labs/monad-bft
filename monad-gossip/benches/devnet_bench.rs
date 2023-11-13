@@ -1,0 +1,149 @@
+use std::time::Duration;
+
+use monad_crypto::hasher::{Hasher, HasherType};
+use monad_gossip::{
+    broadcasttree::{BroadcastTree, BroadcastTreeConfig},
+    gossipsub::{UnsafeGossipsub, UnsafeGossipsubConfig},
+    mock::{MockGossip, MockGossipConfig},
+    testutil::{make_swarm, test_broadcast, test_direct, Swarm},
+    Gossip,
+};
+use monad_transformer::{BytesTransformer, LatencyTransformer, PacerTransformer};
+use monad_types::NodeId;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
+
+const BROADCAST_PAYLOAD_SIZE_BYTES: usize = 5000 * 32;
+const DIRECT_PAYLOAD_SIZE_BYTES: usize = 1024;
+const UP_BANDWIDTH_MBIT: usize = 1000;
+const GOSSIPSUB_FANOUT: usize = 7;
+const BROADCASTTREE_ARITY: usize = 4;
+const BROADCASTTREE_NUM_ROUTES: usize = 1;
+
+fn devnet<G: Gossip>(make_gossip: impl Fn(&[NodeId], &NodeId) -> G) -> Swarm<G> {
+    const NUM_NODES: u16 = 10;
+    make_swarm(NUM_NODES, make_gossip, |_all_peers, _me| {
+        vec![
+            BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(50))),
+            BytesTransformer::Pacer(PacerTransformer::new(UP_BANDWIDTH_MBIT, 8 * 1450)),
+        ]
+    })
+}
+
+fn make_mock_gossip(all_peers: &[NodeId], _me: &NodeId) -> MockGossip {
+    MockGossipConfig {
+        all_peers: all_peers.to_vec(),
+    }
+    .build()
+}
+
+fn devnet_mock_gossip_broadcast() -> u128 {
+    let mut swarm = devnet(make_mock_gossip);
+    let mut rng = ChaCha20Rng::from_seed([0; 32]);
+    test_broadcast(
+        &mut rng,
+        &mut swarm,
+        Duration::from_secs(1),
+        BROADCAST_PAYLOAD_SIZE_BYTES,
+        1,
+        1.0,
+    )
+    .as_millis()
+}
+
+fn devnet_mock_gossip_direct() -> u128 {
+    let mut swarm = devnet(make_mock_gossip);
+    let mut rng = ChaCha20Rng::from_seed([0; 32]);
+    test_direct(
+        &mut rng,
+        &mut swarm,
+        Duration::from_secs(1),
+        DIRECT_PAYLOAD_SIZE_BYTES,
+    )
+    .as_millis()
+}
+
+fn make_gossipsub(all_peers: &[NodeId], me: &NodeId) -> UnsafeGossipsub {
+    UnsafeGossipsubConfig {
+        seed: {
+            let mut hasher = HasherType::new();
+            hasher.update(&me.0.bytes());
+            hasher.hash().0
+        },
+        me: *me,
+        all_peers: all_peers.to_vec(),
+        fanout: GOSSIPSUB_FANOUT,
+    }
+    .build()
+}
+
+fn devnet_gossipsub_broadcast() -> u128 {
+    let mut swarm = devnet(make_gossipsub);
+    let mut rng = ChaCha20Rng::from_seed([0; 32]);
+    test_broadcast(
+        &mut rng,
+        &mut swarm,
+        Duration::from_secs(1),
+        BROADCAST_PAYLOAD_SIZE_BYTES,
+        1,
+        1.0,
+    )
+    .as_millis()
+}
+
+fn devnet_gossipsub_direct() -> u128 {
+    let mut swarm = devnet(make_gossipsub);
+    let mut rng = ChaCha20Rng::from_seed([0; 32]);
+    test_direct(
+        &mut rng,
+        &mut swarm,
+        Duration::from_secs(1),
+        DIRECT_PAYLOAD_SIZE_BYTES,
+    )
+    .as_millis()
+}
+
+fn make_broadcasttree(all_peers: &[NodeId], me: &NodeId) -> BroadcastTree {
+    BroadcastTreeConfig {
+        all_peers: all_peers.to_vec(),
+        my_id: *me,
+        tree_arity: BROADCASTTREE_ARITY,
+        num_routes: BROADCASTTREE_NUM_ROUTES,
+    }
+    .build()
+}
+
+fn devnet_broadcasttree_broadcast() -> u128 {
+    let mut swarm = devnet(make_broadcasttree);
+    let mut rng = ChaCha20Rng::from_seed([0; 32]);
+    test_broadcast(
+        &mut rng,
+        &mut swarm,
+        Duration::from_secs(1),
+        BROADCAST_PAYLOAD_SIZE_BYTES,
+        1,
+        1.0,
+    )
+    .as_millis()
+}
+
+fn devnet_broadcasttree_direct() -> u128 {
+    let mut swarm = devnet(make_broadcasttree);
+    let mut rng = ChaCha20Rng::from_seed([0; 32]);
+    test_direct(
+        &mut rng,
+        &mut swarm,
+        Duration::from_secs(1),
+        DIRECT_PAYLOAD_SIZE_BYTES,
+    )
+    .as_millis()
+}
+
+monad_virtual_bench::virtual_bench_main! {
+    devnet_mock_gossip_broadcast,
+    devnet_mock_gossip_direct,
+    devnet_gossipsub_broadcast,
+    devnet_gossipsub_direct,
+    devnet_broadcasttree_broadcast,
+    devnet_broadcasttree_direct,
+}

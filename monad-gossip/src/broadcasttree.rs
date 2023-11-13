@@ -353,9 +353,9 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use test_case::test_case;
 
-    use super::{super::testutil::Swarm, BroadcastTree, BroadcastTreeConfig};
+    use super::BroadcastTreeConfig;
     use crate::{
-        testutil::{test_broadcast, test_direct},
+        testutil::{make_swarm, test_broadcast, test_direct},
         Gossip, GossipEvent,
     };
 
@@ -653,32 +653,34 @@ mod tests {
     #[test_case(3, 3)]
     #[test_case(3, 5)]
     fn test_framed_messages(num_routes: usize, tree_arity: usize) {
-        let peers: Vec<_> = (1..=53_u8)
-            .map(|idx| {
-                let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
-            })
-            .collect();
-        let mut swarm: Swarm<BroadcastTree> = Swarm::new(peers.iter().map(|peer_id| {
-            (
-                *peer_id,
+        let mut swarm = make_swarm(
+            53,
+            |all_peers, me| {
                 BroadcastTreeConfig {
-                    all_peers: peers.clone(),
-                    my_id: *peer_id,
+                    all_peers: all_peers.to_vec(),
+                    my_id: *me,
                     tree_arity,
                     num_routes,
                 }
-                .build(),
+                .build()
+            },
+            |_all_peers, _me| {
                 vec![BytesTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(5),
-                ))],
-            )
-        }));
+                ))]
+            },
+        );
 
         let mut rng = ChaCha8Rng::from_seed([0; 32]);
-        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1), 1.0);
-        test_direct(&mut rng, &mut swarm, Duration::from_secs(1));
+        test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            1024,
+            usize::MAX,
+            1.0,
+        );
+        test_direct(&mut rng, &mut swarm, Duration::from_secs(1), 1024);
     }
 
     // TODO: This test relies on the BytesSplitterTransformer to split messages. The transformer
@@ -689,32 +691,34 @@ mod tests {
     // ability to flush the transformer explicitly.
     #[test]
     fn test_split_messages() {
-        let peers: Vec<_> = (1..=3_u8)
-            .map(|idx| {
-                let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
-            })
-            .collect();
-        let mut swarm: Swarm<BroadcastTree> = Swarm::new(peers.iter().map(|peer_id| {
-            (
-                *peer_id,
+        let mut swarm = make_swarm(
+            3,
+            |all_peers, me| {
                 BroadcastTreeConfig {
-                    all_peers: peers.clone(),
-                    my_id: *peer_id,
+                    all_peers: all_peers.to_vec(),
+                    my_id: *me,
                     tree_arity: 2,
                     num_routes: 2,
                 }
-                .build(),
+                .build()
+            },
+            |_all_peers, _me| {
                 vec![
                     BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
                     BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
-                ],
-            )
-        }));
+                ]
+            },
+        );
 
         let mut rng = ChaCha8Rng::from_seed([0; 32]);
-        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1), 1.0);
-        test_direct(&mut rng, &mut swarm, Duration::from_secs(1));
+        test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            1024,
+            usize::MAX,
+            1.0,
+        );
+        test_direct(&mut rng, &mut swarm, Duration::from_secs(1), 1024);
     }
 }

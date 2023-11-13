@@ -463,6 +463,96 @@ impl Transformer<Vec<u8>> for BwTransformer {
 }
 
 #[derive(Debug, Clone)]
+pub struct PacerTransformer {
+    upload_mbps: usize,
+    burst_bits: usize,
+
+    // in absolute time
+    last_scheduled_ts: Duration,
+}
+
+impl PacerTransformer {
+    pub fn new(upload_mbps: usize, burst_bits: usize) -> Self {
+        assert!(burst_bits >= 8);
+        Self {
+            upload_mbps,
+            burst_bits,
+
+            last_scheduled_ts: Duration::ZERO,
+        }
+    }
+}
+
+impl Transformer<Vec<u8>> for PacerTransformer {
+    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+        // The goal of PacerTransformer is to pace messages at a configurable rate. Given a
+        // message_1 that's sent at from_tick_1, the delays to generate for each message chunk is
+        // straightforward.
+        //
+        // What's more complicated is determining how much to delay a second message_2 that's sent
+        // at from_tick_2. The first chunk of message_2 needs to be scheduled after the last chunk
+        // of message_1 is scheduled. The following calculation solves for delay_2. It assumes that
+        // prior transformer layers always emit constant latency.
+        //
+        ///// last_scheduled_ts reprents the absolute time that the last message chunk of message_1
+        ///// was sent at
+        // last_scheduled_ts == from_tick_1 + latency + delay_1
+        //
+        ///// delay_offset represents the offset needed to recover last_scheduled_ts given
+        ///// from_tick_2
+        // last_scheduled_ts == from_tick_2 + latency + delay_offset
+        //
+        //// solve for delay_offset
+        // from_tick_1 + delay_1 = from_tick_2 + delay_offset
+        // from_tick_1 - from_tick_2 + delay_1 = delay_offset
+        //
+        //
+        ///// extra_delay is the amount we want to delay the first chunk of message_2 from the last
+        ///// message chunk of message_1
+        // new_scheduled_ts == last_scheduled_ts + extra_delay
+        //
+        ///// delay_2 is the final amount of delay the transformer needs to emit to achieve the
+        ///// desired new_scheduled_ts with the desired extra_delay
+        // new_scheduled_ts == from_tick_2 + latency + delay_2
+        //
+        //
+        ///// solve for delay_2
+        // last_scheduled_ts + extra_delay = from_tick_2 + latency + delay_2
+        // delay_2 = last_scheduled_ts + extra_delay - from_tick_2 - latency
+        // delay_2 = (from_tick_2 + latency + delay_offset) + extra_delay - from_tick_2 - latency
+        // delay_2 = delay_offset + extra_delay
+        // delay_2 = (from_tick_1 - from_tick_2 + delay_1) + extra_delay
+        let schedule_delay = self
+            .last_scheduled_ts
+            .checked_sub(message.from_tick)
+            .unwrap_or(Duration::ZERO);
+        let stream_messages: Vec<StreamMessage<_>> = message
+            .message
+            .chunks(self.burst_bits / 8)
+            .enumerate()
+            .map(|(idx, chunk)| {
+                let message = LinkMessage {
+                    from: message.from,
+                    to: message.to,
+                    message: chunk.to_vec(),
+
+                    from_tick: message.from_tick,
+                };
+                let extra_delay =
+                    idx as f64 * (self.burst_bits as f64 / (self.upload_mbps * 1_000_000) as f64);
+                let delay_2 = schedule_delay + Duration::from_secs_f64(extra_delay);
+                (delay_2, message)
+            })
+            .collect();
+        if let Some((delay_1, _)) = stream_messages.last() {
+            self.last_scheduled_ts = message.from_tick + *delay_1;
+        }
+
+        TransformerStream::Continue(stream_messages)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum BytesTransformer {
     Latency(LatencyTransformer),
     XorLatency(XorLatencyTransformer),
@@ -474,6 +564,7 @@ pub enum BytesTransformer {
 
     BytesSplitter(BytesSplitterTransformer),
     Bw(BwTransformer),
+    Pacer(PacerTransformer),
 }
 
 impl Transformer<Vec<u8>> for BytesTransformer {
@@ -488,6 +579,7 @@ impl Transformer<Vec<u8>> for BytesTransformer {
             BytesTransformer::Replay(t) => t.transform(message),
             BytesTransformer::BytesSplitter(t) => t.transform(message),
             BytesTransformer::Bw(t) => t.transform(message),
+            BytesTransformer::Pacer(t) => t.transform(message),
         }
     }
 
@@ -514,6 +606,7 @@ impl Transformer<Vec<u8>> for BytesTransformer {
             BytesTransformer::Replay(t) => t.min_external_delay(),
             BytesTransformer::BytesSplitter(t) => t.min_external_delay(),
             BytesTransformer::Bw(t) => t.min_external_delay(),
+            BytesTransformer::Pacer(t) => t.min_external_delay(),
         }
     }
 }

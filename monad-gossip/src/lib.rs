@@ -5,7 +5,7 @@ use monad_types::{NodeId, RouterTarget};
 pub mod broadcasttree;
 pub mod gossipsub;
 pub mod mock;
-mod testutil;
+pub mod testutil;
 
 #[derive(Debug)]
 pub enum GossipEvent<GM> {

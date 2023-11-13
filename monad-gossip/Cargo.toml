@@ -20,12 +20,19 @@ rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-monad-crypto = { path = "../monad-crypto" }
-
 criterion = { workspace = true }
-fastrand = "2.0.1"
+fastrand = { workspace = true }
 test-case = { workspace = true }
+monad-virtual-bench = { path = "../monad-virtual-bench" }
 
 [[bench]]
 name = "rand_shuffle_bench"
+harness = false
+
+[[bench]]
+name = "devnet_bench"
+harness = false
+
+[[bench]]
+name = "testnet_bench"
 harness = false
