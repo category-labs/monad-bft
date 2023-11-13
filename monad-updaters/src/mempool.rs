@@ -108,13 +108,13 @@ where
                     };
 
                     match task {
-                        ControllerTaskCommand::FetchTxs(num_max_txs, pending_txs) => {
-                            let Ok(pending_txs) = pending_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.as_bytes().to_vec())).collect::<Result<Vec<_>, _>>() else {
-                                error!("Invalid pending_txs!");
+                        ControllerTaskCommand::FetchTxs(num_max_txs, pending_blocktree_txs) => {
+                            let Ok(pending_blocktree_txs) = pending_blocktree_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.as_bytes().to_vec())).collect::<Result<Vec<_>, _>>() else {
+                                error!("Invalid pending_blocktree_txs!");
                                 continue;
                             };
 
-                            let proposal = controller.create_proposal(num_max_txs, pending_txs).await;
+                            let proposal = controller.create_proposal(num_max_txs, pending_blocktree_txs).await;
 
                             tx.send(ControllerTaskResult::FetchTxs(TransactionHashList::new(proposal.rlp_encode())))
                                 .await?;
@@ -170,10 +170,12 @@ impl<ST, SCT> Executor for MonadMempool<ST, SCT> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(num_max_txs, pending_txs, s) => {
+                MempoolCommand::FetchTxs(num_max_txs, pending_blocktree_txs, s) => {
                     self.fetch_txs_state = Some(s);
-                    fetch_txs_command =
-                        Some(ControllerTaskCommand::FetchTxs(num_max_txs, pending_txs));
+                    fetch_txs_command = Some(ControllerTaskCommand::FetchTxs(
+                        num_max_txs,
+                        pending_blocktree_txs,
+                    ));
                 }
                 MempoolCommand::FetchReset => {
                     self.fetch_txs_state = None;

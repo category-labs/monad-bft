@@ -667,13 +667,13 @@ where
         let seq_num_qc = high_qc.info.vote.seq_num;
         let proposed_seq_num = seq_num_qc + 1;
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
-            ConsensusAction::Propose(h, pending_txs) => {
+            ConsensusAction::Propose(h, pending_blocktree_txs) => {
                 inc_count!(creating_proposal);
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
                 vec![ConsensusCommand::FetchTxs(
                     self.config.proposal_size,
-                    pending_txs,
+                    pending_blocktree_txs,
                     FetchTxParams {
                         node_id,
                         round,
@@ -727,8 +727,10 @@ where
         };
 
         // Always propose when there's a path to root
-        if let Some(pending_txs) = self.pending_block_tree.get_txs_on_path_to_root(parent_bid) {
-            return ConsensusAction::Propose(h, pending_txs);
+        if let Some(pending_blocktree_txs) =
+            self.pending_block_tree.get_txs_on_path_to_root(parent_bid)
+        {
+            return ConsensusAction::Propose(h, pending_blocktree_txs);
         }
 
         // Still propose but with the chance of proposing duplicate txs

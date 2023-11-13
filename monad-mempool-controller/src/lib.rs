@@ -23,7 +23,7 @@ use tokio::{
 use tracing::{event, Level};
 
 const DEFAULT_TX_THRESHOLD: usize = 1000;
-const DEFAULT_TIME_THRESHOLD_S: u64 = 1;
+const DEFAULT_TIME_THRESHOLD_MS: u64 = 250;
 const DEFAULT_BUFFER_SIZE: usize = 100000;
 
 #[derive(Error, Debug)]
@@ -54,7 +54,7 @@ impl Default for ControllerConfig {
             messenger_config: MessengerConfig::default(),
             pool_config: PoolConfig::default(),
             mempool_ipc_path: generate_uds_path().into(),
-            time_threshold: Duration::from_secs(DEFAULT_TIME_THRESHOLD_S),
+            time_threshold: Duration::from_millis(DEFAULT_TIME_THRESHOLD_MS),
             wait_for_peers: 0,
             tx_threshold: DEFAULT_TX_THRESHOLD,
             buffer_size: DEFAULT_BUFFER_SIZE,
@@ -276,12 +276,12 @@ impl Controller {
     pub async fn create_proposal(
         &self,
         tx_limit: usize,
-        pending_txs: Vec<EthTransactionList>,
+        pending_blocktree_txs: Vec<EthTransactionList>,
     ) -> EthTransactionList {
         self.pool
             .lock()
             .await
-            .create_proposal(tx_limit, pending_txs)
+            .create_proposal(tx_limit, pending_blocktree_txs)
     }
 
     pub async fn fetch_full_txs(&self, txs: EthTransactionList) -> Option<EthFullTransactionList> {
