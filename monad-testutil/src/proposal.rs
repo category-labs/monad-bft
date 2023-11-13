@@ -53,6 +53,7 @@ where
         valset: &VT,
         election: &LT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        upcoming_valset: &VT,
         txns: TransactionHashList,
         execution_header: ExecutionArtifacts,
     ) -> Verified<ST, ProposalMessage<SCT>> {
@@ -68,7 +69,12 @@ where
         let (leader_key, leader_certkey) = keys
             .iter()
             .zip(certkeys)
-            .find(|(k, _)| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
+            .find(|(k, _)| k.pubkey() == election.get_leader(
+                self.round,
+                valset.get_list(),
+                valset.get_epoch(),
+                upcoming_valset.get_list(),
+            upcoming_valset.get_epoch()).0)
             .expect("key not in valset");
 
         let block = Block::new::<HasherType>(

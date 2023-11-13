@@ -4,7 +4,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::KeyPair;
-use monad_types::{NodeId, Stake};
+use monad_types::{Epoch, NodeId, Stake};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
 use crate::signing::{create_certificate_keys, create_keys};
@@ -43,7 +43,7 @@ pub fn complete_keys_w_validators<SCT: SignatureCollection>(
         .zip(certificate_keys.iter().map(|k| k.pubkey()))
         .collect::<Vec<_>>();
 
-    let validators = ValidatorSet::new(staking_list).expect("create validator set");
+    let validators = ValidatorSet::new(staking_list, Epoch(1)).expect("create validator set");
     let validator_mapping = ValidatorMapping::new(voting_identity);
 
     (validators, validator_mapping)

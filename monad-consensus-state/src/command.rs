@@ -45,7 +45,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
     StateRootHash(FullBlock<SCT>),
-    // TODO-2 add command for updating validator_set/round
+    EpochEnd(u64),
     // - to handle this command, we need to call message_state.set_round()
 }
 
@@ -64,6 +64,7 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
             PacemakerCommand::ScheduleReset => {
                 ConsensusCommand::ScheduleReset(TimeoutVariant::Pacemaker)
             }
+            PacemakerCommand::EpochEnd(s) => ConsensusCommand::EpochEnd(s),
         }
     }
 }

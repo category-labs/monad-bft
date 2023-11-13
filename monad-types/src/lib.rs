@@ -51,8 +51,10 @@ impl std::fmt::Debug for Round {
     }
 }
 
+pub const EPOCH_LENGTH: u64 = 100;
+
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Default, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Epoch(pub u64);
 
 impl Add for Epoch {
@@ -94,7 +96,7 @@ impl std::fmt::Debug for BlockId {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Stake(pub i64);
 
 impl Add for Stake {

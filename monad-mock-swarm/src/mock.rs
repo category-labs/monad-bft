@@ -20,11 +20,11 @@ use monad_eth_types::EMPTY_RLP_TX_LIST;
 use monad_executor::{Executor, State};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand,
-    RouterTarget, TimerCommand,
+    RouterTarget, TimerCommand, ValidatorSetCommand,
 };
-use monad_types::{Deserializable, Serializable, TimeoutVariant};
+use monad_types::{Deserializable, NodeId, Serializable, Stake, TimeoutVariant, ValidatorData};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
+    checkpoint::MockCheckpoint, ledger::MockLedger,
     state_root_hash::MockStateRootHash,
 };
 use priority_queue::PriorityQueue;
@@ -168,7 +168,7 @@ where
     ledger: MockLedger<<S::State as State>::Block, <S::State as State>::Event>,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
-    epoch: MockEpoch<S::SignatureType, S::SignatureCollectionType>,
+    validator_set: MockValidatorSetUpdaterNop<S::SignatureType, S::SignatureCollectionType>,
     state_root_hash:
         MockStateRootHash<<S::State as State>::Block, S::SignatureType, S::SignatureCollectionType>,
     tick: Duration,
@@ -244,7 +244,7 @@ impl<T> Ord for SequencedPeerEvent<T> {
 enum ExecutorEventType {
     Router,
     Ledger,
-    Epoch,
+    ValidatorSet,
     Timer,
     Mempool,
     StateRootHash,
@@ -264,7 +264,7 @@ where
             ledger: Default::default(),
             execution_ledger: Default::default(),
             mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
-            epoch: Default::default(),
+            validator_set: Default::default(),
             state_root_hash: Default::default(),
 
             tick,
@@ -307,9 +307,9 @@ where
                     .map(|(_, tick)| (tick.0, ExecutorEventType::Timer)),
             )
             .chain(
-                self.epoch
+                self.validator_set
                     .ready()
-                    .then_some((self.tick, ExecutorEventType::Epoch)),
+                    .then_some((self.tick, ExecutorEventType::ValidatorSet)),
             )
             .chain(
                 self.ledger
@@ -349,6 +349,7 @@ where
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            validator_set_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -374,6 +375,7 @@ where
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
+        self.validator_set.exec(validator_set_cmds);
 
         for command in router_cmds {
             match command {
@@ -417,8 +419,8 @@ where
                         Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
                     }
                 }
-                ExecutorEventType::Epoch => {
-                    return futures::executor::block_on(self.epoch.next())
+                ExecutorEventType::ValidatorSet => {
+                    return futures::executor::block_on(self.validator_set.next())
                         .map(MockExecutorEvent::Event)
                 }
                 ExecutorEventType::Timer => {
@@ -765,6 +767,147 @@ impl<O> Default for MockExecutionLedger<O> {
         }
     }
 }
+
+pub trait MockableValidatorSet:
+    Executor<Command = ValidatorSetCommand> + Stream<Item = Self::Event> + Unpin
+{
+    type Event;
+
+    fn new() -> Self;
+
+    fn ready(&self) -> bool;
+}
+
+pub struct MockValidatorSetUpdaterNop<ST, SCT> {
+    init_validator_set: ValidatorData,
+    validator_set: Option<ValidatorData>,
+    phantom: PhantomData<(ST,SCT)>,
+}
+
+impl<ST, SCT> MockableValidatorSet for MockValidatorSetUpdaterNop<ST, SCT>
+where
+    ST: MessageSignature + Unpin,
+    SCT: SignatureCollection + Unpin,
+{
+    type Event = MonadEvent<ST, SCT>;
+
+    fn new() -> Self {
+        // let val_set = validators
+        // .iter()
+        // .map(|(pubkey, _)| (NodeId(*pubkey), Stake(1)))
+        // .collect::<Vec<_>>();
+
+        Self {
+            // need to populate this
+            init_validator_set: ValidatorData(vec![]),
+            validator_set: None,
+            phantom: Default::default(),
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.validator_set.is_some()
+    }
+}
+
+impl<ST, SCT> Default for MockValidatorSetUpdaterNop<ST, SCT> {
+    fn default() -> Self {
+        Self {
+            init_validator_set: ValidatorData(vec![]),
+            validator_set: None,
+            phantom: Default::default(),
+        }
+    }
+}
+
+impl<ST, SCT> Executor for MockValidatorSetUpdaterNop<ST, SCT> {
+    type Command = ValidatorSetCommand;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        for command in commands {
+            match command {
+                ValidatorSetCommand::EpochEnd(_) => {
+                    self.validator_set = Some(self.init_validator_set.clone());
+                }
+            }
+        }
+    }
+}
+
+impl<ST, SCT> Stream for MockValidatorSetUpdaterNop<ST, SCT>
+where
+    Self: Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+{
+    type Item = MonadEvent<ST, SCT>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        return Poll::Ready(Some(MonadEvent::ConsensusEvent(
+            monad_executor_glue::ConsensusEvent::UpdateNextValSet(this.validator_set.take()),
+        )));
+    }
+}
+
+
+pub struct MockValidatorSetUpdater<ST, SCT> {
+    validator_set: Option<ValidatorData>,
+    waker: Option<Waker>,
+    phantom: PhantomData<(ST,SCT)>,
+}
+
+impl<ST, SCT> Default for MockValidatorSetUpdater<ST, SCT> {
+    fn default() -> Self {
+        Self {
+            validator_set: None,
+            waker: None,
+            phantom: Default::default(),
+        }
+    }
+}
+
+impl<ST, SCT> Executor for MockValidatorSetUpdater<ST, SCT> {
+    type Command = ValidatorSetCommand;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        let mut wake = false;
+
+        for command in commands {
+            match command {
+                ValidatorSetCommand::EpochEnd(_) => {
+                    wake = true;
+                }
+            }
+        }
+
+        if wake {
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+}
+
+impl<ST, SCT> Stream for MockValidatorSetUpdater<ST, SCT>
+where
+    Self: Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+{
+    type Item = MonadEvent<ST, SCT>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+        this.waker = Some(cx.waker().clone());
+
+        return Poll::Ready(Some(MonadEvent::ConsensusEvent(
+            monad_executor_glue::ConsensusEvent::UpdateNextValSet(self.validator_set.clone()),
+        )));
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

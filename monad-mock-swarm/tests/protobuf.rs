@@ -109,6 +109,7 @@ fn test_consensus_message_event_proposal_bls() {
         &valset,
         &election,
         &valmap,
+        &ValidatorSet::default(),
         Default::default(),
         ExecutionArtifacts::zero(),
     );

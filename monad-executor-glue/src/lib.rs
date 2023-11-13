@@ -111,6 +111,10 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
+pub enum ValidatorSetCommand {
+    EpochEnd(u64),
+}
+
 pub enum Command<E, OM, B, C, SCT> {
     RouterCommand(RouterCommand<OM>),
     TimerCommand(TimerCommand<E>),
@@ -120,6 +124,7 @@ pub enum Command<E, OM, B, C, SCT> {
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
+    ValidatorSetCommand(ValidatorSetCommand),
 }
 
 impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
@@ -133,6 +138,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
+        Vec<ValidatorSetCommand>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -141,6 +147,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         let mut execution_ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
+        let mut validator_set_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -151,6 +158,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
                 Command::ExecutionLedgerCommand(cmd) => execution_ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
+                Command::ValidatorSetCommand(cmd) => validator_set_cmds.push(cmd),
             }
         }
         (
@@ -161,6 +169,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            validator_set_cmds,
         )
     }
 }
@@ -175,9 +184,8 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),
-    LoadEpoch(Epoch, ValidatorData, ValidatorData),
-    AdvanceEpoch(Option<ValidatorData>),
     StateUpdate((u64, ConsensusHash)),
+    UpdateNextValSet(Option<ValidatorData>),
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -205,8 +213,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .debug_struct("FetchedBlock")
                 .field("unverified_full_block", &b.unverified_full_block)
                 .finish(),
-            ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
-            ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
+            ConsensusEvent::UpdateNextValSet(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
         }
     }

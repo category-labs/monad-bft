@@ -9,7 +9,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::hasher::Hasher;
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, EPOCH_LENGTH};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{
@@ -28,6 +28,8 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     // only need to store for current round
     pending_timeouts: HashMap<NodeId, TimeoutMessage<SCT>>,
 
+    // epoch: Epoch,
+
     // used to not duplicate broadcast/tc
     phase: PhaseHonest,
 }
@@ -45,6 +47,7 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
     Broadcast(TimeoutMessage<SCT>),
     Schedule { duration: Duration },
     ScheduleReset,
+    EpochEnd(u64),
 }
 
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
@@ -59,6 +62,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             last_round_tc,
             pending_timeouts: HashMap::new(),
 
+            // epoch: Epoch(current_round.0 / EPOCH_LENGTH + 1),
             phase: PhaseHonest::Zero,
         }
     }
@@ -66,6 +70,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn get_current_round(&self) -> Round {
         self.current_round
     }
+
+    // pub fn get_current_epoch(&self) -> Epoch { 
+    //     self.epoch
+    // }
 
     fn get_round_timer(&self) -> Duration {
         self.delta * 4
@@ -203,25 +211,58 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_tc(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
-    ) -> Option<PacemakerCommand<SCT>> {
+        root_num: Option<u64>,
+    ) -> Vec<PacemakerCommand<SCT>> {
+        let mut cmds = Vec::new();
+        
         if tc.round < self.current_round {
-            return None;
+            return cmds;
         }
-        let round = tc.round;
         self.last_round_tc = Some(tc.clone());
-        Some(self.start_timer(round + Round(1)))
+
+        let next_round = tc.round + Round(1);
+        if next_round.0 % EPOCH_LENGTH == 1 {
+            cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
+        }
+
+        // let next_round_epoch = next_round.0 / EPOCH_LENGTH + 1;
+        // if next_round_epoch > self.epoch.0 {
+        //     self.epoch = Epoch(next_round_epoch);
+        //     cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
+        // }
+        
+        cmds.push(self.start_timer(next_round));
+
+        return cmds;
     }
 
     #[must_use]
     pub fn advance_round_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-    ) -> Option<PacemakerCommand<SCT>> {
+        root_num: Option<u64>,
+    ) -> Vec<PacemakerCommand<SCT>> {
+        let mut cmds = Vec::new();
+
         if qc.info.vote.round < self.current_round {
-            return None;
+            return cmds;
         }
         self.last_round_tc = None;
-        Some(self.start_timer(qc.info.vote.round + Round(1)))
+
+        let next_round = qc.info.vote.round + Round(1);
+        if next_round.0 % EPOCH_LENGTH == 1 {
+            cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
+        }
+
+        // let next_round_epoch = next_round.0 / EPOCH_LENGTH + 1;
+        // if next_round_epoch > self.epoch.0 {
+        //     self.epoch = Epoch(next_round_epoch);
+        //     cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
+        // }
+
+        cmds.push(self.start_timer(next_round));
+
+        return cmds;
     }
 }
 
@@ -245,7 +286,7 @@ mod test {
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Stake};
+    use monad_types::{BlockId, Hash, Stake, Epoch};
     use monad_validator::validator_set::ValidatorSet;
     use zerocopy::AsBytes;
 
@@ -463,7 +504,7 @@ mod test {
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
-        let valset = ValidatorSet::new(staking_list).expect("create validator set");
+        let valset = ValidatorSet::new(staking_list, Epoch(0)).expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
         let timeout_round = Round(1);

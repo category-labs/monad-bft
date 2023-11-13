@@ -31,7 +31,7 @@ use monad_p2p::Multiaddr;
 use monad_types::{NodeId, Round};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, BoxUpdater,
+    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, BoxUpdater, validator_set::ValidatorSetUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -336,6 +336,7 @@ async fn run(
         MockLedger<_, _>,
         BoxExecutor<ExecutionLedgerCommand<_>>,
         MockCheckpoint<_>,
+        ValidatorSetUpdater<_,_>,
     > {
         router: Box::pin(router),
         timer: Box::pin(TokioTimer::default()),
@@ -343,6 +344,7 @@ async fn run(
         ledger: MockLedger::default(),
         execution_ledger: Box::pin(MonadFileLedger::default()),
         checkpoint: MockCheckpoint::default(),
+        validator_set: ValidatorSetUpdater::default(),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {

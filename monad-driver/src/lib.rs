@@ -18,7 +18,7 @@ mod tests {
     use monad_eth_types::EthAddress;
     use monad_executor::{Executor, State};
     use monad_executor_glue::MonadEvent;
-    use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
+    use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool, MockValidatorSetUpdaterNop};
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
     use monad_types::NodeId;
@@ -66,6 +66,7 @@ mod tests {
                     execution_ledger: MockExecutionLedger::default(),
                     checkpoint: MockCheckpoint::default(),
                     timer: monad_updaters::timer::TokioTimer::default(),
+                    validator_set: MockValidatorSetUpdaterNop::default(),
                 };
 
                 let logger_config = MockWALoggerConfig {};

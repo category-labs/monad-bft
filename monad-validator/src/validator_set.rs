@@ -3,7 +3,7 @@ use std::{
     error, fmt,
 };
 
-use monad_types::{NodeId, Stake};
+use monad_types::{NodeId, Stake, Epoch};
 
 pub type Result<T> = std::result::Result<T, ValidatorSetError>;
 
@@ -26,12 +26,13 @@ impl error::Error for ValidatorSetError {
     }
 }
 
-pub trait ValidatorSetType {
-    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self>
+pub trait ValidatorSetType : Default {
+    fn new(validators: Vec<(NodeId, Stake)>, epoch: Epoch) -> Result<Self>
     where
         Self: Sized;
     fn get_members(&self) -> &HashMap<NodeId, Stake>;
     fn get_list(&self) -> &Vec<NodeId>;
+    fn get_epoch(&self) -> Epoch;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
     fn is_member(&self, addr: &NodeId) -> bool;
@@ -41,15 +42,16 @@ pub trait ValidatorSetType {
     fn has_honest_vote(&self, addrs: &[NodeId]) -> bool;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ValidatorSet {
     validators: HashMap<NodeId, Stake>,
     validator_list: Vec<NodeId>,
     total_stake: Stake,
+    epoch: Epoch,
 }
 
 impl ValidatorSetType for ValidatorSet {
-    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self> {
+    fn new(validators: Vec<(NodeId, Stake)>, epoch: Epoch) -> Result<Self> {
         let mut vmap = HashMap::new();
         let mut vlist = Vec::new();
         for (node_id, stake) in validators.into_iter() {
@@ -68,6 +70,7 @@ impl ValidatorSetType for ValidatorSet {
             validators: vmap,
             validator_list: vlist,
             total_stake,
+            epoch,
         })
     }
 
@@ -77,6 +80,10 @@ impl ValidatorSetType for ValidatorSet {
 
     fn get_list(&self) -> &Vec<NodeId> {
         &self.validator_list
+    }
+
+    fn get_epoch(&self) -> Epoch {
+        self.epoch
     }
 
     fn len(&self) -> usize {
@@ -121,7 +128,7 @@ impl ValidatorSetType for ValidatorSet {
 mod test {
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, get_key};
-    use monad_types::{NodeId, Stake};
+    use monad_types::{NodeId, Stake, Epoch};
 
     use super::ValidatorSet;
     use crate::validator_set::ValidatorSetType;
@@ -140,10 +147,10 @@ mod test {
         let v2 = (NodeId(keypair2.pubkey()), Stake(2));
 
         let validators_duplicate = vec![v1, v1_];
-        let _vs_err = ValidatorSet::new(validators_duplicate).unwrap_err();
+        let _vs_err = ValidatorSet::new(validators_duplicate, Epoch(0)).unwrap_err();
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::new(validators).unwrap();
+        let vs = ValidatorSet::new(validators, Epoch(0)).unwrap();
         assert!(vs.is_member(&NodeId(keypair1.pubkey())));
 
         let mut pkey3: [u8; 32] = [102; 32];
@@ -161,7 +168,7 @@ mod test {
         let pubkey3 = keypairs[2].pubkey();
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::new(validators).unwrap();
+        let vs = ValidatorSet::new(validators, Epoch(0)).unwrap();
         assert!(vs.has_super_majority_votes(&[v2.0]));
         assert!(!vs.has_super_majority_votes(&[v1.0]));
         assert!(vs.has_super_majority_votes(&[v2.0, NodeId(pubkey3)]));
@@ -177,7 +184,7 @@ mod test {
         let v2 = (NodeId(keypairs[1].pubkey()), Stake(2));
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::new(validators).unwrap();
+        let vs = ValidatorSet::new(validators, Epoch(0)).unwrap();
         assert!(!vs.has_honest_vote(&[v1.0]));
         assert!(vs.has_honest_vote(&[v2.0]));
     }

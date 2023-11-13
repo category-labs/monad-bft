@@ -4,7 +4,7 @@ use futures::Stream;
 use monad_executor::Executor;
 
 pub mod checkpoint;
-pub mod epoch;
+pub mod validator_set;
 pub mod execution_ledger;
 pub mod ledger;
 pub mod parent;

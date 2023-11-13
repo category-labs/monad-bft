@@ -139,7 +139,7 @@ fn test_proposal_author_not_sender() {
 
     let sp = TestSigner::sign_object::<HasherType, _>(proposal, &author_keypair);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
+    let vset = ValidatorSet::new(vlist, Epoch(0)).unwrap();
     let vmap = ValidatorMapping::new(vec![
         (NodeId(author_keypair.pubkey()), author_keypair.pubkey()),
         (NodeId(sender_keypair.pubkey()), sender_keypair.pubkey()),
@@ -172,7 +172,7 @@ fn test_proposal_invalid_author() {
 
     let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_valdiator_keypair);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
+    let vset = ValidatorSet::new(vlist, Epoch(0)).unwrap();
     let vmap = ValidatorMapping::new(vec![(
         NodeId(author_keypair.pubkey()),
         author_keypair.pubkey(),
@@ -206,7 +206,7 @@ fn test_proposal_invalid_qc() {
 
     let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_staked_keypair);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
+    let vset = ValidatorSet::new(vlist, Epoch(0)).unwrap();
     let vmap = ValidatorMapping::new(vec![
         (NodeId(staked_keypair.pubkey()), staked_keypair.pubkey()),
         (

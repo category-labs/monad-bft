@@ -9,7 +9,10 @@ use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{
+        MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop,
+        NoSerRouterConfig, NoSerRouterScheduler
+    },
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
     transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer},

@@ -32,7 +32,7 @@ use monad_executor::State;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
     LedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget,
-    StateRootHashCommand, TimerCommand,
+    StateRootHashCommand, TimerCommand, ValidatorSetCommand,
 };
 use monad_types::{Epoch, NodeId, Stake, TimeoutVariant, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
@@ -72,35 +72,21 @@ where
         self.consensus.blocktree()
     }
 
-    fn advance_epoch(&mut self, val_set: Option<ValidatorData>) {
+    fn update_next_val_set(&mut self, val_set: Option<ValidatorData>) {
+        let next_epoch = self.epoch + Epoch(1);
+        self.upcoming_validator_set = val_set.map(|v| {
+            VT::new(v.0, next_epoch).expect("ValidatorData should not have duplicates or invalid entries")
+        });
+    }
+
+    fn advance_epoch(&mut self) {
         self.epoch = self.epoch + Epoch(1);
 
         if let Some(vs) = self.upcoming_validator_set.take() {
             self.validator_set = vs;
+        } else {
+            panic!("should not reach here");
         }
-
-        // FIXME testnet_panic when that's implemented. TODO, decide
-        // error handling behaviour for prod
-        self.upcoming_validator_set = val_set.map(|v| {
-            VT::new(v.0).expect("ValidatorData should not have duplicates or invalid entries")
-        });
-    }
-
-    fn load_epoch(
-        &mut self,
-        epoch: Epoch,
-        val_set: ValidatorData,
-        upcoming_val_set: ValidatorData,
-    ) {
-        self.epoch = epoch;
-        // FIXME testnet_panic when that's implemented. TODO, decide
-        // error handling behaviour for prod
-        self.validator_set = VT::new(val_set.0)
-            .expect("ValidatorData should not have duplicates or invalid entries");
-        self.upcoming_validator_set = Some(
-            VT::new(upcoming_val_set.0)
-                .expect("ValidatorData should not have duplicates or invalid entries"),
-        );
     }
 }
 
@@ -256,7 +242,7 @@ where
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set = VT::new(staking_list).expect("initial validator set init failed");
+        let val_set = VT::new(staking_list, Epoch(1)).expect("initial validator set init failed");
         let val_mapping = ValidatorMapping::new(voting_identities);
         let election = LT::new();
 
@@ -375,6 +361,7 @@ where
                                         txns,
                                         &self.validator_set,
                                         &self.validator_mapping,
+                                        &self.upcoming_validator_set.as_ref().unwrap_or(&VT::default()),
                                         &self.leader_election,
                                     ),
                             );
@@ -422,6 +409,7 @@ where
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
+                                    &self.upcoming_validator_set.as_ref().unwrap_or(&VT::default()),
                                     &self.leader_election,
                                 )
                             }
@@ -431,6 +419,7 @@ where
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
+                                    &self.upcoming_validator_set.as_ref().unwrap_or(&VT::default()),
                                     &self.leader_election,
                                 )
                             }
@@ -457,24 +446,20 @@ where
                             }
                         }
                     }
-                    ConsensusEvent::LoadEpoch(epoch, current_val_set, next_val_set) => {
-                        self.load_epoch(epoch, current_val_set, next_val_set);
-                        Vec::new()
-                    }
-                    ConsensusEvent::AdvanceEpoch(valset) => {
-                        self.advance_epoch(valset);
-                        Vec::new()
-                    }
                     ConsensusEvent::StateUpdate((seq_num, root_hash)) => {
                         self.consensus.handle_state_root_update(seq_num, root_hash);
+                        Vec::new()
+                    }
+                    ConsensusEvent::UpdateNextValSet(valset) => {
+                        self.update_next_val_set(valset);
                         Vec::new()
                     }
                 };
 
                 let prepare_router_message =
-                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
+                    |monad_state: &Self, target: RouterTarget, message: ConsensusMessage<SCT>| {
                         let message = VerifiedMonadMessage(
-                            message.sign::<HasherType, ST>(self.consensus.get_keypair()),
+                            message.sign::<HasherType, ST>(monad_state.consensus.get_keypair()),
                         );
                         Command::RouterCommand(RouterCommand::Publish { target, message })
                     };
@@ -483,7 +468,7 @@ where
                 for consensus_command in consensus_commands {
                     match consensus_command {
                         ConsensusCommand::Publish { target, message } => {
-                            cmds.push(prepare_router_message(target, message));
+                            cmds.push(prepare_router_message(self, target, message));
                         }
                         ConsensusCommand::Schedule {
                             duration,
@@ -522,6 +507,7 @@ where
 
                         ConsensusCommand::RequestSync { peer, block_id } => {
                             cmds.push(prepare_router_message(
+                                self,
                                 RouterTarget::PointToPoint((&peer).into()),
                                 ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
                                     block_id,
@@ -558,6 +544,12 @@ where
                         ConsensusCommand::StateRootHash(full_block) => {
                             cmds.push(Command::StateRootHashCommand(
                                 StateRootHashCommand::LedgerCommit(full_block),
+                            ))
+                        }
+                        ConsensusCommand::EpochEnd(seq_num) => {
+                            self.advance_epoch();
+                            cmds.push(Command::ValidatorSetCommand(
+                                ValidatorSetCommand::EpochEnd(seq_num),
                             ))
                         }
                     }

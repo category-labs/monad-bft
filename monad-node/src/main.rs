@@ -18,7 +18,7 @@ use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
+    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, validator_set::ValidatorSetUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;
@@ -100,6 +100,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
+        validator_set: ValidatorSetUpdater::default(),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {

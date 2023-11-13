@@ -10,7 +10,8 @@ use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{
-        MockMempoolRandFail, MockMempoolRandFailConfig, NoSerRouterConfig, NoSerRouterScheduler,
+        MockMempoolRandFail, MockMempoolRandFailConfig, MockValidatorSetUpdaterNop,
+        NoSerRouterConfig, NoSerRouterScheduler,
     },
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
