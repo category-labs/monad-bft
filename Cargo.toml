@@ -7,7 +7,6 @@ members = [
     "monad-consensus-state",
     "monad-consensus-types",
     "monad-crypto",
-    "monad-driver",
     "monad-eth-types",
     "monad-executor",
     "monad-executor-glue",
@@ -22,7 +21,6 @@ members = [
     "monad-mempool-types",
     "monad-mock-swarm",
     "monad-node",
-    "monad-p2p",
     "monad-proto",
     "monad-quic",
     "monad-randomized-tests",
@@ -48,7 +46,6 @@ debug = true
 
 [workspace.dependencies]
 libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
-libp2p-identity = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
 reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 

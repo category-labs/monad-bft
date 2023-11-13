@@ -19,7 +19,6 @@ use monad_executor_glue::{
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
 use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
-use monad_p2p::Multiaddr;
 use monad_quic::service::UnsafeNoAuthQuinnConfig;
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_updaters::{
@@ -49,13 +48,6 @@ where
     MonadP2P {
         config: monad_quic::service::ServiceConfig<UnsafeNoAuthQuinnConfig>,
         gossip_config: MonadP2PGossipConfig,
-    },
-    LibP2P {
-        identity: libp2p::identity::Keypair,
-        bind_address: Multiaddr,
-        timeout: Duration,
-        keepalive: Duration,
-        peers: Vec<(Multiaddr, libp2p::PeerId)>,
     },
 }
 
@@ -120,29 +112,6 @@ where
                 },
             )),
             RouterConfig::Local(router) => Updater::boxed(router),
-            RouterConfig::LibP2P {
-                identity,
-                bind_address,
-                timeout,
-                keepalive,
-                peers,
-            } => {
-                let mut router = monad_p2p::Service::with_tokio_executor(
-                    identity,
-                    bind_address,
-                    timeout,
-                    keepalive,
-                )
-                .await;
-                for (address, peer) in peers {
-                    router.add_peer(&peer, address)
-                }
-
-                // FIXME hack so all tcp sockets are bound before they try and send mesages
-                // we can delete this once we support retry at the monad-p2p executor level
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                Updater::boxed(router)
-            }
         },
         timer: TokioTimer::default(),
         mempool: match config.mempool_config {

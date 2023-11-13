@@ -808,28 +808,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blake2b_simd"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23285ad32269793932e830392f2fe2f83e26488fd3ec778883a93c8323735780"
-dependencies = [
- "arrayref",
- "arrayvec 0.7.4",
- "constant_time_eq",
-]
-
-[[package]]
-name = "blake2s_simd"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94230421e395b9920d23df13ea5d77a20e1725331f90fbbf6df6040b33f756ae"
-dependencies = [
- "arrayref",
- "arrayvec 0.7.4",
- "constant_time_eq",
-]
-
-[[package]]
 name = "blake3"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1599,16 +1577,6 @@ dependencies = [
  "generic-array",
  "rand_core 0.6.4",
  "typenum",
-]
-
-[[package]]
-name = "crypto-mac"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b584a330336237c1eecd3e94266efb216c56ed91225d634cb2991c5f3fd1aeab"
-dependencies = [
- "generic-array",
- "subtle",
 ]
 
 [[package]]
@@ -2895,15 +2863,6 @@ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
-dependencies = [
- "ahash",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93e7192158dbcda357bdec5fb5788eebf8bbac027f3f33e719d29135ae84156"
@@ -2987,21 +2946,11 @@ dependencies = [
 
 [[package]]
 name = "hmac"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "126888268dcc288495a26bf004b38c5fdbb31682f992c84ceb046a1f0fe38840"
-dependencies = [
- "crypto-mac 0.8.0",
- "digest 0.9.0",
-]
-
-[[package]]
-name = "hmac"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2a2320eb7ec0ebe8da8f744d7812d9fc4cb4d09344ac01898dbcb6a20ae69b"
 dependencies = [
- "crypto-mac 0.11.1",
+ "crypto-mac",
  "digest 0.9.0",
 ]
 
@@ -3012,17 +2961,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest 0.10.7",
-]
-
-[[package]]
-name = "hmac-drbg"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ea0a1394df5b6574da6e0c1ade9e78868c9fb0a4e5ef4428e32da4676b85b1"
-dependencies = [
- "digest 0.9.0",
- "generic-array",
- "hmac 0.8.1",
 ]
 
 [[package]]
@@ -3606,15 +3544,12 @@ dependencies = [
  "libp2p-core",
  "libp2p-dns",
  "libp2p-gossipsub",
- "libp2p-identify",
  "libp2p-identity",
  "libp2p-mdns",
  "libp2p-metrics",
  "libp2p-mplex",
  "libp2p-noise",
- "libp2p-plaintext",
  "libp2p-quic",
- "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
  "libp2p-webrtc",
@@ -3717,35 +3652,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "libp2p-identify"
-version = "0.42.1"
-source = "git+https://github.com/monad-crypto/rust-libp2p.git?rev=8ca605d9#8ca605d9dbb52081221a745c067c0c09e4a1ebd3"
-dependencies = [
- "asynchronous-codec",
- "either",
- "futures",
- "futures-timer",
- "libp2p-core",
- "libp2p-identity",
- "libp2p-swarm",
- "log",
- "lru",
- "quick-protobuf",
- "quick-protobuf-codec",
- "smallvec",
- "thiserror",
- "void",
-]
-
-[[package]]
 name = "libp2p-identity"
 version = "0.1.1"
 source = "git+https://github.com/monad-crypto/rust-libp2p.git?rev=8ca605d9#8ca605d9dbb52081221a745c067c0c09e4a1ebd3"
 dependencies = [
- "asn1_der",
  "bs58",
  "ed25519-dalek",
- "libsecp256k1",
  "log",
  "multiaddr",
  "multihash",
@@ -3783,7 +3695,6 @@ source = "git+https://github.com/monad-crypto/rust-libp2p.git?rev=8ca605d9#8ca60
 dependencies = [
  "libp2p-core",
  "libp2p-gossipsub",
- "libp2p-identify",
  "libp2p-identity",
  "libp2p-swarm",
  "prometheus-client",
@@ -3830,22 +3741,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libp2p-plaintext"
-version = "0.39.1"
-source = "git+https://github.com/monad-crypto/rust-libp2p.git?rev=8ca605d9#8ca605d9dbb52081221a745c067c0c09e4a1ebd3"
-dependencies = [
- "asynchronous-codec",
- "bytes",
- "futures",
- "libp2p-core",
- "libp2p-identity",
- "log",
- "quick-protobuf",
- "unsigned-varint",
- "void",
-]
-
-[[package]]
 name = "libp2p-quic"
 version = "0.7.0-alpha.3"
 source = "git+https://github.com/monad-crypto/rust-libp2p.git?rev=8ca605d9#8ca605d9dbb52081221a745c067c0c09e4a1ebd3"
@@ -3864,21 +3759,6 @@ dependencies = [
  "rustls 0.20.9",
  "thiserror",
  "tokio",
-]
-
-[[package]]
-name = "libp2p-request-response"
-version = "0.24.0"
-source = "git+https://github.com/monad-crypto/rust-libp2p.git?rev=8ca605d9#8ca605d9dbb52081221a745c067c0c09e4a1ebd3"
-dependencies = [
- "async-trait",
- "futures",
- "instant",
- "libp2p-core",
- "libp2p-identity",
- "libp2p-swarm",
- "rand 0.8.5",
- "smallvec",
 ]
 
 [[package]]
@@ -4008,54 +3888,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libsecp256k1"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95b09eff1b35ed3b33b877ced3a691fc7a481919c7e29c53c906226fcf55e2a1"
-dependencies = [
- "arrayref",
- "base64 0.13.1",
- "digest 0.9.0",
- "hmac-drbg",
- "libsecp256k1-core",
- "libsecp256k1-gen-ecmult",
- "libsecp256k1-gen-genmult",
- "rand 0.8.5",
- "serde",
- "sha2 0.9.9",
- "typenum",
-]
-
-[[package]]
-name = "libsecp256k1-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be9b9bb642d8522a44d533eab56c16c738301965504753b03ad1de3425d5451"
-dependencies = [
- "crunchy",
- "digest 0.9.0",
- "subtle",
-]
-
-[[package]]
-name = "libsecp256k1-gen-ecmult"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3038c808c55c87e8a172643a7d87187fc6c4174468159cb3090659d55bcb4809"
-dependencies = [
- "libsecp256k1-core",
-]
-
-[[package]]
-name = "libsecp256k1-gen-genmult"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3db8d6ba2cec9eacc40e6e8ccc98931840301f1006e95647ceb2dd5c3aa06f7c"
-dependencies = [
- "libsecp256k1-core",
-]
-
-[[package]]
 name = "libz-sys"
 version = "1.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4099,15 +3931,6 @@ name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
-
-[[package]]
-name = "lru"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "718e8fae447df0c7e1ba7f5189829e63fd536945c8988d61444c19039f16b670"
-dependencies = [
- "hashbrown 0.13.2",
-]
 
 [[package]]
 name = "lru-cache"
@@ -4414,9 +4237,7 @@ dependencies = [
  "blst",
  "criterion",
  "hex",
- "libp2p-identity",
  "monad-proto",
- "multihash",
  "rcgen 0.11.3",
  "rustls 0.21.8",
  "secp256k1 0.26.0",
@@ -4424,32 +4245,6 @@ dependencies = [
  "tiny-keccak",
  "zerocopy 0.6.5",
  "zeroize",
-]
-
-[[package]]
-name = "monad-driver"
-version = "0.1.0"
-dependencies = [
- "futures",
- "libp2p",
- "monad-block-sync",
- "monad-consensus",
- "monad-consensus-state",
- "monad-consensus-types",
- "monad-crypto",
- "monad-eth-types",
- "monad-executor",
- "monad-executor-glue",
- "monad-mock-swarm",
- "monad-p2p",
- "monad-state",
- "monad-testutil",
- "monad-types",
- "monad-updaters",
- "monad-validator",
- "monad-wal",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -4669,20 +4464,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-p2p"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "libp2p",
- "monad-crypto",
- "monad-executor",
- "monad-executor-glue",
- "monad-p2p",
- "monad-types",
-]
-
-[[package]]
 name = "monad-proto"
 version = "0.1.0"
 dependencies = [
@@ -4767,7 +4548,6 @@ dependencies = [
  "clap 4.4.7",
  "env_logger",
  "futures-util",
- "libp2p",
  "monad-block-sync",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -4777,7 +4557,6 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-mock-swarm",
- "monad-p2p",
  "monad-quic",
  "monad-state",
  "monad-types",
@@ -5005,14 +4784,8 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "835d6ff01d610179fbce3de1694d007e500bf33a7f29689838941d6bf783ae40"
 dependencies = [
- "blake2b_simd",
- "blake2s_simd",
- "blake3",
  "core2",
- "digest 0.10.7",
  "multihash-derive",
- "sha2 0.10.8",
- "sha3",
  "unsigned-varint",
 ]
 

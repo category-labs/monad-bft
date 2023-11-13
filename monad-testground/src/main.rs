@@ -86,9 +86,6 @@ enum RouterArgs {
         bandwidth_Mbps: u16,
         gossip: GossipArgs,
     },
-    LibP2P {
-        keepalive_s: u64, // default 60
-    },
 }
 
 enum GossipArgs {
@@ -225,9 +222,9 @@ where
     SignatureCollectionType: SignatureCollection,
 {
     let configs = std::iter::repeat_with(|| {
-        let (keypair, libp2p_keypair) = KeyPair::libp2p_from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+        let keypair = KeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
         let cert_keypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
-        (keypair, libp2p_keypair, cert_keypair)
+        (keypair, cert_keypair)
     })
     .take(addresses.len())
     .collect::<Vec<_>>();
@@ -235,15 +232,13 @@ where
     let validator_mapping = ValidatorMapping::new(
         configs
             .iter()
-            .map(|(keypair, _libp2p_keypair, cert_keypair)| {
-                (NodeId(keypair.pubkey()), cert_keypair.pubkey())
-            })
+            .map(|(keypair, cert_keypair)| (NodeId(keypair.pubkey()), cert_keypair.pubkey()))
             .collect::<Vec<_>>(),
     );
 
     let genesis_peers = configs
         .iter()
-        .map(|(keypair, _libp2p_keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
+        .map(|(keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
         .collect::<Vec<_>>();
     let genesis_block = {
         let genesis_txn = TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]);
@@ -273,7 +268,7 @@ where
         let msg = HasherType::hash_object(&genesis_lci);
 
         let mut sigs = Vec::new();
-        for (key, _, cert_key) in &configs {
+        for (key, cert_key) in &configs {
             let node_id = NodeId(key.pubkey());
             let sig = <SignatureCollectionType as SignatureCollection>::SignatureType::sign(
                 msg.as_ref(),
@@ -287,16 +282,6 @@ where
 
         signatures
     };
-
-    let libp2p_peers: Vec<_> = addresses
-        .iter()
-        .zip(genesis_peers.iter())
-        .map(|(address, (pubkey, _))| {
-            let (host, port) = address.split_once(':').expect("expected <host>:<port>");
-            let address = format!("/ip4/{host}/udp/{port}/quic-v1").parse().unwrap();
-            (address, pubkey.into())
-        })
-        .collect();
 
     let mut maybe_local_routers = match args.router {
         RouterArgs::Local {
@@ -318,13 +303,13 @@ where
     let known_addresses: HashMap<_, _> = addresses
         .iter()
         .zip(configs.iter())
-        .map(|(address, (keypair, _, _))| (PeerId(keypair.pubkey()), address.parse().unwrap()))
+        .map(|(address, (keypair, _))| (PeerId(keypair.pubkey()), address.parse().unwrap()))
         .collect();
 
     addresses
         .iter()
         .zip(configs)
-        .map(|(address, (keypair, libp2p_keypair, cert_keypair))| {
+        .map(|(address, (keypair, cert_keypair))| {
             let me = PeerId(keypair.pubkey());
             Config {
                 num_nodes: addresses.len(),
@@ -334,17 +319,6 @@ where
                         RouterArgs::Local { .. } => RouterConfig::Local(
                             maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
                         ),
-                        RouterArgs::LibP2P { keepalive_s } => RouterConfig::LibP2P {
-                            identity: libp2p_keypair.into(),
-                            bind_address: {
-                                let (host, port) =
-                                    address.split_once(':').expect("expected <host>:<port>");
-                                format!("/ip4/{host}/udp/{port}/quic-v1").parse().unwrap()
-                            },
-                            timeout: Duration::from_millis(args.delta_ms),
-                            keepalive: Duration::from_secs(*keepalive_s),
-                            peers: libp2p_peers.clone(),
-                        },
                         RouterArgs::MonadP2P {
                             max_rtt_ms,
                             bandwidth_Mbps,
