@@ -124,10 +124,12 @@ impl Pool {
             }
 
             let Some(tx_expiration_time) = tx.timestamp.checked_add(self.ttl_duration) else {
+                self.map.remove(&tx.hash);
                 continue;
             };
 
             if tx_expiration_time < now {
+                self.map.remove(&tx.hash);
                 continue;
             }
 
