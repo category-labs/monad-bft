@@ -20,6 +20,7 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-transformer = { path = "../monad-transformer" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }

@@ -1,6 +1,5 @@
 use std::{
     cmp::{Ordering, Reverse},
-    collections::{BTreeSet, VecDeque},
     hash::{Hash, Hasher},
     marker::{PhantomData, Unpin},
     ops::DerefMut,
@@ -22,7 +21,8 @@ use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
     TimerCommand,
 };
-use monad_types::{NodeId, RouterTarget, TimeoutVariant};
+use monad_router_scheduler::{RouterEvent, RouterScheduler};
+use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
     state_root_hash::MockStateRootHash,
@@ -32,119 +32,6 @@ use rand::{Rng, RngCore};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 use crate::swarm_relation::SwarmRelation;
-
-const MOCK_DEFAULT_SEED: u64 = 1;
-
-#[derive(Debug)]
-pub enum RouterEvent<InboundMessage, TransportMessage> {
-    Rx(NodeId, InboundMessage),
-    Tx(NodeId, TransportMessage),
-}
-
-/// RouterScheduler describes HOW gossip messages get delivered
-pub trait RouterScheduler {
-    type Config;
-
-    // Transport level message type (usually bytes)
-    type TransportMessage;
-
-    // Application level data
-    type InboundMessage;
-    type OutboundMessage;
-
-    fn new(config: Self::Config) -> Self;
-
-    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::TransportMessage);
-    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage);
-
-    fn peek_tick(&self) -> Option<Duration>;
-    fn step_until(
-        &mut self,
-        until: Duration,
-    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>>;
-}
-
-pub struct NoSerRouterScheduler<IM, OM> {
-    all_peers: BTreeSet<NodeId>,
-    events: VecDeque<(Duration, RouterEvent<IM, OM>)>,
-
-    phantom: PhantomData<OM>,
-}
-
-#[derive(Clone)]
-pub struct NoSerRouterConfig {
-    pub all_peers: BTreeSet<NodeId>,
-}
-
-impl<IM, OM> RouterScheduler for NoSerRouterScheduler<IM, OM>
-where
-    OM: Clone,
-    IM: From<OM>,
-{
-    type Config = NoSerRouterConfig;
-    type TransportMessage = OM;
-    type InboundMessage = IM;
-    type OutboundMessage = OM;
-
-    fn new(config: NoSerRouterConfig) -> Self {
-        Self {
-            all_peers: config.all_peers,
-            events: Default::default(),
-
-            phantom: PhantomData,
-        }
-    }
-
-    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::TransportMessage) {
-        assert!(
-            time >= self
-                .events
-                .back()
-                .map(|(time, _)| *time)
-                .unwrap_or(Duration::ZERO)
-        );
-        self.events
-            .push_back((time, RouterEvent::Rx(from, message.into())))
-    }
-
-    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
-        assert!(
-            time >= self
-                .events
-                .back()
-                .map(|(time, _)| *time)
-                .unwrap_or(Duration::ZERO)
-        );
-        match to {
-            RouterTarget::Broadcast => {
-                self.events.extend(
-                    self.all_peers
-                        .iter()
-                        .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
-                );
-            }
-            RouterTarget::PointToPoint(to) => {
-                self.events.push_back((time, RouterEvent::Tx(to, message)));
-            }
-        }
-    }
-
-    fn peek_tick(&self) -> Option<Duration> {
-        self.events.front().map(|(tick, _)| *tick)
-    }
-
-    fn step_until(
-        &mut self,
-        until: Duration,
-    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>> {
-        if self.peek_tick().unwrap_or(Duration::MAX) <= until {
-            let (_, event) = self.events.pop_front().expect("must exist");
-            Some(event)
-        } else {
-            None
-        }
-    }
-}
 
 pub trait MockableExecutor:
     Executor<Command = MempoolCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
@@ -516,6 +403,8 @@ where
         }
     }
 }
+
+const MOCK_DEFAULT_SEED: u64 = 1;
 
 pub struct MockMempool<ST, SCT> {
     fetch_txs_state: Option<FetchTxParams<SCT>>,

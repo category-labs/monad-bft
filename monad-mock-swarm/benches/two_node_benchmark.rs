@@ -3,10 +3,9 @@ use std::time::Duration;
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_consensus_types::transaction_validator::MockValidator;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, NoSerRouterConfig},
-    mock_swarm::UntilTerminator,
-    swarm_relation::NoSerSwarm,
+    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };
+use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{GenericTransformer, LatencyTransformer};
 use monad_wal::mock::MockWALoggerConfig;

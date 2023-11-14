@@ -33,9 +33,10 @@ use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig},
     swarm_relation::SwarmRelation,
 };
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{
     GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer, ID,

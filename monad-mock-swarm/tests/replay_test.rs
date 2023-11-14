@@ -10,10 +10,11 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockExecutor, MockMempool, MockMempoolConfig},
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
 };
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};

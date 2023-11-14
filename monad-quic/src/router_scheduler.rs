@@ -8,7 +8,7 @@ use std::{
 
 use monad_crypto::rustls::UnsafeTlsVerifier;
 use monad_gossip::{Gossip, GossipEvent};
-use monad_mock_swarm::mock::{RouterEvent, RouterScheduler};
+use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,

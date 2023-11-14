@@ -9,11 +9,12 @@ mod test {
     use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
     use monad_crypto::NopSignature;
     use monad_mock_swarm::{
-        mock::{MockMempoolConfig, NoSerRouterConfig},
+        mock::MockMempoolConfig,
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm, SwarmRelation},
         transformer::{FilterTransformer, MonadMessageTransformer},
     };
+    use monad_router_scheduler::NoSerRouterConfig;
     use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
     use monad_transformer::{
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,

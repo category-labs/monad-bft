@@ -11,6 +11,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{Message, MonadEvent};
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
@@ -20,10 +21,7 @@ use monad_wal::{
 };
 
 use crate::{
-    mock::{
-        MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig, NoSerRouterScheduler,
-        RouterScheduler,
-    },
+    mock::{MockMempool, MockMempoolConfig, MockableExecutor},
     transformer::MonadMessageTransformerPipeline,
 };
 

@@ -12,6 +12,7 @@ use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
 use monad_executor::{timed_event::TimedEvent, Executor, State};
+use monad_router_scheduler::RouterScheduler;
 use monad_state::MonadState;
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use monad_types::Round;
@@ -23,7 +24,7 @@ use rayon::prelude::*;
 use tracing::info_span;
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent, RouterScheduler},
+    mock::{MockExecutor, MockExecutorEvent},
     swarm_relation::SwarmRelation,
 };
 

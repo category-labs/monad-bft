@@ -26,4 +26,5 @@ zerocopy = { workspace = true }
 monad-block-sync = { path = "../monad-block-sync" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-wal = { path = "../monad-wal" }

@@ -4405,6 +4405,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-quic",
+ "monad-router-scheduler",
  "monad-state",
  "monad-testutil",
  "monad-tracing-counter",
@@ -4482,7 +4483,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
- "monad-mock-swarm",
+ "monad-router-scheduler",
  "monad-types",
  "quinn",
  "quinn-proto 0.11.0",
@@ -4499,11 +4500,19 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-mock-swarm",
+ "monad-router-scheduler",
  "monad-testutil",
  "monad-transformer",
  "monad-types",
  "monad-wal",
  "simple-xml-builder",
+]
+
+[[package]]
+name = "monad-router-scheduler"
+version = "0.1.0"
+dependencies = [
+ "monad-types",
 ]
 
 [[package]]
@@ -4585,6 +4594,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-router-scheduler",
  "monad-state",
  "monad-transformer",
  "monad-types",
@@ -4625,6 +4635,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-router-scheduler",
  "monad-state",
  "monad-testutil",
  "monad-transformer",
@@ -4713,6 +4724,7 @@ dependencies = [
  "monad-gossip",
  "monad-mock-swarm",
  "monad-quic",
+ "monad-router-scheduler",
  "monad-state",
  "monad-testutil",
  "monad-transformer",
@@ -4737,6 +4749,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-router-scheduler",
  "monad-state",
  "monad-testutil",
  "monad-transformer",

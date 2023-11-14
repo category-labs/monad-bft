@@ -24,6 +24,7 @@ members = [
     "monad-proto",
     "monad-quic",
     "monad-randomized-tests",
+    "monad-router-scheduler",
     "monad-state",
     "monad-testground",
     "monad-testutil",
