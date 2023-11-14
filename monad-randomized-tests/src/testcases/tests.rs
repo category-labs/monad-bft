@@ -6,12 +6,12 @@ use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
     mock_swarm::UntilTerminator,
     swarm_relation::NoSerSwarm,
-    transformer::{
-        GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
-        ReplayTransformer, TransformerReplayOrder, ID,
-    },
 };
 use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};
+use monad_transformer::{
+    GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
+    ReplayTransformer, TransformerReplayOrder, ID,
+};
 use monad_types::NodeId;
 use monad_wal::mock::MockWALoggerConfig;
 

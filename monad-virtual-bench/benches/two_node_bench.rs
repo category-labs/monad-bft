@@ -5,9 +5,9 @@ use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
     mock_swarm::UntilTerminator,
     swarm_relation::NoSerSwarm,
-    transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_transformer::{GenericTransformer, LatencyTransformer};
 use monad_wal::mock::MockWALoggerConfig;
 
 fn two_nodes_virtual() -> u128 {

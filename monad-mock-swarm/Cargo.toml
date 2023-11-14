@@ -19,8 +19,8 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-transformer = { path = "../monad-transformer" }
 monad-state = { path = "../monad-state" }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
@@ -35,14 +35,12 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-block-sync = { path = "../monad-block-sync" }
 monad-gossip = { path = "../monad-gossip" }
 monad-quic = { path = "../monad-quic" }
 monad-testutil = { path = "../monad-testutil" }
+monad-tracing-counter = { path = "../monad-tracing-counter" }
 
 criterion = { workspace = true }
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 rcgen = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }

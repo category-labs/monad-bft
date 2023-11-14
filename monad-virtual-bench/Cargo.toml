@@ -22,6 +22,7 @@ monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-quic = { path = "../monad-quic" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
+monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }

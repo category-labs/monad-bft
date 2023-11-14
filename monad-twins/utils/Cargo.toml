@@ -15,6 +15,7 @@ monad-crypto = { path = "../../monad-crypto" }
 monad-mock-swarm = { path = "../../monad-mock-swarm" }
 monad-state = { path = "../../monad-state" }
 monad-testutil = { path = "../../monad-testutil" }
+monad-transformer = { path = "../../monad-transformer" }
 monad-types = { path = "../../monad-types" }
 
 

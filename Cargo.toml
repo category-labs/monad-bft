@@ -28,6 +28,7 @@ members = [
     "monad-testground",
     "monad-testutil",
     "monad-tracing-counter",
+    "monad-transformer",
     "monad-twins",
     "monad-types",
     "monad-updaters",

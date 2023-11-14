@@ -10,6 +10,7 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-testutil = { path = "../monad-testutil" }
+monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-wal = { path = "../monad-wal" }
 

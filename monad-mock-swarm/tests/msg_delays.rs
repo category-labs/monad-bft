@@ -1,14 +1,14 @@
 mod common;
 use std::time::Duration;
 
-use common::NoSerSwarm;
 use monad_consensus_types::transaction_validator::MockValidator;
 use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
     mock_swarm::UntilTerminator,
-    transformer::{GenericTransformer, XorLatencyTransformer},
+    swarm_relation::NoSerSwarm,
 };
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_transformer::{GenericTransformer, XorLatencyTransformer};
 use monad_wal::mock::MockWALoggerConfig;
 
 #[test]

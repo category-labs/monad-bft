@@ -12,10 +12,10 @@ use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, NoSerRouterConfig, NoSerRouterScheduler},
     mock_swarm::{Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
-    transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::get_configs;
+use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::NodeId;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};

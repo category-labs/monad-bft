@@ -12,12 +12,10 @@ use monad_consensus_types::{
 use monad_crypto::{hasher::Sha256Hash, secp256k1::KeyPair};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
-use monad_mock_swarm::{
-    swarm_relation::SwarmRelation,
-    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
-};
+use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
+use monad_transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID};
 use monad_types::NodeId;
 
 use crate::{graph::SimulationConfig, VizSwarm};

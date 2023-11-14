@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use monad_mock_swarm::transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
+use monad_transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
 use monad_types::{NodeId, RouterTarget};
 use rand::Rng;
 

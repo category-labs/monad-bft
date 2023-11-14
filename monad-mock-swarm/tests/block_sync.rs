@@ -12,12 +12,13 @@ mod test {
         mock::{MockMempoolConfig, NoSerRouterConfig},
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm, SwarmRelation},
-        transformer::{
-            DropTransformer, FilterTransformer, GenericTransformer, LatencyTransformer,
-            MonadMessageTransformer, PartitionTransformer, PeriodicTransformer, ID,
-        },
+        transformer::{FilterTransformer, MonadMessageTransformer},
     };
     use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
+    use monad_transformer::{
+        DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
+        PeriodicTransformer, ID,
+    };
     use monad_types::NodeId;
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;

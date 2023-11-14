@@ -1,18 +1,18 @@
 mod common;
 use std::{collections::HashSet, env, time::Duration};
 
-use common::NoSerSwarm;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
     mock_swarm::UntilTerminator,
-    transformer::{
-        GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
-        TransformerReplayOrder, ID,
-    },
+    swarm_relation::NoSerSwarm,
 };
 use monad_testutil::swarm::{get_configs, run_nodes_until};
+use monad_transformer::{
+    GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
+    TransformerReplayOrder, ID,
+};
 use monad_types::NodeId;
 use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};

@@ -101,9 +101,7 @@ mod tests {
     use std::time::Duration;
 
     use monad_crypto::secp256k1::KeyPair;
-    use monad_mock_swarm::transformer::{
-        BytesSplitterTransformer, BytesTransformer, LatencyTransformer,
-    };
+    use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
     use monad_types::NodeId;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;

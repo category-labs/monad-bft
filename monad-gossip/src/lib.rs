@@ -4,7 +4,6 @@ use monad_types::{NodeId, RouterTarget};
 
 pub mod gossipsub;
 pub mod mock;
-#[cfg(test)]
 mod testutil;
 
 pub enum GossipEvent<GM> {

@@ -1,18 +1,18 @@
 mod common;
 use std::time::Duration;
 
-use common::NoSerSwarm;
 use monad_consensus_types::transaction_validator::MockValidator;
 use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
     mock_swarm::UntilTerminator,
-    transformer::{GenericTransformer, LatencyTransformer},
+    swarm_relation::NoSerSwarm,
 };
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_tracing_counter::{
     counter::{CounterLayer, MetricFilter},
     counter_status,
 };
+use monad_transformer::{GenericTransformer, LatencyTransformer};
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};

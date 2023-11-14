@@ -16,6 +16,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state = { path = "../monad-state" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 

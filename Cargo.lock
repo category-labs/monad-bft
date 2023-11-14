@@ -4286,7 +4286,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "monad-crypto",
- "monad-mock-swarm",
+ "monad-transformer",
  "monad-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -4408,6 +4408,7 @@ dependencies = [
  "monad-state",
  "monad-testutil",
  "monad-tracing-counter",
+ "monad-transformer",
  "monad-types",
  "monad-updaters",
  "monad-validator",
@@ -4499,6 +4500,7 @@ dependencies = [
  "monad-crypto",
  "monad-mock-swarm",
  "monad-testutil",
+ "monad-transformer",
  "monad-types",
  "monad-wal",
  "simple-xml-builder",
@@ -4584,6 +4586,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-mock-swarm",
  "monad-state",
+ "monad-transformer",
  "monad-types",
  "monad-validator",
  "monad-wal",
@@ -4600,6 +4603,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-transformer"
+version = "0.1.0"
+dependencies = [
+ "monad-tracing-counter",
+ "monad-types",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "tracing",
+]
+
+[[package]]
 name = "monad-twins"
 version = "0.1.0"
 dependencies = [
@@ -4613,6 +4627,7 @@ dependencies = [
  "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
+ "monad-transformer",
  "monad-twins-utils",
  "monad-types",
  "monad-validator",
@@ -4632,6 +4647,7 @@ dependencies = [
  "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
+ "monad-transformer",
  "monad-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -4699,6 +4715,7 @@ dependencies = [
  "monad-quic",
  "monad-state",
  "monad-testutil",
+ "monad-transformer",
  "monad-types",
  "monad-validator",
  "monad-wal",
@@ -4722,6 +4739,7 @@ dependencies = [
  "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
+ "monad-transformer",
  "monad-types",
  "monad-validator",
  "monad-wal",

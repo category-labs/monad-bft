@@ -12,6 +12,7 @@ use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{Message, MonadEvent};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
@@ -23,7 +24,7 @@ use crate::{
         MockMempool, MockMempoolConfig, MockableExecutor, NoSerRouterConfig, NoSerRouterScheduler,
         RouterScheduler,
     },
-    transformer::{GenericTransformerPipeline, MonadMessageTransformerPipeline, Pipeline},
+    transformer::MonadMessageTransformerPipeline,
 };
 
 pub trait SwarmRelation {

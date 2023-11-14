@@ -6,11 +6,9 @@ use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes},
     swarm_relation::SwarmRelation,
-    transformer::{
-        MonadMessageTransformer, MonadMessageTransformerPipeline, RandLatencyTransformer,
-        TwinsTransformer, ID,
-    },
+    transformer::{MonadMessageTransformer, MonadMessageTransformerPipeline, TwinsTransformer},
 };
+use monad_transformer::{RandLatencyTransformer, ID};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 
