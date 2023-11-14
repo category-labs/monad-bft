@@ -123,7 +123,8 @@ where
     fn get_pending_events(
         &self,
         node_id: &NodeId,
-    ) -> Vec<NodeEvent<NodeId, <S::State as State>::Message, <S::State as State>::Event>> {
+    ) -> Vec<NodeEvent<NodeId, <S::State as State>::OutboundMessage, <S::State as State>::Event>>
+    {
         let mut nes = vec![];
         for pmsg in self
             .nodes
@@ -157,7 +158,7 @@ where
     C: ReplayConfig<S::State>,
 {
     type State = S::State;
-    type InboundMessage = S::InboundMessage;
+    type InboundMessage = S::OutboundMessage;
     type NodeId = NodeId;
     type Swarm = S;
 

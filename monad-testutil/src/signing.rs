@@ -233,9 +233,3 @@ pub fn get_certificate_key<SCT: SignatureCollection>(
     let mut hash = hasher.hash();
     <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash.0).unwrap()
 }
-
-pub fn get_certificate_key_secret(seed: u64) -> [u8; 32] {
-    let mut hasher = HasherType::new();
-    hasher.update(seed.to_le_bytes());
-    hasher.hash().0
-}

@@ -3,15 +3,11 @@
 pub mod test_tool {
     use std::time::Duration;
 
-    use monad_consensus::{
-        messages::{
-            consensus_message::ConsensusMessage,
-            message::{
-                BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-                VoteMessage,
-            },
+    use monad_consensus::messages::{
+        consensus_message::ConsensusMessage,
+        message::{
+            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
         },
-        validation::signing::Unverified,
     };
     use monad_consensus_types::{
         block::Block,
@@ -24,12 +20,12 @@ pub mod test_tool {
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
-        hasher::{Hash, Sha256Hash},
+        hasher::{Hash, HasherType, Sha256Hash},
         secp256k1::KeyPair,
         NopSignature,
     };
     use monad_eth_types::EthAddress;
-    use monad_state::MonadMessage;
+    use monad_state::VerifiedMonadMessage;
     use monad_testutil::signing::create_keys;
     use monad_types::{BlockId, NodeId, Round};
 
@@ -85,19 +81,17 @@ pub mod test_tool {
         Block::new::<H>(fake_node_id(), round, &payload, &fake_qc())
     }
 
-    pub fn fake_proposal_message(kp: &KeyPair, round: Round) -> MonadMessage<ST, SC> {
+    pub fn fake_proposal_message(kp: &KeyPair, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = ProposalMessage {
             block: fake_block(round),
             last_round_tc: None,
         };
-        let msg = Unverified::new(
-            ConsensusMessage::Proposal(internal_msg),
-            NopSignature::sign(&[0x00_u8, 32], kp),
-        );
-        MonadMessage::<ST, SC>::new(msg)
+        ConsensusMessage::Proposal(internal_msg)
+            .sign::<HasherType, NopSignature>(kp)
+            .into()
     }
 
-    pub fn fake_vote_message(kp: &KeyPair, round: Round) -> MonadMessage<ST, SC> {
+    pub fn fake_vote_message(kp: &KeyPair, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let vote_info = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
             round,
@@ -112,14 +106,12 @@ pub mod test_tool {
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
-        let msg = Unverified::new(
-            ConsensusMessage::Vote(internal_msg),
-            NopSignature::sign(&[0x00_u8, 32], kp),
-        );
-        MonadMessage::<ST, SC>::new(msg)
+        ConsensusMessage::Vote(internal_msg)
+            .sign::<HasherType, NopSignature>(kp)
+            .into()
     }
 
-    pub fn fake_timeout_message(kp: &KeyPair) -> MonadMessage<ST, SC> {
+    pub fn fake_timeout_message(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
         let timeout_info = TimeoutInfo {
             round: Round(0),
             high_qc: fake_qc(),
@@ -131,30 +123,24 @@ pub mod test_tool {
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
-        let msg = Unverified::new(
-            ConsensusMessage::Timeout(internal_msg),
-            NopSignature::sign(&[0x00_u8, 32], kp),
-        );
-        MonadMessage::<ST, SC>::new(msg)
+        ConsensusMessage::Timeout(internal_msg)
+            .sign::<HasherType, NopSignature>(kp)
+            .into()
     }
 
-    pub fn fake_request_block_sync(kp: &KeyPair) -> MonadMessage<ST, SC> {
+    pub fn fake_request_block_sync(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = RequestBlockSyncMessage {
             block_id: BlockId(Hash([0x00_u8; 32])),
         };
-        let msg = Unverified::new(
-            ConsensusMessage::RequestBlockSync(internal_msg),
-            NopSignature::sign(&[0x00_u8, 32], kp),
-        );
-        MonadMessage::<ST, SC>::new(msg)
+        ConsensusMessage::RequestBlockSync(internal_msg)
+            .sign::<HasherType, NopSignature>(kp)
+            .into()
     }
 
-    pub fn fake_block_sync(kp: &KeyPair) -> MonadMessage<ST, SC> {
+    pub fn fake_block_sync(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = BlockSyncMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
-        let msg = Unverified::new(
-            ConsensusMessage::BlockSync(internal_msg),
-            NopSignature::sign(&[0x00_u8, 32], kp),
-        );
-        MonadMessage::<ST, SC>::new(msg)
+        ConsensusMessage::BlockSync(internal_msg)
+            .sign::<HasherType, NopSignature>(kp)
+            .into()
     }
 }

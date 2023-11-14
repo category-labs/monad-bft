@@ -33,8 +33,7 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockTreeBlock<T> {
     block: FullBlock<T>,
     parent: Option<BlockId>,
@@ -106,7 +105,7 @@ pub enum RootKind {
     Unrooted(Round),
 }
 
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
+#[derive(PartialEq, Eq)]
 pub struct BlockTree<T> {
     pub root: RootKind,
     tree: HashMap<BlockId, BlockTreeBlock<T>>,

@@ -13,7 +13,7 @@ where
     pub send_id: NodeId,
     pub send_tick: Duration,
     pub event: S::Event,
-    pub message: <S as State>::Message,
+    pub message: <S as State>::OutboundMessage,
 }
 
 pub struct NodesInfo<S>
@@ -113,8 +113,6 @@ where
                 }
                 Command::RouterCommand(cmd) => match cmd {
                     RouterCommand::Publish { target, message } => {
-                        let message = message.into();
-
                         let tos = match target {
                             RouterTarget::PointToPoint(to) => vec![to],
                             RouterTarget::Broadcast => {
@@ -132,7 +130,7 @@ where
                             msg_queue.push(PendingMsg {
                                 send_id: *node_id,
                                 send_tick: tick,
-                                event: message.clone().event(*node_id),
+                                event: message.clone().into().event(*node_id),
                                 message: message.clone(),
                             });
                         }

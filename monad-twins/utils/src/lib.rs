@@ -7,8 +7,8 @@ use monad_mock_swarm::{
     mock_swarm::{Node, Nodes},
     swarm_relation::SwarmRelation,
     transformer::{
-        monad_test::{MonadMessageTransformer, MonadMessageTransformerPipeline, TwinsTransformer},
-        RandLatencyTransformer, ID,
+        MonadMessageTransformer, MonadMessageTransformerPipeline, RandLatencyTransformer,
+        TwinsTransformer, ID,
     },
 };
 use rand::{Rng, SeedableRng};

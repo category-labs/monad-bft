@@ -22,7 +22,7 @@ use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
     RouterTarget, TimerCommand,
 };
-use monad_types::{Deserializable, NodeId, Serializable, TimeoutVariant};
+use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
     state_root_hash::MockStateRootHash,
@@ -49,8 +49,8 @@ pub trait RouterScheduler {
     type TransportMessage;
 
     // Application level data
-    type InboundMessage: Deserializable<Self::TransportMessage>;
-    type OutboundMessage: Serializable<Self::TransportMessage>;
+    type InboundMessage;
+    type OutboundMessage;
 
     fn new(config: Self::Config) -> Self;
 
@@ -66,7 +66,7 @@ pub trait RouterScheduler {
 
 pub struct NoSerRouterScheduler<IM, OM> {
     all_peers: BTreeSet<NodeId>,
-    events: VecDeque<(Duration, RouterEvent<IM, IM>)>,
+    events: VecDeque<(Duration, RouterEvent<IM, OM>)>,
 
     phantom: PhantomData<OM>,
 }
@@ -78,11 +78,11 @@ pub struct NoSerRouterConfig {
 
 impl<IM, OM> RouterScheduler for NoSerRouterScheduler<IM, OM>
 where
-    IM: Clone,
-    OM: Serializable<IM>,
+    OM: Clone,
+    IM: From<OM>,
 {
     type Config = NoSerRouterConfig;
-    type TransportMessage = IM;
+    type TransportMessage = OM;
     type InboundMessage = IM;
     type OutboundMessage = OM;
 
@@ -95,7 +95,7 @@ where
         }
     }
 
-    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::InboundMessage) {
+    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::TransportMessage) {
         assert!(
             time >= self
                 .events
@@ -104,7 +104,7 @@ where
                 .unwrap_or(Duration::ZERO)
         );
         self.events
-            .push_back((time, RouterEvent::Rx(from, message)))
+            .push_back((time, RouterEvent::Rx(from, message.into())))
     }
 
     fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
@@ -117,7 +117,6 @@ where
         );
         match to {
             RouterTarget::Broadcast => {
-                let message: Self::TransportMessage = message.serialize();
                 self.events.extend(
                     self.all_peers
                         .iter()
@@ -125,8 +124,7 @@ where
                 );
             }
             RouterTarget::PointToPoint(to) => {
-                self.events
-                    .push_back((time, RouterEvent::Tx(to, message.serialize())));
+                self.events.push_back((time, RouterEvent::Tx(to, message)));
             }
         }
     }

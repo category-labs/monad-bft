@@ -58,7 +58,7 @@ impl SwarmRelation for VizSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::InboundMessage;
+    type TransportMessage = Self::OutboundMessage;
 
     type TransactionValidator = MockValidator;
 
@@ -74,9 +74,7 @@ impl SwarmRelation for VizSwarm {
     type RouterSchedulerConfig = NoSerRouterConfig;
     type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
 
-    type Pipeline = GenericTransformerPipeline<
-        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
-    >;
+    type Pipeline = GenericTransformerPipeline<Self::OutboundMessage>;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
@@ -87,7 +85,7 @@ impl SwarmRelation for VizSwarm {
 }
 
 type NS<'a> =
-    NodeState<'a, NodeId, VizSwarm, <<VizSwarm as SwarmRelation>::State as State>::Message>;
+    NodeState<'a, NodeId, VizSwarm, <<VizSwarm as SwarmRelation>::State as State>::OutboundMessage>;
 
 type Sim = NodesSimulation<VizSwarm, SimConfig>;
 type ReplaySim = ReplayNodesSimulation<VizSwarm, RepConfig>;

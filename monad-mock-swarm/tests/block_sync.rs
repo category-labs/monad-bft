@@ -11,19 +11,16 @@ mod test {
     use monad_mock_swarm::{
         mock::{MockMempoolConfig, NoSerRouterConfig},
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
-        swarm_relation::{monad_test::MonadMessageNoSerSwarm, SwarmRelation},
+        swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm, SwarmRelation},
         transformer::{
-            monad_test::{FilterTransformer, MonadMessageTransformer},
-            DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
-            PeriodicTransformer, ID,
+            DropTransformer, FilterTransformer, GenericTransformer, LatencyTransformer,
+            MonadMessageTransformer, PartitionTransformer, PeriodicTransformer, ID,
         },
     };
     use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
     use monad_types::NodeId;
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
-
-    use super::common::NoSerSwarm;
 
     #[test]
     fn bsync_timeout_recovery() {

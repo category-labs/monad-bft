@@ -26,7 +26,7 @@ impl SwarmRelation for BLSSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::InboundMessage;
+    type TransportMessage = Self::OutboundMessage;
 
     type TransactionValidator = MockValidator;
 
@@ -52,9 +52,6 @@ impl SwarmRelation for BLSSwarm {
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
-type SignatureType = SecpSignature;
-type SignatureCollectionType = BlsSignatureCollection;
-
 #[test]
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
@@ -66,9 +63,9 @@ fn two_nodes_bls() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::Latency::<
-            MonadMessage<SignatureType, SignatureCollectionType>,
-        >(LatencyTransformer(Duration::from_millis(1)))],
+        vec![GenericTransformer::Latency(LatencyTransformer(
+            Duration::from_millis(1),
+        ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),
         SwarmTestConfig {
             num_nodes: 2,

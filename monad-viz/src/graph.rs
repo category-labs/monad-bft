@@ -94,7 +94,7 @@ impl<S, C, CT, ST, SCT, VT, LT, BST> NodesSimulation<S, C>
 where
     S: SwarmRelation<
         State = MonadState<CT, ST, SCT, VT, LT, BST>,
-        TransportMessage = <S as SwarmRelation>::InboundMessage,
+        TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
 
@@ -138,7 +138,7 @@ impl<S, C, CT, ST, SCT, VT, LT, BST> Graph for NodesSimulation<S, C>
 where
     S: SwarmRelation<
         State = MonadState<CT, ST, SCT, VT, LT, BST>,
-        TransportMessage = <S as SwarmRelation>::InboundMessage,
+        TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
 
@@ -153,7 +153,7 @@ where
     Node<S>: Send,
 {
     type State = S::State;
-    type InboundMessage = S::InboundMessage;
+    type InboundMessage = S::TransportMessage;
     type NodeId = NodeId;
     type Swarm = S;
 

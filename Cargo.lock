@@ -4406,7 +4406,6 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
- "monad-mock-swarm",
  "monad-quic",
  "monad-state",
  "monad-testutil",
@@ -4526,7 +4525,6 @@ dependencies = [
  "monad-mock-swarm",
  "monad-proto",
  "monad-quic",
- "monad-state",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -4632,6 +4630,7 @@ version = "0.1.0"
 dependencies = [
  "itertools",
  "monad-consensus-types",
+ "monad-crypto",
  "monad-mock-swarm",
  "monad-state",
  "monad-testutil",
@@ -4744,7 +4743,6 @@ dependencies = [
  "monad-state",
  "monad-testutil",
  "monad-types",
- "monad-wal",
  "tempfile",
 ]
 

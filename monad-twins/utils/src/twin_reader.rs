@@ -6,20 +6,21 @@ use std::{
     time::Duration,
 };
 
-use itertools::izip;
+use itertools::{izip, Itertools};
 use monad_consensus_types::{
-    certificate_signature::CertificateKeyPair, signature_collection::SignatureCollection,
+    certificate_signature::CertificateKeyPair,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     transaction_validator::TransactionValidator,
+};
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    secp256k1::KeyPair,
 };
 use monad_mock_swarm::{
     mock_swarm::ProgressTerminator, swarm_relation::SwarmRelation, transformer::ID,
 };
 use monad_state::MonadConfig;
-use monad_testutil::{
-    signing::{create_keys, create_seed_for_certificate_keys, get_certificate_key_secret},
-    swarm::complete_config,
-    validators::complete_keys_w_validators,
-};
+use monad_testutil::{swarm::complete_config, validators::complete_keys_w_validators};
 use monad_types::{NodeId, Round};
 use serde::Deserialize;
 
@@ -67,7 +68,8 @@ where
     default_partition: Vec<ID>,
 
     // some redundant info in case its useful for future
-    secret: [u8; 32],
+    key_secret: [u8; 32],
+    certkey_secret: [u8; 32],
     name: String,
     expected_block: usize,
     is_honest: bool,
@@ -81,13 +83,27 @@ where
     fn clone(&self) -> Self {
         Self {
             id: self.id,
-            secret: self.secret,
-            state_config: self.state_config.dup(self.secret),
+            state_config: MonadConfig {
+                transaction_validator: self.state_config.transaction_validator.clone(),
+                validators: self.state_config.validators.clone(),
+                key: KeyPair::from_bytes(self.key_secret).unwrap(),
+                certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(self.certkey_secret)
+                    .unwrap(),
+                beneficiary: self.state_config.beneficiary,
+                delta: self.state_config.delta,
+                consensus_config: self.state_config.consensus_config.clone(),
+                genesis_block: self.state_config.genesis_block.clone(),
+                genesis_vote_info: self.state_config.genesis_vote_info,
+                genesis_signatures: self.state_config.genesis_signatures.clone(),
+            },
             partition: self.partition.clone(),
             default_partition: self.default_partition.clone(),
+
+            key_secret: self.key_secret,
+            certkey_secret: self.certkey_secret,
+            name: self.name.clone(),
             expected_block: self.expected_block,
             is_honest: self.is_honest,
-            name: self.name.clone(),
         }
     }
 }
@@ -127,12 +143,7 @@ where
             state_config,
             default_partition,
             partition,
-
-            //extra info
-            is_honest: _,
-            expected_block: _,
-            name: _,
-            secret: _,
+            ..
         } = value;
 
         Self {
@@ -178,27 +189,33 @@ where
     } = serde_json::from_str(&raw_str).expect("twins test case JSON is not formatted correctly");
 
     let expected_block = expected_block.unwrap_or(BTreeMap::new());
-    let keys = create_keys(names.len() as u32);
-    let cert_key_secrete: Vec<_> =
-        create_seed_for_certificate_keys::<S::SignatureCollectionType>(names.len() as u32)
-            .into_iter()
-            .map(get_certificate_key_secret)
-            .collect();
+    let mut seeds = (0_u32..).map(|i| {
+        let mut h = HasherType::new();
+        h.update(i.to_le_bytes());
+        h.hash().0
+    });
+    let key_secrets = seeds.by_ref().take(names.len()).collect_vec();
+    let certkey_secrets = seeds.by_ref().take(names.len()).collect_vec();
 
-    let cert_keys: Vec<_> = cert_key_secrete
+    let keys = key_secrets
         .iter()
-        .map(|secret| {
-            CertificateKeyPair::from_bytes(*secret)
-                .expect("secret is invalid when convert to cert-key")
-        })
-        .collect();
+        .copied()
+        .map(KeyPair::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("secp secret invalid");
+    let certkeys: Vec<_> = certkey_secrets
+        .iter()
+        .copied()
+        .map(CertificateKeyPair::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("secret is invalid when convert to cert-key");
 
     let (_, validator_mapping) =
-        complete_keys_w_validators::<S::SignatureCollectionType>(&keys, &cert_keys);
+        complete_keys_w_validators::<S::SignatureCollectionType>(&keys, &certkeys);
     let (pubkeys, state_configs) = complete_config::<S::SignatureType, S::SignatureCollectionType, _>(
         tvt,
         keys,
-        cert_keys,
+        certkeys,
         validator_mapping,
         Duration::from_millis(delta_ms),
         TWINS_STATE_ROOT_DELAY,
@@ -208,9 +225,13 @@ where
     let mut nodes = BTreeMap::new();
     let mut duplicates = BTreeMap::new();
 
-    for (name, pubkey, secret, state_config) in
-        izip!(names.iter(), pubkeys, cert_key_secrete, state_configs)
-    {
+    for (name, pubkey, key_secret, certkey_secret, state_config) in izip!(
+        names.iter(),
+        pubkeys,
+        key_secrets,
+        certkey_secrets,
+        state_configs
+    ) {
         let pid = NodeId(pubkey);
         let id = ID::new(pid).as_non_unique(TWINS_DEFAULT_IDENTIFIER);
         let expected_block = *expected_block.get(name).unwrap_or(&expected_block_default);
@@ -220,7 +241,8 @@ where
                 id,
                 name: name.clone(),
                 state_config,
-                secret,
+                key_secret,
+                certkey_secret,
                 partition: BTreeMap::new(),
                 default_partition: vec![],
                 is_honest: true,

@@ -28,7 +28,6 @@ hex = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
-monad_test = []
 rustls = ["dep:rcgen", "dep:rustls"]
 
 [[bench]]

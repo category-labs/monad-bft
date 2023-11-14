@@ -3,8 +3,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{NoSerSwarm, QuicSwarm};
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
-use monad_crypto::NopSignature;
+use monad_consensus_types::transaction_validator::MockValidator;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     mock::{MockMempoolConfig, NoSerRouterConfig},
@@ -12,7 +11,6 @@ use monad_mock_swarm::{
     transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer},
 };
 use monad_quic::QuicRouterSchedulerConfig;
-use monad_state::MonadMessage;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_test::traced_test;
@@ -26,9 +24,9 @@ fn two_nodes() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::Latency::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >(LatencyTransformer(Duration::from_millis(1)))],
+        vec![GenericTransformer::Latency(LatencyTransformer(
+            Duration::from_millis(1),
+        ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),
         SwarmTestConfig {
             num_nodes: 2,

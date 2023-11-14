@@ -11,8 +11,7 @@ use monad_consensus_types::{
 use monad_crypto::hasher::Hasher;
 use monad_types::*;
 
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct Safety {
     highest_vote_round: Round,
     highest_qc_round: Round,
