@@ -399,25 +399,25 @@ impl Default for BwWindow {
 }
 
 impl BwWindow {
-    fn advance_to(&mut self, now: Duration) {
+    fn advance_to(&mut self, now: Duration, sampling_period: Duration) {
         while self
             .window
             .front()
-            .map_or(false, |&(tick, _)| tick + Duration::from_secs(1) < now)
+            .map_or(false, |&(tick, _)| tick + sampling_period < now)
         {
             let (_, bitlen) = self.window.pop_front().unwrap();
             self.total_bits -= bitlen;
         }
     }
 
-    fn try_push(&mut self, bps_limit: usize, msg: &LinkMessage<Vec<u8>>) -> bool {
+    fn try_push(&mut self, burst_size: usize, msg: &LinkMessage<Vec<u8>>) -> bool {
         // assert msgs are increasing in from_tick
         assert!(self
             .window
             .back()
             .map_or(true, |&(tick, _)| msg.from_tick >= tick));
         let bit_len = msg.message.len() * 8;
-        if self.total_bits + bit_len > bps_limit {
+        if self.total_bits + bit_len > burst_size {
             false
         } else {
             self.total_bits += bit_len;
@@ -429,16 +429,20 @@ impl BwWindow {
 
 #[derive(Clone, Debug)]
 pub struct BwTransformer {
-    // unit: bits per second
-    upload_bps: usize,
+    // number of bits allowed in the sampling period
+    burst_size: usize,
+    // sampling period
+    sampling_period: Duration,
     // upload bandwidth window
     window: BwWindow,
 }
 
 impl BwTransformer {
-    pub fn new(upload_mbps: usize) -> Self {
+    pub fn new(upload_mbps: usize, sampling_period: Duration) -> Self {
         Self {
-            upload_bps: upload_mbps * 1024 * 1024,
+            burst_size: upload_mbps * 1024 * 1024 * sampling_period.as_micros() as usize
+                / Duration::from_secs(1).as_micros() as usize,
+            sampling_period,
             window: BwWindow::default(),
         }
     }
@@ -446,9 +450,10 @@ impl BwTransformer {
 
 impl Transformer<Vec<u8>> for BwTransformer {
     fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
-        self.window.advance_to(message.from_tick);
+        self.window
+            .advance_to(message.from_tick, self.sampling_period);
 
-        if self.window.try_push(self.upload_bps, &message) {
+        if self.window.try_push(self.burst_size, &message) {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
         } else {
             inc_count!(bwtransfomer_dropped_msg);

@@ -34,6 +34,7 @@ fn setup() -> (
     let zero_instant = Instant::now();
     let stc = SwarmTestConfig {
         num_nodes: 20,
+        // intentially smaller than latency so nodes keep timing out
         consensus_delta: Duration::from_millis(30),
         parallelize: false,
         expected_block: 0,
@@ -51,7 +52,7 @@ fn setup() -> (
     };
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-        BytesTransformer::Bw(BwTransformer::new(4)),
+        BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
     ];
     let terminator = UntilTerminator::new().until_round(Round(10));
 

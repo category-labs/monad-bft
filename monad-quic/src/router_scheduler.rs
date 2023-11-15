@@ -11,8 +11,8 @@ use monad_gossip::{Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
-    congestion, ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig,
-    StreamId, TransportConfig, WriteError,
+    ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
+    TransportConfig, WriteError,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 
@@ -70,11 +70,6 @@ where
             let mut config = TransportConfig::default();
             config.max_idle_timeout(None);
             // TODO-1 reasonable initial window sizes
-            config.congestion_controller_factory(Arc::new(
-                congestion::CubicConfig::default()
-                    .initial_window(u64::MAX)
-                    .to_owned(),
-            ));
             Arc::new(config)
         };
         let mut seed = [0; 32];

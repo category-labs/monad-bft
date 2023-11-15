@@ -78,7 +78,7 @@ fn many_nodes_quic_bw() {
 
     let swarm_config = SwarmTestConfig {
         num_nodes: 40,
-        consensus_delta: Duration::from_millis(100),
+        consensus_delta: Duration::from_millis(300),
         parallelize: true,
         expected_block: 95,
         state_root_delay: u64::MAX,
@@ -88,7 +88,7 @@ fn many_nodes_quic_bw() {
 
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-        BytesTransformer::Bw(BwTransformer::new(100)),
+        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(5))),
     ];
 
     create_and_run_nodes::<QuicSwarm, _, _>(
@@ -106,7 +106,7 @@ fn many_nodes_quic_bw() {
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         xfmrs,
-        UntilTerminator::new().until_tick(Duration::from_secs(20)),
+        UntilTerminator::new().until_tick(Duration::from_secs(100)),
         swarm_config,
     );
 }

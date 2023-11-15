@@ -95,7 +95,7 @@ fn two_nodes_quic_bw() {
         MockMempoolConfig::default(),
         vec![
             BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            BytesTransformer::Bw(BwTransformer::new(4)),
+            BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
         ],
         UntilTerminator::new().until_tick(Duration::from_secs(5)),
         SwarmTestConfig {
