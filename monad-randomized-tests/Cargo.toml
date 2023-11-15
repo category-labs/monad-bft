@@ -15,8 +15,8 @@ monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-wal = { path = "../monad-wal" }
 
-inventory = "0.3.6"
-simple-xml-builder = "1.1.0"
+inventory = { workspace = true }
+simple-xml-builder = { workspace = true }
 
 [[bin]]
 name = "randomized-tests"

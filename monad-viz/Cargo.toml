@@ -25,6 +25,6 @@ monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
 clap = { workspace = true, features = ["derive"] }
-iced = { version = "0.9", features = ["canvas"] }
-iced_native = { version = "0.10" }
-iced_lazy = { version = "0.6" }
+iced = { workspace = true, features = ["canvas"] }
+iced_native = { workspace = true }
+iced_lazy = { workspace = true }
