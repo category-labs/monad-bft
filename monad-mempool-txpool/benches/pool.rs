@@ -1,89 +1,62 @@
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-    time::{Duration, SystemTime},
-};
+use std::time::SystemTime;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_mempool_testutil::create_signed_eth_txs;
 use monad_mempool_txpool::{Pool, PoolConfig};
-use reth_primitives::TransactionSignedEcRecovered;
 
-const THREAD_COUNT: u16 = 2;
+const WARMUP_SEED: u64 = 31415926;
+const EXTRA_SEED: u64 = WARMUP_SEED + 1;
 const WARMUP_TXS: u16 = 10000;
-const TX_PER_THREAD: u16 = 10000;
+const EXTRA_TXS: u16 = 10000;
+const LARGE_MULTIPLIER: u16 = 5;
 
 pub fn benchmark_pool(c: &mut Criterion) {
-    c.bench_function("create_single_proposal_with_concurrent_write_read", |b| {
-        let txs_for_threads: Vec<Vec<TransactionSignedEcRecovered>> = (0..THREAD_COUNT)
-            .map(|i| create_signed_eth_txs(i.into(), TX_PER_THREAD))
-            .collect();
-
+    c.bench_function("mempool_small_txs_quantity_test", |b| {
+        let new_txs = create_signed_eth_txs(EXTRA_SEED, EXTRA_TXS);
+        let pool_config = PoolConfig::default();
+        let timestamp = SystemTime::now() - pool_config.pending_duration * 2;
         b.iter_batched(
             || {
-                let pool = Arc::new(Mutex::new(Pool::new(PoolConfig::default())));
-                for tx in create_signed_eth_txs(128, WARMUP_TXS) {
-                    pool.lock().unwrap().insert(tx, SystemTime::now()).unwrap();
+                let mut pool = Pool::new(pool_config.clone());
+                for tx in create_signed_eth_txs(WARMUP_SEED, WARMUP_TXS) {
+                    pool.insert(tx, timestamp).unwrap();
                 }
-                (pool, txs_for_threads.clone())
+                (pool, new_txs.clone())
             },
-            |(pool, mut tx_for_threads)| {
-                for _ in 0..THREAD_COUNT {
-                    let txs = tx_for_threads.pop().unwrap();
-                    let pool = pool.clone();
-                    thread::spawn(move || {
-                        let mut pool = pool.lock().unwrap();
-                        for tx in txs {
-                            pool.insert(tx.clone(), SystemTime::now()).unwrap();
-                        }
-                    });
+            |(mut pool, new_txs)| {
+                for tx in new_txs {
+                    pool.insert(tx, timestamp).unwrap();
                 }
 
-                let mut pool = pool.lock().unwrap();
-                let proposal = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
+                let proposal = pool.create_proposal(EXTRA_TXS as usize, vec![]);
+                assert_eq!(proposal.0.len(), EXTRA_TXS as usize);
                 pool.remove_tx_hashes(proposal);
             },
             criterion::BatchSize::SmallInput,
         )
     });
 
-    c.bench_function("create_multi_proposal_with_concurrent_write_read", |b| {
-        let txs_for_threads: Vec<Vec<TransactionSignedEcRecovered>> = (0..THREAD_COUNT)
-            .map(|i| create_signed_eth_txs(i.into(), TX_PER_THREAD))
-            .collect();
-
+    c.bench_function("mempool_large_txs_quantity_test", |b| {
+        // large test case = LARGE_MULTIPLIER * (small test case)
+        let new_txs = create_signed_eth_txs(EXTRA_SEED, EXTRA_TXS * LARGE_MULTIPLIER);
+        let pool_config = PoolConfig::default();
+        let timestamp = SystemTime::now() - pool_config.pending_duration * 2;
         b.iter_batched(
             || {
-                let pool = Arc::new(Mutex::new(Pool::new(PoolConfig::default())));
-                for tx in create_signed_eth_txs(128, WARMUP_TXS) {
-                    pool.lock().unwrap().insert(tx, SystemTime::now()).unwrap();
+                let mut pool = Pool::new(pool_config.clone());
+                for tx in create_signed_eth_txs(WARMUP_SEED, WARMUP_TXS) {
+                    pool.insert(tx, timestamp).unwrap();
                 }
-                (pool, txs_for_threads.clone())
+                (pool, new_txs.clone())
             },
-            |(pool, mut tx_for_threads)| {
-                for _ in 0..THREAD_COUNT {
-                    let pool = pool.clone();
-                    let txs = tx_for_threads.pop().unwrap();
-                    thread::spawn(move || {
-                        let mut pool = pool.lock().unwrap();
-                        for tx in txs {
-                            pool.insert(tx.clone(), SystemTime::now()).unwrap();
-                        }
-                    });
+            |(mut pool, new_txs)| {
+                for tx in new_txs {
+                    pool.insert(tx, timestamp).unwrap();
                 }
-
-                {
-                    let mut pool: std::sync::MutexGuard<Pool> = pool.lock().unwrap();
-                    let proposal = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
+                for _ in 0..LARGE_MULTIPLIER {
+                    let proposal = pool.create_proposal(EXTRA_TXS as usize, vec![]);
+                    assert_eq!(proposal.0.len(), EXTRA_TXS as usize);
                     pool.remove_tx_hashes(proposal);
-                }
-
-                thread::sleep(Duration::from_millis(1));
-
-                {
-                    let mut pool: std::sync::MutexGuard<Pool> = pool.lock().unwrap();
-                    let proposal2 = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
-                    pool.remove_tx_hashes(proposal2);
                 }
             },
             criterion::BatchSize::SmallInput,
