@@ -18,7 +18,10 @@ impl PartialOrd for PoolTxHash {
 
 impl Ord for PoolTxHash {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering because BinaryHeap is a max heap
-        (other.priority, other.timestamp).cmp(&(self.priority, self.timestamp))
+        (self.priority, self.timestamp, self.hash).cmp(&(
+            other.priority,
+            other.timestamp,
+            other.hash,
+        ))
     }
 }

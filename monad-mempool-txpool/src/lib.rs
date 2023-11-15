@@ -1,5 +1,5 @@
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     time::{Duration, SystemTime},
 };
 
@@ -17,7 +17,7 @@ use item::PoolTxHash;
 
 pub struct Pool {
     map: HashMap<TxHash, TransactionSignedEcRecovered>,
-    pq: BinaryHeap<PoolTxHash>,
+    pq: BTreeSet<PoolTxHash>,
 
     ttl_duration: Duration,
     pending_duration: Duration,
@@ -27,7 +27,7 @@ impl Pool {
     pub fn new(config: PoolConfig) -> Self {
         Self {
             map: HashMap::new(),
-            pq: BinaryHeap::new(),
+            pq: BTreeSet::new(),
 
             ttl_duration: config.ttl_duration,
             pending_duration: config.pending_duration,
@@ -56,14 +56,12 @@ impl Pool {
     ) -> Result<(), PoolError> {
         let hash = tx.hash();
 
-        // TODO-4: try_insert when stable
-        if self.map.contains_key(&hash) {
-            return Err(PoolError::DuplicateTransactionError);
-        }
+        match self.map.entry(hash) {
+            Entry::Occupied(_) => return Err(PoolError::DuplicateTransactionError),
+            Entry::Vacant(e) => e.insert(tx),
+        };
 
-        assert!(self.map.insert(hash, tx).is_none());
-
-        self.pq.push(PoolTxHash {
+        self.pq.insert(PoolTxHash {
             hash,
             priority,
             timestamp,
@@ -101,8 +99,7 @@ impl Pool {
             .flat_map(|tx| tx.0)
             .collect();
 
-        let mut txs = Vec::new();
-        let mut return_to_mempool_txs = Vec::default();
+        let mut tx_hashes = Vec::new();
 
         let now = SystemTime::now();
 
@@ -110,51 +107,26 @@ impl Pool {
             .checked_sub(self.pending_duration)
             .expect("Maximum mempool tx SystemTime is valid");
 
-        loop {
-            if txs.len() >= tx_limit {
-                break;
-            }
-
-            let Some(tx) = self.pq.pop() else {
-                break;
+        self.pq.retain(|tx| {
+            if let Some(tx_expiration_time) = tx.timestamp.checked_add(self.ttl_duration) {
+                if tx_expiration_time >= now {
+                    return true;
+                }
             };
+            // expired
+            self.map.remove(&tx.hash);
+            false
+        });
 
-            if !self.map.contains_key(&tx.hash) {
-                continue;
+        for tx in &self.pq {
+            if tx_hashes.len() >= tx_limit {
+                break;
+            } else if tx.timestamp <= tx_max_time && !pending_blocktree_txs.contains(&tx.hash) {
+                tx_hashes.push(tx.hash);
             }
-
-            let Some(tx_expiration_time) = tx.timestamp.checked_add(self.ttl_duration) else {
-                self.map.remove(&tx.hash);
-                continue;
-            };
-
-            if tx_expiration_time < now {
-                self.map.remove(&tx.hash);
-                continue;
-            }
-
-            if tx.timestamp > tx_max_time {
-                return_to_mempool_txs.push(tx);
-                continue;
-            }
-
-            if pending_blocktree_txs.contains(&tx.hash) {
-                return_to_mempool_txs.push(tx);
-                continue;
-            }
-
-            txs.push(tx);
         }
 
-        for tx in &txs {
-            self.pq.push(tx.clone());
-        }
-
-        for tx in return_to_mempool_txs {
-            self.pq.push(tx);
-        }
-
-        EthTransactionList(txs.into_iter().map(|tx| tx.hash).collect())
+        EthTransactionList(tx_hashes)
     }
 
     /// Returns the list of full transactions which correspond to a list of transaction hashes.
