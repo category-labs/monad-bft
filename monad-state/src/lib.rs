@@ -361,7 +361,7 @@ where
                                         txns,
                                         &self.validator_set,
                                         &self.validator_mapping,
-                                        &self.upcoming_validator_set.as_ref().unwrap_or(&VT::default()),
+                                        &self.upcoming_validator_set.as_ref().unwrap_or(&VT::empty()),
                                         &self.leader_election,
                                     ),
                             );
@@ -409,7 +409,7 @@ where
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
-                                    &self.upcoming_validator_set.as_ref().unwrap_or(&VT::default()),
+                                    &self.upcoming_validator_set.as_ref().unwrap_or(&VT::empty()),
                                     &self.leader_election,
                                 )
                             }
@@ -419,7 +419,7 @@ where
                                     msg,
                                     &self.validator_set,
                                     &self.validator_mapping,
-                                    &self.upcoming_validator_set.as_ref().unwrap_or(&VT::default()),
+                                    &self.upcoming_validator_set.as_ref().unwrap_or(&VT::empty()),
                                     &self.leader_election,
                                 )
                             }

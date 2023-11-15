@@ -26,10 +26,11 @@ impl error::Error for ValidatorSetError {
     }
 }
 
-pub trait ValidatorSetType : Default {
+pub trait ValidatorSetType {
     fn new(validators: Vec<(NodeId, Stake)>, epoch: Epoch) -> Result<Self>
     where
         Self: Sized;
+    fn empty() -> Self;
     fn get_members(&self) -> &HashMap<NodeId, Stake>;
     fn get_list(&self) -> &Vec<NodeId>;
     fn get_epoch(&self) -> Epoch;
@@ -42,7 +43,7 @@ pub trait ValidatorSetType : Default {
     fn has_honest_vote(&self, addrs: &[NodeId]) -> bool;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ValidatorSet {
     validators: HashMap<NodeId, Stake>,
     validator_list: Vec<NodeId>,
@@ -72,6 +73,15 @@ impl ValidatorSetType for ValidatorSet {
             total_stake,
             epoch,
         })
+    }
+
+    fn empty() -> Self {
+        ValidatorSet {
+            validators: HashMap::new(),
+            validator_list: Vec::new(),
+            total_stake: Stake(0),
+            epoch: Epoch(0)
+        }
     }
 
     fn get_members(&self) -> &HashMap<NodeId, Stake> {

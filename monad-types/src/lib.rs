@@ -53,15 +53,15 @@ impl std::fmt::Debug for Round {
 
 impl Round {
     pub fn get_round_within_epoch(&self, epoch_length: Round) -> Round {
-        Round(self.0 % (epoch_length.0 + 1))
+        Round(((self.0 - 1) % epoch_length.0) + 1)
     }
     pub fn get_epoch_num(&self, epoch_length: Round) -> Epoch {
-        Epoch(self.0 / (epoch_length.0 + 1) + 1)
+        Epoch(((self.0 - 1) / epoch_length.0) + 1)
     }
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Default, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Epoch(pub u64);
 
 impl Add for Epoch {
@@ -103,7 +103,7 @@ impl std::fmt::Debug for BlockId {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Stake(pub i64);
 
 impl Add for Stake {

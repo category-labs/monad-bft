@@ -1,7 +1,9 @@
 use std::{cmp::Ordering, fmt::Debug};
 
 use log::warn;
-use monad_types::{Epoch, NodeId, Round, Stake};
+use monad_types::{NodeId, Round, Stake};
+
+use crate::validator_set::ValidatorSetType;
 
 use super::leader_election::LeaderElection;
 
@@ -56,20 +58,23 @@ impl LeaderElection for WeightedRoundRobin {
         }
     }
 
-    fn get_leader(
+    fn get_leader<VT>(
         &self,
         round: Round,
         epoch_length: Round,
-        validator_list: &[NodeId],
-        val_epoch: Epoch,
-        upcoming_validator_list: &[NodeId],
-        upcoming_val_epoch: Epoch
-    ) -> NodeId {
+        validator_set: &VT,
+        upcoming_validator_set: &VT,
+    ) -> NodeId
+    where
+        VT: ValidatorSetType,
+    {
         let round_epoch = round.get_epoch_num(epoch_length);
+        let validator_list = validator_set.get_list();
+        let upcoming_validator_list = upcoming_validator_set.get_list();
 
-        let node = if round_epoch == val_epoch {
+        let node = if round_epoch == validator_set.get_epoch() {
             validator_list[round.0 as usize % validator_list.len()]
-        } else if round_epoch == upcoming_val_epoch {
+        } else if round_epoch == upcoming_validator_set.get_epoch() {
             upcoming_validator_list[round.0 as usize % upcoming_validator_list.len()]
         } else {
             // TODO: probably reached here to get leader from previous epoch

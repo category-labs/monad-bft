@@ -1,16 +1,18 @@
-use monad_types::{Epoch, NodeId, Round};
+use monad_types::{NodeId, Round};
+
+use crate::validator_set::ValidatorSetType;
 
 // VotingPower is i64
 pub trait LeaderElection {
     fn new() -> Self;
-    // TODO: refactor to take in 2 ValidatorSetType parameters
-    fn get_leader(
+    fn get_leader<VT>
+    (
         &self,
         round: Round,
         epoch_length: Round,
-        validator_list: &[NodeId],
-        val_epoch: Epoch,
-        upcoming_validator_list: &[NodeId],
-        upcoming_val_epoch: Epoch,
-     ) -> NodeId;
+        validator_set: &VT,
+        upcoming_validator_set: &VT,
+     ) -> NodeId
+    where
+        VT: ValidatorSetType;
 }

@@ -314,10 +314,8 @@ where
         let leader = election.get_leader(
             round,
             self.config.epoch_length,
-            validators.get_list(),
-            validators.get_epoch(),
-            upcoming_validators.get_list(),
-            upcoming_validators.get_epoch()
+            validators,
+            upcoming_validators,
         );
 
         let author_pubkey = validator_mapping
@@ -376,10 +374,8 @@ where
             let next_leader = election.get_leader(
                 round + Round(1),
                 self.config.epoch_length,
-                validators.get_list(),
-                validators.get_epoch(),
-                upcoming_validators.get_list(),
-                upcoming_validators.get_epoch()
+                validators,
+                upcoming_validators,
             );
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
@@ -424,10 +420,8 @@ where
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
                 self.config.epoch_length,
-                validators.get_list(),
-                validators.get_epoch(),
-                upcoming_validators.get_list(),
-                upcoming_validators.get_epoch()
+                validators,
+                upcoming_validators,
             ) {
                 cmds.extend(self.process_new_round_event(None));
             }
@@ -499,10 +493,8 @@ where
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
                 self.config.epoch_length,
-                validators.get_list(),
-                validators.get_epoch(),
-                upcoming_validators.get_list(),
-                upcoming_validators.get_epoch()
+                validators,
+                upcoming_validators,
             ){
                 cmds.extend(self.process_new_round_event(Some(tc)));
             }
@@ -2637,10 +2629,8 @@ mod test {
         let next_leader = election.get_leader(
             Round(10),
             epoch_length,
-            valset.get_list(),
-            Epoch(1),
-            upcoming_valset.get_list(),
-            Epoch(2)
+            &valset,
+            &upcoming_valset,
         );
         let mut leader_index = 0;
         // test when observing a qc through vote message, and qc points to a block that doesn't exists yet

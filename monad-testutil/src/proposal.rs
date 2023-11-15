@@ -73,10 +73,8 @@ where
             .find(|(k, _)| k.pubkey() == election.get_leader(
                 self.round,
                 epoch_length,
-                valset.get_list(),
-                valset.get_epoch(),
-                upcoming_valset.get_list(),
-            upcoming_valset.get_epoch()).0)
+                valset,
+                upcoming_valset).0)
             .expect("key not in valset");
 
         let block = Block::new::<HasherType>(
