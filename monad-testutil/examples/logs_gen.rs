@@ -19,6 +19,7 @@ use monad_mock_swarm::{
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::get_configs;
+use monad_types::Round;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
@@ -67,6 +68,7 @@ pub fn generate_log(
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
+    epoch_length: Round,
 ) {
     let (pubkeys, state_configs) = get_configs::<
         <LogSwarm as SwarmRelation>::SignatureType,
@@ -78,6 +80,7 @@ pub fn generate_log(
         delta,
         state_root_delay,
         proposal_size,
+        epoch_length,
     );
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
@@ -113,6 +116,6 @@ pub fn generate_log(
 }
 
 fn main() {
-    generate_log(4, 10, Duration::from_millis(101), 4, 0);
+    generate_log(4, 10, Duration::from_millis(101), 4, 0, Round(100));
     println!("Logs Generated!");
 }

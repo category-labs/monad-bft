@@ -13,6 +13,7 @@ use monad_mock_swarm::{
     },
 };
 use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};
+use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 
 use crate::RandomizedTest;
@@ -37,6 +38,7 @@ fn random_latency_test(seed: u64) {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            epoch_length: Round(100),
         },
     );
 }
@@ -50,6 +52,7 @@ fn delayed_message_test(seed: u64) {
         delta,
         4,
         0,
+        Round(100),
     );
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");

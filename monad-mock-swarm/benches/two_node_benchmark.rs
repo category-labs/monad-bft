@@ -9,6 +9,7 @@ use monad_mock_swarm::{
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -42,6 +43,7 @@ fn two_nodes() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 5_000,
+            epoch_length: Round(100),
         },
     );
 }

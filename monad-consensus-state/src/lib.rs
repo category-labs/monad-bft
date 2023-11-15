@@ -68,6 +68,7 @@ pub struct ConsensusConfig {
     pub proposal_size: usize,
     pub state_root_delay: u64,
     pub propose_with_missing_blocks: bool,
+    pub epoch_length: Round,
 }
 
 pub trait ConsensusProcess<SCT>
@@ -303,7 +304,7 @@ where
             inc_count!(proposal_with_tc);
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, root_num)
+                .advance_round_tc(last_round_tc, self.config.epoch_length, root_num)
                 .into_iter()
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
@@ -312,6 +313,7 @@ where
         let round = self.pacemaker.get_current_round();
         let leader = election.get_leader(
             round,
+            self.config.epoch_length,
             validators.get_list(),
             validators.get_epoch(),
             upcoming_validators.get_list(),
@@ -373,6 +375,7 @@ where
 
             let next_leader = election.get_leader(
                 round + Round(1),
+                self.config.epoch_length,
                 validators.get_list(),
                 validators.get_epoch(),
                 upcoming_validators.get_list(),
@@ -420,6 +423,7 @@ where
 
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
+                self.config.epoch_length,
                 validators.get_list(),
                 validators.get_epoch(),
                 upcoming_validators.get_list(),
@@ -458,7 +462,7 @@ where
             inc_count!(remote_timeout_msg_with_tc);
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, root_num)
+                .advance_round_tc(last_round_tc, self.config.epoch_length, root_num)
                 .into_iter()
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
@@ -487,13 +491,14 @@ where
             inc_count!(created_tc);
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(&tc, root_num)
+                .advance_round_tc(&tc, self.config.epoch_length, root_num)
                 .into_iter()
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
+                self.config.epoch_length,
                 validators.get_list(),
                 validators.get_epoch(),
                 upcoming_validators.get_list(),
@@ -674,7 +679,7 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
-        cmds.extend(self.pacemaker.advance_round_qc(qc, root_num).into_iter().map(Into::into));
+        cmds.extend(self.pacemaker.advance_round_qc(qc, self.config.epoch_length, root_num).into_iter().map(Into::into));
 
         // block sync
         cmds.extend(self.get_blocks_if_missing(qc, validators));
@@ -866,7 +871,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, EPOCH_LENGTH};
+    use monad_types::{BlockId, Epoch, NodeId, Round};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -936,6 +941,7 @@ mod test {
                         proposal_size: 5000,
                         state_root_delay: 1,
                         propose_with_missing_blocks: false,
+                        epoch_length: Round(100),
                     },
                     std::mem::replace(&mut dupkeys[i], default_key),
                     std::mem::replace(&mut dupcertkeys[i], default_cert_key),
@@ -1039,6 +1045,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
 
         // local timeout for state in Round 1
@@ -1090,6 +1097,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p1.destructure();
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1123,6 +1131,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p2.destructure();
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1157,6 +1166,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                state.config.epoch_length,
             );
         }
         let p7 = propgen.next_proposal(
@@ -1168,6 +1178,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p7.destructure();
         state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1201,6 +1212,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p1.clone().destructure();
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1263,6 +1275,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p1.destructure();
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1297,6 +1310,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p2.destructure();
         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1332,6 +1346,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                state.config.epoch_length,
             ));
         }
 
@@ -1345,6 +1360,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p_fut.destructure();
         state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1431,6 +1447,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p_last.destructure();
         state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1470,6 +1487,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p1.destructure();
         let p1_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1510,6 +1528,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1555,6 +1574,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p3.destructure();
 
@@ -1591,6 +1611,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p1.destructure();
         state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1613,6 +1634,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p2.destructure();
         let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1672,6 +1694,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         assert_eq!(p3.block.qc.info.vote.round, Round(1));
         assert_eq!(p3.block.round, Round(3));
@@ -1736,6 +1759,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
         let mp1 = mal_proposal_gen.next_proposal(
             &keys,
@@ -1746,6 +1770,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::new(vec![5]),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
 
         let (author, _, verified_message) = cp1.destructure();
@@ -1892,6 +1917,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
         let (author_2, _, verified_message_2) = cp2.destructure();
         let block_2 = UnverifiedFullBlock {
@@ -1939,6 +1965,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
         let (author, _, verified_message) = cp3.destructure();
         let block_3 = UnverifiedFullBlock {
@@ -1994,6 +2021,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
         let (author, _, verified_message) = cp4.destructure();
         let cmds2 = second_state.handle_proposal_message_full::<HasherType, _, _>(
@@ -2178,6 +2206,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
 
         let (author, _, verified_message) = p1.destructure();
@@ -2219,6 +2248,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
 
         let p1 = proposal_gen.next_proposal(
@@ -2230,6 +2260,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
 
         let (author, _, verified_message) = p1.destructure();
@@ -2270,6 +2301,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p0.destructure();
         // p0 should have seqnum 1 and therefore only require state_root 0
@@ -2306,6 +2338,7 @@ mod test {
                 logs_bloom: Bloom::zero(),
                 gas_used: Gas(0),
             },
+            state.config.epoch_length,
         );
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
@@ -2344,6 +2377,7 @@ mod test {
                 logs_bloom: Bloom::zero(),
                 gas_used: Gas(0),
             },
+            state.config.epoch_length,
         );
 
         let (author, _, verified_message) = p2.destructure();
@@ -2384,6 +2418,7 @@ mod test {
                 logs_bloom: Bloom::zero(),
                 gas_used: Gas(0),
             },
+            state.config.epoch_length,
         );
 
         let (author, _, verified_message) = p3.destructure();
@@ -2438,6 +2473,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
 
         let (author, _, verified_message) = cp1.destructure();
@@ -2471,6 +2507,7 @@ mod test {
             &upcoming_valset,
             TransactionHashList::new(vec![13, 32]),
             ExecutionArtifacts::zero(),
+            first_state.config.epoch_length,
         );
 
         let (author, _, verified_message) = bp1.destructure();
@@ -2504,6 +2541,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                first_state.config.epoch_length,
             );
 
             let (author, _, verified_message) = cp.destructure();
@@ -2553,6 +2591,7 @@ mod test {
         let election = SimpleRoundRobin::new();
         let mut correct_proposal_gen =
             ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let epoch_length = states[0].config.epoch_length;
 
         for i in 0..8 {
             let cp = correct_proposal_gen.next_proposal(
@@ -2564,6 +2603,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                epoch_length,
             );
 
             let (author, _, verified_message) = cp.destructure();
@@ -2596,6 +2636,7 @@ mod test {
         }
         let next_leader = election.get_leader(
             Round(10),
+            epoch_length,
             valset.get_list(),
             Epoch(1),
             upcoming_valset.get_list(),
@@ -2612,6 +2653,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            epoch_length,
         );
         let (author, _, verified_message) = cp.destructure();
         let mut votes = vec![];
@@ -2686,6 +2728,7 @@ mod test {
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];
+        let epoch_length = states[0].config.epoch_length;
         for _ in 0..4 {
             let cp = propgen.next_proposal(
                 &keys,
@@ -2696,6 +2739,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                epoch_length,
             );
 
             let (author, _, verified_message) = cp.destructure();
@@ -2771,6 +2815,7 @@ mod test {
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];
+        let epoch_length = states[0].config.epoch_length;
         for _ in 0..4 {
             let cp = propgen.next_proposal(
                 &keys,
@@ -2781,6 +2826,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                epoch_length,
             );
 
             let (_, _, verified_message) = cp.destructure();
@@ -2795,6 +2841,7 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            epoch_length,
         );
 
         let (author, _, verified_message) = cp.destructure();
@@ -2828,7 +2875,8 @@ mod test {
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];
-        for _ in 0..EPOCH_LENGTH {
+        let epoch_length = states[0].config.epoch_length;
+        for _ in 0..epoch_length.0 {
             let cp = propgen.next_proposal(
                 &keys,
                 &certkeys,
@@ -2838,12 +2886,13 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                epoch_length,
             );
 
             let (_, _, verified_message) = cp.destructure();
             blocks.push(verified_message.block);
         }
-        // proposal for Round(EPOCH_LENGTH)
+        // proposal for Round(epoch_length)
         let cp = propgen.next_proposal(
             &keys,
             &certkeys,
@@ -2853,10 +2902,11 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            epoch_length,
         );
 
         let (author, _, verified_message) = cp.destructure();
-        // observe the QC in round EPOCH_LENGTH + 1, and generate epoch end command
+        // observe the QC in round epoch_length + 1, and generate epoch end command
         let cmds = states[0].handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
@@ -2886,7 +2936,8 @@ mod test {
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];
-        for _ in 0..EPOCH_LENGTH {
+        let epoch_length = states[0].config.epoch_length;
+        for _ in 0..epoch_length.0 {
             let cp = propgen.next_proposal(
                 &keys,
                 &certkeys,
@@ -2896,6 +2947,7 @@ mod test {
                 &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
+                epoch_length,
             );
 
             let (author, _, verified_message) = cp.destructure();
@@ -2924,7 +2976,7 @@ mod test {
             blocks.push(verified_message.block);
         }
 
-        // timeout on Round(EPOCH_LENGTH)
+        // timeout on Round(epoch_length)
         let state = &mut states[0];
         let pacemaker_cmds = state
                 .pacemaker
@@ -2939,13 +2991,13 @@ mod test {
         } else {
             panic!()
         };
-        // verify timeout on Round(EPOCH_LENGTH)
-        assert_eq!(tmo.tminfo.round, Round(EPOCH_LENGTH));
+        // verify timeout on Round(epoch_length)
+        assert_eq!(tmo.tminfo.round, Round(epoch_length.0));
 
-        // generate TC for Round(EPOCH_LENGTH)
+        // generate TC for Round(epoch_length)
         let _ = propgen.next_tc(&keys, &certkeys, &valset, &valmap);
 
-        // proposal for Round(EPOCH_LENGTH+1) has QC(EPOCH_LENGTH - 1) and TC(EPOCH_LENGTH)
+        // proposal for Round(epoch_length+1) has QC(epoch_length - 1) and TC(epoch_length)
         let new_epoch_proposal = propgen.next_proposal(
             &keys,
             &certkeys,
@@ -2955,11 +3007,12 @@ mod test {
             &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
+            epoch_length,
         );
-        // the highest QC is from Round(EPOCH_LENGTH - 1)
-        assert_eq!(new_epoch_proposal.block.qc.info.vote.round, Round(EPOCH_LENGTH - 1));
-        // the new block is for Round(EPOCH_LENGTH + 1)
-        assert_eq!(new_epoch_proposal.block.round, Round(EPOCH_LENGTH + 1));
+        // the highest QC is from Round(epoch_length - 1)
+        assert_eq!(new_epoch_proposal.block.qc.info.vote.round, Round(epoch_length.0 - 1));
+        // the new block is for Round(epoch_length + 1)
+        assert_eq!(new_epoch_proposal.block.round, Round(epoch_length.0 + 1));
 
         let (author, _, verified_message) = new_epoch_proposal.destructure();
         // advance round (and end epoch) through TC

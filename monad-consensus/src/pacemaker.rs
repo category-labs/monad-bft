@@ -9,7 +9,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::hasher::Hasher;
-use monad_types::{NodeId, Round, EPOCH_LENGTH};
+use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{
@@ -27,8 +27,6 @@ pub struct Pacemaker<SCT: SignatureCollection> {
 
     // only need to store for current round
     pending_timeouts: HashMap<NodeId, TimeoutMessage<SCT>>,
-
-    // epoch: Epoch,
 
     // used to not duplicate broadcast/tc
     phase: PhaseHonest,
@@ -206,6 +204,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_tc(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
+        epoch_length: Round,
         root_num: Option<u64>,
     ) -> Vec<PacemakerCommand<SCT>> {
         let mut cmds = Vec::new();
@@ -216,7 +215,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         self.last_round_tc = Some(tc.clone());
 
         let next_round = tc.round + Round(1);
-        if next_round.0 % EPOCH_LENGTH == 1 {
+        if next_round.get_round_within_epoch(epoch_length) == Round(1) {
             cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
         }
 
@@ -229,6 +228,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        epoch_length: Round,
         root_num: Option<u64>,
     ) -> Vec<PacemakerCommand<SCT>> {
         let mut cmds = Vec::new();
@@ -239,7 +239,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         self.last_round_tc = None;
 
         let next_round = qc.info.vote.round + Round(1);
-        if next_round.0 % EPOCH_LENGTH == 1 {
+        if next_round.get_round_within_epoch(epoch_length) == Round(1) {
             cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
         }
 

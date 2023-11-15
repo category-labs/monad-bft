@@ -20,6 +20,7 @@ use monad_mock_swarm::{
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
+use monad_types::Round;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
@@ -65,7 +66,7 @@ impl SwarmRelation for ReplaySwarm {
 
 #[test]
 fn test_replay() {
-    recover_nodes_msg_delays(4, 10, 5, 4, 0);
+    recover_nodes_msg_delays(4, 10, 5, 4, 0, Round(100));
 }
 
 pub fn recover_nodes_msg_delays(
@@ -74,6 +75,7 @@ pub fn recover_nodes_msg_delays(
     num_block_after: usize,
     state_root_delay: u64,
     proposal_size: usize,
+    epoch_length: Round,
 ) {
     let (pubkeys, state_configs) = get_configs::<
         <ReplaySwarm as SwarmRelation>::SignatureType,
@@ -85,6 +87,7 @@ pub fn recover_nodes_msg_delays(
         Duration::from_millis(101),
         state_root_delay,
         proposal_size,
+        epoch_length,
     );
 
     // create the log file path
@@ -154,6 +157,7 @@ pub fn recover_nodes_msg_delays(
         Duration::from_millis(2),
         4,
         proposal_size,
+        Round(100),
     );
 
     let peers_clone = pubkeys_clone

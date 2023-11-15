@@ -8,6 +8,7 @@ use monad_mock_swarm::{
     transformer::{GenericTransformer, LatencyTransformer},
 };
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 
 fn two_nodes_virtual() -> u128 {
@@ -30,6 +31,7 @@ fn two_nodes_virtual() -> u128 {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            epoch_length: Round(100),
         },
     )
     .as_millis()

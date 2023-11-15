@@ -19,6 +19,7 @@ use monad_mock_swarm::{
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_types::Round;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -86,6 +87,7 @@ fn two_nodes_bls() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            epoch_length: Round(100),
         },
     );
 }

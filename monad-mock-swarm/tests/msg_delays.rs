@@ -9,6 +9,7 @@ use monad_mock_swarm::{
     transformer::{GenericTransformer, XorLatencyTransformer},
 };
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 
 #[test]
@@ -34,6 +35,7 @@ fn two_nodes() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            epoch_length: Round(100),
         },
     );
 }

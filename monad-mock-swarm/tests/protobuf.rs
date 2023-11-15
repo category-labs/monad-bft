@@ -102,6 +102,7 @@ fn test_consensus_message_event_proposal_bls() {
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
         ProposalGen::new(genesis_qc);
+    let epoch_length = Round(100);
 
     let proposal = propgen.next_proposal(
         &keys,
@@ -112,6 +113,7 @@ fn test_consensus_message_event_proposal_bls() {
         &ValidatorSet::default(),
         Default::default(),
         ExecutionArtifacts::zero(),
+        epoch_length,
     );
 
     let consensus_proposal_msg = ConsensusMessage::Proposal((*proposal).clone());

@@ -13,6 +13,7 @@ use monad_tracing_counter::{
     counter::{CounterLayer, MetricFilter},
     counter_status,
 };
+use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};
@@ -51,6 +52,7 @@ fn two_nodes() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            epoch_length: Round(100),
         },
     );
     counter_status!();

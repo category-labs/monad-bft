@@ -20,6 +20,7 @@ use monad_mock_swarm::{
 };
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
+use monad_types::Round;
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -132,12 +133,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
         <ReplaySwarm as SwarmRelation>::SignatureType,
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0);
+    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0, Round(100));
     let (_, mut state_configs_duplicate) = get_configs::<
         <ReplaySwarm as SwarmRelation>::SignatureType,
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0);
+    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0, Round(100));
 
     let pubkeys = peers;
     let router_scheduler_config = |all_peers: Vec<PeerId>, _: PeerId| NoSerRouterConfig {

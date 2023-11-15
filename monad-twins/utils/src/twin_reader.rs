@@ -204,6 +204,7 @@ where
         Duration::from_millis(delta_ms),
         TWINS_STATE_ROOT_DELAY,
         10,
+        Round(100),
     );
 
     let mut nodes = BTreeMap::new();

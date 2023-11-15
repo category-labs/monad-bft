@@ -19,7 +19,7 @@ use monad_mock_swarm::{
 };
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
-use monad_types::NodeId;
+use monad_types::{NodeId, Round};
 
 use crate::{graph::SimulationConfig, VizSwarm};
 
@@ -105,6 +105,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
                     proposal_size: 5000,
                     state_root_delay: 0,
                     propose_with_missing_blocks: false,
+                    epoch_length: Round(100),
                 },
                 genesis_block: genesis_block.clone(),
                 genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

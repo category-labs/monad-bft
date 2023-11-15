@@ -22,7 +22,7 @@ use monad_mock_swarm::{
     transformer::ID,
 };
 use monad_state::MonadConfig;
-use monad_types::NodeId;
+use monad_types::{NodeId, Round};
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -36,6 +36,7 @@ pub struct SwarmTestConfig {
     pub state_root_delay: u64,
     pub seed: u64,
     pub proposal_size: usize,
+    pub epoch_length: Round,
 }
 
 pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
@@ -44,6 +45,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
+    epoch_length: Round,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
@@ -55,6 +57,7 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
         delta,
         state_root_delay,
         proposal_size,
+        epoch_length,
     )
 }
 
@@ -70,6 +73,7 @@ pub fn complete_config<
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
+    epoch_length: Round,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let voting_keys = keys
@@ -99,6 +103,7 @@ pub fn complete_config<
                 proposal_size,
                 state_root_delay,
                 propose_with_missing_blocks: false,
+                epoch_length: epoch_length,
             },
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
@@ -163,6 +168,7 @@ where
             swarm_config.consensus_delta,
             swarm_config.state_root_delay,
             swarm_config.proposal_size,
+            swarm_config.epoch_length,
         );
     run_nodes_until::<S, _, _>(
         peers,

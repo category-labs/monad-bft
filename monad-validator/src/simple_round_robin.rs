@@ -1,4 +1,4 @@
-use monad_types::{NodeId, Round, Epoch, EPOCH_LENGTH};
+use monad_types::{NodeId, Round, Epoch};
 
 use super::leader_election::LeaderElection;
 
@@ -8,9 +8,16 @@ impl LeaderElection for SimpleRoundRobin {
         Self {}
     }
 
-    fn get_leader(&self, round: Round, validator_list: &[NodeId], val_epoch: Epoch,
-        upcoming_validator_list: &[NodeId], upcoming_val_epoch: Epoch) -> NodeId {
-        let round_epoch = Epoch((round.0 + EPOCH_LENGTH - 1) / EPOCH_LENGTH);
+    fn get_leader(
+        &self,
+        round: Round,
+        epoch_length: Round,
+        validator_list: &[NodeId],
+        val_epoch: Epoch,
+        upcoming_validator_list: &[NodeId],
+        upcoming_val_epoch: Epoch,
+    ) -> NodeId {
+        let round_epoch = round.get_epoch_num(epoch_length);
 
         let node = if round_epoch == val_epoch {
             validator_list[round.0 as usize % validator_list.len()]

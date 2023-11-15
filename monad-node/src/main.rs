@@ -16,6 +16,7 @@ use monad_executor::{Executor, State};
 use monad_mempool_controller::ControllerConfig;
 use monad_p2p::Multiaddr;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_types::Round;
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, validator_set::ValidatorSetUpdater,
@@ -120,6 +121,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             proposal_size: 5000,
             state_root_delay: 0,
             propose_with_missing_blocks: false,
+            epoch_length: Round(100),
         },
         genesis_block: node_state.genesis.genesis_block,
         genesis_vote_info: node_state.genesis.genesis_vote_info,

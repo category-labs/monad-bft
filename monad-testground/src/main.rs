@@ -293,6 +293,7 @@ fn testnet(
                 proposal_size: 5000,
                 state_root_delay,
                 propose_with_missing_blocks: false,
+                epoch_length: Round(100),
             },
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

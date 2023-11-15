@@ -4719,6 +4719,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-mock-swarm",
  "monad-testutil",
+ "monad-types",
  "monad-wal",
  "simple-xml-builder",
 ]

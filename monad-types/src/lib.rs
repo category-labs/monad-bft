@@ -51,7 +51,14 @@ impl std::fmt::Debug for Round {
     }
 }
 
-pub const EPOCH_LENGTH: u64 = 100;
+impl Round {
+    pub fn get_round_within_epoch(&self, epoch_length: Round) -> Round {
+        Round(self.0 % (epoch_length.0 + 1))
+    }
+    pub fn get_epoch_num(&self, epoch_length: Round) -> Epoch {
+        Epoch(self.0 / (epoch_length.0 + 1) + 1)
+    }
+}
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, Hash, Eq, PartialEq, PartialOrd, Ord)]

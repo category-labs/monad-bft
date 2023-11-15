@@ -20,6 +20,7 @@ mod test {
         },
     };
     use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
+    use monad_types::Round;
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
 
@@ -35,7 +36,7 @@ mod test {
             <MonadMessageNoSerSwarm as SwarmRelation>::SignatureType,
             <MonadMessageNoSerSwarm as SwarmRelation>::SignatureCollectionType,
             _,
-        >(MockValidator, num_nodes, delta, u64::MAX, 0);
+        >(MockValidator, num_nodes, delta, u64::MAX, 0, Round(100));
 
         let filter_peers = HashSet::from([ID::new(PeerId(pubkeys[0]))]);
 
@@ -138,6 +139,7 @@ mod test {
             delta,
             u64::MAX,
             0,
+            Round(100),
         );
 
         let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
@@ -188,6 +190,7 @@ mod test {
             delta,
             u64::MAX,
             0,
+            Round(100),
         );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
@@ -248,6 +251,7 @@ mod test {
             delta,
             u64::MAX,
             0,
+            Round(100),
         );
 
         assert!(num_nodes >= 4, "test requires 4 or more nodes");

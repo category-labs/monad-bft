@@ -4,6 +4,13 @@ use monad_types::{Epoch, NodeId, Round};
 pub trait LeaderElection {
     fn new() -> Self;
     // TODO: refactor to take in 2 ValidatorSetType parameters
-    fn get_leader(&self, round: Round, validator_list: &[NodeId], val_epoch: Epoch,
-        upcoming_validator_list: &[NodeId], upcoming_val_epoch: Epoch) -> NodeId;
+    fn get_leader(
+        &self,
+        round: Round,
+        epoch_length: Round,
+        validator_list: &[NodeId],
+        val_epoch: Epoch,
+        upcoming_validator_list: &[NodeId],
+        upcoming_val_epoch: Epoch,
+     ) -> NodeId;
 }

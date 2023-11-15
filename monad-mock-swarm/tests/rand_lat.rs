@@ -11,6 +11,7 @@ use monad_mock_swarm::{
 };
 use monad_state::MonadMessage;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -78,6 +79,7 @@ fn nodes_with_random_latency(seed: u64) {
             state_root_delay: u64::MAX,
             seed: 1,
             proposal_size: 0,
+            epoch_length: Round(100),
         },
     );
 }

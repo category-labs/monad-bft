@@ -56,6 +56,7 @@ where
         upcoming_valset: &VT,
         txns: TransactionHashList,
         execution_header: ExecutionArtifacts,
+        epoch_length: Round,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
         let qc = if self.last_tc.is_some() {
@@ -71,6 +72,7 @@ where
             .zip(certkeys)
             .find(|(k, _)| k.pubkey() == election.get_leader(
                 self.round,
+                epoch_length,
                 valset.get_list(),
                 valset.get_epoch(),
                 upcoming_valset.get_list(),

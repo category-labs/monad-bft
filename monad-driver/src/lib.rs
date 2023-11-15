@@ -21,7 +21,7 @@ mod tests {
     use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool, MockValidatorSetUpdaterNop};
     use monad_state::{MonadConfig, MonadState};
     use monad_testutil::signing::get_genesis_config;
-    use monad_types::NodeId;
+    use monad_types::{NodeId, Round};
     use monad_updaters::{checkpoint::MockCheckpoint, ledger::MockLedger};
     use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
     use monad_wal::{
@@ -142,6 +142,7 @@ mod tests {
                             proposal_size: 5000,
                             state_root_delay: 0,
                             propose_with_missing_blocks: false,
+                            epoch_length: Round(100),
                         },
                         genesis_block: genesis_block.clone(),
                         genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
