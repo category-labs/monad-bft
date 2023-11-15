@@ -3,10 +3,23 @@ use reth_primitives::{
     Address, Signature, Transaction, TransactionSigned, TransactionSignedEcRecovered, TxLegacy,
 };
 
+// create single signed eth tx
+pub fn create_signed_eth_tx(value: u128) -> TransactionSignedEcRecovered {
+    let tx = Transaction::Legacy(TxLegacy {
+        value,
+        ..Default::default()
+    });
+
+    TransactionSignedEcRecovered::from_signed_transaction(
+        TransactionSigned::from_transaction_and_signature(tx, Signature::default()),
+        Address::default(),
+    )
+}
+
 pub fn create_signed_eth_txs(seed: u64, count: u16) -> Vec<TransactionSignedEcRecovered> {
     create_eth_txs(seed, count)
         .into_iter()
-        .map(|tx| {
+        .map(|tx: Transaction| {
             TransactionSignedEcRecovered::from_signed_transaction(
                 TransactionSigned::from_transaction_and_signature(tx, Signature::default()),
                 Address::default(),

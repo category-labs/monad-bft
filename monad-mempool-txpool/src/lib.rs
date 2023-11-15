@@ -100,8 +100,7 @@ impl Pool {
             .flat_map(|tx| tx.0)
             .collect::<HashSet<_>>();
 
-        let mut tx_hashes = Vec::new();
-        tx_hashes.reserve(tx_limit);
+        let mut tx_hashes = Vec::with_capacity(tx_limit);
         let mut expired_tx_hashes = HashSet::new();
 
         let now = SystemTime::now();
