@@ -37,6 +37,7 @@ impl Pool {
     /// Removes a Vec of transactions from the pool by hash.
     /// Hashes that do not exist are skipped.
     pub fn remove_tx_hashes(&mut self, tx_hashes: EthTransactionList) {
+        // hashmap's retain function is O(capacity) not O(size), loop is typically faster
         for tx_hash in &tx_hashes.0 {
             self.map.remove(tx_hash);
         }
@@ -48,7 +49,7 @@ impl Pool {
 
     /// Inserts a transaction into the pool with a given priority.
     /// Only validated transactions should be inserted.
-    fn insert_with_priority(
+    pub fn insert_with_priority(
         &mut self,
         tx: TransactionSignedEcRecovered,
         timestamp: SystemTime,
@@ -94,36 +95,39 @@ impl Pool {
         tx_limit: usize,
         pending_blocktree_txs: Vec<EthTransactionList>,
     ) -> EthTransactionList {
-        let pending_blocktree_txs: HashSet<TxHash> = pending_blocktree_txs
+        let pending_blocktree_txs = pending_blocktree_txs
             .into_iter()
             .flat_map(|tx| tx.0)
-            .collect();
+            .collect::<HashSet<_>>();
 
         let mut tx_hashes = Vec::new();
+        tx_hashes.reserve(tx_limit);
+        let mut expired_tx_hashes = HashSet::new();
 
         let now = SystemTime::now();
+
+        let tx_expire_time = now
+            .checked_add(self.ttl_duration)
+            .expect("Mempool expiration tx SystemTime is valid");
 
         let tx_max_time = now
             .checked_sub(self.pending_duration)
             .expect("Maximum mempool tx SystemTime is valid");
-
-        self.pq.retain(|tx| {
-            if let Some(tx_expiration_time) = tx.timestamp.checked_add(self.ttl_duration) {
-                if tx_expiration_time >= now {
-                    return true;
-                }
-            };
-            // expired
-            self.map.remove(&tx.hash);
-            false
-        });
 
         for tx in &self.pq {
             if tx_hashes.len() >= tx_limit {
                 break;
             } else if tx.timestamp <= tx_max_time && !pending_blocktree_txs.contains(&tx.hash) {
                 tx_hashes.push(tx.hash);
+            } else if tx.timestamp >= tx_expire_time {
+                expired_tx_hashes.insert(tx.hash);
+                self.map.remove(&tx.hash);
             }
+        }
+
+        // optimistic, because majority of time this should be empty
+        if !expired_tx_hashes.is_empty() {
+            self.pq.retain(|tx| !expired_tx_hashes.contains(&tx.hash));
         }
 
         EthTransactionList(tx_hashes)
