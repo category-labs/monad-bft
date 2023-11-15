@@ -17,7 +17,7 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Stake};
+use monad_types::{NodeId, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{
@@ -230,7 +230,7 @@ where
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + 1 {
+        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + SeqNum(1) {
             return Err(Error::InvalidSeqNum);
         }
         Ok(())
@@ -523,7 +523,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, Stake};
+    use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
     use test_case::test_case;
 
@@ -584,7 +584,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
@@ -609,7 +609,7 @@ mod test {
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let qc = QuorumCertificate::new::<HasherType>(
@@ -632,7 +632,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
@@ -730,7 +730,7 @@ mod test {
             round: Round(3),
             parent_id: BlockId(Hash([0x01_u8; 32])),
             parent_round: Round(2),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);

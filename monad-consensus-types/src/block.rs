@@ -1,5 +1,5 @@
 use monad_crypto::hasher::{Hashable, Hasher};
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
@@ -17,7 +17,7 @@ pub trait BlockType: Clone + PartialEq + Eq {
     fn get_parent_id(&self) -> BlockId;
     fn get_parent_round(&self) -> Round;
 
-    fn get_seq_num(&self) -> u64;
+    fn get_seq_num(&self) -> SeqNum;
 }
 
 #[derive(Clone)]
@@ -101,7 +101,7 @@ impl<T: SignatureCollection> BlockType for Block<T> {
         self.qc.info.vote.round
     }
 
-    fn get_seq_num(&self) -> u64 {
+    fn get_seq_num(&self) -> SeqNum {
         self.payload.seq_num
     }
 }
@@ -197,7 +197,7 @@ impl<T: SignatureCollection> BlockType for FullBlock<T> {
         self.block.get_parent_round()
     }
 
-    fn get_seq_num(&self) -> u64 {
+    fn get_seq_num(&self) -> SeqNum {
         self.block.get_seq_num()
     }
 }

@@ -28,7 +28,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, NodeId, Round, Serializable, TimeoutVariant};
+use monad_types::{BlockId, NodeId, Round, SeqNum, Serializable, TimeoutVariant};
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
     PersistenceLogger,
@@ -112,7 +112,7 @@ fn bench_vote(c: &mut Criterion) {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
     let lci = LedgerCommitInfo {
         commit_state_hash: None,
@@ -158,7 +158,7 @@ fn bench_timeout(c: &mut Criterion) {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
     let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 

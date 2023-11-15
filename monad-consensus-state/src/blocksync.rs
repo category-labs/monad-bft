@@ -247,7 +247,7 @@ mod test {
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, TimeoutVariant};
+    use monad_types::{BlockId, NodeId, Round, SeqNum, TimeoutVariant};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::BlockSyncManager;
@@ -321,7 +321,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -352,7 +352,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -385,7 +385,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -411,7 +411,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -437,7 +437,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -458,7 +458,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -474,7 +474,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
-                        seq_num: 0,
+                        seq_num: SeqNum(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -493,7 +493,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
-                        seq_num: 0,
+                        seq_num: SeqNum(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -512,7 +512,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
-                        seq_num: 0,
+                        seq_num: SeqNum(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -645,7 +645,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -711,7 +711,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -809,7 +809,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };

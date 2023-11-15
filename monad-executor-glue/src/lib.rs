@@ -13,7 +13,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant, ValidatorData};
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant, ValidatorData};
 
 pub enum RouterCommand<OM> {
     // TODO-2 add a RouterCommand for setting peer set for broadcast
@@ -156,7 +156,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData, ValidatorData),
     AdvanceEpoch(Option<ValidatorData>),
-    StateUpdate((u64, ConsensusHash)),
+    StateUpdate((SeqNum, ConsensusHash)),
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {

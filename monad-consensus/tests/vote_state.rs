@@ -15,7 +15,7 @@ use monad_crypto::{
     secp256k1::{KeyPair, SecpSignature},
 };
 use monad_testutil::{signing::*, validators::create_keys_w_validators};
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 use test_case::test_case;
 
@@ -31,7 +31,7 @@ fn create_signed_vote_message(
         round: vote_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
 
     let lci = LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi);

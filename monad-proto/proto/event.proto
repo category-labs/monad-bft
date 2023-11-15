@@ -40,7 +40,7 @@ message ProtoFetchedTxs {
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 4;
 
   bytes tx_hashes = 5;
-  uint64 seq_num = 6;
+  monad_proto.basic.ProtoSeqNum seq_num = 6;
   monad_proto.basic.ProtoHash state_root_hash = 7;
 }
 
@@ -68,7 +68,7 @@ message ProtoLoadEpochEvent {
 }
 
 message ProtoStateUpdateEvent {
-  uint64 seq_num = 1;
+  monad_proto.basic.ProtoSeqNum seq_num = 1;
   monad_proto.basic.ProtoHash state_root_hash = 2;
 }
 

@@ -49,7 +49,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
                     tx_hashes: txns.as_bytes().to_vec(),
-                    seq_num: fetched.seq_num,
+                    seq_num: Some((&fetched.seq_num).into()),
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
             }
@@ -88,7 +88,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
             }
             ConsensusEvent::StateUpdate((seq_num, hash)) => {
                 proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
-                    seq_num: *seq_num,
+                    seq_num: Some(seq_num.into()),
                     state_root_hash: Some(hash.into()),
                 })
             }
@@ -151,7 +151,12 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                                 "ConsensusEvent::fetched_txs.round".to_owned(),
                             ))?
                             .try_into()?,
-                        seq_num: fetched_txs.seq_num,
+                        seq_num: fetched_txs
+                            .seq_num
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_txs.seq_num".to_owned(),
+                            ))?
+                            .try_into()?,
                         state_root_hash: fetched_txs
                             .state_root_hash
                             .ok_or(ProtoError::MissingRequiredField(
@@ -256,7 +261,14 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                         "ConsensusEvent::StateUpdate::state_root_hash".to_owned(),
                     ))?
                     .try_into()?;
-                ConsensusEvent::StateUpdate((event.seq_num, h))
+                let s = event
+                    .seq_num
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::StateUpdate::seq_num".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                ConsensusEvent::StateUpdate((s, h))
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),

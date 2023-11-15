@@ -29,7 +29,7 @@ use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
@@ -250,7 +250,7 @@ where
                 &Payload {
                     txns: genesis_txn,
                     header: genesis_execution_header,
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -373,7 +373,7 @@ where
                     delta: Duration::from_millis(args.delta_ms),
                     consensus_config: ConsensusConfig {
                         proposal_size: args.proposal_size,
-                        state_root_delay: args.state_root_delay,
+                        state_root_delay: SeqNum(args.state_root_delay),
                         propose_with_missing_blocks: false,
                     },
                     genesis_block: genesis_block.clone(),

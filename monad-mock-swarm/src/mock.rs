@@ -667,7 +667,7 @@ mod tests {
     use monad_executor::Executor;
     use monad_executor_glue::{ConsensusEvent, TimerCommand};
     use monad_testutil::signing::node_id;
-    use monad_types::{BlockId, Round};
+    use monad_types::{BlockId, Round, SeqNum};
 
     use super::*;
 
@@ -675,7 +675,7 @@ mod tests {
         FetchTxParams {
             node_id: node_id(),
             round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             state_root_hash: Default::default(),
             high_qc: QuorumCertificate::genesis_prime_qc::<HasherType>(),
             last_round_tc: None,

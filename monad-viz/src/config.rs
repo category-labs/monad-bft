@@ -16,7 +16,7 @@ use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID};
-use monad_types::NodeId;
+use monad_types::{NodeId, SeqNum};
 
 use crate::{graph::SimulationConfig, VizSwarm};
 
@@ -100,7 +100,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
                 delta: self.delta,
                 consensus_config: ConsensusConfig {
                     proposal_size: 5000,
-                    state_root_delay: 0,
+                    state_root_delay: SeqNum(0),
                     propose_with_missing_blocks: false,
                 },
                 genesis_block: genesis_block.clone(),

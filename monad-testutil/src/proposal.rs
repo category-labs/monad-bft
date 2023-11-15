@@ -20,7 +20,7 @@ use monad_crypto::{
     secp256k1::KeyPair,
 };
 use monad_eth_types::EthAddress;
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 pub struct ProposalGen<ST, SCT> {
@@ -77,7 +77,7 @@ where
             &Payload {
                 txns,
                 header: execution_header,
-                seq_num: qc.info.vote.seq_num + 1,
+                seq_num: qc.info.vote.seq_num + SeqNum(1),
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },

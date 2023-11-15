@@ -54,7 +54,7 @@ pub struct VoteInfo {
     pub round: Round,
     pub parent_id: BlockId,
     pub parent_round: Round,
-    pub seq_num: u64,
+    pub seq_num: SeqNum,
 }
 
 impl std::fmt::Debug for VoteInfo {
@@ -82,7 +82,7 @@ impl Hashable for VoteInfo {
 #[cfg(test)]
 mod test {
     use monad_crypto::hasher::{Hash, Hasher, HasherType};
-    use monad_types::{BlockId, Round};
+    use monad_types::{BlockId, Round, SeqNum};
     use test_case::test_case;
     use zerocopy::AsBytes;
 
@@ -96,7 +96,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let mut hasher = HasherType::new();
@@ -120,7 +120,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let vi_hash = HasherType::hash_object(&vi);

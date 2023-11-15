@@ -73,7 +73,7 @@ pub fn genesis_vote_info(genesis_block_id: BlockId) -> VoteInfo {
         round: Round(0),
         parent_id: BlockId(GENESIS_PRIME_QC_HASH),
         parent_round: Round(0),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     }
 }
 
@@ -94,7 +94,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             round: Round(0),
             parent_id: BlockId(GENESIS_PRIME_QC_HASH),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
         let lci = LedgerCommitInfo::new::<H>(None, &vote_info);
 

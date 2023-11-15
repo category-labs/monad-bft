@@ -28,7 +28,7 @@ pub mod test_tool {
     use monad_state::VerifiedMonadMessage;
     use monad_testutil::signing::create_keys;
     use monad_transformer::{LinkMessage, ID};
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     type ST = NopSignature;
     type SC = MultiSig<NopSignature>;
@@ -60,7 +60,7 @@ pub mod test_tool {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x00_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -72,7 +72,7 @@ pub mod test_tool {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -96,7 +96,7 @@ pub mod test_tool {
             round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
         let internal_msg = VoteMessage {
             vote: Vote {

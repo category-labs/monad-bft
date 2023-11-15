@@ -22,7 +22,7 @@ fn block_hash_id() {
                 parent_id: BlockId(Hash([0x00_u8; 32])),
                 round: Round(0),
                 parent_round: Round(0),
-                seq_num: 0,
+                seq_num: SeqNum(0),
             },
             ledger_commit: LedgerCommitInfo::default(),
         },
@@ -35,7 +35,7 @@ fn block_hash_id() {
         &Payload {
             txns,
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         },

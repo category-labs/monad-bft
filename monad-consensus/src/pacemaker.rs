@@ -244,7 +244,7 @@ mod test {
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Stake};
+    use monad_types::{BlockId, SeqNum, Stake};
     use monad_validator::validator_set::ValidatorSet;
     use zerocopy::AsBytes;
 
@@ -263,7 +263,7 @@ mod test {
             round: qc_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let ledger_commit_info = LedgerCommitInfo::new::<HasherType>(None, &vote_info);

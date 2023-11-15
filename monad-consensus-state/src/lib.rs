@@ -26,7 +26,7 @@ use monad_crypto::{
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId, Round, RouterTarget};
+use monad_types::{BlockId, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use tracing::{debug, trace, warn};
 
@@ -98,7 +98,7 @@ impl<SCT, TVT, SVT> Eq for ConsensusState<SCT, TVT, SVT> where SCT: SignatureCol
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ConsensusConfig {
     pub proposal_size: usize,
-    pub state_root_delay: u64,
+    pub state_root_delay: SeqNum,
     pub propose_with_missing_blocks: bool,
 }
 
@@ -179,7 +179,7 @@ where
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
-    fn handle_state_root_update(&mut self, seq_num: u64, root_hash: Hash);
+    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash);
 
     fn get_current_round(&self) -> Round;
 
@@ -578,7 +578,7 @@ where
         self.block_sync_manager.request(&qc, validators)
     }
 
-    fn handle_state_root_update(&mut self, seq_num: u64, root_hash: Hash) {
+    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash) {
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 
@@ -697,7 +697,7 @@ where
 
         let parent_bid = high_qc.info.vote.id;
         let seq_num_qc = high_qc.info.vote.seq_num;
-        let proposed_seq_num = seq_num_qc + 1;
+        let proposed_seq_num = seq_num_qc + SeqNum(1);
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
             ConsensusAction::Propose(h, pending_blocktree_txs) => {
                 inc_count!(creating_proposal);
@@ -744,7 +744,7 @@ where
     }
 
     #[must_use]
-    fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: u64) -> ConsensusAction {
+    fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: SeqNum) -> ConsensusAction {
         // Never propose while syncing
         if let RootKind::Unrooted(_) = self.pending_block_tree.root {
             return ConsensusAction::Abstain;
@@ -828,7 +828,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, RouterTarget};
+    use monad_types::{BlockId, NodeId, Round, RouterTarget, SeqNum};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -893,7 +893,7 @@ mod test {
                     Duration::from_secs(1),
                     ConsensusConfig {
                         proposal_size: 5000,
-                        state_root_delay: 1,
+                        state_root_delay: SeqNum(1),
                         propose_with_missing_blocks: false,
                     },
                     std::mem::replace(&mut dupkeys[i], default_key),
@@ -924,7 +924,7 @@ mod test {
             round: expected_qc_high_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
         let v = Vote {
             vote_info: vi,
@@ -2173,7 +2173,7 @@ mod test {
         let (author, _, verified_message) = p0.destructure();
         // p0 should have seqnum 1 and therefore only require state_root 0
         // the state_root 0's hash should be Hash([0x00; 32])
-        state.handle_state_root_update(0, Hash([0x00; 32]));
+        state.handle_state_root_update(SeqNum(0), Hash([0x00; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2206,7 +2206,7 @@ mod test {
         );
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
-        state.handle_state_root_update(1, Hash([0x99; 32]));
+        state.handle_state_root_update(SeqNum(1), Hash([0x99; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2242,7 +2242,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p2.destructure();
-        state.handle_state_root_update(2, Hash([0xbb; 32]));
+        state.handle_state_root_update(SeqNum(2), Hash([0xbb; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2280,7 +2280,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p3.destructure();
-        state.handle_state_root_update(3, Hash([0xcc; 32]));
+        state.handle_state_root_update(SeqNum(3), Hash([0xcc; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2305,8 +2305,14 @@ mod test {
         // Proposals with seq num 1 and 2 are committed, so expect 2 and 3 to remain
         // in the state_root_validator
         assert_eq!(2, state.state_root_validator.root_hashes.len());
-        assert!(state.state_root_validator.root_hashes.contains_key(&2));
-        assert!(state.state_root_validator.root_hashes.contains_key(&3));
+        assert!(state
+            .state_root_validator
+            .root_hashes
+            .contains_key(&SeqNum(2)));
+        assert!(state
+            .state_root_validator
+            .root_hashes
+            .contains_key(&SeqNum(3)));
     }
 
     #[test]

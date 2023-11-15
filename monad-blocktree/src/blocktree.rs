@@ -7,7 +7,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
 use ptree::{builder::TreeBuilder, print_tree};
 use tracing::trace;
 
@@ -375,7 +375,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         }
     }
 
-    pub fn get_seq_num(&self, block_id: BlockId) -> Option<u64> {
+    pub fn get_seq_num(&self, block_id: BlockId) -> Option<SeqNum> {
         self.tree.get(&block_id).map(|b| b.block.get_seq_num())
     }
 
@@ -408,7 +408,7 @@ mod test {
     };
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     use super::{BlockTree, BlockTreeError, RootKind};
 
@@ -426,7 +426,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -442,7 +442,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -459,7 +459,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -485,7 +485,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b2 = FullBlock::from_block(
@@ -511,7 +511,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b3 = FullBlock::from_block(
@@ -537,7 +537,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b4 = FullBlock::from_block(
@@ -563,7 +563,7 @@ mod test {
             round: Round(3),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b5 = FullBlock::from_block(
@@ -589,7 +589,7 @@ mod test {
             round: Round(5),
             parent_id: b3.get_id(),
             parent_round: Round(3),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b6 = FullBlock::from_block(
@@ -615,7 +615,7 @@ mod test {
             round: Round(6),
             parent_id: b5.get_id(),
             parent_round: Round(5),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b7 = FullBlock::from_block(
@@ -713,7 +713,7 @@ mod test {
             round: Round(5),
             parent_id: b3.get_id(),
             parent_round: Round(3),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b8 = FullBlock::from_block(
@@ -743,7 +743,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -759,7 +759,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -776,7 +776,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -802,7 +802,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b2 = FullBlock::from_block(
@@ -855,7 +855,7 @@ mod test {
                 &Payload {
                     txns: TransactionHashList::default(),
                     header: ExecutionArtifacts::zero(),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -866,7 +866,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -883,7 +883,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -893,7 +893,7 @@ mod test {
                 &Payload {
                     txns: TransactionHashList::new(vec![1]),
                     header: ExecutionArtifacts::zero(),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -917,7 +917,7 @@ mod test {
                 &Payload {
                     txns: TransactionHashList::new(vec![2]),
                     header: ExecutionArtifacts::zero(),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -939,7 +939,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b3 = FullBlock::from_block(
@@ -949,7 +949,7 @@ mod test {
                 &Payload {
                     txns: TransactionHashList::new(vec![3]),
                     header: ExecutionArtifacts::zero(),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -1000,7 +1000,7 @@ mod test {
                 &Payload {
                     txns: TransactionHashList::default(),
                     header: ExecutionArtifacts::zero(),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -1011,7 +1011,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1028,7 +1028,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -1038,7 +1038,7 @@ mod test {
                 &Payload {
                     txns: TransactionHashList::new(vec![1]),
                     header: ExecutionArtifacts::zero(),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -1075,7 +1075,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -1091,7 +1091,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1108,7 +1108,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -1134,7 +1134,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b2 = FullBlock::from_block(
@@ -1234,7 +1234,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -1251,7 +1251,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1268,7 +1268,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b4 = FullBlock::from_block(
@@ -1294,7 +1294,7 @@ mod test {
             round: Round(4),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b5 = FullBlock::from_block(
@@ -1320,7 +1320,7 @@ mod test {
             round: Round(5),
             parent_id: b4.get_id(),
             parent_round: Round(4),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b6 = FullBlock::from_block(
@@ -1369,7 +1369,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -1385,7 +1385,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1402,7 +1402,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b2 = FullBlock::from_block(
@@ -1428,7 +1428,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b3 = FullBlock::from_block(
@@ -1454,7 +1454,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b4 = FullBlock::from_block(
@@ -1480,7 +1480,7 @@ mod test {
             round: Round(4),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b5 = FullBlock::from_block(
@@ -1506,7 +1506,7 @@ mod test {
             round: Round(5),
             parent_id: b4.get_id(),
             parent_round: Round(4),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b6 = FullBlock::from_block(
@@ -1562,7 +1562,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -1579,7 +1579,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1596,7 +1596,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -1622,7 +1622,7 @@ mod test {
             round: Round(3),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(3),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b4 = FullBlock::from_block(
@@ -1662,7 +1662,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -1678,7 +1678,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1695,7 +1695,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b4 = FullBlock::from_block(
@@ -1721,7 +1721,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b5 = FullBlock::from_block(
@@ -1762,7 +1762,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -1778,7 +1778,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo::default(),
                     },
@@ -1795,7 +1795,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b1 = FullBlock::from_block(
@@ -1821,7 +1821,7 @@ mod test {
             round: Round(1),
             parent_id: g.get_id(),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let b2 = FullBlock::from_block(

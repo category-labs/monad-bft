@@ -16,7 +16,7 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
 
 use crate::{error::NodeSetupError, SignatureCollectionType, TransactionValidatorType};
 
@@ -72,7 +72,7 @@ fn build_genesis_block(
             &Payload {
                 txns: genesis_txs,
                 header: genesis_execution_header,
-                seq_num: 0,
+                seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::default(),
             },

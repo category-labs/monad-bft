@@ -9,7 +9,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::hasher::{Hash, Hasher, HasherType};
 use monad_eth_types::EthAddress;
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, SeqNum};
 
 // test utility if you only wish for simple block
 #[derive(Clone, PartialEq, Eq)]
@@ -45,8 +45,8 @@ impl BlockType for MockBlock {
         Round(0)
     }
 
-    fn get_seq_num(&self) -> u64 {
-        0
+    fn get_seq_num(&self) -> SeqNum {
+        SeqNum(0)
     }
 }
 
@@ -70,7 +70,7 @@ pub fn setup_block<SCT: SignatureCollection>(
         round: qc_round,
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
     let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 
@@ -101,7 +101,7 @@ pub fn setup_block<SCT: SignatureCollection>(
         &Payload {
             txns,
             header: execution_header,
-            seq_num: 1,
+            seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::new::<SCT::SignatureType>(block_round, &certkeys[0]),
         },

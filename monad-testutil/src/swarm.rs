@@ -21,7 +21,7 @@ use monad_mock_swarm::{
 };
 use monad_state::MonadConfig;
 use monad_transformer::ID;
-use monad_types::NodeId;
+use monad_types::{NodeId, SeqNum};
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -96,7 +96,7 @@ pub fn complete_config<
             delta,
             consensus_config: ConsensusConfig {
                 proposal_size,
-                state_root_delay,
+                state_root_delay: SeqNum(state_root_delay),
                 propose_with_missing_blocks: false,
             },
             genesis_block: genesis_block.clone(),

@@ -33,7 +33,7 @@ fn setup_block(
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
     let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
         QcInfo {
@@ -49,7 +49,7 @@ fn setup_block(
         &Payload {
             txns,
             header: ExecutionArtifacts::zero(),
-            seq_num: 1,
+            seq_num: SeqNum(1),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         },

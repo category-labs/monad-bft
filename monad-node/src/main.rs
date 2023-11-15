@@ -17,7 +17,7 @@ use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
-use monad_types::NodeId;
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -119,7 +119,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
             proposal_size: 5000,
-            state_root_delay: 0,
+            state_root_delay: SeqNum(0),
             propose_with_missing_blocks: false,
         },
         genesis_block: node_state.genesis.genesis_block,

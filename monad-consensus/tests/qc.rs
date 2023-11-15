@@ -18,7 +18,7 @@ fn comparison() {
         round: Round(2),
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
 
     let vi_2 = VoteInfo {
@@ -26,7 +26,7 @@ fn comparison() {
         round: Round(3),
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
 
     let qc_1 = QuorumCertificate::<MockSignatures>::new::<HasherType>(
