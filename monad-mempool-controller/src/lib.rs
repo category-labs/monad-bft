@@ -112,7 +112,7 @@ impl Controller {
         let messenger =
             Messenger::new(config.messenger_config.clone(), config.wait_for_peers).await?;
 
-        let pool = Arc::new(Mutex::new(Pool::new(config.pool_config.clone())));
+        let pool = Arc::new(Mutex::new(Pool::new(config.pool_config)));
         let pending_tx_batch = Arc::new(Mutex::new(Vec::new()));
 
         // Spawn task to broadcast transaction batches every time_threshold seconds.

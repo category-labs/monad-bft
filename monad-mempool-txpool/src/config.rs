@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct PoolConfig {
     pub ttl_duration: Duration,
     pub pending_duration: Duration,
