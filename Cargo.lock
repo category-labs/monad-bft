@@ -4240,7 +4240,6 @@ dependencies = [
 name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
- "env_logger",
  "itertools",
  "monad-blocktree",
  "monad-consensus",
@@ -4312,9 +4311,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
- "monad-testutil",
  "monad-types",
- "test-case",
  "tokio",
 ]
 
@@ -4338,7 +4335,6 @@ dependencies = [
  "criterion",
  "fastrand 2.0.1",
  "monad-crypto",
- "monad-mock-swarm",
  "monad-transformer",
  "monad-types",
  "rand 0.8.5",
@@ -4573,9 +4569,6 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
- "criterion",
- "env_logger",
- "itertools",
  "monad-block-sync",
  "monad-blocktree",
  "monad-consensus",
@@ -4585,19 +4578,14 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
- "monad-mock-swarm",
  "monad-proto",
- "monad-quic",
- "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
  "monad-validator",
- "monad-wal",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "ref-cast",
  "tempfile",
- "test-case",
  "tracing",
  "tracing-core",
  "tracing-subscriber",

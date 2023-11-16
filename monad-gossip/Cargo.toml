@@ -21,7 +21,6 @@ serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 monad-crypto = { path = "../monad-crypto" }
-monad-mock-swarm = { path = "../monad-mock-swarm" }
 
 criterion = { workspace = true }
 fastrand = "2.0.1"

@@ -23,7 +23,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
 
-env_logger = { workspace = true }
 itertools = { workspace = true }
 test-case = { workspace = true }
 tracing-subscriber = { workspace = true }
