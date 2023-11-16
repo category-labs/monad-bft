@@ -37,6 +37,7 @@ pub fn start_gossipsub<T: 'static + prost::Message + Default>(
 
     let gossipsub_config = gossipsub::ConfigBuilder::default()
         .validation_mode(gossipsub::ValidationMode::Strict)
+        .max_transmit_size(usize::MAX)
         .build()
         // The config is fixed, so this should never fail.
         ?;
