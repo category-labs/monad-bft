@@ -8,6 +8,8 @@ bench = false
 
 [dependencies]
 brotli = { workspace = true }
+flate2 = { workspace = true }
+lz4 = { workspace = true }
 
 [dev-dependencies]
 monad-consensus = { path = "../monad-consensus" }

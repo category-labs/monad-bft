@@ -1,50 +1,36 @@
 use std::io::{Cursor, Read, Write};
 
-use brotli::{CompressorWriter, Decompressor};
+use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
 
 use crate::CompressionAlgo;
 
-pub const MAX_COMPRESSION_LEVEL: u32 = 11;
+pub const MAX_COMPRESSION_LEVEL: u32 = 9;
 
-pub struct BrotliCompression {
-    // quality range 0..=11
-    quality: u32,
-    // window_bits range:
-    // 10..=24 without large_window_size feature
-    // 10..=30 with large_window_size feature
-    window_bits: u32,
-    // library default is 11/22 for Brotli
+pub struct DeflateCompression {
+    // compression level range 0..=9
+    level: Compression,
 }
 
-impl Default for BrotliCompression {
-    fn default() -> Self {
-        Self {
-            quality: 11,
-            window_bits: 22,
-        }
-    }
-}
-
-impl CompressionAlgo for BrotliCompression {
+impl CompressionAlgo for DeflateCompression {
     type CompressError = std::io::Error;
     type DecompressError = std::io::Error;
 
-    fn new(quality: u32, window_bits: u32) -> Self {
+    fn new(quality: u32, _window_bits: u32) -> Self {
         Self {
-            quality: quality.min(MAX_COMPRESSION_LEVEL),
-            window_bits,
+            level: Compression::new(quality.min(MAX_COMPRESSION_LEVEL)),
         }
     }
 
     fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
-        let mut writer = CompressorWriter::new(output, 4096, self.quality, self.window_bits);
+        let mut writer = DeflateEncoder::new(output, self.level);
+
         writer.write_all(input)?;
-        writer.flush()
+        writer.finish().map(|_| ())
     }
 
     fn decompress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::DecompressError> {
-        let mut reader = Decompressor::new(Cursor::new(input), 4096);
-
+        let temp_buffer = vec![0x00_u8; 4096];
+        let mut reader = DeflateDecoder::new_with_buf(Cursor::new(input), temp_buffer);
         reader.read_to_end(output)?;
         Ok(())
     }
@@ -56,7 +42,7 @@ mod test {
     #[test]
     fn test_lossless_compression() {
         let data = [0xfe_u8; 5000];
-        let algo = BrotliCompression::new(11, 22);
+        let algo = DeflateCompression::new(9, 0);
 
         let mut compressed = Vec::new();
         assert!(algo.compress(&data, &mut compressed).is_ok());

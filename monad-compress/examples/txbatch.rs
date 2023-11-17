@@ -1,6 +1,8 @@
 use std::{env, fs::File, io::Read};
 
-use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
+use monad_compress::{
+    brotli::BrotliCompression, deflate::DeflateCompression, lz4::Lz4Compression, CompressionAlgo,
+};
 use peak_alloc::PeakAlloc;
 
 #[global_allocator]
@@ -19,7 +21,11 @@ fn main() {
 
     let bg_mem_usage = PEAK_ALLOC.current_usage_as_mb();
 
-    println!("{:<10} | {:<10} | {:<10}", "level", "ratio", "mem (MB)");
+    println!("{:-^50}", "brotli");
+    println!(
+        "{:<10} | {:<10} | {:<10} | {:<10}",
+        "level", "ratio", "mem (MB)", "compressed (KB)"
+    );
 
     for compression_level in 0..=11 {
         // compress txns
@@ -30,10 +36,55 @@ fn main() {
             .expect("compression success");
 
         println!(
-            "{:<10} | {:<10.3} | {:<10.3}",
+            "{:<10} | {:<10.3} | {:<10.3} | {:<10}",
             compression_level,
             compressed.len() as f64 / txns.len() as f64,
-            PEAK_ALLOC.peak_usage_as_mb() - bg_mem_usage
+            PEAK_ALLOC.peak_usage_as_mb() - bg_mem_usage,
+            compressed.len() / 1024
+        );
+    }
+
+    println!("{:-^50}", "deflate");
+    println!(
+        "{:<10} | {:<10} | {:<10} | {:<10}",
+        "level", "ratio", "mem (MB)", "compressed (KB)"
+    );
+    for compression_level in 0..=11 {
+        // compress txns
+        PEAK_ALLOC.reset_peak_usage();
+        let algo = DeflateCompression::new(compression_level, 22);
+        let mut compressed = Vec::new();
+        algo.compress(&txns, &mut compressed)
+            .expect("compression success");
+
+        println!(
+            "{:<10} | {:<10.3} | {:<10.3} | {:<10}",
+            compression_level,
+            compressed.len() as f64 / txns.len() as f64,
+            PEAK_ALLOC.peak_usage_as_mb() - bg_mem_usage,
+            compressed.len() / 1024
+        );
+    }
+
+    println!("{:-^50}", "lz4");
+    println!(
+        "{:<10} | {:<10} | {:<10} | {:<10}",
+        "level", "ratio", "mem (MB)", "compressed (KB)"
+    );
+    for compression_level in 0..=16 {
+        // compress txns
+        PEAK_ALLOC.reset_peak_usage();
+        let algo = Lz4Compression::new(compression_level, 90);
+        let mut compressed = Vec::new();
+        algo.compress(&txns, &mut compressed)
+            .expect("compression success");
+
+        println!(
+            "{:<10} | {:<10.3} | {:<10.3} | {:<10}",
+            compression_level,
+            compressed.len() as f64 / txns.len() as f64,
+            PEAK_ALLOC.peak_usage_as_mb() - bg_mem_usage,
+            compressed.len() / 1024
         );
     }
 }
