@@ -14,15 +14,14 @@ use monad_types::ValidatorData;
 
 pub struct ValidatorSetUpdater<ST, SCT> {
     validator_set: Option<ValidatorData>,
+    // TODO: call waker.wake() when exeuction sends 
+    // validator set updates after executing block s
     epoch_boundary: u64,
     waker: Option<Waker>,
     _marker: PhantomData<(ST, SCT)>,
 }
 
 impl<ST, SCT> ValidatorSetUpdater<ST, SCT> {
-    // TODO: call waker.wake() when exeuction sends 
-    // validator set updates after executing block s
-
     pub fn ready(&self) -> bool {
         self.validator_set.is_some()
     }

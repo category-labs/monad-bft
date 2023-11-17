@@ -21,7 +21,7 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
 
 pub struct ProposalGen<ST, SCT> {
     round: Round,
@@ -50,10 +50,9 @@ where
         &mut self,
         keys: &[KeyPair],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        valset: &VT,
+        valsets: &ValidatorSetMapping<VT>,
         election: &LT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_valset: &VT,
         txns: TransactionHashList,
         execution_header: ExecutionArtifacts,
         epoch_length: Round,
@@ -73,8 +72,7 @@ where
             .find(|(k, _)| k.pubkey() == election.get_leader(
                 self.round,
                 epoch_length,
-                valset,
-                upcoming_valset).0)
+                valsets).0)
             .expect("key not in valset");
 
         let block = Block::new::<HasherType>(

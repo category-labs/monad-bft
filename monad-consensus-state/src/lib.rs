@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{time::Duration};
 
 use log::{debug, warn};
 use monad_blocktree::blocktree::{BlockTree, RootKind};
@@ -28,8 +28,8 @@ use monad_crypto::{
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId, Round};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_types::{BlockId, Epoch, NodeId, Round};
+use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
 use tracing::trace;
 
 use crate::{
@@ -112,9 +112,8 @@ where
         author: NodeId,
         p: ProposalMessage<SCT>,
         txns: FullTransactionList,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -122,9 +121,8 @@ where
         &mut self,
         author: NodeId,
         v: VoteMessage<SCT>,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -132,9 +130,8 @@ where
         &mut self,
         author: NodeId,
         tm: TimeoutMessage<SCT>,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -286,17 +283,20 @@ where
         author: NodeId,
         p: ProposalMessage<SCT>,
         full_txs: FullTransactionList,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Fetched full proposal: {:?}", p);
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
 
+        let epoch = p.block.round.get_epoch_num(self.config.epoch_length);
+        // TODO: fix unwrap and handle case where validator set is not in map
+        let validator_set = validator_sets.get(&epoch).unwrap();
         let root_num = self.pending_block_tree.get_root_seq_num();
-        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc, validators, root_num);
+
+        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc, validator_set, root_num);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -314,8 +314,7 @@ where
         let leader = election.get_leader(
             round,
             self.config.epoch_length,
-            validators,
-            upcoming_validators,
+            validator_sets,
         );
 
         let author_pubkey = validator_mapping
@@ -374,8 +373,7 @@ where
             let next_leader = election.get_leader(
                 round + Round(1),
                 self.config.epoch_length,
-                validators,
-                upcoming_validators,
+                validator_sets,
             );
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
@@ -393,9 +391,8 @@ where
         &mut self,
         author: NodeId,
         vote_msg: VoteMessage<SCT>,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Vote Message: {:?}", vote_msg);
@@ -405,23 +402,26 @@ where
         }
         inc_count!(vote_received);
 
+        let epoch = vote_msg.vote.vote_info.round.get_epoch_num(self.config.epoch_length);
+        // TODO: fix unwrap and handle case where validator set is not in map
+        let validator_set = validator_sets.get(&epoch).unwrap();
+
         let mut cmds = Vec::new();
         let (qc, vote_state_cmds) =
             self.vote_state
-                .process_vote::<H, _>(&author, &vote_msg, validators, validator_mapping);
+                .process_vote::<H, _>(&author, &vote_msg, validator_set, validator_mapping);
         cmds.extend(vote_state_cmds.into_iter().map(Into::into));
 
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);
             let root_num = self.pending_block_tree.get_root_seq_num();
-            cmds.extend(self.process_certificate_qc(&qc, validators, root_num));
+            cmds.extend(self.process_certificate_qc(&qc, validator_set, root_num));
 
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
                 self.config.epoch_length,
-                validators,
-                upcoming_validators,
+                validator_sets,
             ) {
                 cmds.extend(self.process_new_round_event(None));
             }
@@ -433,9 +433,8 @@ where
         &mut self,
         author: NodeId,
         tmo_msg: TimeoutMessage<SCT>,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        upcoming_validators: &VT,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         let tm = &tmo_msg.timeout;
@@ -445,11 +444,15 @@ where
             return cmds;
         }
 
+        let epoch = tm.tminfo.round.get_epoch_num(self.config.epoch_length);
+        // TODO: fix unwrap and handle case where validator set is not in map
+        let validator_set = validator_sets.get(&epoch).unwrap();
+
         debug!("Remote timeout msg: {:?}", tm);
         inc_count!(remote_timeout_msg);
 
         let root_num = self.pending_block_tree.get_root_seq_num();
-        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc, validators, root_num);
+        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc, validator_set, root_num);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
@@ -463,7 +466,7 @@ where
         }
 
         let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout::<H, VT>(
-            validators,
+            validator_set,
             validator_mapping,
             &mut self.safety,
             &self.high_qc,
@@ -493,8 +496,7 @@ where
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
                 self.config.epoch_length,
-                validators,
-                upcoming_validators,
+                validator_sets,
             ){
                 cmds.extend(self.process_new_round_event(Some(tc)));
             }
@@ -671,7 +673,10 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
-        cmds.extend(self.pacemaker.advance_round_qc(qc, self.config.epoch_length, root_num).into_iter().map(Into::into));
+        cmds.extend(
+            self.pacemaker.advance_round_qc(qc, self.config.epoch_length, root_num)
+                .into_iter()
+                .map(Into::into));
 
         // block sync
         cmds.extend(self.get_blocks_if_missing(qc, validators));
@@ -867,7 +872,7 @@ mod test {
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
-        validator_set::{ValidatorSet, ValidatorSetType},
+        validator_set::{ValidatorSet, ValidatorSetType, ValidatorSetMapping},
     };
     use test_case::test_case;
     use tracing_test::traced_test;
@@ -886,14 +891,17 @@ mod test {
     ) -> (
         Vec<KeyPair>,
         Vec<SignatureCollectionKeyPairType<SCT>>,
-        ValidatorSet,
+        ValidatorSetMapping<ValidatorSet>,
         ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        ValidatorSet,
         Vec<ConsensusState<SCT, MockValidator, SVT>>,
     ) {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
         let validators = Vec::from_iter(valset.get_members().clone());
-        let upcoming_valset = ValidatorSet::new(validators, Epoch(2)).expect("no duplicates or invalid entries");
+        let mut validator_sets = ValidatorSetMapping::new();
+        validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone(), Epoch(1))
+            .expect("ValidatorData should not have duplicates or invalid entries"));
+        validator_sets.insert(Epoch(2), ValidatorSet::new(validators.clone(), Epoch(2))
+            .expect("ValidatorData should not have duplicates or invalid entries"));
 
         let voting_keys = keys
             .iter()
@@ -942,14 +950,14 @@ mod test {
             })
             .collect::<Vec<_>>();
 
-        (keys, cert_keys, valset, valmap, upcoming_valset, consensus_states)
+        (keys, cert_keys, validator_sets, valmap, consensus_states)
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[traced_test]
     #[test]
     fn lock_qc_high() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
 
@@ -981,17 +989,15 @@ mod test {
         state.handle_vote_message::<HasherType, _, _>(
             *v1.author(),
             *v1,
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         state.handle_vote_message::<HasherType, _, _>(
             *v2.author(),
             *v2,
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1001,9 +1007,8 @@ mod test {
         state.handle_vote_message::<HasherType, _, _>(
             *v3.author(),
             *v3,
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
@@ -1023,7 +1028,7 @@ mod test {
     // When a node locally timesout on a round, it no longer produces votes in that round
     #[test]
     fn timeout_stops_voting() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
@@ -1031,10 +1036,9 @@ mod test {
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1053,9 +1057,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1073,7 +1076,7 @@ mod test {
 
     #[test]
     fn enter_proposalmsg_round() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
@@ -1083,10 +1086,9 @@ mod test {
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1096,9 +1098,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1117,10 +1118,9 @@ mod test {
         let p2 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1130,9 +1130,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1152,10 +1151,9 @@ mod test {
             propgen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 state.config.epoch_length,
@@ -1164,10 +1162,9 @@ mod test {
         let p7 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1177,9 +1174,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1188,7 +1184,7 @@ mod test {
 
     #[test]
     fn duplicate_proposals() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
@@ -1198,10 +1194,9 @@ mod test {
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1211,9 +1206,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1233,9 +1227,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         assert!(cmds.is_empty());
@@ -1251,7 +1244,7 @@ mod test {
     }
 
     fn out_of_order_proposals(perms: Vec<usize>) {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
@@ -1261,10 +1254,9 @@ mod test {
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1274,9 +1266,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1296,10 +1287,9 @@ mod test {
         let p2 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1309,9 +1299,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1332,10 +1321,9 @@ mod test {
             missing_proposals.push(propgen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 state.config.epoch_length,
@@ -1346,10 +1334,9 @@ mod test {
         let p_fut = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1359,9 +1346,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1376,9 +1362,8 @@ mod test {
                 author,
                 verified_message,
                 FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-                &valset,
+                &validator_sets,
                 &valmap,
-                &upcoming_valset,
                 &election,
             ));
         }
@@ -1416,9 +1401,8 @@ mod test {
                         m.block.author,
                         m.clone(),
                         FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-                        &valset,
+                        &validator_sets,
                         &valmap,
-                        &upcoming_valset,
                         &election,
                     ));
                 }
@@ -1433,10 +1417,9 @@ mod test {
         let p_last = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1446,9 +1429,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1463,7 +1445,7 @@ mod test {
 
     #[test]
     fn test_commit_rule_consecutive() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
@@ -1473,10 +1455,9 @@ mod test {
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1486,9 +1467,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1514,10 +1494,9 @@ mod test {
         let p2 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1527,9 +1506,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1560,10 +1538,9 @@ mod test {
         let p3 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1574,9 +1551,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let lc = p2_cmds
@@ -1587,7 +1563,7 @@ mod test {
 
     #[test]
     fn test_commit_rule_non_consecutive() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
@@ -1597,10 +1573,9 @@ mod test {
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1610,9 +1585,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1620,10 +1594,9 @@ mod test {
         let p2 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1633,9 +1606,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1674,16 +1646,16 @@ mod test {
         };
         assert_eq!(tmo.tminfo.round, Round(2));
 
-        let _ = propgen.next_tc(&keys, &certkeys, &valset, &valmap);
+        let valset = validator_sets.get(&Epoch(1)).unwrap();
+        let _ = propgen.next_tc(&keys, &certkeys, valset, &valmap);
 
         // round 3 proposal, has qc(1)
         let p3 = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -1695,9 +1667,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1725,8 +1696,9 @@ mod test {
     // not incorrectly committed
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+        let valset = validator_sets.get(&Epoch(1)).unwrap();
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -1745,10 +1717,9 @@ mod test {
         let cp1 = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -1756,10 +1727,9 @@ mod test {
         let mp1 = mal_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![5]),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -1774,9 +1744,8 @@ mod test {
             author,
             verified_message.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let p1_votes = cmds1
@@ -1794,9 +1763,8 @@ mod test {
             author,
             verified_message.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let p3_votes = cmds3
@@ -1814,9 +1782,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let p4_votes = cmds4
@@ -1835,9 +1802,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let p2_votes = cmds2
@@ -1866,9 +1832,8 @@ mod test {
             let cmds2 = second_state.handle_vote_message::<HasherType, _, _>(
                 *v.author(),
                 *v,
-                &valset,
+                &validator_sets,
                 &valmap,
-                &upcoming_valset,
                 &election,
             );
             let res = cmds2.into_iter().find(|c| {
@@ -1903,10 +1868,9 @@ mod test {
         let cp2 = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -1920,9 +1884,8 @@ mod test {
             author_2,
             verified_message_2.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -1931,9 +1894,8 @@ mod test {
             author_2,
             verified_message_2.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let res = cmds1.into_iter().find(|c| {
@@ -1951,10 +1913,9 @@ mod test {
         let cp3 = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -1969,18 +1930,16 @@ mod test {
             author,
             verified_message.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -2001,16 +1960,15 @@ mod test {
 
         let msg = BlockSyncMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
-        second_state.handle_block_sync(routing_target, msg, &valset);
+        second_state.handle_block_sync(routing_target, msg, valset);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -2020,9 +1978,8 @@ mod test {
             author,
             verified_message.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         // new block added should allow path_to_root properly, thus no more request sync
@@ -2041,9 +1998,8 @@ mod test {
             author,
             verified_message.clone(),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -2068,9 +2024,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -2090,7 +2045,7 @@ mod test {
 
         let mal_sync = BlockSyncMessage::NotAvailable(block_2.block.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
-        let cmds3 = third_state.handle_block_sync(author_2, mal_sync, &valset);
+        let cmds3 = third_state.handle_block_sync(author_2, mal_sync, valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3.iter().clone().find(|c| {
@@ -2106,7 +2061,7 @@ mod test {
 
         let sync = BlockSyncMessage::BlockFound(block_3);
 
-        let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), &valset);
+        let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -2126,7 +2081,7 @@ mod test {
             panic!("request sync is not found")
         };
         // repeated handling of the requested block should be ignored
-        let cmds3 = third_state.handle_block_sync(*peer, sync, &valset);
+        let cmds3 = third_state.handle_block_sync(*peer, sync, valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -2145,9 +2100,8 @@ mod test {
             author_2,
             verified_message_2,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         assert_eq!(third_state.pending_block_tree.size(), 5);
@@ -2164,7 +2118,7 @@ mod test {
 
         let sync = BlockSyncMessage::BlockFound(block_2);
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = third_state.handle_block_sync(*peer_2, sync, &valset);
+        let cmds3 = third_state.handle_block_sync(*peer_2, sync, valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 5);
         let res = cmds3.iter().clone().find(|c| {
@@ -2182,7 +2136,7 @@ mod test {
     #[traced_test]
     #[test]
     fn test_receive_empty_block() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
@@ -2192,10 +2146,9 @@ mod test {
         let p1 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -2224,7 +2177,7 @@ mod test {
     #[traced_test]
     #[test]
     fn test_lagging_execution() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
@@ -2234,10 +2187,9 @@ mod test {
         let p0 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -2246,10 +2198,9 @@ mod test {
         let p1 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -2276,7 +2227,7 @@ mod test {
 
     #[test]
     fn test_state_root_updates() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
@@ -2287,10 +2238,9 @@ mod test {
         let p0 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
             state.config.epoch_length,
@@ -2308,19 +2258,17 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
         let p1 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
@@ -2345,9 +2293,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -2356,10 +2303,9 @@ mod test {
         let p2 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
@@ -2384,9 +2330,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let lc = p2_cmds
@@ -2397,10 +2342,9 @@ mod test {
         let p3 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![0xaa]),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
@@ -2425,9 +2369,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let lc = p3_cmds
@@ -2446,7 +2389,7 @@ mod test {
 
     #[test]
     fn test_fetch_uncommitted_block() {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
@@ -2459,10 +2402,9 @@ mod test {
         let cp1 = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::default(),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -2481,9 +2423,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_correct).unwrap();
@@ -2493,10 +2434,9 @@ mod test {
         let bp1 = branch_off_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             TransactionHashList::new(vec![13, 32]),
             ExecutionArtifacts::zero(),
             first_state.config.epoch_length,
@@ -2514,9 +2454,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_branch).unwrap();
@@ -2527,10 +2466,9 @@ mod test {
             let cp = correct_proposal_gen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 first_state.config.epoch_length,
@@ -2550,9 +2488,8 @@ mod test {
                 author,
                 verified_message,
                 FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-                &valset,
+                &validator_sets,
                 &valmap,
-                &upcoming_valset,
                 &election,
             );
             let full_block = first_state.fetch_uncommitted_block(&bid).unwrap();
@@ -2575,7 +2512,7 @@ mod test {
     #[test_case(100; "100 participants")]
     #[test_case(523; "523 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
                 num_state as u32,
             );
@@ -2589,10 +2526,9 @@ mod test {
             let cp = correct_proposal_gen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 epoch_length,
@@ -2604,9 +2540,8 @@ mod test {
                     author,
                     verified_message.clone(),
                     FullTransactionList::new(Vec::new()),
-                    &valset,
+                    &validator_sets,
                     &valmap,
-                    &upcoming_valset,
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2629,18 +2564,16 @@ mod test {
         let next_leader = election.get_leader(
             Round(10),
             epoch_length,
-            &valset,
-            &upcoming_valset,
+            &validator_sets,
         );
         let mut leader_index = 0;
         // test when observing a qc through vote message, and qc points to a block that doesn't exists yet
         let cp = correct_proposal_gen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             epoch_length,
@@ -2653,9 +2586,8 @@ mod test {
                     author,
                     verified_message.clone(),
                     FullTransactionList::new(Vec::new()),
-                    &valset,
+                    &validator_sets,
                     &valmap,
-                    &upcoming_valset,
                     &election,
                 );
 
@@ -2684,7 +2616,7 @@ mod test {
         }
         for (i, (author, v)) in votes.iter().enumerate() {
             let cmds = states[leader_index]
-                .handle_vote_message::<HasherType, _, _>(*author, *v, &valset, &valmap, &upcoming_valset, &election);
+                .handle_vote_message::<HasherType, _, _>(*author, *v, &validator_sets, &valmap, &election);
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId, BlockId)> = cmds
                     .into_iter()
@@ -2711,7 +2643,7 @@ mod test {
     #[test]
     fn test_observe_qc_through_tmo() {
         let num_state = 5;
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
                 num_state as u32,
             );
@@ -2723,10 +2655,9 @@ mod test {
             let cp = propgen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 epoch_length,
@@ -2738,9 +2669,8 @@ mod test {
                     author,
                     verified_message.clone(),
                     FullTransactionList::new(Vec::new()),
-                    &valset,
+                    &validator_sets,
                     &valmap,
-                    &upcoming_valset,
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2778,9 +2708,8 @@ mod test {
         let cmds = states[0].handle_timeout_message::<HasherType, _, _>(
             author,
             timeout_msg,
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
 
@@ -2798,7 +2727,7 @@ mod test {
     #[test]
     fn test_observe_qc_through_proposal() {
         let num_state = 5;
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
                 num_state as u32,
             );
@@ -2810,10 +2739,9 @@ mod test {
             let cp = propgen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 epoch_length,
@@ -2825,10 +2753,9 @@ mod test {
         let cp = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             epoch_length,
@@ -2839,9 +2766,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let req: Vec<(NodeId, BlockId)> = cmds
@@ -2858,7 +2784,7 @@ mod test {
     #[test]
     fn test_epoch_end_through_qc() {
         let num_state = 2;
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
                 num_state as u32,
             );
@@ -2870,10 +2796,9 @@ mod test {
             let cp = propgen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 epoch_length,
@@ -2886,10 +2811,9 @@ mod test {
         let cp = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             epoch_length,
@@ -2901,9 +2825,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(Vec::new()),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let epoch_end_cmds: Vec<u64> = cmds
@@ -2919,10 +2842,11 @@ mod test {
     #[test]
     fn test_epoch_end_through_tc() {
         let num_state = 2;
-        let (keys, certkeys, valset, valmap, upcoming_valset, mut states) =
+        let (keys, certkeys, validator_sets, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
                 num_state as u32,
             );
+        let valset = validator_sets.get(&Epoch(1)).unwrap();
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
         let mut blocks = vec![];
@@ -2931,10 +2855,9 @@ mod test {
             let cp = propgen.next_proposal(
                 &keys,
                 &certkeys,
-                &valset,
+                &validator_sets,
                 &election,
                 &valmap,
-                &upcoming_valset,
                 Default::default(),
                 ExecutionArtifacts::zero(),
                 epoch_length,
@@ -2946,9 +2869,8 @@ mod test {
                     author,
                     verified_message.clone(),
                     FullTransactionList::new(Vec::new()),
-                    &valset,
+                    &validator_sets,
                     &valmap,
-                    &upcoming_valset,
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2985,16 +2907,15 @@ mod test {
         assert_eq!(tmo.tminfo.round, Round(epoch_length.0));
 
         // generate TC for Round(epoch_length)
-        let _ = propgen.next_tc(&keys, &certkeys, &valset, &valmap);
+        let _ = propgen.next_tc(&keys, &certkeys, valset, &valmap);
 
         // proposal for Round(epoch_length+1) has QC(epoch_length - 1) and TC(epoch_length)
         let new_epoch_proposal = propgen.next_proposal(
             &keys,
             &certkeys,
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
-            &upcoming_valset,
             Default::default(),
             ExecutionArtifacts::zero(),
             epoch_length,
@@ -3010,9 +2931,8 @@ mod test {
             author,
             verified_message,
             FullTransactionList::new(Vec::new()),
-            &valset,
+            &validator_sets,
             &valmap,
-            &upcoming_valset,
             &election,
         );
         let epoch_end_cmds: Vec<u64> = cmds

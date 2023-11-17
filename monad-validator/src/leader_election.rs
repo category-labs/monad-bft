@@ -1,6 +1,6 @@
 use monad_types::{NodeId, Round};
 
-use crate::validator_set::ValidatorSetType;
+use crate::validator_set::{ValidatorSetType, ValidatorSetMapping};
 
 // VotingPower is i64
 pub trait LeaderElection {
@@ -10,8 +10,7 @@ pub trait LeaderElection {
         &self,
         round: Round,
         epoch_length: Round,
-        validator_set: &VT,
-        upcoming_validator_set: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
      ) -> NodeId
     where
         VT: ValidatorSetType;

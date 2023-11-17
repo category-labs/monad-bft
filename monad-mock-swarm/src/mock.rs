@@ -843,7 +843,7 @@ where
 {
     type Item = MonadEvent<ST, SCT>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
         return Poll::Ready(Some(MonadEvent::ConsensusEvent(
@@ -922,7 +922,7 @@ where
 {
     type Item = MonadEvent<ST, SCT>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
         return Poll::Ready(Some(MonadEvent::ConsensusEvent(

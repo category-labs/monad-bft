@@ -134,6 +134,33 @@ impl ValidatorSetType for ValidatorSet {
     }
 }
 
+pub struct ValidatorSetMapping<VT>
+where
+    VT: ValidatorSetType
+{
+    validator_sets: HashMap<Epoch, VT>
+}
+
+impl<VT> ValidatorSetMapping<VT>
+where
+    VT: ValidatorSetType
+{
+    pub fn new() -> Self {
+        Self {
+            validator_sets: HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, epoch: &Epoch) -> Option<&VT> {
+        self.validator_sets.get(epoch)
+    }
+
+    pub fn insert(&mut self, epoch: Epoch, valset: VT) -> Option<VT> {
+        self.validator_sets.insert(epoch, valset)
+    }
+}
+
+
 #[cfg(test)]
 mod test {
     use monad_crypto::secp256k1::KeyPair;
