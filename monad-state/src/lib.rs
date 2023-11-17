@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, time::Duration, collections::HashMap};
+use std::{fmt::Debug, marker::PhantomData, time::Duration};
 
 use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
@@ -50,9 +50,7 @@ where
     epoch: Epoch,
     leader_election: LT,
     validator_sets: ValidatorSetMapping<VT>,
-    validator_set: VT,
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    upcoming_validator_set: Option<VT>,
     block_sync: BST,
 
     _pd: PhantomData<ST>,
@@ -77,9 +75,6 @@ where
     fn update_next_val_set(&mut self, val_set: Option<ValidatorData>) {
         let next_epoch = self.epoch + Epoch(1);
         let next_val_set = val_set.clone();
-        self.upcoming_validator_set = val_set.map(|v| {
-            VT::new(v.0, next_epoch).expect("ValidatorData should not have duplicates or invalid entries")
-        });
 
         if let Some(vd) = next_val_set {
             self.validator_sets.insert(
@@ -92,12 +87,6 @@ where
 
     fn advance_epoch(&mut self) {
         self.epoch = self.epoch + Epoch(1);
-
-        if let Some(vs) = self.upcoming_validator_set.take() {
-            self.validator_set = vs;
-        } else {
-            panic!("should not reach here");
-        }
     }
 }
 
@@ -253,8 +242,9 @@ where
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set_new = VT::new(staking_list.clone(), Epoch(1)).expect("initial validator set init failed");
         let val_set = VT::new(staking_list, Epoch(1)).expect("initial validator set init failed");
+        let mut validator_sets = ValidatorSetMapping::new();
+        validator_sets.insert(Epoch(1), val_set);
         let val_mapping = ValidatorMapping::new(voting_identities);
         let election = LT::new();
 
@@ -265,9 +255,7 @@ where
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT, BST> = Self {
             validator_sets: ValidatorSetMapping::new(),
-            validator_set: val_set,
             validator_mapping: val_mapping,
-            upcoming_validator_set: None,
             leader_election: election,
             epoch: Epoch(1),
             consensus: CT::new(
@@ -285,8 +273,6 @@ where
 
             _pd: PhantomData,
         };
-
-        monad_state.validator_sets.insert(Epoch(1), val_set_new);
 
         let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
             TimeoutVariant::Pacemaker,
@@ -317,9 +303,11 @@ where
                             .into_iter()
                             .map(Into::into)
                             .collect(),
-                        TimeoutVariant::BlockSync(bid) => self
-                            .consensus
-                            .handle_block_sync_tmo(bid, &self.validator_set),
+                        TimeoutVariant::BlockSync(bid) => {
+                            // TODO: fix unwrap and handle case where validator set is not in map
+                            let validator_set = self.validator_sets.get(&self.epoch).unwrap();
+                            self.consensus.handle_block_sync_tmo(bid, validator_set)
+                        }
                     },
 
                     ConsensusEvent::FetchedTxs(fetched, txns) => {
@@ -404,8 +392,10 @@ where
                         sender,
                         unverified_message,
                     } => {
+                        // TODO: fix unwrap and handle case where validator set is not in map
+                        let validator_set = self.validator_sets.get(&self.epoch).unwrap();
                         let verified_message = match unverified_message.verify::<HasherType, _>(
-                            &self.validator_set,
+                            validator_set,
                             &self.validator_mapping,
                             &sender,
                         ) {
@@ -453,8 +443,9 @@ where
                                 }
                             }
                             ConsensusMessage::BlockSync(msg) => {
-                                self.consensus
-                                    .handle_block_sync(author, msg, &self.validator_set)
+                                // TODO: fix unwrap and handle case where validator set is not in map
+                                let validator_set = self.validator_sets.get(&self.epoch).unwrap();
+                                self.consensus.handle_block_sync(author, msg, validator_set)
                             }
                         }
                     }

@@ -1,4 +1,4 @@
-use std::{time::Duration};
+use std::time::Duration;
 
 use log::{debug, warn};
 use monad_blocktree::blocktree::{BlockTree, RootKind};
@@ -28,7 +28,7 @@ use monad_crypto::{
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Epoch, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
 use tracing::trace;
 
