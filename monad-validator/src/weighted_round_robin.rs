@@ -3,7 +3,7 @@ use std::{cmp::Ordering, fmt::Debug};
 use log::warn;
 use monad_types::{NodeId, Round, Stake};
 
-use crate::validator_set::{ValidatorSetType, ValidatorSetMapping, self};
+use crate::validator_set::{ValidatorSetType, ValidatorSetMapping};
 
 use super::leader_election::LeaderElection;
 

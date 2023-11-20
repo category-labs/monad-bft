@@ -17,8 +17,8 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Stake};
-use monad_validator::validator_set::ValidatorSetType;
+use monad_types::{NodeId, Stake, Round};
+use monad_validator::validator_set::{ValidatorSetType, ValidatorSetMapping};
 
 use crate::{
     convert::message::UnverifiedConsensusMessage,
@@ -109,14 +109,20 @@ where
     // signatures for the present TC or QC
     pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
-        validators: &VT,
+        validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        current_round: Round,
+        epoch_length: Round,
         sender: &PubKey,
     ) -> Result<Verified<S, ConsensusMessage<SCT>>, Error> {
         // FIXME this feels wrong... it feels like the enum variant should factor into the hash so
         //       signatures can't be reused across variant members
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {
+                let round = m.block.round;
+                let validators = validator_sets
+                    .get(&round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
                     validators,
                     validator_mapping,
@@ -131,6 +137,10 @@ where
                 }
             }
             ConsensusMessage::Vote(m) => {
+                let round = m.vote.vote_info.round;
+                let validators = validator_sets
+                    .get(&round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature)
                     .verify::<H>(validators.get_members(), sender)?;
                 Verified {
@@ -142,6 +152,10 @@ where
                 }
             }
             ConsensusMessage::Timeout(m) => {
+                let round = m.timeout.tminfo.round;
+                let validators = validator_sets
+                    .get(&round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
                     validators,
                     validator_mapping,
@@ -156,6 +170,9 @@ where
                 }
             }
             ConsensusMessage::RequestBlockSync(m) => {
+                let validators = validator_sets
+                    .get(&current_round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature)
                     .verify::<H>(validators.get_members(), sender)?;
                 Verified {
@@ -167,6 +184,9 @@ where
                 }
             }
             ConsensusMessage::BlockSync(m) => {
+                let validators = validator_sets
+                    .get(&current_round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
                     validators,
                     validator_mapping,

@@ -14,4 +14,6 @@ pub enum Error {
     InsufficientStake,
     /// Seq num in block proposal must be 1 higher than in the QC
     InvalidSeqNum,
+    /// Required validator set not in validator set mapping
+    ValSetUnavailable,
 }

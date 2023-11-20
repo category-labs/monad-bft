@@ -152,6 +152,8 @@ where
 
     fn get_current_round(&self) -> Round;
 
+    fn get_epoch_length(&self) -> Round;
+
     fn get_keypair(&self) -> &KeyPair;
 
     fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>>;
@@ -596,6 +598,10 @@ where
 
     fn get_current_round(&self) -> Round {
         self.pacemaker.get_current_round()
+    }
+
+    fn get_epoch_length(&self) -> Round {
+        self.config.epoch_length
     }
 
     fn get_keypair(&self) -> &KeyPair {

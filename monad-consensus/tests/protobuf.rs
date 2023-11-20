@@ -23,7 +23,8 @@ use monad_crypto::{
     secp256k1::KeyPair,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, Epoch};
+use monad_validator::validator_set::ValidatorSetMapping;
 use zerocopy::AsBytes;
 
 fn make_tc<SCT: SignatureCollection>(
@@ -122,6 +123,9 @@ macro_rules! test_all_combination {
 test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let mut validator_sets = ValidatorSetMapping::new();
+    validator_sets.insert(Epoch(1), validators);
+    
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: Round(1),
@@ -149,7 +153,7 @@ test_all_combination!(test_vote_message, |num_keys| {
     let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
     let verified_rx_vote = rx_msg
-        .verify::<HasherType, _>(&validators, &validator_mapping, &author_keypair.pubkey())
+        .verify::<HasherType, _>(&validator_sets, &validator_mapping, Round(3), Round(100), &author_keypair.pubkey())
         .unwrap();
 
     assert_eq!(verified_votemsg, verified_rx_vote);
@@ -158,6 +162,8 @@ test_all_combination!(test_vote_message, |num_keys| {
 test_all_combination!(test_timeout_message, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let mut validator_sets = ValidatorSetMapping::new();
+    validator_sets.insert(Epoch(1), validators);
 
     let author_keypair = &keypairs[0];
     let author_cert_key = &cert_keys[0];
@@ -221,14 +227,16 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
 
     let verified_rx_tmo_messaage =
-        rx_msg.verify::<HasherType, _>(&validators, &validator_mapping, &author_keypair.pubkey());
+        rx_msg.verify::<HasherType, _>(&validator_sets, &validator_mapping, Round(3), Round(100), &author_keypair.pubkey());
 
     assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
 });
 
 test_all_combination!(test_proposal_qc, |num_keys| {
-    let (keypairs, cert_keys, validators, validator_map) =
+    let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let mut validator_sets = ValidatorSetMapping::new();
+    validator_sets.insert(Epoch(1), validators);
 
     let author_keypair = &keypairs[0];
     let blk = setup_block(
@@ -238,7 +246,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         TransactionHashList::new(vec![1, 2, 3, 4]),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_map,
+        &validator_mapping,
     );
     let proposal: ConsensusMessage<SCT> = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
@@ -249,15 +257,17 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
     let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-    let verified_rx_msg =
-        rx_msg.verify::<HasherType, _>(&validators, &validator_map, &author_keypair.pubkey());
+    let verified_rx_msg = rx_msg
+        .verify::<HasherType, _>(&validator_sets, &validator_mapping, Round(233), Round(300), &author_keypair.pubkey());
 
     assert_eq!(verified_msg, verified_rx_msg.unwrap());
 });
 
 test_all_combination!(test_proposal_tc, |num_keys| {
-    let (keypairs, cert_keys, validators, validator_map) =
+    let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let mut validator_sets = ValidatorSetMapping::new();
+    validator_sets.insert(Epoch(1), validators);
 
     let author_keypair = &keypairs[0];
     let blk = setup_block::<SCT>(
@@ -267,7 +277,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         TransactionHashList::new(vec![1, 2, 3, 4]),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_map,
+        &validator_mapping,
     );
 
     let tc_round = Round(232);
@@ -280,7 +290,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         high_qc_round,
         keypairs.as_slice(),
         cert_keys.as_slice(),
-        &validator_map,
+        &validator_mapping,
     );
 
     let msg = ConsensusMessage::Proposal(ProposalMessage {
@@ -292,8 +302,8 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
     let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
 
-    let verified_rx_msg =
-        rx_msg.verify::<HasherType, _>(&validators, &validator_map, &author_keypair.pubkey());
+    let verified_rx_msg = rx_msg
+        .verify::<HasherType, _>(&validator_sets, &validator_mapping, Round(233), Round(300), &author_keypair.pubkey());
 
     assert_eq!(verified_msg, verified_rx_msg.unwrap());
 });

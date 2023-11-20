@@ -254,7 +254,7 @@ where
         );
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT, BST> = Self {
-            validator_sets: ValidatorSetMapping::new(),
+            validator_sets,
             validator_mapping: val_mapping,
             leader_election: election,
             epoch: Epoch(1),
@@ -393,10 +393,11 @@ where
                         unverified_message,
                     } => {
                         // TODO: fix unwrap and handle case where validator set is not in map
-                        let validator_set = self.validator_sets.get(&self.epoch).unwrap();
                         let verified_message = match unverified_message.verify::<HasherType, _>(
-                            validator_set,
+                            &self.validator_sets,
                             &self.validator_mapping,
+                            self.consensus.get_current_round(),
+                            self.consensus.get_epoch_length(),
                             &sender,
                         ) {
                             Ok(m) => m,
