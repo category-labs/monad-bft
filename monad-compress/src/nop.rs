@@ -17,7 +17,7 @@ impl CompressionAlgo for NopCompression {
     type CompressError = NopCompressionError;
     type DecompressError = NopCompressionError;
 
-    fn new(_quality: u32, _window_bits: u32) -> Self {
+    fn new(_quality: u32, _window_bits: u32, _custom_dictionary: Vec<u8>) -> Self {
         Self
     }
 

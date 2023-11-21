@@ -15,7 +15,7 @@ impl CompressionAlgo for Lz4Compression {
     type CompressError = std::io::Error;
     type DecompressError = std::io::Error;
 
-    fn new(quality: u32, _window_bits: u32) -> Self {
+    fn new(quality: u32, _window_bits: u32, _custom_dictionary: Vec<u8>) -> Self {
         Self {
             builder: EncoderBuilder::new()
                 .level(quality.min(MAX_COMPRESSION_LEVEL))
@@ -38,11 +38,18 @@ impl CompressionAlgo for Lz4Compression {
 
 #[cfg(test)]
 mod test {
+    use std::fs::File;
+
     use super::*;
     #[test]
     fn test_lossless_compression() {
-        let data = [0xfe_u8; 5000];
-        let algo = Lz4Compression::new(16, 0);
+        let mut data = Vec::new();
+        File::open("examples/txbatch.rlp")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+
+        let algo = Lz4Compression::new(8, 0, Vec::new());
 
         let mut compressed = Vec::new();
         assert!(algo.compress(&data, &mut compressed).is_ok());
