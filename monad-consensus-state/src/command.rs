@@ -64,7 +64,6 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
             PacemakerCommand::ScheduleReset => {
                 ConsensusCommand::ScheduleReset(TimeoutVariant::Pacemaker)
             }
-            PacemakerCommand::EpochEnd(s) => ConsensusCommand::EpochEnd(s),
         }
     }
 }

@@ -45,7 +45,6 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
     Broadcast(TimeoutMessage<SCT>),
     Schedule { duration: Duration },
     ScheduleReset,
-    EpochEnd(u64),
 }
 
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
@@ -208,8 +207,9 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         if tc.round < self.current_round {
             return None;
         }
+        let round = tc.round;
         self.last_round_tc = Some(tc.clone());
-        Some(self.start_timer(tc.round + Round(1)))
+        Some(self.start_timer(round + Round(1)))
     }
 
     #[must_use]
