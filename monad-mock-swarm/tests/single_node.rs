@@ -53,7 +53,7 @@ fn two_nodes_quic() {
 
             master_seed: 7,
 
-            gossip: MockGossipConfig { all_peers }.build(),
+            gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -87,7 +87,7 @@ fn two_nodes_quic_bw() {
 
             master_seed: 7,
 
-            gossip: MockGossipConfig { all_peers }.build(),
+            gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),

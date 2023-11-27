@@ -12,6 +12,7 @@ use crate::{AppMessage, GossipMessage};
 
 pub struct MockGossipConfig {
     pub all_peers: Vec<NodeId>,
+    pub me: NodeId,
 }
 
 impl MockGossipConfig {
@@ -42,20 +43,35 @@ impl Gossip for MockGossip {
         self.current_tick = time;
         let gossip_message_header: GossipMessage =
             Vec::from((message.len() as MessageLenType).to_le_bytes()).into();
-        let gossip_message = std::iter::once(gossip_message_header).chain(std::iter::once(message));
+        let gossip_message =
+            std::iter::once(gossip_message_header).chain(std::iter::once(message.clone()));
         match to {
             RouterTarget::Broadcast => {
-                for peer in &self.config.all_peers {
+                for peer in self
+                    .config
+                    .all_peers
+                    .iter()
+                    .filter(|to| to != &&self.config.me)
+                {
                     self.events.extend(
                         gossip_message
                             .clone()
                             .map(|gossip_message| GossipEvent::Send(*peer, gossip_message)),
                     );
                 }
+                self.events
+                    .push_back(GossipEvent::Emit(self.config.me, message))
             }
-            RouterTarget::PointToPoint(to) => self
-                .events
-                .extend(gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message))),
+            RouterTarget::PointToPoint(to) => {
+                if to == self.config.me {
+                    self.events
+                        .push_back(GossipEvent::Emit(self.config.me, message))
+                } else {
+                    self.events.extend(
+                        gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)),
+                    )
+                }
+            }
         }
     }
 
@@ -122,9 +138,10 @@ mod tests {
     fn test_framed_messages() {
         let mut swarm = make_swarm(
             NUM_NODES,
-            |all_peers, _me| {
+            |all_peers, me| {
                 MockGossipConfig {
                     all_peers: all_peers.to_vec(),
+                    me: *me,
                 }
                 .build()
             },
@@ -156,9 +173,10 @@ mod tests {
     fn test_split_messages() {
         let mut swarm = make_swarm(
             NUM_NODES,
-            |all_peers, _me| {
+            |all_peers, me| {
                 MockGossipConfig {
                     all_peers: all_peers.to_vec(),
+                    me: *me,
                 }
                 .build()
             },

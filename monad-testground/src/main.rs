@@ -157,7 +157,7 @@ async fn main() {
         router: RouterArgs::MonadP2P {
             max_rtt_ms: 150,
             bandwidth_Mbps: 1_000,
-            gossip: GossipArgs::Gossipsub { fanout: 7 },
+            gossip: GossipArgs::Simple,
         },
         mempool: MempoolArgs::Mock,
         execution_ledger: ExecutionLedgerArgs::Mock,
@@ -341,6 +341,7 @@ where
                                             .iter()
                                             .map(|(pubkey, _)| NodeId(*pubkey))
                                             .collect(),
+                                        me,
                                     })
                                 }
                                 GossipArgs::Gossipsub { fanout } => {

@@ -47,7 +47,7 @@ fn setup() -> (
         all_peers: all_peers.iter().cloned().collect(),
         me,
         master_seed: 7,
-        gossip: MockGossipConfig { all_peers }.build(),
+        gossip: MockGossipConfig { all_peers, me }.build(),
     };
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
