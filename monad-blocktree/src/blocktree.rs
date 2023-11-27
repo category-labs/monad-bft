@@ -403,7 +403,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         self.tree.get(&block_id).map(|b| b.block.get_seq_num())
     }
 
-    pub fn get_root_seq_num(&self) -> Option<u64> {
+    pub fn get_root_seq_num(&self) -> Option<SeqNum> {
         match self.root {
             RootKind::Rooted(block_id) => self.get_seq_num(block_id),
             RootKind::Unrooted(_) => None,

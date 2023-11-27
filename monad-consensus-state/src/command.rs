@@ -10,7 +10,7 @@ use monad_consensus_types::{
     payload::TransactionHashList,
     signature_collection::SignatureCollection,
 };
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant, SeqNum};
 
 use crate::blocksync::InFlightBlockSync;
 
@@ -44,7 +44,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// persisted events if necessary
     CheckpointSave(Checkpoint<SCT>),
     StateRootHash(FullBlock<SCT>),
-    EpochEnd(u64),
+    EpochEnd(SeqNum),
     // - to handle this command, we need to call message_state.set_round()
 }
 

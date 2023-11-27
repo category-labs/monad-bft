@@ -2965,7 +2965,7 @@ mod test {
             Epoch(1),
             &election,
         );
-        let epoch_end_cmds: Vec<u64> = cmds
+        let epoch_end_cmds: Vec<SeqNum> = cmds
             .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
@@ -3071,7 +3071,7 @@ mod test {
             Epoch(1),
             &election,
         );
-        let epoch_end_cmds: Vec<u64> = cmds
+        let epoch_end_cmds: Vec<SeqNum> = cmds
             .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
@@ -3205,8 +3205,8 @@ mod test {
         assert!(bsync_cmds.len() == 0);
 
         // state 1 should advance epoch
-        let epoch_end_cmds: Vec<_> = cmds
-            .iter()
+        let epoch_end_cmds: Vec<SeqNum> = cmds
+            .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
                 _ => None,
@@ -3238,8 +3238,8 @@ mod test {
         let routing_target = bsync_cmds[0].0.clone();
 
         // state 2 should not advance epoch since there is no path to root
-        let epoch_end_cmds: Vec<_> = cmds
-            .iter()
+        let epoch_end_cmds: Vec<SeqNum> = cmds
+            .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
                 _ => None,
@@ -3254,8 +3254,8 @@ mod test {
 
 
         // state 2 should advance epoch
-        let epoch_end_cmds: Vec<_> = cmds
-            .iter()
+        let epoch_end_cmds: Vec<SeqNum> = cmds
+            .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
                 _ => None,

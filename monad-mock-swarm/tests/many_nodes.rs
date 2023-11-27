@@ -86,12 +86,8 @@ fn many_nodes_quic_bw() {
         expected_block: 95,
         state_root_delay: u64::MAX,
         seed: 1,
-<<<<<<< HEAD
-        proposal_size: 150,
-        epoch_length: Round(100),
-=======
         proposal_size: 5000,
->>>>>>> master
+        epoch_length: Round(100),
     };
 
     let xfmrs = vec![

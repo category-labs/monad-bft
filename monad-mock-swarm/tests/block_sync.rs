@@ -249,7 +249,7 @@ mod test {
             delta,
             u64::MAX,
             0,
-            Round(100),
+            Round(2000),
         );
 
         assert!(num_nodes >= 4, "test requires 4 or more nodes");

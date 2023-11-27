@@ -91,7 +91,7 @@ pub enum StateRootHashCommand<B> {
 }
 
 pub enum ValidatorSetCommand {
-    EpochEnd(u64),
+    EpochEnd(SeqNum),
 }
 
 pub enum Command<E, OM, B, C, SCT> {

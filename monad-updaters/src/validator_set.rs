@@ -10,13 +10,13 @@ use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
 use monad_executor_glue::{MonadEvent, ValidatorSetCommand};
-use monad_types::ValidatorData;
+use monad_types::{ValidatorData, SeqNum};
 
 pub struct ValidatorSetUpdater<ST, SCT> {
     validator_set: Option<ValidatorData>,
     // TODO: call waker.wake() when exeuction sends 
     // validator set updates after executing block s
-    epoch_boundary: u64,
+    epoch_boundary: SeqNum,
     waker: Option<Waker>,
     _marker: PhantomData<(ST, SCT)>,
 }
@@ -31,7 +31,7 @@ impl<ST, SCT> Default for ValidatorSetUpdater<ST, SCT> {
     fn default() -> Self {
         Self {
             validator_set: None,
-            epoch_boundary: 0,
+            epoch_boundary: SeqNum(0),
             waker: None,
             _marker: PhantomData,
         }
