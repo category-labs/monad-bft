@@ -90,7 +90,7 @@ fn test_consensus_message_event_proposal_bls() {
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
     let validators = Vec::from_iter(valset.get_members().clone());
     let mut validator_sets = ValidatorSetMapping::new();
-    validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone(), Epoch(1))
+    validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone())
         .expect("ValidatorData should not have duplicates or invalid entries"));
     let voting_keys = keys
         .iter()

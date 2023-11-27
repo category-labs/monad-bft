@@ -968,9 +968,9 @@ mod test {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
         let validators = Vec::from_iter(valset.get_members().clone());
         let mut validator_sets = ValidatorSetMapping::new();
-        validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone(), Epoch(1))
+        validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone())
             .expect("ValidatorData should not have duplicates or invalid entries"));
-        validator_sets.insert(Epoch(2), ValidatorSet::new(validators.clone(), Epoch(2))
+        validator_sets.insert(Epoch(2), ValidatorSet::new(validators.clone())
             .expect("ValidatorData should not have duplicates or invalid entries"));
 
         let voting_keys = keys

@@ -463,7 +463,7 @@ mod test {
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
-        let valset = ValidatorSet::new(staking_list, Epoch(0)).expect("create validator set");
+        let valset = ValidatorSet::new(staking_list).expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
         let timeout_round = Round(1);

@@ -288,7 +288,7 @@ mod test {
         let cert_key = get_certificate_key::<SignatureCollectionType>(6);
         let node_id = NodeId(keypair.pubkey());
 
-        let vset = ValidatorSet::new(vec![(node_id, Stake(1))], Epoch(0)).unwrap();
+        let vset = ValidatorSet::new(vec![(node_id, Stake(1))]).unwrap();
         let vmap = ValidatorMapping::new(vec![(node_id, cert_key.pubkey())]);
 
         let mut vi = VoteInfo {
@@ -497,7 +497,7 @@ mod test {
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
-        let valset = ValidatorSet::new(staking_list, Epoch(0)).expect("create validator set");
+        let valset = ValidatorSet::new(staking_list).expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
         let vote_round = Round(0);

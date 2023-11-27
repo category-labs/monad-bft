@@ -79,7 +79,7 @@ where
         if let Some(vd) = next_val_set {
             self.validator_sets.insert(
                 next_epoch,
-                VT::new(vd.0, next_epoch)
+                VT::new(vd.0)
                     .expect("ValidatorData should not have duplicates or invalid entries")
             );
         }
@@ -242,7 +242,7 @@ where
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set = VT::new(staking_list, Epoch(1)).expect("initial validator set init failed");
+        let val_set = VT::new(staking_list).expect("initial validator set init failed");
         let mut validator_sets = ValidatorSetMapping::new();
         validator_sets.insert(Epoch(1), val_set);
         let val_mapping = ValidatorMapping::new(voting_identities);

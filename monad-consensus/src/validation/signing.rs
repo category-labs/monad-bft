@@ -634,7 +634,7 @@ mod test {
         let stake_list = vec![(NodeId(keypair.pubkey()), Stake(1))];
         let voting_identity = vec![(NodeId(keypair.pubkey()), cert_keypair.pubkey())];
 
-        let vset = ValidatorSet::new(stake_list, Epoch(0)).unwrap();
+        let vset = ValidatorSet::new(stake_list).unwrap();
         let val_mapping = ValidatorMapping::new(voting_identity);
 
         let msg = HasherType::hash_object(&lci);
@@ -683,7 +683,7 @@ mod test {
             (NodeId(keypairs[1].pubkey()), Stake(2)),
         ];
 
-        let vset = ValidatorSet::new(vlist, Epoch(0)).unwrap();
+        let vset = ValidatorSet::new(vlist).unwrap();
 
         let cert_keys = create_certificate_keys::<SignatureCollectionType>(2);
         let voting_identity = keypairs
