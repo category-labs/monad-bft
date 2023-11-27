@@ -364,6 +364,7 @@ where
                                         txns,
                                         &self.validator_sets,
                                         &self.validator_mapping,
+                                        self.epoch,
                                         &self.leader_election,
                                     ),
                             );
@@ -414,6 +415,7 @@ where
                                     msg,
                                     &self.validator_sets,
                                     &self.validator_mapping,
+                                    self.epoch,
                                     &self.leader_election,
                                 )
                             }
@@ -423,6 +425,7 @@ where
                                     msg,
                                     &self.validator_sets,
                                     &self.validator_mapping,
+                                    self.epoch,
                                     &self.leader_election,
                                 )
                             }
@@ -446,7 +449,7 @@ where
                             ConsensusMessage::BlockSync(msg) => {
                                 // TODO: fix unwrap and handle case where validator set is not in map
                                 let validator_set = self.validator_sets.get(&self.epoch).unwrap();
-                                self.consensus.handle_block_sync(author, msg, validator_set)
+                                self.consensus.handle_block_sync(author, msg, validator_set, self.epoch)
                             }
                         }
                     }

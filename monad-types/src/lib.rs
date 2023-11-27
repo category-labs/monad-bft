@@ -56,6 +56,8 @@ impl Round {
         Round(((self.0 - 1) % epoch_length.0) + 1)
     }
     pub fn get_epoch_num(&self, epoch_length: Round) -> Epoch {
+        if self.0 == 0 { return Epoch(1) }
+
         Epoch(((self.0 - 1) / epoch_length.0) + 1)
     }
 }

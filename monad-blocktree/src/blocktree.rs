@@ -331,6 +331,30 @@ impl<T: SignatureCollection> BlockTree<T> {
         }
     }
 
+    pub fn get_blocks_on_path_to_root(&self, b: &BlockId) -> Option<Vec<FullBlock<T>>> {
+        let mut blocks = Vec::default();
+
+        let mut bid = b;
+
+        loop {
+            let Some(i) = self.tree.get(bid) else {
+                return None;
+            };
+
+            blocks.push(i.block.clone());
+
+            if self.root_match(i) {
+                return Some(blocks);
+            }
+
+            let Some(parent_id) = &i.parent else {
+                return None;
+            };
+
+            bid = parent_id;
+        }
+    }
+
     /// returns true if the parent block id in the QC of a block
     /// exists in the blocktree.
     /// Root blocks also return true.

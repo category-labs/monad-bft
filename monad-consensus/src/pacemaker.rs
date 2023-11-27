@@ -204,48 +204,24 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_tc(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
-        epoch_length: Round,
-        root_num: Option<u64>,
-    ) -> Vec<PacemakerCommand<SCT>> {
-        let mut cmds = Vec::new();
-        
+    ) -> Option<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
-            return cmds;
+            return None;
         }
         self.last_round_tc = Some(tc.clone());
-
-        let next_round = tc.round + Round(1);
-        if next_round.get_round_within_epoch(epoch_length) == Round(1) {
-            cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
-        }
-
-        cmds.push(self.start_timer(next_round));
-
-        return cmds;
+        Some(self.start_timer(tc.round + Round(1)))
     }
 
     #[must_use]
     pub fn advance_round_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-        epoch_length: Round,
-        root_num: Option<u64>,
-    ) -> Vec<PacemakerCommand<SCT>> {
-        let mut cmds = Vec::new();
-
+    ) -> Option<PacemakerCommand<SCT>> {
         if qc.info.vote.round < self.current_round {
-            return cmds;
+            return None;
         }
         self.last_round_tc = None;
-
-        let next_round = qc.info.vote.round + Round(1);
-        if next_round.get_round_within_epoch(epoch_length) == Round(1) {
-            cmds.push(PacemakerCommand::EpochEnd(root_num.unwrap_or(0)));
-        }
-
-        cmds.push(self.start_timer(next_round));
-
-        return cmds;
+        Some(self.start_timer(qc.info.vote.round + Round(1)))
     }
 }
 

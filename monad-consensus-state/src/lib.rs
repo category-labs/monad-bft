@@ -28,7 +28,7 @@ use monad_crypto::{
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, Epoch};
 use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
 use tracing::trace;
 
@@ -45,6 +45,7 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     pending_block_tree: BlockTree<SCT>,
     vote_state: VoteState<SCT>,
     high_qc: QuorumCertificate<SCT>,
+    high_commit_qc: QuorumCertificate<SCT>,
     state_root_validator: SVT,
 
     pacemaker: Pacemaker<SCT>,
@@ -114,6 +115,7 @@ where
         txns: FullTransactionList,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -123,6 +125,7 @@ where
         v: VoteMessage<SCT>,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -132,6 +135,7 @@ where
         tm: TimeoutMessage<SCT>,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -140,6 +144,7 @@ where
         author: NodeId,
         msg: BlockSyncMessage<SCT>,
         validators: &VT,
+        current_epoch: Epoch,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_block_sync_tmo<VT: ValidatorSetType>(
@@ -189,7 +194,8 @@ where
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_block),
             vote_state: VoteState::default(),
-            high_qc: genesis_qc,
+            high_qc: genesis_qc.clone(),
+            high_commit_qc: genesis_qc,
             state_root_validator: SVT::new(config.state_root_delay),
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
@@ -287,6 +293,7 @@ where
         full_txs: FullTransactionList,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        mut current_epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Fetched full proposal: {:?}", p);
@@ -296,9 +303,9 @@ where
         let epoch = p.block.round.get_epoch_num(self.config.epoch_length);
         // TODO: fix unwrap and handle case where validator set is not in map
         let validator_set = validator_sets.get(&epoch).unwrap();
-        let root_num = self.pending_block_tree.get_root_seq_num();
 
-        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc, validator_set, root_num);
+        let process_certificate_cmds = self
+            .process_certificate_qc(&p.block.qc, validator_set, &mut current_epoch);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -306,10 +313,11 @@ where
             inc_count!(proposal_with_tc);
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, self.config.epoch_length, root_num)
-                .into_iter()
+                .advance_round_tc(last_round_tc)
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
+
+            cmds.extend(self.advance_epoch(&self.high_qc, self.get_current_round(), &mut current_epoch));
         }
 
         let round = self.pacemaker.get_current_round();
@@ -395,6 +403,7 @@ where
         vote_msg: VoteMessage<SCT>,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        mut current_epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         debug!("Vote Message: {:?}", vote_msg);
@@ -417,8 +426,9 @@ where
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);
-            let root_num = self.pending_block_tree.get_root_seq_num();
-            cmds.extend(self.process_certificate_qc(&qc, validator_set, root_num));
+            cmds.extend(self
+                .process_certificate_qc(&qc,validator_set, &mut current_epoch)
+            );
 
             if self.nodeid == election.get_leader(
                 self.pacemaker.get_current_round(),
@@ -437,6 +447,7 @@ where
         tmo_msg: TimeoutMessage<SCT>,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        mut current_epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
         let tm = &tmo_msg.timeout;
@@ -453,18 +464,19 @@ where
         debug!("Remote timeout msg: {:?}", tm);
         inc_count!(remote_timeout_msg);
 
-        let root_num = self.pending_block_tree.get_root_seq_num();
-        let process_certificate_cmds = self.process_certificate_qc(&tm.tminfo.high_qc, validator_set, root_num);
+        let process_certificate_cmds = self
+            .process_certificate_qc(&tm.tminfo.high_qc, validator_set, &mut current_epoch);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
             inc_count!(remote_timeout_msg_with_tc);
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, self.config.epoch_length, root_num)
-                .into_iter()
+                .advance_round_tc(last_round_tc)
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
+
+            cmds.extend(self.advance_epoch(&self.high_qc, self.get_current_round(),&mut current_epoch));
         }
 
         let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout::<H, VT>(
@@ -490,8 +502,7 @@ where
             inc_count!(created_tc);
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(&tc, self.config.epoch_length, root_num)
-                .into_iter()
+                .advance_round_tc(&tc)
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
@@ -522,6 +533,7 @@ where
         author: NodeId,
         msg: BlockSyncMessage<SCT>,
         validators: &VT,
+        current_epoch: Epoch,
     ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = vec![];
 
@@ -543,6 +555,8 @@ where
                     self.pending_block_tree
                         .add(full_block)
                         .expect("failed to add block to tree during block sync");
+
+                    cmds.extend(self.process_block_sync_commit(current_epoch));
                 }
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
@@ -624,13 +638,12 @@ where
     // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
     pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<SCT>> {
-        if Rank(qc.info) <= Rank(self.high_qc.info) {
+        if Rank(qc.info) <= Rank(self.high_commit_qc.info) {
             inc_count!(process_old_qc);
             return Vec::new();
         }
         inc_count!(process_qc);
 
-        self.high_qc = qc.clone();
         let mut cmds = Vec::new();
         if qc.info.ledger_commit.commit_state_hash.is_some()
             && self
@@ -665,7 +678,14 @@ where
                 ));
                 cmds.push(ConsensusCommand::<SCT>::LedgerCommit(blocks_to_commit));
             }
+
+            self.high_commit_qc = qc.clone();
         }
+
+        if Rank(qc.info) > Rank(self.high_qc.info) {
+            self.high_qc = qc.clone();
+        }
+    
         cmds
     }
 
@@ -674,18 +694,22 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validators: &VT,
-        root_num: Option<u64>,
+        current_epoch: &mut Epoch,
     ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
-        cmds.extend(
-            self.pacemaker.advance_round_qc(qc, self.config.epoch_length, root_num)
-                .into_iter()
-                .map(Into::into));
+        cmds.extend(self
+            .pacemaker
+            .advance_round_qc(qc)
+            .map(Into::into)
+        );
 
         // block sync
         cmds.extend(self.get_blocks_if_missing(qc, validators));
+
+        cmds.extend(self.advance_epoch(&qc, self.get_current_round(), current_epoch));
+
         cmds
     }
 
@@ -787,6 +811,46 @@ where
         } else {
             vec![]
         }
+    }
+
+    fn process_block_sync_commit(
+        &mut self,
+        mut current_epoch: Epoch
+     ) -> Vec<ConsensusCommand<SCT>> {
+        let mut cmds = Vec::new();
+
+        let bid = self.high_qc.info.vote.id;
+
+        if self.pending_block_tree.path_to_root(&bid) {
+            let mut blocks = self.pending_block_tree.get_blocks_on_path_to_root(&bid).unwrap();
+            blocks.reverse();
+
+            for block in blocks {
+                cmds.extend(self.process_qc(&block.get_block().qc));
+
+                cmds.extend(self.advance_epoch(&block.get_block().qc, block.get_round(), &mut current_epoch));
+            }
+        }
+
+        cmds
+    }
+
+    fn advance_epoch(
+        &self,
+        qc: &QuorumCertificate<SCT>,
+        qc_round: Round,
+        current_epoch: &mut Epoch
+    ) -> Option<ConsensusCommand<SCT>> {
+        if qc_round.get_epoch_num(self.config.epoch_length) > *current_epoch &&
+            self.pending_block_tree.path_to_root(&qc.info.vote.id) {
+            *current_epoch = *current_epoch + Epoch(1);
+
+            return Some(ConsensusCommand::EpochEnd(self
+                .pending_block_tree.get_root_seq_num().unwrap()
+            ))
+        }
+
+        None
     }
 }
 
@@ -997,6 +1061,7 @@ mod test {
             *v1,
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         state.handle_vote_message::<HasherType, _, _>(
@@ -1004,6 +1069,7 @@ mod test {
             *v2,
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1015,6 +1081,7 @@ mod test {
             *v3,
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
@@ -1065,6 +1132,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1106,6 +1174,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1138,6 +1207,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1182,6 +1252,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1214,6 +1285,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1235,6 +1307,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         assert!(cmds.is_empty());
@@ -1274,6 +1347,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1307,6 +1381,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let result = cmds.iter().find(|&c| {
@@ -1354,6 +1429,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1370,6 +1446,7 @@ mod test {
                 FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
                 &validator_sets,
                 &valmap,
+                Epoch(1),
                 &election,
             ));
         }
@@ -1409,6 +1486,7 @@ mod test {
                         FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
                         &validator_sets,
                         &valmap,
+                        Epoch(1),
                         &election,
                     ));
                 }
@@ -1437,6 +1515,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1475,6 +1554,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1514,6 +1594,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1559,6 +1640,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let lc = p2_cmds
@@ -1593,6 +1675,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1614,6 +1697,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1675,6 +1759,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1752,6 +1837,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let p1_votes = cmds1
@@ -1771,6 +1857,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let p3_votes = cmds3
@@ -1790,6 +1877,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let p4_votes = cmds4
@@ -1810,6 +1898,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let p2_votes = cmds2
@@ -1840,6 +1929,7 @@ mod test {
                 *v,
                 &validator_sets,
                 &valmap,
+                Epoch(1),
                 &election,
             );
             let res = cmds2.into_iter().find(|c| {
@@ -1892,6 +1982,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1902,6 +1993,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let res = cmds1.into_iter().find(|c| {
@@ -1938,6 +2030,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let cmds1 = first_state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1946,6 +2039,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -1966,7 +2060,7 @@ mod test {
 
         let msg = BlockSyncMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
-        second_state.handle_block_sync(routing_target, msg, valset);
+        second_state.handle_block_sync(routing_target, msg, valset, Epoch(1));
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
@@ -1986,6 +2080,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         // new block added should allow path_to_root properly, thus no more request sync
@@ -2006,6 +2101,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -2032,6 +2128,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -2051,7 +2148,7 @@ mod test {
 
         let mal_sync = BlockSyncMessage::NotAvailable(block_2.block.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
-        let cmds3 = third_state.handle_block_sync(author_2, mal_sync, valset);
+        let cmds3 = third_state.handle_block_sync(author_2, mal_sync, valset, Epoch(1));
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3.iter().clone().find(|c| {
@@ -2067,7 +2164,7 @@ mod test {
 
         let sync = BlockSyncMessage::BlockFound(block_3);
 
-        let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), valset);
+        let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), valset, Epoch(1));
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -2087,7 +2184,7 @@ mod test {
             panic!("request sync is not found")
         };
         // repeated handling of the requested block should be ignored
-        let cmds3 = third_state.handle_block_sync(*peer, sync, valset);
+        let cmds3 = third_state.handle_block_sync(*peer, sync, valset, Epoch(1));
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
@@ -2108,6 +2205,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         assert_eq!(third_state.pending_block_tree.size(), 5);
@@ -2124,7 +2222,7 @@ mod test {
 
         let sync = BlockSyncMessage::BlockFound(block_2);
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = third_state.handle_block_sync(*peer_2, sync, valset);
+        let cmds3 = third_state.handle_block_sync(*peer_2, sync, valset, Epoch(1));
 
         assert_eq!(third_state.pending_block_tree.size(), 5);
         let res = cmds3.iter().clone().find(|c| {
@@ -2266,6 +2364,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -2301,6 +2400,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -2338,6 +2438,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let lc = p2_cmds
@@ -2377,6 +2478,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let lc = p3_cmds
@@ -2431,6 +2533,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_correct).unwrap();
@@ -2462,6 +2565,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_branch).unwrap();
@@ -2496,6 +2600,7 @@ mod test {
                 FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
                 &validator_sets,
                 &valmap,
+                Epoch(1),
                 &election,
             );
             let full_block = first_state.fetch_uncommitted_block(&bid).unwrap();
@@ -2548,6 +2653,7 @@ mod test {
                     FullTransactionList::new(Vec::new()),
                     &validator_sets,
                     &valmap,
+                    Epoch(1),
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2594,6 +2700,7 @@ mod test {
                     FullTransactionList::new(Vec::new()),
                     &validator_sets,
                     &valmap,
+                    Epoch(1),
                     &election,
                 );
 
@@ -2622,7 +2729,7 @@ mod test {
         }
         for (i, (author, v)) in votes.iter().enumerate() {
             let cmds = states[leader_index]
-                .handle_vote_message::<HasherType, _, _>(*author, *v, &validator_sets, &valmap, &election);
+                .handle_vote_message::<HasherType, _, _>(*author, *v, &validator_sets, &valmap, Epoch(1), &election);
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId, BlockId)> = cmds
                     .into_iter()
@@ -2677,6 +2784,7 @@ mod test {
                     FullTransactionList::new(Vec::new()),
                     &validator_sets,
                     &valmap,
+                    Epoch(1),
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2716,6 +2824,7 @@ mod test {
             timeout_msg,
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
 
@@ -2774,6 +2883,7 @@ mod test {
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let req: Vec<(NodeId, BlockId)> = cmds
@@ -2810,7 +2920,30 @@ mod test {
                 epoch_length,
             );
 
-            let (_, _, verified_message) = cp.destructure();
+            let (author, _, verified_message) = cp.destructure();
+            for state in states.iter_mut() {
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::new(Vec::new()),
+                    &validator_sets,
+                    &valmap,
+                    Epoch(1),
+                    &election,
+                );
+                let bsync_reqest = cmds.iter().find(|&c| {
+                    matches!(
+                        c,
+                        ConsensusCommand::RequestSync {
+                            peer: NodeId(_),
+                            block_id: BlockId(_)
+                        }
+                    )
+                });
+                // observing a qc that link to root should not trigger anything
+                assert!(bsync_reqest.is_none());
+            }
+
             blocks.push(verified_message.block);
         }
         // proposal for Round(epoch_length)
@@ -2833,6 +2966,7 @@ mod test {
             FullTransactionList::new(Vec::new()),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let epoch_end_cmds: Vec<u64> = cmds
@@ -2877,6 +3011,7 @@ mod test {
                     FullTransactionList::new(Vec::new()),
                     &validator_sets,
                     &valmap,
+                    Epoch(1),
                     &election,
                 );
                 let bsync_reqest = cmds.iter().find(|&c| {
@@ -2939,6 +3074,7 @@ mod test {
             FullTransactionList::new(Vec::new()),
             &validator_sets,
             &valmap,
+            Epoch(1),
             &election,
         );
         let epoch_end_cmds: Vec<u64> = cmds

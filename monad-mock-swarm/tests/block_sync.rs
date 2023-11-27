@@ -36,7 +36,7 @@ mod test {
             <MonadMessageNoSerSwarm as SwarmRelation>::SignatureType,
             <MonadMessageNoSerSwarm as SwarmRelation>::SignatureCollectionType,
             _,
-        >(MockValidator, num_nodes, delta, u64::MAX, 0, Round(100));
+        >(MockValidator, num_nodes, delta, u64::MAX, 0, Round(1000));
 
         let filter_peers = HashSet::from([ID::new(PeerId(pubkeys[0]))]);
 
