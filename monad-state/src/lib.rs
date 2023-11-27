@@ -83,8 +83,8 @@ where
             self.validator_set = vs;
         }
 
-        // FIXME testnet_panic when that's implemented. TODO, decide
-        // error handling behaviour for prod
+        // FIXME-2 testnet_panic when that's implemented.
+        // TODO-3 decide error handling behaviour for prod
         self.upcoming_validator_set = val_set.map(|v| {
             VT::new(v.0).expect("ValidatorData should not have duplicates or invalid entries")
         });
@@ -97,8 +97,8 @@ where
         upcoming_val_set: ValidatorData,
     ) {
         self.epoch = epoch;
-        // FIXME testnet_panic when that's implemented. TODO, decide
-        // error handling behaviour for prod
+        // FIXME-2 testnet_panic when that's implemented.
+        // TODO-3 decide error handling behaviour for prod
         self.validator_set = VT::new(val_set.0)
             .expect("ValidatorData should not have duplicates or invalid entries");
         self.upcoming_validator_set = Some(
@@ -261,7 +261,7 @@ where
             >,
         >,
     ) {
-        // FIXME stake should be configurable
+        // FIXME-1 stake should be configurable
         let staking_list = config
             .validators
             .iter()

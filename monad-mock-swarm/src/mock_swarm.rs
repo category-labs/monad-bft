@@ -92,7 +92,7 @@ where
                                 timestamp: tick,
                                 event: event.clone(),
                             };
-                            self.logger.push(&timed_event).unwrap(); // FIXME: propagate the error
+                            self.logger.push(&timed_event).unwrap(); // FIXME-4: propagate the error
                             let node_span = info_span!("node", id = ?self.id);
                             let _guard = node_span.enter();
                             let commands = self.state.update(event.clone());
@@ -113,7 +113,7 @@ where
                             for (delay, msg) in transformed {
                                 let sched_tick = tick + delay;
 
-                                // FIXME: do we need to transform msg to self?
+                                // FIXME-3: do we need to transform msg to self?
                                 if msg.to == self.id {
                                     self.pending_inbound_messages
                                         .entry(sched_tick)

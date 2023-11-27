@@ -175,7 +175,7 @@ where
             parent_round: block.qc.info.vote.round,
             seq_num: block.payload.seq_num,
         };
-        let commit = Some(block.get_id().0); // FIXME: is this hash correct?
+        let commit = Some(block.get_id().0); // FIXME-1: is this hash correct?
         let lci = LedgerCommitInfo::new::<HasherType>(commit, &vi);
         let qcinfo = QcInfo {
             vote: vi,

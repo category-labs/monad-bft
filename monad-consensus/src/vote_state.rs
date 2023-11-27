@@ -158,7 +158,7 @@ mod test {
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
 
-    // FIXME: we don't need to create Verified<VoteMessage> as the vote signature
+    // FIXME-4: we don't need to create Verified<VoteMessage> as the vote signature
     // is now in the VoteMessage
     fn create_signed_vote_message<SCT: SignatureCollection>(
         keypair: &KeyPair,

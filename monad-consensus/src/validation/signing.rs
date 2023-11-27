@@ -113,7 +113,7 @@ where
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
     ) -> Result<Verified<S, ConsensusMessage<SCT>>, Error> {
-        // FIXME this feels wrong... it feels like the enum variant should factor into the hash so
+        // FIXME-2 this feels wrong... it feels like the enum variant should factor into the hash so
         //       signatures can't be reused across variant members
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {

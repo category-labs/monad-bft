@@ -84,7 +84,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     )
     .await;
 
-    // FIXME hack so all tcp sockets are bound before they try and send mesages
+    // FIXME-1 hack so all tcp sockets are bound before they try and send mesages
     // we can delete this once we support retry at the monad-p2p executor level
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 

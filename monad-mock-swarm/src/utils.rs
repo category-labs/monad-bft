@@ -35,7 +35,7 @@ pub mod test_tool {
     type H = Sha256Hash;
     type QC = QuorumCertificate<SC>;
 
-    /// FIXME these should take in from/to/from_tick as params, not have defaults
+    /// FIXME-3 these should take in from/to/from_tick as params, not have defaults
     pub fn get_mock_message() -> LinkMessage<String> {
         let keys = create_keys(2);
         LinkMessage {

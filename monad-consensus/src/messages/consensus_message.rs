@@ -43,7 +43,7 @@ where
     fn hash(&self, state: &mut impl Hasher) {
         match self {
             ConsensusMessage::Proposal(m) => m.hash(state),
-            // FIXME:
+            // FIXME-2:
             // it can be confusing as we are hashing only part of the message
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct

@@ -168,7 +168,7 @@ where
     let genesis_txn = TransactionHashList::default();
     let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc::<H>();
     let genesis_block = Block::<SCT>::new::<H>(
-        // FIXME init from genesis config, don't use random key
+        // FIXME-4 init from genesis config, don't use random key
         NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
         Round(0),
         &Payload {
