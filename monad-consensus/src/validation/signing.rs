@@ -372,6 +372,11 @@ where
     Ok(())
 }
 
+/// Verify the timeout certificate
+///
+/// The signature collections are created over `Hash(tc.round, high_qc.round)`
+///
+/// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
 fn verify_tc<SCT, H, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -388,12 +393,12 @@ where
             return Err(Error::InvalidTcRound);
         }
 
-        // TODO-1 fix this hashing..
         let mut h = H::new();
         h.update(tc.round);
-        t.high_qc_round.hash(&mut h);
+        h.update(t.high_qc_round.qc_round);
         let msg = h.hash();
 
+        // TODO-3: evidence collection
         let signers = t
             .sigs
             .verify(validator_mapping, msg.as_ref())
