@@ -178,10 +178,12 @@ where
 
             if !this.inbound_connections.is_empty() {
                 if let Poll::Ready(message) = this.inbound_connections.poll_next_unpin(cx) {
-                    let (from, gossip_message) =
+                    let (from, gossip_messages) =
                         message.expect("inbound stream should never be exhausted");
-                    this.gossip
-                        .handle_gossip_message(time, from, gossip_message);
+                    for gossip_message in gossip_messages {
+                        this.gossip
+                            .handle_gossip_message(time, from, gossip_message);
+                    }
                     continue;
                 }
             }
@@ -221,7 +223,7 @@ where
                                 };
 
                                 if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
-                                    const MAX_BUFFERED_MESSAGES: usize = 10;
+                                    const MAX_BUFFERED_MESSAGES: usize = 100;
                                     let (sender, mut receiver) =
                                         tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
                                     sender
@@ -290,7 +292,7 @@ where
 type InboundConnectionError = Box<dyn Error>;
 enum InboundConnection {
     Pending(BoxFuture<'static, Result<(NodeId, RecvStream), InboundConnectionError>>),
-    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Bytes), InboundConnectionError>>),
+    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Vec<Bytes>), InboundConnectionError>>),
 }
 
 impl InboundConnection {
@@ -306,12 +308,11 @@ impl InboundConnection {
         Self::Pending(fut)
     }
     fn active(peer: NodeId, mut stream: RecvStream) -> Self {
-        const RX_MESSAGE_BUFFER_SIZE: usize = 64 * 1024;
         let fut = async move {
-            let mut buf = vec![0_u8; RX_MESSAGE_BUFFER_SIZE];
-            let bytes = stream.read(&mut buf).await?;
-            buf.truncate(bytes.unwrap_or(0));
-            Ok((peer, stream, buf.into()))
+            let mut bufs = vec![Bytes::new(); 32];
+            let num_chunks = stream.read_chunks(&mut bufs).await?.unwrap_or(0);
+            bufs.truncate(num_chunks);
+            Ok((peer, stream, bufs))
         };
         Self::Active(fut.boxed())
     }
@@ -321,7 +322,7 @@ impl Stream for InboundConnection
 where
     Self: Unpin,
 {
-    type Item = (NodeId, Bytes);
+    type Item = (NodeId, Vec<Bytes>);
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -344,13 +345,12 @@ where
                 InboundConnection::Active(stream) => {
                     if let Poll::Ready(maybe_bytes) = stream.poll_unpin(cx) {
                         match maybe_bytes {
-                            Ok((peer, stream, bytes)) => {
-                                if bytes.is_empty() {
+                            Ok((peer, stream, chunks)) => {
+                                if chunks.is_empty() {
                                     return Poll::Ready(None);
                                 }
-
                                 *this = InboundConnection::active(peer, stream);
-                                return Poll::Ready(Some((peer, bytes)));
+                                return Poll::Ready(Some((peer, chunks)));
                             }
                             Err(e) => todo!("connection read stream err: {:?}", e),
                         }
