@@ -14,11 +14,13 @@ bench = false
 monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
-monad-crypto = { path = "../monad-crypto", features = ["libp2p-identity"] }
+monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types", features = ["serde"] }
 monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-gossip = { path = "../monad-gossip" }
 monad-mempool-controller = { path = "../monad-mempool-controller" }
-monad-p2p = { path = "../monad-p2p", features = ["tokio"] }
+monad-quic = { path = "../monad-quic" }
 monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"]}
@@ -28,7 +30,6 @@ clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
-libp2p-identity = { workspace = true }
 log = { workspace = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry_api = { workspace = true }

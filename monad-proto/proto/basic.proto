@@ -14,6 +14,10 @@ message ProtoRound {
   uint64 round = 1;
 }
 
+message ProtoSeqNum {
+  uint64 seq_num = 1;
+}
+
 message ProtoHash {
   bytes hash = 1;
 }

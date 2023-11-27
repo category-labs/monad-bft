@@ -6,15 +6,14 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
-use monad_gossip::mock::{MockGossip, MockGossipConfig};
-pub use monad_mock_swarm::swarm_relation::NoSerSwarm;
+use monad_gossip::mock::MockGossip;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop},
     swarm_relation::SwarmRelation,
-    transformer::BytesTransformerPipeline,
 };
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_transformer::BytesTransformerPipeline;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -39,7 +38,7 @@ impl SwarmRelation for QuicSwarm {
         BlockSyncState,
     >;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
     type RouterScheduler =
         QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
 

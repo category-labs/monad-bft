@@ -1,16 +1,16 @@
 mod common;
 use std::time::{Duration, Instant};
 
-use common::{NoSerSwarm, QuicSwarm};
+use common::QuicSwarm;
 use monad_consensus_types::transaction_validator::MockValidator;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, NoSerRouterConfig},
-    mock_swarm::UntilTerminator,
-    transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer},
+    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };
 use monad_quic::QuicRouterSchedulerConfig;
+use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer};
 use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 
@@ -54,7 +54,7 @@ fn many_nodes_quic() {
             tls_key_der: Vec::new(),
             master_seed: 7,
 
-            gossip_config: MockGossipConfig { all_peers },
+            gossip: MockGossipConfig { all_peers }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -81,18 +81,22 @@ fn many_nodes_quic_bw() {
 
     let swarm_config = SwarmTestConfig {
         num_nodes: 40,
-        consensus_delta: Duration::from_millis(1000),
+        consensus_delta: Duration::from_millis(300),
         parallelize: true,
-        expected_block: 10,
+        expected_block: 95,
         state_root_delay: u64::MAX,
         seed: 1,
+<<<<<<< HEAD
         proposal_size: 150,
         epoch_length: Round(100),
+=======
+        proposal_size: 5000,
+>>>>>>> master
     };
 
     let xfmrs = vec![
-        BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-        BytesTransformer::Bw(BwTransformer::new(5)),
+        BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
+        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(5))),
     ];
 
     create_and_run_nodes::<QuicSwarm, _, _>(
@@ -105,7 +109,7 @@ fn many_nodes_quic_bw() {
             tls_key_der: Vec::new(),
             master_seed: 7,
 
-            gossip_config: MockGossipConfig { all_peers },
+            gossip: MockGossipConfig { all_peers }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),

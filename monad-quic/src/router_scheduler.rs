@@ -7,10 +7,9 @@ use std::{
 };
 
 use monad_crypto::rustls::UnsafeTlsVerifier;
-use monad_executor_glue::{PeerId, RouterTarget};
 use monad_gossip::{Gossip, GossipEvent};
-use monad_mock_swarm::mock::{RouterEvent, RouterScheduler};
-use monad_types::{Deserializable, Serializable};
+use monad_router_scheduler::{RouterEvent, RouterScheduler};
+use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
     TransportConfig, WriteError,
@@ -19,35 +18,35 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 use crate::timeout_queue::TimeoutQueue;
 
-pub struct QuicRouterSchedulerConfig<GC> {
+pub struct QuicRouterSchedulerConfig<G> {
     pub zero_instant: Instant,
 
-    pub all_peers: BTreeSet<PeerId>,
-    pub me: PeerId,
+    pub all_peers: BTreeSet<NodeId>,
+    pub me: NodeId,
 
     pub tls_key_der: Vec<u8>,
     pub master_seed: u64,
 
-    pub gossip_config: GC,
+    pub gossip: G,
 }
 
 pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     zero_instant: Instant,
 
-    me: PeerId,
+    me: NodeId,
     endpoint: quinn_proto::Endpoint,
-    connections: HashMap<ConnectionHandle, Connection>,
-    outbound_connections: HashMap<PeerId, (ConnectionHandle, Option<StreamId>)>,
+    connections: BTreeMap<ConnectionHandle, Connection>,
+    outbound_connections: HashMap<NodeId, (ConnectionHandle, Option<StreamId>)>,
 
-    peer_ids: HashMap<PeerId, SocketAddr>,
-    addresses: HashMap<SocketAddr, PeerId>,
+    peer_ids: HashMap<NodeId, SocketAddr>,
+    addresses: HashMap<SocketAddr, NodeId>,
 
     gossip: G,
 
     timeouts: TimeoutQueue,
 
-    pending_events: BTreeMap<Duration, Vec<RouterEvent<IM, Vec<u8>>>>,
-    pending_outbound_messages: HashMap<PeerId, VecDeque<Vec<u8>>>,
+    pending_events: BTreeMap<Duration, VecDeque<RouterEvent<IM, Vec<u8>>>>,
+    pending_outbound_messages: HashMap<NodeId, VecDeque<Vec<u8>>>,
 
     phantom: PhantomData<OM>,
 }
@@ -59,7 +58,7 @@ where
     IM: Deserializable<Vec<u8>>,
     OM: Serializable<Vec<u8>>,
 {
-    type Config = QuicRouterSchedulerConfig<G::Config>;
+    type Config = QuicRouterSchedulerConfig<G>;
 
     type InboundMessage = IM;
     type OutboundMessage = OM;
@@ -93,7 +92,7 @@ where
             Some(seed),
         );
 
-        let mut connections = HashMap::new();
+        let mut connections = BTreeMap::new();
         let mut outbound_connections = HashMap::new();
         let mut peer_ids = HashMap::new();
         for (idx, peer) in config
@@ -130,7 +129,7 @@ where
             peer_ids,
             addresses,
 
-            gossip: G::new(config.gossip_config),
+            gossip: config.gossip,
 
             timeouts: Default::default(),
             pending_events: Default::default(),
@@ -152,7 +151,7 @@ where
     fn process_inbound(
         &mut self,
         time: std::time::Duration,
-        from: monad_executor_glue::PeerId,
+        from: NodeId,
         message: Self::TransportMessage,
     ) {
         if from == self.me {
@@ -207,7 +206,7 @@ where
                     self.pending_events
                         .entry(time)
                         .or_default()
-                        .push(RouterEvent::Tx(to, contents.into()))
+                        .push_back(RouterEvent::Tx(to, contents.into()))
                 }
             };
         }
@@ -236,7 +235,7 @@ where
                     let mut entry = self.pending_events.first_entry().unwrap();
                     assert_eq!(min_tick, *entry.key());
                     let events = entry.get_mut();
-                    let event = events.pop().expect("events should never be empty");
+                    let event = events.pop_front().expect("events should never be empty");
 
                     if events.is_empty() {
                         self.pending_events.pop_first().unwrap();
@@ -324,7 +323,7 @@ where
                 self.pending_events
                     .entry(time)
                     .or_default()
-                    .push(RouterEvent::Tx(to, transmit.contents.into()))
+                    .push_back(RouterEvent::Tx(to, transmit.contents.into()))
             }
 
             if let Some(timeout) = connection.poll_timeout() {
@@ -353,6 +352,7 @@ where
                         .entry(*remote_peer_id)
                         .or_default();
                     while let Some(mut gossip_message) = pending_outbound.pop_front() {
+                        should_poll = true;
                         match connection.send_stream(*stream_id).write(&gossip_message) {
                             Ok(num_sent) => {
                                 if num_sent < gossip_message.len() {
@@ -469,13 +469,14 @@ where
                         self.pending_events
                             .entry(time)
                             .or_default()
-                            .push(RouterEvent::Tx(peer_id, gossip_message))
+                            .push_back(RouterEvent::Tx(peer_id, gossip_message))
                     } else {
                         let maybe_connection_handle = self
                             .outbound_connections
                             .get(&peer_id)
                             .map(|(handle, _)| handle)
                             .copied();
+                        assert!(maybe_connection_handle.is_some());
                         self.pending_outbound_messages
                             .entry(peer_id)
                             .or_default()
@@ -499,7 +500,7 @@ where
                             .pending_events
                             .entry(time)
                             .or_default()
-                            .push(RouterEvent::Rx(peer_id, message)),
+                            .push_back(RouterEvent::Rx(peer_id, message)),
 
                         Err(e) => {
                             todo!("Message deserialization should never fail! Error: {:?}", e)

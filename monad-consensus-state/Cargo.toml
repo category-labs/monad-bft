@@ -8,30 +8,21 @@ edition = "2021"
 [lib]
 bench = false
 
-
-[features]
-monad_test = ["monad-blocktree/monad_test", "monad-consensus/monad_test"]
-
 [dependencies]
 monad-blocktree = { path = "../monad-blocktree" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
-monad-executor-glue = { path = "../monad-executor-glue" }
 monad-types = { path = "../monad-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-validator = { path = "../monad-validator" }
 
-log = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-blocktree = { path = "../monad-blocktree", features = ["monad_test"] }
-monad-consensus = { path = "../monad-consensus", features = ["monad_test"] }
 monad-testutil = { path = "../monad-testutil" }
 
-env_logger = { workspace = true }
 itertools = { workspace = true }
 test-case = { workspace = true }
 tracing-subscriber = { workspace = true }

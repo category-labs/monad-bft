@@ -10,9 +10,6 @@ edition = "2021"
 [lib]
 bench = false
 
-[features]
-monad_test = []
-
 [dependencies]
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }

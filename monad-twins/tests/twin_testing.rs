@@ -3,11 +3,9 @@ mod test {
     use std::collections::BTreeSet;
 
     use monad_consensus_types::transaction_validator::MockValidator;
-    use monad_mock_swarm::{
-        mock::{MockMempoolConfig, NoSerRouterConfig},
-        swarm_relation::monad_test::MonadMessageNoSerSwarm,
-        transformer::ID,
-    };
+    use monad_mock_swarm::{mock::MockMempoolConfig, swarm_relation::MonadMessageNoSerSwarm};
+    use monad_router_scheduler::NoSerRouterConfig;
+    use monad_transformer::ID;
     use monad_twins_utils::{run_twins_test, twin_reader::read_twins_test};
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;

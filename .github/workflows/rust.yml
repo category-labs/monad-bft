@@ -18,6 +18,9 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - name: Format
         run: cargo +nightly fmt --all --check --verbose
+      - run: cargo install cargo-udeps --locked
+      - name: Lint unused deps
+        run: cargo +nightly udeps --all-targets --all-features
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --all-targets --all-features --
@@ -40,8 +43,6 @@ jobs:
           -A clippy::int_plus_one
           -A clippy::uninlined-format-args
           -A clippy::enum-variant-names
-      - name: Lint unused deps
-        run: cargo clippy --all-features -- -D unused_crate_dependencies
       - name: Check
         run: cargo check --all-targets --all-features --verbose
       - name: Run tests

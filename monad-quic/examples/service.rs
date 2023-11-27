@@ -9,10 +9,10 @@ use clap::Parser;
 use futures_util::{FutureExt, StreamExt};
 use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
-use monad_executor_glue::{Identifiable, Message, PeerId, RouterCommand, RouterTarget};
+use monad_executor_glue::{Identifiable, Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_quic::service::{Service, ServiceConfig, UnsafeNoAuthQuinnConfig};
-use monad_types::{Deserializable, Serializable};
+use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -38,15 +38,15 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     );
     assert!(message_len >= 1);
     let num_peers = addresses.len() as u8;
-    let peers: Vec<PeerId> = (0..num_peers)
+    let peers: Vec<NodeId> = (0..num_peers)
         .map(|idx| {
             let mut privkey: [u8; 32] = [1 + idx; 32];
             let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-            PeerId(keypair.pubkey())
+            NodeId(keypair.pubkey())
         })
         .collect();
 
-    let known_addresses: HashMap<PeerId, SocketAddr> = peers
+    let known_addresses: HashMap<NodeId, SocketAddr> = peers
         .iter()
         .copied()
         .zip(addresses.into_iter())
@@ -71,7 +71,8 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                 },
                 MockGossipConfig {
                     all_peers: peers.clone(),
-                },
+                }
+                .build(),
             )
         })
         .collect::<Vec<Service<_, MockGossip, MockMessage, MockMessage>>>();
@@ -86,7 +87,7 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
             .collect(),
     );
     // messages from first peer expected
-    let expected_messages: HashSet<(PeerId, u8)> = peers
+    let expected_messages: HashSet<(NodeId, u8)> = peers
         .first()
         .iter()
         .copied()
@@ -160,9 +161,9 @@ impl Identifiable for MockMessage {
 }
 
 impl Message for MockMessage {
-    type Event = (PeerId, u8);
+    type Event = (NodeId, u8);
 
-    fn event(self, from: PeerId) -> Self::Event {
+    fn event(self, from: NodeId) -> Self::Event {
         (from, self.0[0])
     }
 }

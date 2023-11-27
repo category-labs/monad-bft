@@ -3,18 +3,30 @@ use std::{
     time::Duration,
 };
 
-use monad_executor_glue::{PeerId, RouterTarget};
+use monad_types::{NodeId, RouterTarget};
 
 use super::{Gossip, GossipEvent};
 
 pub struct MockGossipConfig {
-    pub all_peers: Vec<PeerId>,
+    pub all_peers: Vec<NodeId>,
+}
+
+impl MockGossipConfig {
+    pub fn build(self) -> MockGossip {
+        MockGossip {
+            config: self,
+
+            read_buffers: Default::default(),
+            events: VecDeque::default(),
+            current_tick: Duration::ZERO,
+        }
+    }
 }
 
 pub struct MockGossip {
     config: MockGossipConfig,
 
-    read_buffers: HashMap<PeerId, (Option<MessageLenType>, Vec<u8>)>,
+    read_buffers: HashMap<NodeId, (Option<MessageLenType>, Vec<u8>)>,
     events: VecDeque<GossipEvent<Vec<u8>>>,
     current_tick: Duration,
 }
@@ -23,18 +35,6 @@ type MessageLenType = u32;
 const MESSAGE_HEADER_LEN: usize = std::mem::size_of::<MessageLenType>();
 
 impl Gossip for MockGossip {
-    type Config = MockGossipConfig;
-
-    fn new(config: Self::Config) -> Self {
-        Self {
-            config,
-
-            read_buffers: Default::default(),
-            events: VecDeque::default(),
-            current_tick: Duration::ZERO,
-        }
-    }
-
     fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
         self.current_tick = time;
         let mut gossip_message = Vec::from((message.len() as MessageLenType).to_le_bytes());
@@ -52,7 +52,7 @@ impl Gossip for MockGossip {
         }
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: PeerId, gossip_message: &[u8]) {
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
         self.current_tick = time;
         let (maybe_message_len, read_buffer) = self.read_buffers.entry(from).or_default();
         read_buffer.extend(gossip_message.iter());
@@ -100,67 +100,82 @@ impl Gossip for MockGossip {
 mod tests {
     use std::time::Duration;
 
-    use monad_crypto::secp256k1::KeyPair;
-    use monad_executor_glue::PeerId;
-    use monad_mock_swarm::transformer::{
-        BytesSplitterTransformer, BytesTransformer, LatencyTransformer,
-    };
+    use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
-    use super::{super::testutil::Swarm, MockGossip, MockGossipConfig};
-    use crate::testutil::{test_broadcast, test_direct};
+    use super::MockGossipConfig;
+    use crate::testutil::{make_swarm, test_broadcast, test_direct};
+
+    const NUM_NODES: u16 = 10;
+    const PAYLOAD_SIZE_BYTES: usize = 1024;
 
     #[test]
     fn test_framed_messages() {
-        let peers: Vec<_> = (1..=10_u8)
-            .map(|idx| {
-                let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                PeerId(keypair.pubkey())
-            })
-            .collect();
-        let mut swarm: Swarm<MockGossip> = Swarm::new(peers.iter().map(|peer_id| {
-            (
-                *peer_id,
+        let mut swarm = make_swarm(
+            NUM_NODES,
+            |all_peers, _me| {
                 MockGossipConfig {
-                    all_peers: peers.clone(),
-                },
+                    all_peers: all_peers.to_vec(),
+                }
+                .build()
+            },
+            |_all_peers, _me| {
                 vec![BytesTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(5),
-                ))],
-            )
-        }));
+                ))]
+            },
+        );
 
         let mut rng = ChaCha20Rng::from_seed([0; 32]);
-        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1), 1.0);
-        test_direct(&mut rng, &mut swarm, Duration::from_secs(1));
+        test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+            usize::MAX,
+            1.0,
+        );
+        test_direct(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+        );
     }
 
     #[test]
     fn test_split_messages() {
-        let peers: Vec<_> = (1..=10_u8)
-            .map(|idx| {
-                let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                PeerId(keypair.pubkey())
-            })
-            .collect();
-        let mut swarm: Swarm<MockGossip> = Swarm::new(peers.iter().map(|peer_id| {
-            (
-                *peer_id,
+        let mut swarm = make_swarm(
+            NUM_NODES,
+            |all_peers, _me| {
                 MockGossipConfig {
-                    all_peers: peers.clone(),
-                },
+                    all_peers: all_peers.to_vec(),
+                }
+                .build()
+            },
+            |_all_peers, _me| {
                 vec![
                     BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
                     BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
-                ],
-            )
-        }));
+                ]
+            },
+        );
 
         let mut rng = ChaCha20Rng::from_seed([0; 32]);
-        test_broadcast(&mut rng, &mut swarm, Duration::from_secs(1), 1.0);
-        test_direct(&mut rng, &mut swarm, Duration::from_secs(1));
+        test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+            usize::MAX,
+            1.0,
+        );
+        test_direct(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+        );
     }
 }

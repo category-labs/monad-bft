@@ -20,7 +20,7 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey, SecpSignature},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
@@ -174,7 +174,7 @@ where
         &Payload {
             txns: genesis_txn,
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         },
@@ -232,10 +232,4 @@ pub fn get_certificate_key<SCT: SignatureCollection>(
     hasher.update(seed.to_le_bytes());
     let mut hash = hasher.hash();
     <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(&mut hash.0).unwrap()
-}
-
-pub fn get_certificate_key_secret(seed: u64) -> [u8; 32] {
-    let mut hasher = HasherType::new();
-    hasher.update(seed.to_le_bytes());
-    hasher.hash().0
 }

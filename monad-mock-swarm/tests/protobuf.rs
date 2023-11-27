@@ -25,7 +25,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_genesis_config, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, NodeId, Round, Epoch};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSet, ValidatorSetType, ValidatorSetMapping}
@@ -56,7 +56,7 @@ fn test_consensus_message_event_vote_multisig() {
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
-        seq_num: 0,
+        seq_num: SeqNum(0),
     };
     let lci: LedgerCommitInfo = LedgerCommitInfo {
         commit_state_hash: None,

@@ -13,28 +13,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, Epoch, NodeId, TimeoutVariant, ValidatorData};
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PeerId(pub PubKey);
-
-impl std::fmt::Debug for PeerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<&NodeId> for PeerId {
-    fn from(id: &NodeId) -> Self {
-        PeerId(id.0)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RouterTarget {
-    Broadcast,
-    PointToPoint(PeerId),
-}
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant, ValidatorData};
 
 pub enum RouterCommand<OM> {
     // TODO-2 add a RouterCommand for setting peer set for broadcast
@@ -44,8 +23,8 @@ pub enum RouterCommand<OM> {
 pub trait Message: Identifiable + Clone {
     type Event;
 
-    // TODO-3 PeerId -> &PeerId
-    fn event(self, from: PeerId) -> Self::Event;
+    // TODO-3 NodeId -> &NodeId
+    fn event(self, from: NodeId) -> Self::Event;
 }
 
 pub trait Identifiable {
@@ -184,8 +163,8 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),
-    StateUpdate((u64, ConsensusHash)),
     UpdateNextValSet(Option<ValidatorData>),
+    StateUpdate((SeqNum, ConsensusHash)),
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {

@@ -81,6 +81,43 @@ impl std::fmt::Debug for Epoch {
 }
 
 #[repr(transparent)]
+#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
+pub struct SeqNum(pub u64);
+
+impl AsRef<[u8]> for SeqNum {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl Add for SeqNum {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        SeqNum(self.0 + other.0)
+    }
+}
+
+impl Sub for SeqNum {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        SeqNum(self.0 - rhs.0)
+    }
+}
+
+impl AddAssign for SeqNum {
+    fn add_assign(&mut self, other: Self) {
+        self.0 += other.0
+    }
+}
+
+impl std::fmt::Debug for SeqNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+#[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NodeId(pub PubKey);
 
@@ -88,6 +125,12 @@ impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         self.0.fmt(f)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RouterTarget {
+    Broadcast,
+    PointToPoint(NodeId),
 }
 
 #[repr(transparent)]

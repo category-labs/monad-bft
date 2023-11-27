@@ -9,6 +9,13 @@ use monad_executor_glue::{Command, Message};
 pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
+
+    fn boxed<'a>(self) -> BoxExecutor<'a, Self::Command>
+    where
+        Self: Sized + Send + Unpin + 'a,
+    {
+        Box::pin(self)
+    }
 }
 
 impl<E: Executor + ?Sized> Executor for Box<E> {
@@ -31,14 +38,14 @@ where
     }
 }
 
-pub type BoxExecutor<C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin>>;
+pub type BoxExecutor<'a, C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin + 'a>>;
 
 pub trait State: Sized {
     type Config;
     type Message: Message<Event = Self::Event>;
 
     type Event: Clone;
-    type OutboundMessage: Into<Self::Message> + AsRef<Self::Message>;
+    type OutboundMessage: Clone + Into<Self::Message> + AsRef<Self::Message>;
     type Block: BlockType;
     type Checkpoint;
     type SignatureCollection;

@@ -1,5 +1,5 @@
 use std::{
-    net::Ipv4Addr,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::{Duration, Instant},
 };
 
@@ -13,10 +13,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{Executor, State};
+use monad_executor_glue::Message;
+use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
-use monad_p2p::Multiaddr;
-use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_types::Round;
+use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, validator_set::ValidatorSetUpdater,
@@ -77,8 +78,8 @@ fn main() {
 
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router(
-        node_state.identity_libp2p,
         node_state.config.network,
+        NodeId(node_state.identity.pubkey()),
         &node_state.config.bootstrap.peers,
     )
     .await;
@@ -119,7 +120,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
             proposal_size: 5000,
-            state_root_delay: 0,
+            state_root_delay: SeqNum(0),
             propose_with_missing_blocks: false,
             epoch_length: Round(100),
         },
@@ -152,6 +153,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             }
             event = executor.next() => {
                 let Some(event) = event else {
+                    event!(
+                        Level::ERROR,
+                        "parent executor returned none!"
+                    );
                     return Err(());
                 };
 
@@ -191,37 +196,47 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     Ok(())
 }
 
-async fn build_router(
-    identity_libp2p: libp2p_identity::secp256k1::Keypair,
+async fn build_router<M, OM>(
     network_config: NodeNetworkConfig,
-    peers: &Vec<NodeBootstrapPeerConfig>,
-) -> monad_p2p::Service<
-    MonadMessage<SignatureType, SignatureCollectionType>,
-    VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-> {
-    let mut router = monad_p2p::Service::with_tokio_executor(
-        identity_libp2p.into(),
-        generate_bind_address(
-            network_config.bind_address_host,
-            network_config.bind_address_port,
-        ),
-        Duration::from_millis(network_config.libp2p_timeout_ms),
-        Duration::from_millis(network_config.libp2p_keepalive_ms),
+    me: NodeId,
+    peers: &[NodeBootstrapPeerConfig],
+) -> monad_quic::service::Service<UnsafeNoAuthQuinnConfig, MockGossip, M, OM>
+where
+    M: Message,
+{
+    monad_quic::service::Service::new(
+        ServiceConfig {
+            zero_instant: Instant::now(),
+            me,
+            server_address: generate_bind_address(
+                network_config.bind_address_host,
+                network_config.bind_address_port,
+            ),
+            quinn_config: UnsafeNoAuthQuinnConfig::new(
+                me,
+                Duration::from_millis(network_config.max_rtt_ms),
+                network_config.max_mbps,
+            ),
+            known_addresses: peers
+                .iter()
+                .map(|peer| {
+                    (
+                        NodeId(peer.pubkey.to_owned()),
+                        generate_bind_address(peer.ip, peer.port),
+                    )
+                })
+                .collect(),
+        },
+        MockGossipConfig {
+            all_peers: peers
+                .iter()
+                .map(|peer| NodeId(peer.pubkey.to_owned()))
+                .collect(),
+        }
+        .build(),
     )
-    .await;
-
-    for peer in peers {
-        router.add_peer(
-            &(&peer.pubkey).into(),
-            generate_bind_address(peer.ip, peer.port),
-        );
-    }
-
-    router
 }
 
-fn generate_bind_address(host: Ipv4Addr, port: u16) -> Multiaddr {
-    format!("/ip4/{}/udp/{}/quic-v1", host, port)
-        .parse()
-        .unwrap()
+fn generate_bind_address(host: Ipv4Addr, port: u16) -> SocketAddr {
+    SocketAddr::V4(SocketAddrV4::new(host, port))
 }

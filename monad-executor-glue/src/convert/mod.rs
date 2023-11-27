@@ -6,31 +6,10 @@ use monad_consensus_types::{
 use monad_proto::{error::ProtoError, proto::event::*};
 use monad_types::TimeoutVariant;
 
-use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock, PeerId};
+use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock};
 
 pub mod event;
 pub mod interface;
-
-impl From<&PeerId> for ProtoPeerId {
-    fn from(value: &PeerId) -> Self {
-        Self {
-            pubkey: Some((&(value.0)).into()),
-        }
-    }
-}
-
-impl TryFrom<ProtoPeerId> for PeerId {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPeerId) -> Result<Self, Self::Error> {
-        Ok(Self(
-            value
-                .pubkey
-                .ok_or(ProtoError::MissingRequiredField("PeerId.pubkey".to_owned()))?
-                .try_into()?,
-        ))
-    }
-}
 
 impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
     for ProtoConsensusEvent
@@ -70,7 +49,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
                     tx_hashes: txns.as_bytes().to_vec(),
-                    seq_num: fetched.seq_num,
+                    seq_num: Some((&fetched.seq_num).into()),
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
             }
@@ -97,7 +76,7 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
             }
             ConsensusEvent::StateUpdate((seq_num, hash)) => {
                 proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
-                    seq_num: *seq_num,
+                    seq_num: Some(seq_num.into()),
                     state_root_hash: Some(hash.into()),
                 })
             }
@@ -165,7 +144,12 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                                 "ConsensusEvent::fetched_txs.round".to_owned(),
                             ))?
                             .try_into()?,
-                        seq_num: fetched_txs.seq_num,
+                        seq_num: fetched_txs
+                            .seq_num
+                            .ok_or(ProtoError::MissingRequiredField(
+                                "ConsensusEvent::fetched_txs.seq_num".to_owned(),
+                            ))?
+                            .try_into()?,
                         state_root_hash: fetched_txs
                             .state_root_hash
                             .ok_or(ProtoError::MissingRequiredField(
@@ -240,7 +224,14 @@ impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
                         "ConsensusEvent::StateUpdate::state_root_hash".to_owned(),
                     ))?
                     .try_into()?;
-                ConsensusEvent::StateUpdate((event.seq_num, h))
+                let s = event
+                    .seq_num
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::StateUpdate::seq_num".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                ConsensusEvent::StateUpdate((s, h))
             }
             Some(proto_consensus_event::Event::UpdateNextValSet(val_set_event)) => {
                 match val_set_event.validator_set {

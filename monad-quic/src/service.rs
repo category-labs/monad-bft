@@ -16,9 +16,9 @@ use monad_crypto::{
     secp256k1::PubKey,
 };
 use monad_executor::Executor;
-use monad_executor_glue::{Message, PeerId, RouterCommand};
+use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::{Gossip, GossipEvent};
-use monad_types::{Deserializable, Serializable};
+use monad_types::{Deserializable, NodeId, Serializable};
 use quinn::{Connecting, RecvStream};
 use quinn_proto::{congestion::CubicConfig, ClientConfig, TransportConfig};
 use tokio::sync::mpsc::error::TrySendError;
@@ -32,8 +32,8 @@ where
     M: Message,
 {
     zero_instant: Instant,
-    me: PeerId,
-    known_addresses: HashMap<PeerId, SocketAddr>,
+    me: NodeId,
+    known_addresses: HashMap<NodeId, SocketAddr>,
 
     gossip: G,
 
@@ -42,7 +42,7 @@ where
 
     accept: BoxFuture<'static, Option<Connecting>>,
     inbound_connections: SelectAll<InboundConnection>,
-    outbound_messages: HashMap<PeerId, tokio::sync::mpsc::Sender<Vec<u8>>>,
+    outbound_messages: HashMap<NodeId, tokio::sync::mpsc::Sender<Vec<u8>>>,
 
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
     waker: Option<Waker>,
@@ -55,17 +55,17 @@ pub trait QuinnConfig {
     fn client(&self) -> Arc<dyn quinn_proto::crypto::ClientConfig>;
     fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig>;
 
-    fn remote_peer_id(connection: &quinn::Connection) -> Result<PeerId, Box<dyn Error>>;
+    fn remote_peer_id(connection: &quinn::Connection) -> Result<NodeId, Box<dyn Error>>;
 }
 
 pub struct ServiceConfig<QC> {
     pub zero_instant: Instant,
-    pub me: PeerId,
+    pub me: NodeId,
 
     pub server_address: SocketAddr,
     pub quinn_config: QC,
 
-    pub known_addresses: HashMap<PeerId, SocketAddr>,
+    pub known_addresses: HashMap<NodeId, SocketAddr>,
 }
 
 impl<QC, G, M, OM> Service<QC, G, M, OM>
@@ -74,7 +74,7 @@ where
     G: Gossip,
     M: Message,
 {
-    pub fn new(config: ServiceConfig<QC>, gossip_config: G::Config) -> Self {
+    pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
         server_config.transport_config(config.quinn_config.transport());
         let endpoint =
@@ -87,8 +87,6 @@ where
             let endpoint = endpoint.clone();
             async move { endpoint.accept().await }.boxed()
         };
-
-        let gossip = G::new(gossip_config);
 
         Self {
             zero_instant: config.zero_instant,
@@ -290,8 +288,8 @@ where
 
 type InboundConnectionError = Box<dyn Error>;
 enum InboundConnection {
-    Pending(BoxFuture<'static, Result<(PeerId, RecvStream), InboundConnectionError>>),
-    Active(BoxFuture<'static, Result<(PeerId, RecvStream, Vec<u8>), InboundConnectionError>>),
+    Pending(BoxFuture<'static, Result<(NodeId, RecvStream), InboundConnectionError>>),
+    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Vec<u8>), InboundConnectionError>>),
 }
 
 impl InboundConnection {
@@ -306,7 +304,7 @@ impl InboundConnection {
         .boxed();
         Self::Pending(fut)
     }
-    fn active(peer: PeerId, mut stream: RecvStream) -> Self {
+    fn active(peer: NodeId, mut stream: RecvStream) -> Self {
         const RX_MESSAGE_BUFFER_SIZE: usize = 64 * 1024;
         let fut = async move {
             let mut buf = vec![0_u8; RX_MESSAGE_BUFFER_SIZE];
@@ -322,7 +320,7 @@ impl Stream for InboundConnection
 where
     Self: Unpin,
 {
-    type Item = (PeerId, Vec<u8>);
+    type Item = (NodeId, Vec<u8>);
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -366,14 +364,14 @@ where
 type OutboundConnectionError = Box<dyn Error>;
 
 pub struct UnsafeNoAuthQuinnConfig {
-    me: PeerId,
+    me: NodeId,
     transport: Arc<TransportConfig>,
     client: Arc<dyn quinn_proto::crypto::ClientConfig>,
 }
 
 impl UnsafeNoAuthQuinnConfig {
     /// bandwidth_Mbps is in Megabit/s
-    pub fn new(me: PeerId, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
+    pub fn new(me: NodeId, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
         let mut transport_config = TransportConfig::default();
         let bandwidth_Bps = bandwidth_Mbps as u64 * 125_000;
         let rwnd = bandwidth_Bps * max_rtt.as_millis() as u64 / 1000;
@@ -411,7 +409,7 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
         ))
     }
 
-    fn remote_peer_id(connection: &quinn::Connection) -> Result<PeerId, Box<dyn Error>> {
+    fn remote_peer_id(connection: &quinn::Connection) -> Result<NodeId, Box<dyn Error>> {
         let identity = connection
             .peer_identity()
             .expect("all quic sessions have TLS identity");
@@ -420,15 +418,18 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
             .expect("always is rustls cert for default quinn");
 
         let raw_cert = certificates
-            .get(0)
+            .first()
             .ok_or("no attached certificates".to_owned())?;
 
         use x509_parser::prelude::*;
         let (_, cert) = X509Certificate::from_der(&raw_cert.0)?;
 
-        let extension = cert.extensions().get(0).ok_or("no extensions".to_owned())?;
+        let extension = cert
+            .extensions()
+            .first()
+            .ok_or("no extensions".to_owned())?;
 
-        let peer_id = PeerId(PubKey::from_slice(extension.value)?);
+        let peer_id = NodeId(PubKey::from_slice(extension.value)?);
         Ok(peer_id)
     }
 }

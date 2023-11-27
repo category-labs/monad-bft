@@ -10,13 +10,6 @@ edition = "2021"
 [lib]
 bench = false
 
-[features]
-monad_test = [
-    "monad-consensus/monad_test",
-    "monad-executor-glue/monad_test",
-    "monad-state/monad_test",
-]
-
 [dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus = { path = "../monad-consensus" }
@@ -26,8 +19,9 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
-monad-state = { path = "../monad-state", features = ["monad_test"] }
-monad-tracing-counter = { path = "../monad-tracing-counter" }
+monad-transformer = { path = "../monad-transformer" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
+monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
@@ -42,20 +36,12 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-block-sync = { path = "../monad-block-sync" }
-monad-consensus = { path = "../monad-consensus", features = ["monad_test"] }
-monad-consensus-state = { path = "../monad-consensus-state", features = [
-    "monad_test",
-] }
-monad-executor = { path = "../monad-executor", features = ["monad_test"] }
 monad-gossip = { path = "../monad-gossip" }
-monad-mock-swarm = { path = ".", features = ["monad_test"] }
 monad-quic = { path = "../monad-quic" }
 monad-testutil = { path = "../monad-testutil" }
+monad-tracing-counter = { path = "../monad-tracing-counter" }
 
 criterion = { workspace = true }
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 rcgen = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }

@@ -1,16 +1,13 @@
 mod common;
 use std::env;
 
-use common::NoSerSwarm;
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
-use monad_crypto::NopSignature;
+use monad_consensus_types::transaction_validator::MockValidator;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, NoSerRouterConfig},
-    mock_swarm::UntilTerminator,
-    transformer::GenericTransformer,
+    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };
-use monad_state::MonadMessage;
+use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_transformer::GenericTransformer;
 use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -54,7 +51,7 @@ fn nodes_with_random_latency_cron() {
 fn nodes_with_random_latency(seed: u64) {
     use std::time::Duration;
 
-    use monad_mock_swarm::transformer::RandLatencyTransformer;
+    use monad_transformer::RandLatencyTransformer;
 
     create_and_run_nodes::<NoSerSwarm, _, _>(
         MockValidator,
@@ -63,11 +60,9 @@ fn nodes_with_random_latency(seed: u64) {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >::RandLatency(RandLatencyTransformer::new(
-            seed, 330,
-        ))],
+        vec![GenericTransformer::RandLatency(
+            RandLatencyTransformer::new(seed, 330),
+        )],
         UntilTerminator::new().until_tick(Duration::from_secs(60 * 60)),
         SwarmTestConfig {
             num_nodes: 4,

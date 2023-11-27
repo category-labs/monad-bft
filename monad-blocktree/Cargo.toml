@@ -8,9 +8,6 @@ edition = "2021"
 [lib]
 bench = false
 
-[features]
-monad_test = []
-
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }

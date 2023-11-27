@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, time::Duration};
+use std::time::Duration;
 
 use monad_block_sync::BlockSyncProcess;
 use monad_consensus_state::ConsensusProcess;
@@ -7,14 +7,14 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::State;
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
-    transformer::ID,
 };
 use monad_state::MonadState;
+use monad_transformer::ID;
+use monad_types::NodeId;
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 pub enum NodeEvent<'s, Id, M, E> {
@@ -94,7 +94,7 @@ impl<S, C, CT, ST, SCT, VT, LT, BST> NodesSimulation<S, C>
 where
     S: SwarmRelation<
         State = MonadState<CT, ST, SCT, VT, LT, BST>,
-        TransportMessage = <S as SwarmRelation>::InboundMessage,
+        TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
 
@@ -138,7 +138,7 @@ impl<S, C, CT, ST, SCT, VT, LT, BST> Graph for NodesSimulation<S, C>
 where
     S: SwarmRelation<
         State = MonadState<CT, ST, SCT, VT, LT, BST>,
-        TransportMessage = <S as SwarmRelation>::InboundMessage,
+        TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
 
@@ -153,8 +153,8 @@ where
     Node<S>: Send,
 {
     type State = S::State;
-    type InboundMessage = S::InboundMessage;
-    type NodeId = PeerId;
+    type InboundMessage = S::TransportMessage;
+    type NodeId = NodeId;
     type Swarm = S;
 
     fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {
@@ -168,11 +168,13 @@ where
                 pending_events: node
                     .pending_inbound_messages
                     .iter()
-                    .map(|Reverse((rx_time, message))| NodeEvent::Message {
-                        tx_time: message.from_tick,
-                        rx_time: *rx_time,
-                        tx_peer: message.from.get_peer_id(),
-                        message: &message.message,
+                    .flat_map(|(rx_time, messages)| {
+                        messages.iter().map(|message| NodeEvent::Message {
+                            tx_time: message.from_tick,
+                            rx_time: *rx_time,
+                            tx_peer: message.from.get_peer_id(),
+                            message: &message.message,
+                        })
                     })
                     .collect(),
             })

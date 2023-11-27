@@ -2,18 +2,16 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{NoSerSwarm, QuicSwarm};
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
-use monad_crypto::NopSignature;
+use common::QuicSwarm;
+use monad_consensus_types::transaction_validator::MockValidator;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, NoSerRouterConfig},
-    mock_swarm::UntilTerminator,
-    transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer},
+    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };
 use monad_quic::QuicRouterSchedulerConfig;
-use monad_state::MonadMessage;
+use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer};
 use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_test::traced_test;
@@ -27,9 +25,9 @@ fn two_nodes() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::Latency::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >(LatencyTransformer(Duration::from_millis(1)))],
+        vec![GenericTransformer::Latency(LatencyTransformer(
+            Duration::from_millis(1),
+        ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),
         SwarmTestConfig {
             num_nodes: 2,
@@ -58,7 +56,7 @@ fn two_nodes_quic() {
             tls_key_der: Vec::new(),
             master_seed: 7,
 
-            gossip_config: MockGossipConfig { all_peers },
+            gossip: MockGossipConfig { all_peers }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -94,13 +92,13 @@ fn two_nodes_quic_bw() {
             tls_key_der: Vec::new(),
             master_seed: 7,
 
-            gossip_config: MockGossipConfig { all_peers },
+            gossip: MockGossipConfig { all_peers }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         vec![
             BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            BytesTransformer::Bw(BwTransformer::new(4)),
+            BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
         ],
         UntilTerminator::new().until_tick(Duration::from_secs(5)),
         SwarmTestConfig {

@@ -8,15 +8,16 @@ use std::{
 
 use futures::Stream;
 use monad_executor::Executor;
-use monad_executor_glue::{Message, PeerId, RouterCommand, RouterTarget};
+use monad_executor_glue::{Message, RouterCommand};
+use monad_types::{NodeId, RouterTarget};
 
 pub struct LocalRouterConfig {
-    pub all_peers: Vec<PeerId>,
+    pub all_peers: Vec<NodeId>,
     pub external_latency: Duration,
 }
 
 impl LocalRouterConfig {
-    pub fn build<M, OM>(self) -> HashMap<PeerId, LocalPeerRouter<M, OM>>
+    pub fn build<M, OM>(self) -> HashMap<NodeId, LocalPeerRouter<M, OM>>
     where
         M: Send + 'static,
     {
@@ -70,18 +71,18 @@ impl LocalRouterConfig {
 }
 
 pub struct LocalPeerRouter<M, OM> {
-    me: PeerId,
-    txs: HashMap<PeerId, tokio::sync::mpsc::UnboundedSender<(Instant, PeerId, M)>>,
-    rx: tokio::sync::mpsc::UnboundedReceiver<(PeerId, M)>,
+    me: NodeId,
+    txs: HashMap<NodeId, tokio::sync::mpsc::UnboundedSender<(Instant, NodeId, M)>>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId, M)>,
 
     _pd: PhantomData<OM>,
 }
 
 impl<M, OM> LocalPeerRouter<M, OM> {
     fn new(
-        me: PeerId,
-        txs: HashMap<PeerId, tokio::sync::mpsc::UnboundedSender<(Instant, PeerId, M)>>,
-        rx: tokio::sync::mpsc::UnboundedReceiver<(PeerId, M)>,
+        me: NodeId,
+        txs: HashMap<NodeId, tokio::sync::mpsc::UnboundedSender<(Instant, NodeId, M)>>,
+        rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId, M)>,
     ) -> Self {
         Self {
             me,

@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::secp256k1::PubKey;
-use monad_executor_glue::{Command, LedgerCommand, Message, PeerId, RouterCommand, RouterTarget};
+use monad_executor_glue::{Command, LedgerCommand, Message, RouterCommand};
+use monad_types::{NodeId, RouterTarget};
 
 use crate::State;
 
@@ -9,10 +10,10 @@ pub struct PendingMsg<S>
 where
     S: State,
 {
-    pub send_id: PeerId,
+    pub send_id: NodeId,
     pub send_tick: Duration,
     pub event: S::Event,
-    pub message: <S as State>::Message,
+    pub message: <S as State>::OutboundMessage,
 }
 
 pub struct NodesInfo<S>
@@ -56,7 +57,7 @@ pub struct ReplayNodes<S>
 where
     S: State,
 {
-    pub replay_nodes_info: BTreeMap<PeerId, NodesInfo<S>>,
+    pub replay_nodes_info: BTreeMap<NodeId, NodesInfo<S>>,
 }
 
 impl<S> ReplayNodes<S>
@@ -75,12 +76,12 @@ where
                 blockchain,
                 pending_messages,
             };
-            replay_nodes_info.insert(PeerId(pubkey), nodes_info);
+            replay_nodes_info.insert(NodeId(pubkey), nodes_info);
         }
         Self { replay_nodes_info }
     }
 
-    pub fn step(&mut self, node_id: &PeerId, event: S::Event, tick: Duration) {
+    pub fn step(&mut self, node_id: &NodeId, event: S::Event, tick: Duration) {
         let state = self.replay_nodes_info.get_mut(node_id).unwrap().mut_state();
         let commands = state.update(event);
         self.mutate_state(node_id, tick, commands);
@@ -88,7 +89,7 @@ where
 
     fn mutate_state(
         &mut self,
-        node_id: &PeerId,
+        node_id: &NodeId,
         tick: Duration,
         cmds: Vec<
             Command<
@@ -112,8 +113,6 @@ where
                 }
                 Command::RouterCommand(cmd) => match cmd {
                     RouterCommand::Publish { target, message } => {
-                        let message = message.into();
-
                         let tos = match target {
                             RouterTarget::PointToPoint(to) => vec![to],
                             RouterTarget::Broadcast => {
@@ -131,7 +130,7 @@ where
                             msg_queue.push(PendingMsg {
                                 send_id: *node_id,
                                 send_tick: tick,
-                                event: message.clone().event(*node_id),
+                                event: message.clone().into().event(*node_id),
                                 message: message.clone(),
                             });
                         }

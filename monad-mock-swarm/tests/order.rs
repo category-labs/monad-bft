@@ -1,20 +1,18 @@
 mod common;
 use std::{collections::HashSet, env, time::Duration};
 
-use common::NoSerSwarm;
 use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
 use monad_crypto::NopSignature;
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, NoSerRouterConfig},
-    mock_swarm::UntilTerminator,
-    transformer::{
-        GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
-        TransformerReplayOrder, ID,
-    },
+    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };
+use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{get_configs, run_nodes_until};
-use monad_types::Round;
+use monad_transformer::{
+    GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
+    TransformerReplayOrder, ID,
+};
+use monad_types::{NodeId, Round};
 use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -57,7 +55,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-    let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
+    let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
 
     let mut filter_peers = HashSet::new();
     filter_peers.insert(first_node);

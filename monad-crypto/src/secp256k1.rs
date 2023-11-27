@@ -1,3 +1,4 @@
+use asn1_der::typed::DerDecodable;
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
 
@@ -5,7 +6,6 @@ use crate::hasher::{Hashable, Hasher, HasherType};
 
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
-#[cfg_attr(feature = "monad_test", derive(Clone))]
 pub struct KeyPair(secp256k1::KeyPair);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
@@ -78,39 +78,23 @@ impl KeyPair {
         keypair
     }
 
-    #[cfg(feature = "libp2p-identity")]
-    /// Special implementation for creating both a (monad_crypto::KeyPair, lib2p::KeyPair)
-    /// TODO-4 Once we've unified those, hopefully we can deprecate this
-    pub fn libp2p_from_bytes(
-        mut secret: impl AsMut<[u8]>,
-    ) -> Result<(Self, libp2p_identity::secp256k1::Keypair), Error> {
-        let secret = secret.as_mut();
-        let monad_keypair = {
-            let secret = &*secret; // explicitly use immutable reference
-            secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
-                .map(Self)
-                .map_err(Error)?
-        };
-        let libp2p_keypair = libp2p_identity::secp256k1::SecretKey::from_bytes(secret)
-            .expect("monad_keypair parse succeeded, libp2p parse shouldn't fail")
-            .into();
+    pub fn from_der(mut der: impl AsMut<[u8]>) -> Result<Self, Error> {
+        let der_obj = der.as_mut();
 
-        Ok((monad_keypair, libp2p_keypair))
-    }
-
-    #[cfg(feature = "libp2p-identity")]
-    pub fn libp2p_from_der(
-        der: impl AsMut<[u8]>,
-    ) -> Result<(Self, libp2p_identity::secp256k1::Keypair), Error> {
-        let secret_key = libp2p_identity::secp256k1::SecretKey::from_der(der)
+        let mut secret_key_bytes = asn1_der::typed::Sequence::decode(der_obj)
+            .and_then(|seq| seq.get(1))
+            .and_then(Vec::load)
             .map_err(|_| Error(secp256k1::Error::InvalidSecretKey))?;
 
-        let monad_keypair = Self(secp256k1::KeyPair::from_secret_key(
-            secp256k1::SECP256K1,
-            &secp256k1::SecretKey::from_slice(&secret_key.to_bytes()).map_err(Error)?,
-        ));
+        let secret_key = secp256k1::SecretKey::from_slice(&secret_key_bytes).map_err(Error)?;
 
-        Ok((monad_keypair, secret_key.into()))
+        secret_key_bytes.zeroize();
+        der_obj.zeroize();
+
+        Ok(Self(secp256k1::KeyPair::from_secret_key(
+            secp256k1::SECP256K1,
+            &secret_key,
+        )))
     }
 
     pub fn sign(&self, msg: &[u8]) -> SecpSignature {
@@ -187,64 +171,6 @@ impl Hashable for SecpSignature {
     }
 }
 
-#[cfg(feature = "libp2p-identity")]
-#[derive(Debug)]
-pub enum PeerIdError {
-    Multihash(multihash::Error),
-    Decoding(libp2p_identity::DecodingError),
-    UnsupportedSignature,
-}
-#[cfg(feature = "libp2p-identity")]
-impl From<multihash::Error> for PeerIdError {
-    fn from(err: multihash::Error) -> Self {
-        Self::Multihash(err)
-    }
-}
-#[cfg(feature = "libp2p-identity")]
-impl From<libp2p_identity::DecodingError> for PeerIdError {
-    fn from(err: libp2p_identity::DecodingError) -> Self {
-        Self::Decoding(err)
-    }
-}
-
-#[cfg(feature = "libp2p-identity")]
-impl TryFrom<libp2p_identity::PeerId> for PubKey {
-    type Error = PeerIdError;
-    fn try_from(peer_id: libp2p_identity::PeerId) -> Result<Self, Self::Error> {
-        let bytes = peer_id.to_bytes();
-        let multihash = multihash::Multihash::from_bytes(&bytes)?;
-
-        // code 0 == Identity
-        if multihash.code() != 0 {
-            return Err(multihash::Error::UnsupportedCode(multihash.code()).into());
-        }
-
-        let libp2p_pubkey_secp =
-            libp2p_identity::PublicKey::from_protobuf_encoding(multihash.digest())?;
-        let libp2p_pubkey = libp2p_pubkey_secp
-            .into_secp256k1()
-            .ok_or(PeerIdError::UnsupportedSignature)?;
-        let pubkey = Self::from_slice(&libp2p_pubkey.encode_uncompressed()).expect(
-            "monad_crypto::PubKeyfrom_slice(libp2p::PubKey::encode_uncompressed()) should not fail",
-        );
-
-        Ok(pubkey)
-    }
-}
-
-#[cfg(feature = "libp2p-identity")]
-impl From<&PubKey> for libp2p_identity::PeerId {
-    fn from(pubkey: &PubKey) -> Self {
-        let pubkey = libp2p_identity::secp256k1::PublicKey::decode(&pubkey.bytes_compressed())
-            .expect("internal pubkey -> peer_id should never fail");
-
-        #[allow(deprecated)] // can't find another way
-        let pubkey = libp2p_identity::PublicKey::Secp256k1(pubkey);
-
-        pubkey.to_peer_id()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use tiny_keccak::Hasher;
@@ -318,44 +244,5 @@ mod tests {
         let ser = signature.serialize();
         let deser = SecpSignature::deserialize(&ser);
         assert_eq!(signature, deser.unwrap());
-    }
-
-    #[cfg(feature = "libp2p-identity")]
-    #[test]
-    // THIS MUST PASS!! don't comment this test out >:(
-    fn test_pubkey_peerid_roundtrip() {
-        let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-
-        let pubkey = keypair.pubkey();
-        let peer_id: libp2p_identity::PeerId = (&pubkey).into();
-        assert_eq!(pubkey, PubKey::try_from(peer_id).unwrap());
-    }
-
-    #[cfg(feature = "libp2p-identity")]
-    #[test]
-    // THIS MUST PASS!! don't comment this test out >:(
-    fn test_keypair_pubkey_peerid_roundtrip() {
-        let mut privkey: [u8; 32] = [127; 32];
-        let (monad_keypair, libp2p_keypair) = KeyPair::libp2p_from_bytes(&mut privkey).unwrap();
-
-        let monad_pubkey = monad_keypair.pubkey();
-        let libp2p_pubkey = libp2p_identity::Keypair::from(libp2p_keypair).public();
-        assert_eq!(
-            monad_pubkey.bytes(),
-            libp2p_pubkey
-                .clone()
-                .into_secp256k1()
-                .unwrap()
-                .encode_uncompressed()
-        );
-
-        let monad_peer_id: libp2p_identity::PeerId = (&monad_pubkey).into();
-        let libp2p_peer_id: libp2p_identity::PeerId = libp2p_pubkey.into();
-
-        assert_eq!(monad_peer_id, libp2p_peer_id);
-
-        assert_eq!(monad_pubkey, PubKey::try_from(monad_peer_id).unwrap());
-        assert_eq!(monad_pubkey, PubKey::try_from(libp2p_peer_id).unwrap());
     }
 }

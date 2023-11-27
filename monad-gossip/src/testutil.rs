@@ -4,17 +4,21 @@ use std::{
     time::Duration,
 };
 
-use monad_executor_glue::{PeerId, RouterTarget};
-use monad_mock_swarm::transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
+use monad_crypto::{
+    hasher::{Hasher, HasherType},
+    secp256k1::KeyPair,
+};
+use monad_transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
+use monad_types::{NodeId, RouterTarget};
 use rand::Rng;
 
 use super::{Gossip, GossipEvent};
 
 type BytesType = Vec<u8>;
 
-pub(crate) struct Swarm<G> {
+pub struct Swarm<G> {
     current_tick: Duration,
-    nodes: BTreeMap<PeerId, (G, BytesTransformerPipeline)>,
+    nodes: BTreeMap<NodeId, (G, BytesTransformerPipeline)>,
     pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<BytesType>)>>,
     seq_no: usize,
 }
@@ -26,11 +30,9 @@ pub enum SwarmEventType {
 }
 
 impl<G: Gossip> Swarm<G> {
-    pub fn new(
-        configs: impl Iterator<Item = (PeerId, G::Config, BytesTransformerPipeline)>,
-    ) -> Self {
+    pub fn new(configs: impl Iterator<Item = (NodeId, G, BytesTransformerPipeline)>) -> Self {
         let nodes = configs
-            .map(|(peer_id, config, pipeline)| (peer_id, (G::new(config), pipeline)))
+            .map(|(peer_id, gossip, pipeline)| (peer_id, (gossip, pipeline)))
             .collect();
 
         Self {
@@ -41,7 +43,7 @@ impl<G: Gossip> Swarm<G> {
         }
     }
 
-    pub fn send(&mut self, from: &PeerId, to: RouterTarget, message: &[u8]) {
+    pub fn send(&mut self, from: &NodeId, to: RouterTarget, message: &[u8]) {
         self.nodes
             .get_mut(from)
             .expect("peer doesn't exist")
@@ -49,7 +51,7 @@ impl<G: Gossip> Swarm<G> {
             .send(self.current_tick, to, message)
     }
 
-    pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, PeerId)> {
+    pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, NodeId)> {
         self.nodes
             .iter()
             .filter_map(|(id, (node, _))| {
@@ -73,7 +75,7 @@ impl<G: Gossip> Swarm<G> {
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<(Duration, PeerId, (PeerId, BytesType))> {
+    ) -> Option<(Duration, NodeId, (NodeId, BytesType))> {
         while let Some((tick, event_type, id)) = self.peek_event() {
             if tick > until {
                 break;
@@ -136,18 +138,48 @@ impl<G: Gossip> Swarm<G> {
     }
 }
 
-pub(crate) fn test_broadcast<G: Gossip>(
+pub fn make_swarm<G: Gossip>(
+    num_nodes: u16,
+    make_gossip: impl Fn(&[NodeId], &NodeId) -> G,
+    make_transformer: impl Fn(&[NodeId], &NodeId) -> BytesTransformerPipeline,
+) -> Swarm<G> {
+    let peers: Vec<_> = (1_u32..)
+        .take(num_nodes.into())
+        .map(|idx| {
+            let mut secret = {
+                let mut hasher = HasherType::new();
+                hasher.update(idx.to_le_bytes());
+                hasher.hash().0
+            };
+            let keypair = KeyPair::from_bytes(&mut secret).unwrap();
+            NodeId(keypair.pubkey())
+        })
+        .collect();
+    Swarm::new(peers.iter().map(|node_id| {
+        (
+            *node_id,
+            make_gossip(&peers, node_id),
+            make_transformer(&peers, node_id),
+        )
+    }))
+}
+
+pub fn test_broadcast<G: Gossip>(
     rng: &mut impl Rng,
     swarm: &mut Swarm<G>,
     max_tick: Duration,
+
+    payload_size_bytes: usize,
+    max_payload_broadcasts: usize,
     // expected_delivery_rate of 1.0 == everything delivered
     expected_delivery_rate: f64,
-) {
+) -> Duration {
+    let start = swarm.current_tick;
     assert!((0.0..=1.0).contains(&expected_delivery_rate));
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
-    for tx_peer in &peer_ids {
-        let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    for tx_peer in peer_ids.iter().take(max_payload_broadcasts) {
+        let message: Vec<u8> = (0..payload_size_bytes).map(|_| rng.gen()).collect();
         let target = RouterTarget::Broadcast;
         swarm.send(tx_peer, target, &message);
 
@@ -159,7 +191,7 @@ pub(crate) fn test_broadcast<G: Gossip>(
     // some random extra messages to flush pipeline transformers
     for _ in 0..10 {
         for tx_peer in &peer_ids {
-            let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+            let message: Vec<u8> = (0..10).map(|_| rng.gen()).collect();
             let target = RouterTarget::Broadcast;
             swarm.send(tx_peer, target, &message);
         }
@@ -170,7 +202,7 @@ pub(crate) fn test_broadcast<G: Gossip>(
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
         let num_delivered = num_expected - pending_messages.len();
         if num_delivered as f64 / num_expected as f64 >= expected_delivery_rate {
-            return;
+            return tick - start;
         }
     }
     let num_delivered = num_expected - pending_messages.len();
@@ -179,12 +211,19 @@ pub(crate) fn test_broadcast<G: Gossip>(
     unreachable!("stepped until max_tick without {expected_percentage}% percentage of messages being received. received percentage: {received_percentage}%");
 }
 
-pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, max_tick: Duration) {
+pub fn test_direct<G: Gossip>(
+    rng: &mut impl Rng,
+    swarm: &mut Swarm<G>,
+    max_tick: Duration,
+
+    payload_size_bytes: usize,
+) -> Duration {
+    let start = swarm.current_tick;
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
     for tx_peer in &peer_ids {
         for rx_peer in &peer_ids {
-            let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+            let message: Vec<u8> = (0..payload_size_bytes).map(|_| rng.gen()).collect();
             let target = RouterTarget::PointToPoint(*rx_peer);
             swarm.send(tx_peer, target, &message);
 
@@ -195,16 +234,18 @@ pub(crate) fn test_direct<G: Gossip>(rng: &mut impl Rng, swarm: &mut Swarm<G>, m
     // some random extra messages to flush pipeline transformers
     for _ in 0..10 {
         for tx_peer in &peer_ids {
-            let message: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-            let target = RouterTarget::Broadcast;
-            swarm.send(tx_peer, target, &message);
+            let message: Vec<u8> = (0..10).map(|_| rng.gen()).collect();
+            for rx_peer in &peer_ids {
+                let target = RouterTarget::PointToPoint(*rx_peer);
+                swarm.send(tx_peer, target, &message);
+            }
         }
     }
 
-    while let Some((_, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
+    while let Some((tick, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
         if pending_messages.is_empty() {
-            return;
+            return tick - start;
         }
     }
     unreachable!("stepped until max_tick without all pending_messages being received");

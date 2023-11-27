@@ -16,8 +16,7 @@ use crate::messages::message::VoteMessage;
 // accumulate votes and create a QC if enough votes are received
 // only one QC should be created in a round using the first supermajority of votes received
 // At the end of a round, older rounds can be cleaned up
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct VoteState<SCT: SignatureCollection> {
     pending_votes:
         BTreeMap<Round, HashMap<Hash, (Vec<(NodeId, SCT::SignatureType)>, HashSet<NodeId>)>>,
@@ -150,7 +149,7 @@ mod test {
         signing::{get_key, *},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, Stake, Epoch};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::VoteState;
@@ -171,7 +170,7 @@ mod test {
             round: vote_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi);
@@ -196,7 +195,7 @@ mod test {
             round: vote_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi);
@@ -296,7 +295,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let v = Vote {
@@ -321,7 +320,7 @@ mod test {
             round: Round(5),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(4),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let vi2 = VoteInfo {
@@ -329,7 +328,7 @@ mod test {
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let invalid_vote = Vote {

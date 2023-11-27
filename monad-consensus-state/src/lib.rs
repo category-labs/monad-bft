@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use log::{debug, warn};
 use monad_blocktree::blocktree::{BlockTree, RootKind};
 use monad_consensus::{
     messages::{
@@ -26,11 +25,10 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_executor_glue::{PeerId, RouterTarget};
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId, Round, Epoch};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
-use tracing::trace;
+use tracing::{debug, trace, warn};
 
 use crate::{
     blocksync::{BlockSyncManager, BlockSyncResult},
@@ -63,11 +61,45 @@ pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
     beneficiary: EthAddress,
 }
 
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq, Clone))]
-#[derive(Debug)]
+impl<SCT, TVT, SVT> PartialEq for ConsensusState<SCT, TVT, SVT>
+where
+    SCT: SignatureCollection,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.pending_block_tree.eq(&other.pending_block_tree)
+            && self.vote_state.eq(&other.vote_state)
+            && self.high_qc.eq(&other.high_qc)
+            && self.pacemaker.eq(&other.pacemaker)
+            && self.safety.eq(&other.safety)
+            && self.nodeid.eq(&other.nodeid)
+            && self.config.eq(&other.config)
+            && self.block_sync_manager.eq(&other.block_sync_manager)
+    }
+}
+impl<SCT, TVT, SVT> std::fmt::Debug for ConsensusState<SCT, TVT, SVT>
+where
+    SCT: SignatureCollection,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsensusState")
+            .field("pending_block_tree", &self.pending_block_tree)
+            .field("vote_state", &self.vote_state)
+            .field("high_qc", &self.high_qc)
+            .field("pacemaker", &self.pacemaker)
+            .field("safety", &self.safety)
+            .field("nodeid", &self.nodeid)
+            .field("config", &self.config)
+            .field("block_sync_manager", &self.block_sync_manager)
+            .finish()
+    }
+}
+
+impl<SCT, TVT, SVT> Eq for ConsensusState<SCT, TVT, SVT> where SCT: SignatureCollection {}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ConsensusConfig {
     pub proposal_size: usize,
-    pub state_root_delay: u64,
+    pub state_root_delay: SeqNum,
     pub propose_with_missing_blocks: bool,
     pub epoch_length: Round,
 }
@@ -153,7 +185,7 @@ where
         validators: &VT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
-    fn handle_state_root_update(&mut self, seq_num: u64, root_hash: Hash);
+    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash);
 
     fn get_current_round(&self) -> Round;
 
@@ -386,7 +418,7 @@ where
                 validator_sets,
             );
             let send_cmd = ConsensusCommand::Publish {
-                target: RouterTarget::PointToPoint(PeerId(next_leader.0)),
+                target: RouterTarget::PointToPoint(NodeId(next_leader.0)),
                 message: ConsensusMessage::Vote(vote_msg),
             };
             debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
@@ -590,7 +622,7 @@ where
         self.block_sync_manager.request(&qc, validators)
     }
 
-    fn handle_state_root_update(&mut self, seq_num: u64, root_hash: Hash) {
+    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash) {
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 
@@ -727,15 +759,15 @@ where
 
         let parent_bid = high_qc.info.vote.id;
         let seq_num_qc = high_qc.info.vote.seq_num;
-        let proposed_seq_num = seq_num_qc + 1;
+        let proposed_seq_num = seq_num_qc + SeqNum(1);
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
-            ConsensusAction::Propose(h, pending_txs) => {
+            ConsensusAction::Propose(h, pending_blocktree_txs) => {
                 inc_count!(creating_proposal);
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
                 vec![ConsensusCommand::FetchTxs(
                     self.config.proposal_size,
-                    pending_txs,
+                    pending_blocktree_txs,
                     FetchTxParams {
                         node_id,
                         round,
@@ -774,7 +806,7 @@ where
     }
 
     #[must_use]
-    fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: u64) -> ConsensusAction {
+    fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: SeqNum) -> ConsensusAction {
         // Never propose while syncing
         if let RootKind::Unrooted(_) = self.pending_block_tree.root {
             return ConsensusAction::Abstain;
@@ -789,8 +821,10 @@ where
         };
 
         // Always propose when there's a path to root
-        if let Some(pending_txs) = self.pending_block_tree.get_txs_on_path_to_root(parent_bid) {
-            return ConsensusAction::Propose(h, pending_txs);
+        if let Some(pending_blocktree_txs) =
+            self.pending_block_tree.get_txs_on_path_to_root(parent_bid)
+        {
+            return ConsensusAction::Propose(h, pending_blocktree_txs);
         }
 
         // Still propose but with the chance of proposing duplicate txs
@@ -859,47 +893,6 @@ pub enum ConsensusAction {
     ProposeEmpty,
     Abstain,
 }
-#[cfg(feature = "monad_test")]
-mod monad_test {
-    use monad_consensus_types::signature_collection::SignatureCollection;
-
-    use crate::ConsensusState;
-
-    impl<SCT, TVT, SVT> PartialEq for ConsensusState<SCT, TVT, SVT>
-    where
-        SCT: SignatureCollection,
-    {
-        fn eq(&self, other: &Self) -> bool {
-            self.pending_block_tree.eq(&other.pending_block_tree)
-                && self.vote_state.eq(&other.vote_state)
-                && self.high_qc.eq(&other.high_qc)
-                && self.pacemaker.eq(&other.pacemaker)
-                && self.safety.eq(&other.safety)
-                && self.nodeid.eq(&other.nodeid)
-                && self.config.eq(&other.config)
-                && self.block_sync_manager.eq(&other.block_sync_manager)
-        }
-    }
-    impl<SCT, TVT, SVT> std::fmt::Debug for ConsensusState<SCT, TVT, SVT>
-    where
-        SCT: SignatureCollection,
-    {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("ConsensusState")
-                .field("pending_block_tree", &self.pending_block_tree)
-                .field("vote_state", &self.vote_state)
-                .field("high_qc", &self.high_qc)
-                .field("pacemaker", &self.pacemaker)
-                .field("safety", &self.safety)
-                .field("nodeid", &self.nodeid)
-                .field("config", &self.config)
-                .field("block_sync_manager", &self.block_sync_manager)
-                .finish()
-        }
-    }
-
-    impl<SCT, TVT, SVT> Eq for ConsensusState<SCT, TVT, SVT> where SCT: SignatureCollection {}
-}
 
 #[cfg(test)]
 mod test {
@@ -932,13 +925,12 @@ mod test {
         NopSignature,
     };
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-    use monad_executor_glue::{PeerId, RouterTarget};
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round};
+    use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
@@ -1009,7 +1001,7 @@ mod test {
                     Duration::from_secs(1),
                     ConsensusConfig {
                         proposal_size: 5000,
-                        state_root_delay: 1,
+                        state_root_delay: SeqNum(1),
                         propose_with_missing_blocks: false,
                         epoch_length: Round(100),
                     },
@@ -1041,7 +1033,7 @@ mod test {
             round: expected_qc_high_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
         let v = Vote {
             vote_info: vi,
@@ -1451,7 +1443,7 @@ mod test {
             ));
         }
 
-        let _self_id = PeerId(state.nodeid.0);
+        let _self_id = NodeId(state.nodeid.0);
         let mut more_proposals = true;
 
         while more_proposals {
@@ -2352,7 +2344,7 @@ mod test {
         let (author, _, verified_message) = p0.destructure();
         // p0 should have seqnum 1 and therefore only require state_root 0
         // the state_root 0's hash should be Hash([0x00; 32])
-        state.handle_state_root_update(0, Hash([0x00; 32]));
+        state.handle_state_root_update(SeqNum(0), Hash([0x00; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2387,7 +2379,7 @@ mod test {
         );
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
-        state.handle_state_root_update(1, Hash([0x99; 32]));
+        state.handle_state_root_update(SeqNum(1), Hash([0x99; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2425,7 +2417,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p2.destructure();
-        state.handle_state_root_update(2, Hash([0xbb; 32]));
+        state.handle_state_root_update(SeqNum(2), Hash([0xbb; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2465,7 +2457,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p3.destructure();
-        state.handle_state_root_update(3, Hash([0xcc; 32]));
+        state.handle_state_root_update(SeqNum(3), Hash([0xcc; 32]));
         let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
         let result = cmds
             .iter()
@@ -2491,8 +2483,14 @@ mod test {
         // Proposals with seq num 1 and 2 are committed, so expect 2 and 3 to remain
         // in the state_root_validator
         assert_eq!(2, state.state_root_validator.root_hashes.len());
-        assert!(state.state_root_validator.root_hashes.contains_key(&2));
-        assert!(state.state_root_validator.root_hashes.contains_key(&3));
+        assert!(state
+            .state_root_validator
+            .root_hashes
+            .contains_key(&SeqNum(2)));
+        assert!(state
+            .state_root_validator
+            .root_hashes
+            .contains_key(&SeqNum(3)));
     }
 
     #[test]
@@ -2711,7 +2709,7 @@ mod test {
                             target: RouterTarget::PointToPoint(peer),
                             message: ConsensusMessage::Vote(vote),
                         } => {
-                            if peer == (&next_leader).into() {
+                            if peer == next_leader {
                                 Some(vote)
                             } else {
                                 println!("not next leader");

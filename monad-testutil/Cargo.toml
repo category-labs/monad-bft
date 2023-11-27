@@ -14,9 +14,9 @@ monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
-monad-executor-glue = { path = "../monad-executor-glue" }
 monad-state = { path = "../monad-state" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
@@ -25,4 +25,6 @@ zerocopy = { workspace = true }
 [dev-dependencies]
 monad-block-sync = { path = "../monad-block-sync" }
 monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-wal = { path = "../monad-wal" }

@@ -1,78 +1,57 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
+use executor::MonadP2PGossipConfig;
 use futures_util::{FutureExt, StreamExt};
-use monad_block_sync::BlockSyncState;
-use monad_consensus_state::{ConsensusConfig, ConsensusState};
+use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::{Block, BlockType, FullBlock},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::LedgerCommitInfo,
+    message_signature::MessageSignature,
     multi_sig::MultiSig,
     payload::{
-        ExecutionArtifacts, FullTransactionList, NopStateRoot, Payload, RandaoReveal,
-        TransactionHashList,
+        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
     },
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    signature_collection::{
-        SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
-    },
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     transaction_validator::MockValidator,
-    voting::{ValidatorMapping, VoteInfo},
+    voting::ValidatorMapping,
 };
 use monad_crypto::{
     hasher::{Hasher, HasherType},
-    secp256k1::{KeyPair, PubKey, SecpSignature},
+    secp256k1::{KeyPair, SecpSignature},
 };
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_executor::{BoxExecutor, Executor, State};
-use monad_executor_glue::{ExecutionLedgerCommand, MempoolCommand, RouterCommand, TimerCommand};
-use monad_p2p::Multiaddr;
-use monad_types::{NodeId, Round};
-use monad_updaters::{
-    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, BoxUpdater, validator_set::ValidatorSetUpdater,
-};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_executor::{Executor, State};
+use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
+use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_types::{NodeId, Round, SeqNum};
+use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::{event, instrument::WithSubscriber, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-type SignatureType = SecpSignature;
-type SignatureCollectionType = MultiSig<SignatureType>;
-type TransactionValidatorType = MockValidator;
-type StateRootValidatorType = NopStateRoot;
-type MonadState = monad_state::MonadState<
-    ConsensusState<SignatureCollectionType, TransactionValidatorType, StateRootValidatorType>,
-    SignatureType,
-    SignatureCollectionType,
-    ValidatorSet,
-    SimpleRoundRobin,
-    BlockSyncState,
->;
-type MonadConfig = <MonadState as State>::Config;
+use crate::executor::{
+    make_monad_executor, make_monad_state, ExecutionLedgerConfig, ExecutorConfig, MempoolConfig,
+    RouterConfig, StateConfig,
+};
 
-pub struct Config {
-    // boxed for no implicit copies
-    pub secret_key: Box<[u8; 32]>,
-    pub pubkey: PubKey,
+mod executor;
+
+pub struct Config<MessageSignatureType, SignatureCollectionType>
+where
+    MessageSignatureType: MessageSignature,
+    SignatureCollectionType: SignatureCollection,
+{
+    pub num_nodes: usize,
     pub simulation_length: Duration,
-
-    pub bind_address: Multiaddr,
-    pub libp2p_timeout: Duration,
-    pub libp2p_keepalive: Duration,
-
-    pub genesis_peers: Vec<(
-        Multiaddr,
-        PubKey,
-        SignatureCollectionPubKeyType<SignatureCollectionType>,
-    )>,
-    pub delta: Duration,
-    pub consensus_config: ConsensusConfig,
-    pub genesis_block: FullBlock<SignatureCollectionType>,
-    pub genesis_vote_info: VoteInfo,
-    pub genesis_signatures: SignatureCollectionType,
+    pub executor_config: ExecutorConfig<MessageSignatureType, SignatureCollectionType>,
+    pub state_config: StateConfig<SignatureCollectionType>,
 }
 
 #[derive(Parser, Debug)]
@@ -83,6 +62,44 @@ struct Args {
     /// addresses
     #[arg(short, long, required=true, num_args=1..)]
     addresses: Vec<String>,
+}
+
+struct TestgroundArgs {
+    state_root_delay: u64,    // default 0
+    simulation_length_s: u64, // default 10
+    delta_ms: u64,            // default 1000
+    proposal_size: usize,     // default 5000
+
+    router: RouterArgs,
+    mempool: MempoolArgs,
+    execution_ledger: ExecutionLedgerArgs,
+}
+
+enum RouterArgs {
+    Local {
+        external_latency_ms: u64,
+    },
+    MonadP2P {
+        max_rtt_ms: u64,
+        /// bandwidth_Mbps is in Megabit/s
+        bandwidth_Mbps: u16,
+        gossip: GossipArgs,
+    },
+}
+
+enum GossipArgs {
+    Simple,
+    Gossipsub { fanout: usize },
+}
+
+enum MempoolArgs {
+    Mock,
+    LibP2P,
+}
+
+pub enum ExecutionLedgerArgs {
+    Mock,
+    File,
 }
 
 fn make_provider(
@@ -128,26 +145,36 @@ async fn main() {
         opentelemetry::Context::default().with_remote_span_context(context)
     });
 
+    type SignatureTypeConfig = SecpSignature;
+    type SignatureCollectionTypeConfig = MultiSig<SignatureTypeConfig>;
+    // TODO parse this from CLI args
+    let testground_args = TestgroundArgs {
+        state_root_delay: 0,
+        simulation_length_s: 10,
+        delta_ms: 75,
+        proposal_size: 5_000,
+
+        router: RouterArgs::MonadP2P {
+            max_rtt_ms: 150,
+            bandwidth_Mbps: 1_000,
+            gossip: GossipArgs::Gossipsub { fanout: 7 },
+        },
+        mempool: MempoolArgs::Mock,
+        execution_ledger: ExecutionLedgerArgs::Mock,
+    };
+
     let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());
     futures_util::future::join_all(
-        testnet(
-            args.addresses
-                .into_iter()
-                .map(|address| {
-                    let (host, port) = address.split_once(':').expect("expected <host>:<port>");
-                    (host.to_owned(), port.parse().unwrap())
-                })
-                .collect(),
-            Duration::from_secs(10),
-            Duration::from_secs(1),
-            Duration::from_secs(60),
-            0,
+        testnet::<SignatureTypeConfig, SignatureCollectionTypeConfig>(
+            &args.addresses,
+            &testground_args,
         )
+        .into_iter()
         .map(|config| {
             let maybe_provider = args.otel_endpoint.as_ref().map(|endpoint| {
                 make_provider(
                     endpoint.to_owned(),
-                    format!("monad-testground-{:?}", &config.pubkey),
+                    format!("monad-testground-{:?}", &config.state_config.key.pubkey()),
                 )
             });
 
@@ -185,78 +212,62 @@ async fn main() {
     .unwrap();
 }
 
-fn testnet(
-    addresses: Vec<(String, u16)>,
-    simulation_length: Duration,
-    delta: Duration,
-    keepalive: Duration,
-    state_root_delay: u64,
-) -> impl Iterator<Item = Config> {
-    let secrets = std::iter::repeat_with(rand::random::<[u8; 32]>)
-        .map(Box::new)
-        .take(addresses.len())
-        .collect::<Vec<_>>();
-    let keys: Vec<_> = secrets
+fn testnet<MessageSignatureType, SignatureCollectionType>(
+    addresses: &Vec<String>,
+    args: &TestgroundArgs,
+) -> Vec<Config<MessageSignatureType, SignatureCollectionType>>
+where
+    MessageSignatureType: MessageSignature,
+    SignatureCollectionType: SignatureCollection,
+{
+    let configs = std::iter::repeat_with(|| {
+        let keypair = KeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+        let cert_keypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+        (keypair, cert_keypair)
+    })
+    .take(addresses.len())
+    .collect::<Vec<_>>();
+
+    let validator_mapping = ValidatorMapping::new(
+        configs
+            .iter()
+            .map(|(keypair, cert_keypair)| (NodeId(keypair.pubkey()), cert_keypair.pubkey()))
+            .collect::<Vec<_>>(),
+    );
+
+    let genesis_peers = configs
         .iter()
-        .cloned() // It's ok to copy these secrets because this is just used for testnet config gen
-        .map(|mut secret| KeyPair::libp2p_from_bytes(secret.as_mut_slice()).unwrap())
-        .collect();
-
-    let cert_keys:Vec<_>= secrets.iter().cloned().map(|mut secret| <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(secret.as_mut_slice()).unwrap()).collect();
-
-    let voting_identities = keys
-        .iter()
-        .zip(cert_keys.iter())
-        .map(|((keypair, _libp2p_keypair), cert_keypair)| {
-            (NodeId(keypair.pubkey()), cert_keypair.pubkey())
-        })
+        .map(|(keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
         .collect::<Vec<_>>();
-
-    let val_mapping = ValidatorMapping::new(voting_identities);
-
-    let addresses = addresses
-        .into_iter()
-        .map(|(host, port)| format!("/ip4/{host}/udp/{port}/quic-v1").parse().unwrap())
-        .collect::<Vec<Multiaddr>>();
-
-    let peers = addresses
-        .iter()
-        .cloned()
-        .zip(keys.iter().map(|(keypair, _)| keypair.pubkey()))
-        .zip(cert_keys.iter().map(|keypair| keypair.pubkey()))
-        .map(|((a, b), c)| (a, b, c))
-        .collect::<Vec<_>>();
-
     let genesis_block = {
         let genesis_txn = TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]);
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(
             Block::new::<HasherType>(
-                // FIXME init from genesis config, don't use random key
                 NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
                 Round(0),
                 &Payload {
                     txns: genesis_txn,
                     header: genesis_execution_header,
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
                 &genesis_prime_qc,
             ),
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &TransactionValidatorType::default(),
+            &MockValidator,
         )
         .unwrap()
     };
+    let gen_vote_info = genesis_vote_info(genesis_block.get_id());
     let genesis_signatures = {
-        let genesis_lci =
-            LedgerCommitInfo::new::<HasherType>(None, &genesis_vote_info(genesis_block.get_id()));
+        let genesis_lci = LedgerCommitInfo::new::<HasherType>(None, &gen_vote_info);
         let msg = HasherType::hash_object(&genesis_lci);
 
         let mut sigs = Vec::new();
-        for ((key, _), cert_key) in keys.iter().zip(cert_keys.iter()) {
+        for (key, cert_key) in &configs {
             let node_id = NodeId(key.pubkey());
             let sig = <SignatureCollectionType as SignatureCollection>::SignatureType::sign(
                 msg.as_ref(),
@@ -265,105 +276,129 @@ fn testnet(
             sigs.push((node_id, sig));
         }
 
-        let signatures = SignatureCollectionType::new(sigs, &val_mapping, msg.as_ref()).unwrap();
+        let signatures =
+            SignatureCollectionType::new(sigs, &validator_mapping, msg.as_ref()).unwrap();
 
         signatures
     };
 
+    let mut maybe_local_routers = match args.router {
+        RouterArgs::Local {
+            external_latency_ms,
+        } => {
+            let local_routers = LocalRouterConfig {
+                all_peers: genesis_peers
+                    .iter()
+                    .map(|(peer_id, _)| NodeId(*peer_id))
+                    .collect(),
+                external_latency: Duration::from_millis(external_latency_ms),
+            }
+            .build();
+            Some(local_routers)
+        }
+        _ => None,
+    };
+
+    let known_addresses: HashMap<_, _> = addresses
+        .iter()
+        .zip(configs.iter())
+        .map(|(address, (keypair, _))| (NodeId(keypair.pubkey()), address.parse().unwrap()))
+        .collect();
+
     addresses
-        .into_iter()
-        .zip(secrets)
-        .zip(
-            peers
-                .iter()
-                .map(|(_, pubkey, _)| pubkey)
-                .copied()
-                .collect::<Vec<_>>(),
-        )
-        .map(move |((bind_address, secret_key), pubkey)| Config {
-            secret_key,
-            pubkey,
-            simulation_length,
-            bind_address,
-            libp2p_timeout: delta,
-            libp2p_keepalive: keepalive,
-            genesis_peers: peers.clone(),
-            delta,
-            consensus_config: ConsensusConfig {
-                proposal_size: 5000,
-                state_root_delay,
-                propose_with_missing_blocks: false,
-                epoch_length: Round(100),
-            },
-            genesis_block: genesis_block.clone(),
-            genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
-            genesis_signatures: genesis_signatures.clone(),
+        .iter()
+        .zip(configs)
+        .map(|(address, (keypair, cert_keypair))| {
+            let me = NodeId(keypair.pubkey());
+            Config {
+                num_nodes: addresses.len(),
+                simulation_length: Duration::from_secs(args.simulation_length_s),
+                executor_config: ExecutorConfig {
+                    router_config: match &args.router {
+                        RouterArgs::Local { .. } => RouterConfig::Local(
+                            maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
+                        ),
+                        RouterArgs::MonadP2P {
+                            max_rtt_ms,
+                            bandwidth_Mbps,
+                            gossip,
+                        } => RouterConfig::MonadP2P {
+                            config: ServiceConfig {
+                                zero_instant: Instant::now(),
+                                me,
+                                server_address: address.parse().unwrap(),
+                                quinn_config: UnsafeNoAuthQuinnConfig::new(
+                                    me,
+                                    Duration::from_millis(*max_rtt_ms),
+                                    *bandwidth_Mbps,
+                                ),
+                                known_addresses: known_addresses.clone(),
+                            },
+                            gossip_config: match gossip {
+                                GossipArgs::Simple => {
+                                    MonadP2PGossipConfig::Simple(MockGossipConfig {
+                                        all_peers: genesis_peers
+                                            .iter()
+                                            .map(|(pubkey, _)| NodeId(*pubkey))
+                                            .collect(),
+                                    })
+                                }
+                                GossipArgs::Gossipsub { fanout } => {
+                                    MonadP2PGossipConfig::Gossipsub(UnsafeGossipsubConfig {
+                                        seed: rand::random(),
+                                        me,
+                                        all_peers: genesis_peers
+                                            .iter()
+                                            .map(|(pubkey, _)| NodeId(*pubkey))
+                                            .collect(),
+                                        fanout: *fanout,
+                                    })
+                                }
+                            },
+                        },
+                    },
+                    mempool_config: match args.mempool {
+                        MempoolArgs::Mock => MempoolConfig::Mock,
+                        MempoolArgs::LibP2P => MempoolConfig::LibP2P,
+                    },
+                    execution_ledger_config: match args.execution_ledger {
+                        ExecutionLedgerArgs::Mock => ExecutionLedgerConfig::Mock,
+                        ExecutionLedgerArgs::File => ExecutionLedgerConfig::File,
+                    },
+                },
+                state_config: StateConfig {
+                    key: keypair,
+                    cert_key: cert_keypair,
+                    genesis_peers: genesis_peers.clone(),
+                    delta: Duration::from_millis(args.delta_ms),
+                    consensus_config: ConsensusConfig {
+                        proposal_size: args.proposal_size,
+                        state_root_delay: SeqNum(args.state_root_delay),
+                        propose_with_missing_blocks: false,
+                        epoch_length: Round(100),
+                    },
+                    genesis_block: genesis_block.clone(),
+                    genesis_vote_info: gen_vote_info,
+                    genesis_signatures: genesis_signatures.clone(),
+                },
+            }
         })
+        .collect()
 }
 
-async fn run(
+async fn run<MessageSignatureType, SignatureCollectionType>(
     cx: Option<opentelemetry_api::Context>,
     wg_tx: tokio::sync::broadcast::Sender<()>,
     mut wg_rx: tokio::sync::broadcast::Receiver<()>,
-    mut config: Config,
-) {
-    // FIXME: not sure about the crypto implications of generating
-    //        2 keypairs on different curves using the same secret/randomness
-    let (keypair, libp2p_keypair) =
-        KeyPair::libp2p_from_bytes(config.secret_key.clone().as_mut_slice()).expect("invalid key");
+    config: Config<MessageSignatureType, SignatureCollectionType>,
+) where
+    MessageSignatureType: MessageSignature + Unpin,
+    SignatureCollectionType: SignatureCollection + Unpin,
+    <SignatureCollectionType as SignatureCollection>::SignatureType: Unpin,
+{
+    let mut executor = make_monad_executor(config.executor_config).await;
+    let (mut state, init_commands) = make_monad_state(config.state_config);
 
-    let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(config.secret_key.as_mut_slice()).expect("invalid cert key");
-
-    let mut router = monad_p2p::Service::with_tokio_executor(
-        libp2p_keypair.into(),
-        config.bind_address,
-        config.libp2p_timeout,
-        config.libp2p_keepalive,
-    )
-    .await;
-    let num_nodes = config.genesis_peers.len();
-    for (address, peer, _) in &config.genesis_peers {
-        router.add_peer(&peer.into(), address.clone())
-    }
-
-    // FIXME hack so all tcp sockets are bound before they try and send mesages
-    // we can delete this once we support retry at the monad-p2p executor level
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-    let mut executor = ParentExecutor::<
-        BoxUpdater<RouterCommand<_>, _>,
-        BoxUpdater<TimerCommand<_>, _>,
-        BoxUpdater<MempoolCommand<_>, _>,
-        MockLedger<_, _>,
-        BoxExecutor<ExecutionLedgerCommand<_>>,
-        MockCheckpoint<_>,
-        ValidatorSetUpdater<_,_>,
-    > {
-        router: Box::pin(router),
-        timer: Box::pin(TokioTimer::default()),
-        mempool: Box::pin(MonadMempool::default()),
-        ledger: MockLedger::default(),
-        execution_ledger: Box::pin(MonadFileLedger::default()),
-        checkpoint: MockCheckpoint::default(),
-        validator_set: ValidatorSetUpdater::default(),
-    };
-
-    let (mut state, init_commands) = MonadState::init(MonadConfig {
-        transaction_validator: TransactionValidatorType {},
-        validators: config
-            .genesis_peers
-            .into_iter()
-            .map(|(_, peer, cert_ident)| (peer, cert_ident))
-            .collect(),
-        key: keypair,
-        certkey: certkeypair,
-        beneficiary: EthAddress::default(),
-        delta: config.delta,
-        consensus_config: config.consensus_config,
-        genesis_block: config.genesis_block,
-        genesis_vote_info: config.genesis_vote_info,
-        genesis_signatures: config.genesis_signatures,
-    });
     executor.exec(init_commands);
 
     let total_start = Instant::now();
@@ -408,7 +443,7 @@ async fn run(
     }
     wg_tx.send(()).unwrap();
     let mut num_done = 0;
-    while num_done < num_nodes {
+    while num_done < config.num_nodes {
         if let futures_util::future::Either::Left((result, _)) =
             futures_util::future::select(wg_rx.recv().boxed(), executor.next().boxed()).await
         {

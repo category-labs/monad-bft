@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use log::debug;
 use monad_consensus::messages::message::BlockSyncMessage;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
@@ -15,13 +14,13 @@ use monad_consensus_types::{
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
+use tracing::debug;
 
 use crate::command::ConsensusCommand;
 
 const DEFAULT_PEER_INDEX: usize = 0;
 
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
-#[derive(Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct InFlightBlockSync<SCT> {
     pub req_target: NodeId,
     pub retry_cnt: usize,
@@ -71,8 +70,7 @@ impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
         }
     }
 }
-#[cfg_attr(feature = "monad_test", derive(PartialEq, Eq))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSyncManager<SCT> {
     requests: HashMap<BlockId, InFlightBlockSync<SCT>>,
     id: NodeId,
@@ -249,7 +247,7 @@ mod test {
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, TimeoutVariant};
+    use monad_types::{BlockId, NodeId, Round, SeqNum, TimeoutVariant};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::BlockSyncManager;
@@ -323,7 +321,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -354,7 +352,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -387,7 +385,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -413,7 +411,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -439,7 +437,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -460,7 +458,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
@@ -476,7 +474,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
-                        seq_num: 0,
+                        seq_num: SeqNum(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -495,7 +493,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
-                        seq_num: 0,
+                        seq_num: SeqNum(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -514,7 +512,7 @@ mod test {
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
-                        seq_num: 0,
+                        seq_num: SeqNum(0),
                     },
                     ledger_commit: LedgerCommitInfo::default(),
                 },
@@ -647,7 +645,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -713,7 +711,7 @@ mod test {
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                 },
                 ledger_commit: LedgerCommitInfo::default(),
             },
@@ -811,7 +809,7 @@ mod test {
         let payload = Payload {
             txns: TransactionHashList::default(),
             header: ExecutionArtifacts::zero(),
-            seq_num: 0,
+            seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };

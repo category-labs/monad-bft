@@ -19,7 +19,14 @@ pub mod timer;
 #[cfg(feature = "tokio")]
 pub mod local_router;
 
-pub trait Updater<C, E>: Executor<Command = C> + Stream<Item = E> {}
-impl<U, C, E> Updater<C, E> for U where U: Executor<Command = C> + Stream<Item = E> {}
+pub trait Updater<E>: Executor + Stream<Item = E> {
+    fn boxed<'a>(self) -> BoxUpdater<'a, Self::Command, E>
+    where
+        Self: Sized + Send + Unpin + 'a,
+    {
+        Box::pin(self)
+    }
+}
+impl<U, E> Updater<E> for U where U: Executor + Stream<Item = E> + Send + Unpin {}
 
-pub type BoxUpdater<C, E> = Pin<Box<dyn Updater<C, E> + Send + Unpin>>;
+pub type BoxUpdater<'a, C, E> = Pin<Box<dyn Updater<E, Command = C> + Send + Unpin + 'a>>;

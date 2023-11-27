@@ -1,5 +1,5 @@
 use monad_crypto::hasher::Hash;
-use monad_types::{BlockId, NodeId, Round};
+use monad_types::{BlockId, NodeId, Round, SeqNum};
 
 use crate::{
     block::{Block, UnverifiedFullBlock},
@@ -13,7 +13,7 @@ pub struct FetchTxParams<SCT> {
     // they're included here just to be extra safe
     pub node_id: NodeId,
     pub round: Round,
-    pub seq_num: u64,
+    pub seq_num: SeqNum,
     pub state_root_hash: Hash,
     pub high_qc: QuorumCertificate<SCT>,
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-use monad_types::Round;
+use monad_types::{Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::certificate_signature::{CertificateKeyPair, CertificateSignature};
@@ -136,7 +136,7 @@ impl RandaoReveal {
 pub struct Payload {
     pub txns: TransactionHashList,
     pub header: ExecutionArtifacts,
-    pub seq_num: u64,
+    pub seq_num: SeqNum,
     pub beneficiary: EthAddress,
     pub randao_reveal: RandaoReveal,
 }
@@ -152,11 +152,11 @@ impl Hashable for Payload {
 }
 
 pub trait StateRootValidator {
-    fn new(delay: u64) -> Self;
-    fn add_state_root(&mut self, seq_num: u64, root_hash: Hash);
-    fn get_next_state_root(&self, seq_num: u64) -> Option<Hash>;
-    fn remove_old_roots(&mut self, latest_seq_num: u64);
-    fn validate(&self, seq_num: u64, block_state_root_hash: Hash) -> StateRootResult;
+    fn new(delay: SeqNum) -> Self;
+    fn add_state_root(&mut self, seq_num: SeqNum, root_hash: Hash);
+    fn get_next_state_root(&self, seq_num: SeqNum) -> Option<Hash>;
+    fn remove_old_roots(&mut self, latest_seq_num: SeqNum);
+    fn validate(&self, seq_num: SeqNum, block_state_root_hash: Hash) -> StateRootResult;
 }
 
 #[derive(Debug, PartialEq)]
@@ -170,25 +170,25 @@ pub enum StateRootResult {
 #[derive(Debug, Clone)]
 pub struct StateRoot {
     // Map executed block seq_num to root hash
-    pub root_hashes: BTreeMap<u64, Hash>,
+    pub root_hashes: BTreeMap<SeqNum, Hash>,
     // Delay gap between root hash to use for current block
     // validation
-    pub delay: u64,
+    pub delay: SeqNum,
 }
 
 impl StateRootValidator for StateRoot {
-    fn new(delay: u64) -> Self {
+    fn new(delay: SeqNum) -> Self {
         StateRoot {
-            root_hashes: BTreeMap::from([(0, Hash([0; 32]))]),
+            root_hashes: BTreeMap::from([(SeqNum(0), Hash([0; 32]))]),
             delay,
         }
     }
 
-    fn add_state_root(&mut self, seq_num: u64, root_hash: Hash) {
+    fn add_state_root(&mut self, seq_num: SeqNum, root_hash: Hash) {
         self.root_hashes.insert(seq_num, root_hash);
     }
 
-    fn get_next_state_root(&self, seq_num: u64) -> Option<Hash> {
+    fn get_next_state_root(&self, seq_num: SeqNum) -> Option<Hash> {
         if self.delay > seq_num {
             return Some(Hash([0; 32]));
         }
@@ -196,7 +196,7 @@ impl StateRootValidator for StateRoot {
         self.root_hashes.get(&(seq_num - self.delay)).copied()
     }
 
-    fn remove_old_roots(&mut self, latest_seq_num: u64) {
+    fn remove_old_roots(&mut self, latest_seq_num: SeqNum) {
         if self.delay > latest_seq_num {
             return;
         }
@@ -204,7 +204,7 @@ impl StateRootValidator for StateRoot {
             .retain(|k, _| *k > (latest_seq_num - self.delay));
     }
 
-    fn validate(&self, seq_num: u64, block_state_root_hash: Hash) -> StateRootResult {
+    fn validate(&self, seq_num: SeqNum, block_state_root_hash: Hash) -> StateRootResult {
         // FIXME-1:
         // for the first N blocks, there are no state roots so we need to decide
         // how to validate them -- right now, assuming anything with hash=0x0 is
@@ -246,60 +246,61 @@ impl StateRootValidator for StateRoot {
 pub struct NopStateRoot {}
 
 impl StateRootValidator for NopStateRoot {
-    fn new(_delay: u64) -> Self {
+    fn new(_delay: SeqNum) -> Self {
         Self {}
     }
 
-    fn add_state_root(&mut self, _seq_num: u64, _root_hash: Hash) {}
+    fn add_state_root(&mut self, _seq_num: SeqNum, _root_hash: Hash) {}
 
-    fn get_next_state_root(&self, _seq_num: u64) -> Option<Hash> {
+    fn get_next_state_root(&self, _seq_num: SeqNum) -> Option<Hash> {
         Some(Hash([0; 32]))
     }
 
-    fn validate(&self, _seq_num: u64, _block_state_root_hash: Hash) -> StateRootResult {
+    fn validate(&self, _seq_num: SeqNum, _block_state_root_hash: Hash) -> StateRootResult {
         StateRootResult::Success
     }
 
-    fn remove_old_roots(&mut self, _latest_seq_num: u64) {}
+    fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
 }
 
 #[cfg(test)]
 mod test {
     use monad_crypto::hasher::Hash;
+    use monad_types::SeqNum;
 
     use super::{StateRoot, StateRootValidator};
     use crate::payload::StateRootResult;
 
     #[test]
     fn state_root_impl_test() {
-        let mut state_root = StateRoot::new(0);
+        let mut state_root = StateRoot::new(SeqNum(0));
 
         for i in 1..10 {
-            state_root.add_state_root(i, Hash([i as u8; 32]));
+            state_root.add_state_root(SeqNum(i), Hash([i as u8; 32]));
         }
         for i in 1..10 {
             assert_eq!(
-                state_root.validate(i, Hash([i as u8; 32])),
+                state_root.validate(SeqNum(i), Hash([i as u8; 32])),
                 StateRootResult::Success
             );
         }
 
-        state_root.remove_old_roots(10);
+        state_root.remove_old_roots(SeqNum(10));
         assert_eq!(state_root.root_hashes.len(), 0);
 
         assert_eq!(
-            state_root.validate(10, Hash([0x0a_u8; 32])),
+            state_root.validate(SeqNum(10), Hash([0x0a_u8; 32])),
             StateRootResult::OutOfRange
         );
 
-        state_root.add_state_root(10, Hash([0x01_u8; 32]));
+        state_root.add_state_root(SeqNum(10), Hash([0x01_u8; 32]));
         assert_eq!(
-            state_root.validate(10, Hash([0x0a_u8; 32])),
+            state_root.validate(SeqNum(10), Hash([0x0a_u8; 32])),
             StateRootResult::Mismatch
         );
 
         assert_eq!(
-            state_root.validate(5, Hash([0x0a_u8; 32])),
+            state_root.validate(SeqNum(5), Hash([0x0a_u8; 32])),
             StateRootResult::Missing
         );
     }

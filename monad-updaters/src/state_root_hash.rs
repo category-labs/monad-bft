@@ -13,11 +13,12 @@ use monad_consensus_types::{
 use monad_crypto::hasher::Hash;
 use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
+use monad_types::SeqNum;
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 
 pub struct MockStateRootHash<O, ST, SCT> {
-    update: Option<(u64, Hash)>,
+    update: Option<(SeqNum, Hash)>,
     waker: Option<Waker>,
     phantom: PhantomData<(O, ST, SCT)>,
 }
@@ -47,7 +48,7 @@ impl<O: BlockType, ST, SCT> Executor for MockStateRootHash<O, ST, SCT> {
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
                     let seq_num = block.get_seq_num();
-                    let mut gen = ChaChaRng::seed_from_u64(seq_num);
+                    let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
                     let mut hash = Hash([0; 32]);
                     gen.fill_bytes(&mut hash.0);
 

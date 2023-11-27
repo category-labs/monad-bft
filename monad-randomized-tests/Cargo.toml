@@ -8,14 +8,15 @@ edition = "2021"
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-executor-glue = { path = "../monad-executor-glue" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-testutil = { path = "../monad-testutil" }
+monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-wal = { path = "../monad-wal" }
 
-inventory = "0.3.6"
-simple-xml-builder = "1.1.0"
+inventory = { workspace = true }
+simple-xml-builder = { workspace = true }
 
 [[bin]]
 name = "randomized-tests"

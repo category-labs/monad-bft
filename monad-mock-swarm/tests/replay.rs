@@ -8,19 +8,19 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop, NoSerRouterConfig, NoSerRouterScheduler},
+    mock::{MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop},
     mock_swarm::{Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
-    transformer::{
-        GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer,
-        ID,
-    },
 };
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
-use monad_types::Round;
+use monad_transformer::{
+    GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer, ID,
+};
+use monad_types::{NodeId, Round};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
@@ -33,7 +33,7 @@ impl SwarmRelation for ReplaySwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::InboundMessage;
+    type TransportMessage = Self::OutboundMessage;
 
     type TransactionValidator = MockValidator;
 
@@ -108,11 +108,11 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs.clone())
         .map(|((a, b), c)| {
             (
-                ID::new(PeerId(a)),
+                ID::new(NodeId(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
                 MockMempoolConfig::default(),
                 vec![GenericTransformer::XorLatency(XorLatencyTransformer(
@@ -167,11 +167,11 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs)
         .map(|((a, b), c)| {
             (
-                ID::new(PeerId(a)),
+                ID::new(NodeId(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
                 MockMempoolConfig::default(),
                 vec![GenericTransformer::Latency(LatencyTransformer(

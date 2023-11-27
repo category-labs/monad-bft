@@ -10,11 +10,10 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
@@ -68,7 +67,7 @@ impl ReplayConfig<MS> for RepConfig {
                 delta: self.delta,
                 consensus_config: ConsensusConfig {
                     proposal_size: 5000,
-                    state_root_delay: 0,
+                    state_root_delay: SeqNum(0),
                     propose_with_missing_blocks: false,
                     epoch_length: Round(100),
                 },
@@ -93,7 +92,7 @@ where
     pub nodes: ReplayNodes<S::State>,
     pub current_tick: Duration,
     config: C,
-    pub replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::State as State>::Event>>>,
+    pub replay_events: BTreeMap<NodeId, Vec<TimedEvent<<S::State as State>::Event>>>,
 }
 
 impl<S, C> ReplayNodesSimulation<S, C>
@@ -103,7 +102,7 @@ where
 {
     pub fn new(
         config: C,
-        replay_events: BTreeMap<PeerId, Vec<TimedEvent<<S::State as State>::Event>>>,
+        replay_events: BTreeMap<NodeId, Vec<TimedEvent<<S::State as State>::Event>>>,
     ) -> Self {
         Self {
             nodes: ReplayNodes::new(config.nodes()),
@@ -124,8 +123,9 @@ where
 
     fn get_pending_events(
         &self,
-        node_id: &PeerId,
-    ) -> Vec<NodeEvent<PeerId, <S::State as State>::Message, <S::State as State>::Event>> {
+        node_id: &NodeId,
+    ) -> Vec<NodeEvent<NodeId, <S::State as State>::OutboundMessage, <S::State as State>::Event>>
+    {
         let mut nes = vec![];
         for pmsg in self
             .nodes
@@ -159,8 +159,8 @@ where
     C: ReplayConfig<S::State>,
 {
     type State = S::State;
-    type InboundMessage = S::InboundMessage;
-    type NodeId = PeerId;
+    type InboundMessage = S::OutboundMessage;
+    type NodeId = NodeId;
     type Swarm = S;
 
     fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {

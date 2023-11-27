@@ -1,20 +1,17 @@
 mod common;
 use std::time::Duration;
 
-use common::NoSerSwarm;
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
-use monad_crypto::NopSignature;
+use monad_consensus_types::transaction_validator::MockValidator;
 use monad_mock_swarm::{
-    mock::{MockMempoolConfig, NoSerRouterConfig},
-    mock_swarm::UntilTerminator,
-    transformer::{GenericTransformer, LatencyTransformer},
+    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };
-use monad_state::MonadMessage;
+use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_tracing_counter::{
     counter::{CounterLayer, MetricFilter},
     counter_status,
 };
+use monad_transformer::{GenericTransformer, LatencyTransformer};
 use monad_types::Round;
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_core::LevelFilter;
@@ -42,9 +39,7 @@ fn many_nodes_metrics() {
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
-        vec![GenericTransformer::<
-            MonadMessage<NopSignature, MultiSig<NopSignature>>,
-        >::Latency(LatencyTransformer(
+        vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(4)),

@@ -18,7 +18,9 @@ use item::PoolTxHash;
 pub struct Pool {
     map: HashMap<TxHash, TransactionSignedEcRecovered>,
     pq: BinaryHeap<PoolTxHash>,
+
     ttl_duration: Duration,
+    pending_duration: Duration,
 }
 
 impl Pool {
@@ -26,7 +28,9 @@ impl Pool {
         Self {
             map: HashMap::new(),
             pq: BinaryHeap::new(),
+
             ttl_duration: config.ttl_duration,
+            pending_duration: config.pending_duration,
         }
     }
 
@@ -90,14 +94,21 @@ impl Pool {
     pub fn create_proposal(
         &mut self,
         tx_limit: usize,
-        pending_txs: Vec<EthTransactionList>,
+        pending_blocktree_txs: Vec<EthTransactionList>,
     ) -> EthTransactionList {
-        let pending_txs: HashSet<TxHash> = pending_txs.into_iter().flat_map(|tx| tx.0).collect();
+        let pending_blocktree_txs: HashSet<TxHash> = pending_blocktree_txs
+            .into_iter()
+            .flat_map(|tx| tx.0)
+            .collect();
 
         let mut txs = Vec::new();
-        let mut dupe_txs = Vec::default();
+        let mut return_to_mempool_txs = Vec::default();
 
         let now = SystemTime::now();
+
+        let tx_max_time = now
+            .checked_sub(self.pending_duration)
+            .expect("Maximum mempool tx SystemTime is valid");
 
         loop {
             if txs.len() >= tx_limit {
@@ -120,18 +131,24 @@ impl Pool {
                 continue;
             }
 
-            if pending_txs.contains(&tx.hash) {
-                dupe_txs.push(tx);
-            } else {
-                txs.push(tx);
+            if tx.timestamp > tx_max_time {
+                return_to_mempool_txs.push(tx);
+                continue;
             }
+
+            if pending_blocktree_txs.contains(&tx.hash) {
+                return_to_mempool_txs.push(tx);
+                continue;
+            }
+
+            txs.push(tx);
         }
 
         for tx in &txs {
             self.pq.push(tx.clone());
         }
 
-        for tx in dupe_txs {
+        for tx in return_to_mempool_txs {
             self.pq.push(tx);
         }
 
@@ -152,7 +169,7 @@ impl Pool {
 
 #[cfg(test)]
 mod test {
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use monad_eth_types::EthTransactionList;
     use monad_mempool_testutil::create_signed_eth_txs;
@@ -164,7 +181,8 @@ mod test {
     fn test_pool() {
         const TX_BATCH_SIZE: usize = 10;
 
-        let mut pool = Pool::new(PoolConfig::new(std::time::Duration::from_secs(120)));
+        let mut pool =
+            Pool::new(PoolConfig::default().with_pending_duration(Duration::from_secs(0)));
 
         // Create 2 batches of transactions + 1 extra tx, with the second batch having a higher priority
         let mut txs = create_signed_eth_txs(0, (TX_BATCH_SIZE * 2 + 1) as u16);
@@ -251,9 +269,8 @@ mod test {
 
     #[test]
     fn test_create_proposal_non_empty_pending_txs() {
-        let mut pool = Pool::new(PoolConfig {
-            ttl_duration: std::time::Duration::from_secs(120),
-        });
+        let mut pool =
+            Pool::new(PoolConfig::default().with_pending_duration(Duration::from_secs(0)));
 
         let [tx1, tx2] = &create_signed_eth_txs(0, 2)[..] else {
             panic!();
@@ -290,6 +307,31 @@ mod test {
 
         assert_eq!(
             pool.create_proposal(10, vec![EthTransactionList(vec![tx2.hash])]),
+            EthTransactionList(
+                vec![tx1]
+                    .into_iter()
+                    .map(|tx| tx.hash)
+                    .collect::<Vec<TxHash>>()
+            )
+        );
+    }
+
+    #[test]
+    fn test_create_proposal_pending_duration() {
+        let mut pool = Pool::new(PoolConfig::default());
+
+        let [tx1] = &create_signed_eth_txs(0, 1)[..] else {
+            panic!();
+        };
+
+        pool.insert(tx1.to_owned(), SystemTime::now()).unwrap();
+
+        assert_eq!(pool.create_proposal(10, vec![]), EthTransactionList(vec![]));
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        assert_eq!(
+            pool.create_proposal(10, vec![]),
             EthTransactionList(
                 vec![tx1]
                     .into_iter()

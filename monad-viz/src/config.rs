@@ -12,14 +12,11 @@ use monad_consensus_types::{
 use monad_crypto::{hasher::Sha256Hash, secp256k1::KeyPair};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
-use monad_executor_glue::PeerId;
-use monad_mock_swarm::{
-    swarm_relation::SwarmRelation,
-    transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID},
-};
+use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
-use monad_types::{NodeId, Round};
+use monad_transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID};
+use monad_types::{NodeId, Round, SeqNum};
 
 use crate::{graph::SimulationConfig, VizSwarm};
 
@@ -103,7 +100,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
                 delta: self.delta,
                 consensus_config: ConsensusConfig {
                     proposal_size: 5000,
-                    state_root_delay: 0,
+                    state_root_delay: SeqNum(0),
                     propose_with_missing_blocks: false,
                     epoch_length: Round(100),
                 },
@@ -119,11 +116,11 @@ impl SimulationConfig<VizSwarm> for SimConfig {
             .zip(state_configs)
             .map(|(a, b)| {
                 (
-                    ID::new(PeerId(a)),
+                    ID::new(NodeId(a)),
                     b,
                     LoggerConfig {},
                     RouterSchedulerConfig {
-                        all_peers: pubkeys.iter().map(|pubkey| PeerId(*pubkey)).collect(),
+                        all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                     },
                     MempoolConfig::default(),
                     self.pipeline.clone(),

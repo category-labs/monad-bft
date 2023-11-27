@@ -68,7 +68,7 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
         withdrawals_root: block_body.calculate_withdrawals_root(),
         logs_bloom: Bloom(logs_bloom.0),
         difficulty: U256::ZERO,
-        number: monad_block.payload.seq_num,
+        number: monad_block.payload.seq_num.0,
         // TODO-1
         gas_limit: u64::MAX,
         gas_used: gas_used.0,
@@ -104,7 +104,7 @@ mod test {
         NopSignature,
     };
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-    use monad_types::{BlockId, NodeId, Round};
+    use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     use crate::encode_full_block;
 
@@ -126,7 +126,7 @@ mod test {
                         logs_bloom: Bloom::zero(),
                         gas_used: Gas::default(),
                     },
-                    seq_num: 0,
+                    seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
@@ -137,7 +137,7 @@ mod test {
                             round: Round(0),
                             parent_id: BlockId(Hash([0x00_u8; 32])),
                             parent_round: Round(0),
-                            seq_num: 0,
+                            seq_num: SeqNum(0),
                         },
                         ledger_commit: LedgerCommitInfo {
                             commit_state_hash: None,

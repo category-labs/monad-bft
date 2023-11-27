@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
 use monad_block_sync::BlockSyncProcess;
 use monad_blocktree::blocktree::BlockTree;
@@ -31,10 +31,10 @@ use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, PeerId, RouterCommand, RouterTarget,
-    StateRootHashCommand, TimerCommand, ValidatorSetCommand,
+    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
+    TimerCommand, ValidatorSetCommand,
 };
-use monad_types::{Epoch, NodeId, Stake, TimeoutVariant, ValidatorData};
+use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
 use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
 use ref_cast::RefCast;
 
@@ -64,6 +64,10 @@ where
     VT: ValidatorSetType,
     BST: BlockSyncProcess<SCT, VT>,
 {
+    pub fn consensus(&self) -> &CT {
+        &self.consensus
+    }
+
     pub fn pubkey(&self) -> PubKey {
         self.consensus.get_pubkey()
     }
@@ -90,8 +94,16 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(Verified<ST, ConsensusMessage<SCT>>);
+
+impl<ST, SCT: SignatureCollection> From<Verified<ST, ConsensusMessage<SCT>>>
+    for VerifiedMonadMessage<ST, SCT>
+{
+    fn from(value: Verified<ST, ConsensusMessage<SCT>>) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(RefCast)]
 #[repr(transparent)]
@@ -152,6 +164,13 @@ impl<ST, SCT: SignatureCollection> AsRef<MonadMessage<ST, SCT>> for VerifiedMona
     }
 }
 
+impl<ST, SCT: SignatureCollection> Deref for VerifiedMonadMessage<ST, SCT> {
+    type Target = ConsensusMessage<SCT>;
+    fn deref(&self) -> &ConsensusMessage<SCT> {
+        self.0.deref()
+    }
+}
+
 impl<ST, SCT> Identifiable for MonadMessage<ST, SCT>
 where
     ST: MessageSignature,
@@ -171,8 +190,8 @@ where
 {
     type Event = MonadEvent<ST, SCT>;
 
-    fn event(self, from: PeerId) -> Self::Event {
-        // MUST assert that output is valid and came from the `from` PeerId
+    fn event(self, from: NodeId) -> Self::Event {
+        // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
 
@@ -379,7 +398,7 @@ where
                                 fetched_b.block_id,
                             ),
                             ConsensusCommand::Publish {
-                                target: RouterTarget::PointToPoint(PeerId(fetched_b.requester.0)),
+                                target: RouterTarget::PointToPoint(NodeId(fetched_b.requester.0)),
                                 message: ConsensusMessage::BlockSync(
                                     match fetched_b.unverified_full_block {
                                         Some(b) => BlockSyncMessage::BlockFound(b),
@@ -435,7 +454,7 @@ where
                                 {
                                     // retrieve if currently cached in pending block tree
                                     vec![ConsensusCommand::Publish {
-                                        target: RouterTarget::PointToPoint((&author).into()),
+                                        target: RouterTarget::PointToPoint(author),
                                         message: ConsensusMessage::BlockSync(
                                             BlockSyncMessage::BlockFound(block.clone().into()),
                                         ),
@@ -515,7 +534,7 @@ where
                         ConsensusCommand::RequestSync { peer, block_id } => {
                             cmds.push(prepare_router_message(
                                 self,
-                                RouterTarget::PointToPoint((&peer).into()),
+                                RouterTarget::PointToPoint(peer),
                                 ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
                                     block_id,
                                 }),
@@ -563,72 +582,6 @@ where
                 }
 
                 cmds
-            }
-        }
-    }
-}
-
-#[cfg(feature = "monad_test")]
-mod monad_test {
-    use monad_block_sync::BlockSyncProcess;
-    use monad_consensus::{
-        messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
-    };
-    use monad_consensus_state::ConsensusProcess;
-    use monad_consensus_types::{
-        certificate_signature::CertificateKeyPair, message_signature::MessageSignature,
-        signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
-    };
-    use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
-
-    use crate::{MonadConfig, MonadMessage, MonadState, SignatureCollectionKeyPairType};
-
-    impl<ST, SCT> MonadMessage<ST, SCT>
-    where
-        ST: MessageSignature,
-        SCT: SignatureCollection,
-    {
-        pub fn spy_internal(&self) -> &ConsensusMessage<SCT> {
-            return self.0.spy_internal();
-        }
-
-        pub fn new(msg: Unverified<ST, ConsensusMessage<SCT>>) -> Self {
-            Self(msg)
-        }
-    }
-
-    impl<CT, ST, SCT, VT, LT, BST> MonadState<CT, ST, SCT, VT, LT, BST>
-    where
-        CT: ConsensusProcess<SCT> + Eq,
-        ST: MessageSignature,
-        SCT: SignatureCollection,
-        VT: ValidatorSetType,
-        LT: LeaderElection,
-        BST: BlockSyncProcess<SCT, VT>,
-    {
-        pub fn consensus(&self) -> &CT {
-            &self.consensus
-        }
-    }
-
-    impl<SCT, TVT> MonadConfig<SCT, TVT>
-    where
-        SCT: SignatureCollection,
-        TVT: TransactionValidator,
-    {
-        pub fn dup(&self, secret: [u8; 32]) -> Self {
-            Self {
-                transaction_validator: self.transaction_validator.clone(),
-                validators: self.validators.clone(),
-                key: self.key.clone(),
-                certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(secret).unwrap(),
-                beneficiary: self.beneficiary,
-
-                delta: self.delta,
-                consensus_config: self.consensus_config.clone(),
-                genesis_block: self.genesis_block.clone(),
-                genesis_vote_info: self.genesis_vote_info,
-                genesis_signatures: self.genesis_signatures.clone(),
             }
         }
     }

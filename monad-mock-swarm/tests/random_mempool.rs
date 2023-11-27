@@ -11,14 +11,14 @@ use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{
         MockMempoolRandFail, MockMempoolRandFailConfig, MockValidatorSetUpdaterNop,
-        NoSerRouterConfig, NoSerRouterScheduler,
     },
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
-    transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer},
 };
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
 use monad_types::Round;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
@@ -30,7 +30,7 @@ impl SwarmRelation for RandFailSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::InboundMessage;
+    type TransportMessage = Self::OutboundMessage;
 
     type TransactionValidator = MockValidator;
 

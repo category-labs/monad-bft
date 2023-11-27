@@ -14,15 +14,14 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::EthAddress;
-use monad_executor_glue::PeerId;
 use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes, NodesTerminator},
     swarm_relation::SwarmRelation,
-    transformer::ID,
 };
 use monad_state::MonadConfig;
-use monad_types::{NodeId, Round};
+use monad_transformer::ID;
+use monad_types::{NodeId, Round, SeqNum};
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -101,7 +100,7 @@ pub fn complete_config<
             delta,
             consensus_config: ConsensusConfig {
                 proposal_size,
-                state_root_delay,
+                state_root_delay: SeqNum(state_root_delay),
                 propose_with_missing_blocks: false,
                 epoch_length: epoch_length,
             },
@@ -158,7 +157,7 @@ where
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    R: Fn(Vec<PeerId>, PeerId) -> S::RouterSchedulerConfig,
+    R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let (peers, state_configs) =
@@ -202,7 +201,7 @@ where
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    R: Fn(Vec<PeerId>, PeerId) -> S::RouterSchedulerConfig,
+    R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let mut nodes = Nodes::<S>::new(
@@ -212,12 +211,12 @@ where
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    ID::new(PeerId(pubkey)),
+                    ID::new(NodeId(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
-                        pubkeys.iter().copied().map(PeerId).collect(),
-                        PeerId(pubkey),
+                        pubkeys.iter().copied().map(NodeId).collect(),
+                        NodeId(pubkey),
                     ),
                     mock_mempool_config,
                     pipeline.clone(),

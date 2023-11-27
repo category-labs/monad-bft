@@ -202,7 +202,7 @@ impl From<&Payload> for ProtoPayload {
         ProtoPayload {
             txns: Some((&(value.txns)).into()),
             header: Some((&(value.header)).into()),
-            seq_num: value.seq_num,
+            seq_num: Some((&(value.seq_num)).into()),
             beneficiary: value.beneficiary.0.to_vec(),
             randao_reveal: value.randao_reveal.0.clone(),
         }
@@ -223,7 +223,12 @@ impl TryFrom<ProtoPayload> for Payload {
                     "Payload.header".to_owned(),
                 ))?
                 .try_into()?,
-            seq_num: value.seq_num,
+            seq_num: value
+                .seq_num
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Payload.seq_num".to_owned(),
+                ))?
+                .try_into()?,
             beneficiary: EthAddress::from_bytes(
                 value
                     .beneficiary

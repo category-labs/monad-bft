@@ -7,10 +7,10 @@ import "ledger.proto";
 
 message ProtoVoteInfo {
   monad_proto.basic.ProtoBlockId id = 1;
-  uint64 round = 2;
+  monad_proto.basic.ProtoRound round = 2;
   monad_proto.basic.ProtoBlockId parent_id = 3;
-  uint64 parent_round = 4;
-  uint64 seq_num = 5;
+  monad_proto.basic.ProtoRound parent_round = 4;
+  monad_proto.basic.ProtoSeqNum seq_num = 5;
 }
 
 message ProtoVote {

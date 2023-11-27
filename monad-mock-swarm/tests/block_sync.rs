@@ -8,23 +8,21 @@ mod test {
 
     use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
     use monad_crypto::NopSignature;
-    use monad_executor_glue::PeerId;
     use monad_mock_swarm::{
-        mock::{MockMempoolConfig, NoSerRouterConfig},
+        mock::MockMempoolConfig,
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
-        swarm_relation::{monad_test::MonadMessageNoSerSwarm, SwarmRelation},
-        transformer::{
-            monad_test::{FilterTransformer, MonadMessageTransformer},
-            DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
-            PeriodicTransformer, ID,
-        },
+        swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm, SwarmRelation},
+        transformer::{FilterTransformer, MonadMessageTransformer},
     };
+    use monad_router_scheduler::NoSerRouterConfig;
     use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
-    use monad_types::Round;
+    use monad_transformer::{
+        DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
+        PeriodicTransformer, ID,
+    };
+    use monad_types::{NodeId, Round};
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
-
-    use super::common::NoSerSwarm;
 
     #[test]
     fn bsync_timeout_recovery() {
@@ -38,7 +36,7 @@ mod test {
             _,
         >(MockValidator, num_nodes, delta, u64::MAX, 0, Round(1000));
 
-        let filter_peers = HashSet::from([ID::new(PeerId(pubkeys[0]))]);
+        let filter_peers = HashSet::from([ID::new(NodeId(pubkeys[0]))]);
 
         let mut pipeline = vec![
             MonadMessageTransformer::Filter(FilterTransformer {
@@ -58,11 +56,11 @@ mod test {
                 .zip(state_configs)
                 .map(|(pubkey, state_config)| {
                     (
-                        ID::new(PeerId(pubkey)),
+                        ID::new(NodeId(pubkey)),
                         state_config,
                         MockWALoggerConfig,
                         NoSerRouterConfig {
-                            all_peers: pubkeys.iter().copied().map(PeerId).collect(),
+                            all_peers: pubkeys.iter().copied().map(NodeId).collect(),
                         },
                         MockMempoolConfig::default(),
                         pipeline.clone(),
@@ -142,7 +140,7 @@ mod test {
             Round(100),
         );
 
-        let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
+        let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
 
         let mut filter_peers = HashSet::new();
         filter_peers.insert(first_node);
@@ -152,7 +150,7 @@ mod test {
         let terminator = ProgressTerminator::new(
             pubkeys
                 .iter()
-                .map(|k| (ID::new(PeerId(*k)), 1))
+                .map(|k| (ID::new(NodeId(*k)), 1))
                 .collect::<BTreeMap<_, _>>(),
             Duration::from_secs(1),
         );
@@ -195,7 +193,7 @@ mod test {
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-        let first_node = ID::new(PeerId(*pubkeys.first().unwrap()));
+        let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
 
         let mut filter_peers = HashSet::new();
         filter_peers.insert(first_node);
@@ -260,7 +258,7 @@ mod test {
             pubkeys
                 .iter()
                 .take(black_out_cnt)
-                .map(|k| ID::new(PeerId(*k))),
+                .map(|k| ID::new(NodeId(*k))),
         );
 
         run_nodes_until::<NoSerSwarm, _, _>(

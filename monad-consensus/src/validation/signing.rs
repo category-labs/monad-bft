@@ -17,7 +17,7 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Stake, Round};
+use monad_types::{NodeId, Round, Stake, SeqNum};
 use monad_validator::validator_set::{ValidatorSetType, ValidatorSetMapping};
 
 use crate::{
@@ -250,7 +250,7 @@ where
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + 1 {
+        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + SeqNum(1) {
             return Err(Error::InvalidSeqNum);
         }
         Ok(())
@@ -523,26 +523,6 @@ impl ValidatorPubKey for PubKey {
     }
 }
 
-#[cfg(feature = "monad_test")]
-mod monad_test {
-    use monad_consensus_types::{
-        message_signature::MessageSignature, signature_collection::SignatureCollection,
-    };
-
-    use super::Unverified;
-    use crate::messages::consensus_message::ConsensusMessage;
-
-    impl<S, SCT> Unverified<S, ConsensusMessage<SCT>>
-    where
-        S: MessageSignature,
-        SCT: SignatureCollection,
-    {
-        pub fn spy_internal(&self) -> &ConsensusMessage<SCT> {
-            &self.obj
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
@@ -563,7 +543,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, Stake, Epoch};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
     use test_case::test_case;
 
@@ -624,7 +604,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
@@ -649,7 +629,7 @@ mod test {
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let qc = QuorumCertificate::new::<HasherType>(
@@ -672,7 +652,7 @@ mod test {
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
@@ -770,7 +750,7 @@ mod test {
             round: Round(3),
             parent_id: BlockId(Hash([0x01_u8; 32])),
             parent_round: Round(2),
-            seq_num: 0,
+            seq_num: SeqNum(0),
         };
 
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);

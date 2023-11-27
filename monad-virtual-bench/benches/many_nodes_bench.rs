@@ -8,30 +8,33 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop},
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
-    transformer::{BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer},
 };
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
-use monad_types::Round;
+use monad_transformer::{
+    BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer,
+};
+use monad_types::{NodeId, Round};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 fn setup() -> (
     SwarmTestConfig,
-    impl Fn(Vec<PeerId>, PeerId) -> QuicRouterSchedulerConfig<MockGossipConfig>,
+    impl Fn(Vec<NodeId>, NodeId) -> QuicRouterSchedulerConfig<MockGossip>,
     Vec<BytesTransformer>,
     UntilTerminator,
 ) {
     let zero_instant = Instant::now();
     let stc = SwarmTestConfig {
         num_nodes: 20,
+        // intentially smaller than latency so nodes keep timing out
         consensus_delta: Duration::from_millis(30),
         parallelize: false,
         expected_block: 0,
@@ -40,17 +43,17 @@ fn setup() -> (
         proposal_size: 0,
         epoch_length: Round(100),
     };
-    let rsc = move |all_peers: Vec<PeerId>, me: PeerId| QuicRouterSchedulerConfig {
+    let rsc = move |all_peers: Vec<NodeId>, me: NodeId| QuicRouterSchedulerConfig {
         zero_instant,
         all_peers: all_peers.iter().cloned().collect(),
         me,
         tls_key_der: Vec::new(),
         master_seed: 7,
-        gossip_config: MockGossipConfig { all_peers },
+        gossip: MockGossipConfig { all_peers }.build(),
     };
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-        BytesTransformer::Bw(BwTransformer::new(4)),
+        BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
     ];
     let terminator = UntilTerminator::new().until_round(Round(10));
 
@@ -78,7 +81,7 @@ impl SwarmRelation for NopSwarm {
         BlockSyncState,
     >;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
     type RouterScheduler =
         QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
 
@@ -120,7 +123,7 @@ impl SwarmRelation for BlsSwarm {
 
     type RouterScheduler =
         QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossipConfig>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
 
     type Pipeline = BytesTransformerPipeline;
 

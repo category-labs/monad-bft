@@ -8,19 +8,19 @@ use monad_consensus_types::{
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
-use monad_executor_glue::{MonadEvent, PeerId};
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{
         MockExecutor, MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop,
-        NoSerRouterConfig, NoSerRouterScheduler
     },
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
-    transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID},
 };
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
-use monad_types::Round;
+use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
+use monad_types::{NodeId, Round};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -40,7 +40,7 @@ impl SwarmRelation for ReplaySwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::InboundMessage;
+    type TransportMessage = Self::OutboundMessage;
 
     type TransactionValidator = MockValidator;
 
@@ -141,7 +141,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     >(MockValidator, 4, CONSENSUS_DELTA, 4, 0, Round(100));
 
     let pubkeys = peers;
-    let router_scheduler_config = |all_peers: Vec<PeerId>, _: PeerId| NoSerRouterConfig {
+    let router_scheduler_config = |all_peers: Vec<NodeId>, _: NodeId| NoSerRouterConfig {
         all_peers: all_peers.into_iter().collect(),
     };
     let logger_config = MockMemLoggerConfig::default();
@@ -158,12 +158,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    ID::new(PeerId(pubkey)),
+                    ID::new(NodeId(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
-                        pubkeys.iter().copied().map(PeerId).collect(),
-                        PeerId(pubkey),
+                        pubkeys.iter().copied().map(NodeId).collect(),
+                        NodeId(pubkey),
                     ),
                     MockMempoolConfig::default(),
                     pipeline.clone(),
@@ -200,10 +200,10 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     // bring down 2 nodes
     let node0 = nodes
-        .remove_state(&ID::new(PeerId(pubkeys[f0])))
+        .remove_state(&ID::new(NodeId(pubkeys[f0])))
         .expect("peer0 exists");
     let node1 = nodes
-        .remove_state(&ID::new(PeerId(pubkeys[f1])))
+        .remove_state(&ID::new(NodeId(pubkeys[f1])))
         .expect("peer1 exists");
 
     let phase_two_until = max_tick + Duration::from_secs(4);
@@ -227,12 +227,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_logger_config = MockMemLoggerConfig::new(node1.logger.log);
 
     nodes.add_state((
-        ID::new(PeerId(pubkeys[f0])),
+        ID::new(NodeId(pubkeys[f0])),
         state_configs_duplicate.remove(f0),
         node0_logger_config,
         router_scheduler_config(
-            pubkeys.iter().copied().map(PeerId).collect(),
-            PeerId(pubkeys[f0]),
+            pubkeys.iter().copied().map(NodeId).collect(),
+            NodeId(pubkeys[f0]),
         ),
         MockMempoolConfig::default(),
         pipeline.clone(),
@@ -240,12 +240,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
     ));
 
     nodes.add_state((
-        ID::new(PeerId(pubkeys[f1])),
+        ID::new(NodeId(pubkeys[f1])),
         state_configs_duplicate.remove(f1 - 1),
         node1_logger_config,
         router_scheduler_config(
-            pubkeys.iter().copied().map(PeerId).collect(),
-            PeerId(pubkeys[f1]),
+            pubkeys.iter().copied().map(NodeId).collect(),
+            NodeId(pubkeys[f1]),
         ),
         MockMempoolConfig::default(),
         pipeline,
@@ -256,7 +256,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node0_consensus = node0.state.consensus();
     let node0_consensus_recovered = nodes
         .states()
-        .get(&ID::new(PeerId(pubkeys[f0])))
+        .get(&ID::new(NodeId(pubkeys[f0])))
         .unwrap()
         .state
         .consensus();
@@ -265,7 +265,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_consensus = node1.state.consensus();
     let node1_consensus_recovered = nodes
         .states()
-        .get(&ID::new(PeerId(pubkeys[f1])))
+        .get(&ID::new(NodeId(pubkeys[f1])))
         .unwrap()
         .state
         .consensus();
