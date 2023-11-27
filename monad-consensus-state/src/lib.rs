@@ -2931,17 +2931,15 @@ mod test {
                     Epoch(1),
                     &election,
                 );
-                let bsync_reqest = cmds.iter().find(|&c| {
-                    matches!(
-                        c,
-                        ConsensusCommand::RequestSync {
-                            peer: NodeId(_),
-                            block_id: BlockId(_)
-                        }
-                    )
-                });
-                // observing a qc that link to root should not trigger anything
-                assert!(bsync_reqest.is_none());
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
+                        _ => None
+                    })
+                    .collect();
+                assert!(bsync_cmds.len() == 0);
             }
 
             blocks.push(verified_message.block);
@@ -3014,17 +3012,15 @@ mod test {
                     Epoch(1),
                     &election,
                 );
-                let bsync_reqest = cmds.iter().find(|&c| {
-                    matches!(
-                        c,
-                        ConsensusCommand::RequestSync {
-                            peer: NodeId(_),
-                            block_id: BlockId(_)
-                        }
-                    )
-                });
-                // observing a qc that link to root should not trigger anything
-                assert!(bsync_reqest.is_none());
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
+                        _ => None
+                    })
+                    .collect();
+                assert!(bsync_cmds.len() == 0);
             }
             blocks.push(verified_message.block);
         }
@@ -3086,5 +3082,191 @@ mod test {
             .collect();
 
         assert!(epoch_end_cmds.len() == 1);
+    }
+
+    #[test]
+    fn test_epoch_end_after_blocksync() {
+        let num_state = 2;
+        let (keys, certkeys, validator_sets, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_state as u32,
+            );
+        let valset = validator_sets.get(&Epoch(1)).unwrap();
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut blocks = vec![];
+        let epoch_length = states[0].config.epoch_length;
+        for _ in 0..epoch_length.0 {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &validator_sets,
+                &election,
+                &valmap,
+                Default::default(),
+                ExecutionArtifacts::zero(),
+                epoch_length,
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for state in states.iter_mut() {
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::new(Vec::new()),
+                    &validator_sets,
+                    &valmap,
+                    Epoch(1),
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
+                        _ => None
+                    })
+                    .collect();
+                assert!(bsync_cmds.len() == 0);
+            }
+            blocks.push(verified_message.block);
+        }
+
+        let (state_1, xs) = states.split_first_mut().unwrap();
+        let state_2 = &mut xs[0];
+
+        // generate proposal for Round(epoch_length)
+        let cp_epoch_last_round = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &validator_sets,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+            epoch_length,
+        );
+        let (author, _, verified_message) = cp_epoch_last_round.destructure();
+        let block_epoch_len = UnverifiedFullBlock {
+            block: verified_message.block.clone(),
+            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+        };
+
+        // handle proposal only for state 1
+        let cmds = state_1.handle_proposal_message_full::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            FullTransactionList::new(Vec::new()),
+            &validator_sets,
+            &valmap,
+            Epoch(1),
+            &election,
+        );
+        // state 1 should not request blocksync
+        let bsync_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
+                _ => None
+            })
+            .collect();
+        assert!(bsync_cmds.len() == 0);
+
+        // generate proposal message for Round(epoch_length + 1)
+        let cp_new_epoch_first_round = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &validator_sets,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+            epoch_length,
+        );
+        let (author, _, verified_message) = cp_new_epoch_first_round.destructure();
+
+        // handle proposal message for state 1
+        let cmds = state_1.handle_proposal_message_full::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            FullTransactionList::new(Vec::new()),
+            &validator_sets,
+            &valmap,
+            Epoch(1),
+            &election,
+        );
+
+        // state 1 should not request blocksync
+        let bsync_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync{ peer, block_id } => Some((peer, block_id)),
+                _ => None
+            })
+            .collect();
+        assert!(bsync_cmds.len() == 0);
+
+        // state 1 should advance epoch
+        let epoch_end_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
+                _ => None,
+            })
+            .collect();
+        let state_1_seq_num = epoch_end_cmds[0].clone();
+        assert!(epoch_end_cmds.len() == 1);
+
+        // handle porposal message for state 2
+        let cmds = state_2.handle_proposal_message_full::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            FullTransactionList::new(Vec::new()),
+            &validator_sets,
+            &valmap,
+            Epoch(1),
+            &election,
+        );
+
+        // state 2 should request blocksync
+        let bsync_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync{ peer, block_id } => Some((peer, block_id)),
+                _ => None
+            })
+        .collect();
+        assert!(bsync_cmds.len() == 1);
+        let routing_target = bsync_cmds[0].0.clone();
+
+        // state 2 should not advance epoch since there is no path to root
+        let epoch_end_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
+                _ => None,
+            })
+            .collect();
+        assert!(epoch_end_cmds.len() == 0);
+
+        let msg = BlockSyncMessage::BlockFound(block_epoch_len);
+        // blocksync response for state 2
+        let cmds = state_2
+            .handle_block_sync(routing_target, msg, valset, Epoch(1));
+
+
+        // state 2 should advance epoch
+        let epoch_end_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
+                _ => None,
+            })
+            .collect();
+        assert!(epoch_end_cmds.len() == 1);
+        let state_2_seq_num = epoch_end_cmds[0].clone();
+
+        // the sequence number at epoch end should be same as for both states
+        assert!(state_1_seq_num == state_2_seq_num);
     }
 }
