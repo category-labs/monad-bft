@@ -20,6 +20,7 @@ monad-types = { path = "../monad-types" }
 
 futures = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
 
 quinn = { workspace = true }
 quinn-proto = { workspace = true }
@@ -29,6 +30,7 @@ rand = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
+env_logger = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

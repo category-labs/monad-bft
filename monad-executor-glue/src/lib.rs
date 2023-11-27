@@ -15,6 +15,7 @@ use monad_consensus_types::{
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant, ValidatorData};
 
+#[derive(Clone)]
 pub enum RouterCommand<OM> {
     // TODO-2 add a RouterCommand for setting peer set for broadcast
     Publish { target: RouterTarget, message: OM },

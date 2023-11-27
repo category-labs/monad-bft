@@ -4528,6 +4528,7 @@ name = "monad-quic"
 version = "0.1.0"
 dependencies = [
  "clap 4.4.8",
+ "env_logger",
  "futures",
  "futures-util",
  "monad-crypto",
@@ -4540,6 +4541,7 @@ dependencies = [
  "quinn-proto 0.11.0",
  "rand 0.8.5",
  "tokio",
+ "tracing",
  "x509-parser 0.15.1",
 ]
 
