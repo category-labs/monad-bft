@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     bls::BlsSignatureCollection, multi_sig::MultiSig, payload::StateRoot,
@@ -65,7 +66,7 @@ impl SwarmRelation for NopSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Vec<u8>;
+    type TransportMessage = Bytes;
 
     type TransactionValidator = MockValidator;
 
@@ -99,7 +100,7 @@ impl SwarmRelation for BlsSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Vec<u8>;
+    type TransportMessage = Bytes;
 
     type TransactionValidator = MockValidator;
 

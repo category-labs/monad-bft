@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::ConsensusMessage;
 use monad_consensus_types::{
@@ -77,7 +78,7 @@ fn main() {
             .sign::<HasherType, SecpSignature>(leader_key)
             .into();
 
-    let proposal_bytes: Vec<u8> = proposal.serialize();
+    let proposal_bytes: Bytes = proposal.serialize();
 
     println!(
         "current mem usage before compression {:?} MB",

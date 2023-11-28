@@ -963,6 +963,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytes-utils"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
+dependencies = [
+ "bytes",
+ "either",
+]
+
+[[package]]
 name = "c-kzg"
 version = "0.1.0"
 source = "git+https://github.com/ethereum/c-kzg-4844?rev=f5f6f863d475847876a2bd5ee252058d37c3a15d#f5f6f863d475847876a2bd5ee252058d37c3a15d"
@@ -4228,6 +4238,7 @@ name = "monad-compress"
 version = "0.1.0"
 dependencies = [
  "brotli",
+ "bytes",
  "criterion",
  "flate2",
  "lz4",
@@ -4333,6 +4344,7 @@ dependencies = [
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
@@ -4344,6 +4356,7 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
@@ -4357,6 +4370,8 @@ name = "monad-gossip"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bytes",
+ "bytes-utils",
  "criterion",
  "fastrand",
  "monad-crypto",
@@ -4468,6 +4483,7 @@ dependencies = [
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "criterion",
  "futures",
  "itertools",
@@ -4550,6 +4566,7 @@ dependencies = [
 name = "monad-quic"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clap 4.4.10",
  "env_logger",
  "futures",
@@ -4594,6 +4611,7 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-blocktree",
  "monad-consensus",
  "monad-consensus-state",
@@ -4681,6 +4699,8 @@ dependencies = [
 name = "monad-transformer"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "bytes-utils",
  "monad-tracing-counter",
  "monad-types",
  "rand 0.8.5",
@@ -4779,6 +4799,7 @@ dependencies = [
 name = "monad-virtual-bench"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -4824,6 +4845,7 @@ dependencies = [
 name = "monad-wal"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "criterion",
  "monad-consensus",
  "monad-consensus-state",

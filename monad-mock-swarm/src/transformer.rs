@@ -419,14 +419,14 @@ mod test {
             let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
                 from: ID::new(NodeId(keys[0].pubkey())),
                 to: ID::new(NodeId(keys[1].pubkey())),
-                message: bytes,
+                message: bytes.into(),
                 from_tick: Duration::from_millis(idx),
             }) else {
                 panic!("bytes_splitter_transformer returned wrong type")
             };
             for (_, message) in &mut c {
                 max_received_message_len = max(max_received_message_len, message.message.len());
-                received_stream.append(&mut message.message);
+                received_stream.extend_from_slice(&message.message);
             }
         }
 

@@ -21,6 +21,7 @@ monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
+bytes = { workspace = true }
 ref-cast = { workspace = true }
 
 [dev-dependencies]

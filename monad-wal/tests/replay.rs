@@ -2,6 +2,7 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
+    use bytes::Bytes;
     use monad_executor::State;
     use monad_executor_glue::{Identifiable, Message};
     use monad_testutil::block::MockBlock;
@@ -16,9 +17,9 @@ mod test {
         data: i32,
     }
 
-    impl Serializable<Vec<u8>> for TestEvent {
-        fn serialize(&self) -> Vec<u8> {
-            self.data.to_be_bytes().to_vec()
+    impl Serializable<Bytes> for TestEvent {
+        fn serialize(&self) -> Bytes {
+            self.data.to_be_bytes().to_vec().into()
         }
     }
 
@@ -160,7 +161,7 @@ mod test {
             // state is not updated
             if i == input1_len - 1 {
                 let file_len = fs::metadata(&log1_path).unwrap().len();
-                let payload_len = Serializable::<Vec<u8>>::serialize(&e).len() as u64;
+                let payload_len = Serializable::<Bytes>::serialize(&e).len() as u64;
 
                 let truncated_len = match test_config {
                     TestConfig::Full => file_len,

@@ -87,7 +87,7 @@ fn many_nodes_quic_bw() {
 
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(5))),
+        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(10))),
     ];
 
     create_and_run_nodes::<QuicSwarm, _, _>(

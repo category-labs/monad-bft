@@ -2,6 +2,7 @@ pub mod convert;
 
 use std::{fmt::Debug, hash::Hash};
 
+use bytes::Bytes;
 use monad_consensus::{
     messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
 };
@@ -215,13 +216,13 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Vec<u8>>
+impl monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::NopSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
     >
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }
@@ -239,13 +240,13 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Vec<u8>>
+impl monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::bls::BlsSignatureCollection,
     >
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }
@@ -263,13 +264,13 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Vec<u8>>
+impl monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }

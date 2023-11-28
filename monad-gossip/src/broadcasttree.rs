@@ -3,6 +3,8 @@ use std::{
     time::Duration,
 };
 
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes_utils::SegmentedBuf;
 use monad_crypto::{
     hasher::{Hasher, HasherType},
     secp256k1::PubKey,
@@ -13,11 +15,12 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use super::{Gossip, GossipEvent};
+use crate::{AppMessage, GossipMessage};
 
 type MsgId = [u8; 32];
 type PartIndex = u16;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Header {
     message_len: u32,
     id: MsgId,
@@ -63,13 +66,24 @@ impl BroadcastTreeConfig {
 pub struct BroadcastTree {
     config: BroadcastTreeConfig,
 
-    msg_cache: HashMap<MsgId, HashMap<PartIndex, Vec<u8>>>,
+    msg_cache: HashMap<MsgId, HashMap<PartIndex, Bytes>>,
     // TODO garbage collect complete_msgs
     completed_msgs: HashSet<MsgId>,
 
-    read_buffers: HashMap<NodeId, Vec<u8>>,
-    events: VecDeque<GossipEvent<Vec<u8>>>,
+    read_buffers: HashMap<NodeId, (BufferStatus, SegmentedBuf<GossipMessage>)>,
+    events: VecDeque<GossipEvent>,
     current_tick: Duration,
+}
+
+enum BufferStatus {
+    None,
+    OuterHeader(OuterHeader),
+    Header(Header),
+}
+impl Default for BufferStatus {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 impl BroadcastTree {
@@ -122,9 +136,8 @@ impl BroadcastTree {
     fn handle_message_part(
         &mut self,
         from: NodeId,
-        gossip_message: Vec<u8>,
         message_header: Header,
-        message_part: Vec<u8>,
+        message_part: GossipMessage,
     ) {
         if message_header.direct {
             // direct message should be emitted to application and does not
@@ -146,8 +159,10 @@ impl BroadcastTree {
 
         let children = &routes[route_idx];
         for node in children {
-            self.events
-                .push_back(GossipEvent::Send(*node, gossip_message.clone()));
+            let gossip_message = Self::create_gossip_message(&message_header, &message_part);
+            self.events.extend(
+                gossip_message.map(|gossip_message| GossipEvent::Send(*node, gossip_message)),
+            )
         }
 
         if !self.completed_msgs.contains(&message_header.id) {
@@ -160,50 +175,60 @@ impl BroadcastTree {
         &mut self,
         from_peer: NodeId,
         message_header: Header,
-        message_part: Vec<u8>,
+        message_part: GossipMessage,
     ) {
         let part_list = self.msg_cache.entry(message_header.id).or_default();
         part_list.insert(message_header.part, message_part);
 
         if part_list.len() >= self.config.num_routes {
-            let mut combined_msg: Vec<u8> = Vec::new();
+            let mut combined_msg = BytesMut::new();
             for i in 0..self.config.num_routes as PartIndex {
-                combined_msg.append(part_list.get_mut(&i).unwrap());
+                combined_msg.extend_from_slice(part_list.get_mut(&i).unwrap());
             }
 
             self.completed_msgs.insert(message_header.id);
             self.msg_cache.remove(&message_header.id);
             self.events
-                .push_back(GossipEvent::Emit(from_peer, combined_msg));
+                .push_back(GossipEvent::Emit(from_peer, combined_msg.into()));
         }
+    }
+
+    fn create_gossip_message(
+        header: &Header,
+        message: &GossipMessage,
+    ) -> impl Iterator<Item = GossipMessage> + Clone {
+        let mut inner_header_buf = BytesMut::new().writer();
+        bincode::serialize_into(&mut inner_header_buf, header)
+            .expect("serializing gossip header should succeed");
+        let inner_header_buf: Bytes = inner_header_buf.into_inner().into();
+
+        let outer_header = OuterHeader(inner_header_buf.len() as u32);
+        let mut outer_header_buf = BytesMut::new().writer();
+        bincode::serialize_into(&mut outer_header_buf, &outer_header)
+            .expect("serializing outer header should succeed");
+        let outer_header_buf: Bytes = outer_header_buf.into_inner().into();
+
+        std::iter::once(outer_header_buf)
+            .chain(std::iter::once(inner_header_buf))
+            .chain(std::iter::once(message.clone()))
     }
 
     fn create_gossip_chunk(
         &self,
-        message: &[u8],
+        message: Bytes,
         msgid: MsgId,
         root: Vec<u8>,
         part: PartIndex,
         direct: bool,
-    ) -> Vec<u8> {
-        let gossip_header = Header {
+    ) -> impl Iterator<Item = GossipMessage> + Clone {
+        let header = Header {
             message_len: message.len() as u32,
             id: msgid,
             root,
             part,
             direct,
         };
-        let ser_gossip_header =
-            bincode::serialize(&gossip_header).expect("serializing gossip header should succeed");
-        let outer_header = OuterHeader(ser_gossip_header.len() as u32);
-
-        let mut gossip_message = Vec::new();
-        gossip_message.extend_from_slice(
-            &bincode::serialize(&outer_header).expect("serializing outer header should succeed"),
-        );
-        gossip_message.extend_from_slice(&ser_gossip_header);
-        gossip_message.extend_from_slice(message);
-        gossip_message
+        Self::create_gossip_message(&header, &message)
     }
 
     // Create a vector of gossip messages from the original app message
@@ -211,34 +236,41 @@ impl BroadcastTree {
         &self,
         msgid: MsgId,
         root_id: Vec<u8>,
-        message: &[u8],
-    ) -> Vec<Vec<u8>> {
+        mut message: AppMessage,
+    ) -> Vec<impl Iterator<Item = GossipMessage> + Clone> {
         let chunk_size = message.len().div_ceil(self.config.num_routes);
-        let chunks: Vec<&[u8]> = message.chunks(chunk_size).collect();
+
+        let mut chunks = Vec::new();
+        let mut i = 0;
+        while !message.is_empty() {
+            let app_chunk = message.copy_to_bytes(chunk_size.min(message.remaining()));
+            let chunk =
+                self.create_gossip_chunk(app_chunk, msgid, root_id.clone(), i as PartIndex, false);
+            chunks.push(chunk);
+
+            i += 1;
+        }
         chunks
-            .iter()
-            .enumerate()
-            .map(|(i, msg_chunk)| {
-                self.create_gossip_chunk(msg_chunk, msgid, root_id.clone(), i as PartIndex, false)
-            })
-            .collect::<Vec<Vec<u8>>>()
     }
 
     // to our designated children for the tree routes calculated from the
     // msgid
     fn send_broadcast_gossip_messages(
         &mut self,
-        gossip_messages: Vec<Vec<u8>>,
+        gossip_messages: Vec<impl Iterator<Item = GossipMessage> + Clone>,
         root: NodeId,
         msgid: MsgId,
     ) {
         let routes = self.calculate_route(root, msgid);
         // for each chunk, use one of the routes -- if the route is empty, do nothing
         assert_eq!(routes.len(), gossip_messages.len());
-        for (i, route) in routes.iter().enumerate() {
+        for (route, gossip_message) in routes.iter().zip(gossip_messages.into_iter()) {
             for child in route {
-                self.events
-                    .push_back(GossipEvent::Send(*child, gossip_messages[i].clone()));
+                self.events.extend(
+                    gossip_message
+                        .clone()
+                        .map(|gossip_message| GossipEvent::Send(*child, gossip_message)),
+                )
             }
         }
     }
@@ -248,11 +280,11 @@ impl BroadcastTree {
 // if we break a message into parts, need to have a msg_id and part index
 // also, need to know the root sender of a message so we can figure out the correct root bcast tree to use
 impl Gossip for BroadcastTree {
-    fn send(&mut self, time: std::time::Duration, to: RouterTarget, message: &[u8]) {
+    fn send(&mut self, time: std::time::Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
 
         let mut hasher = HasherType::new();
-        hasher.update(message);
+        hasher.update(&message);
         let msgid = hasher.hash().0;
 
         let root_id_bytes = self.config.my_id.0.bytes();
@@ -261,7 +293,7 @@ impl Gossip for BroadcastTree {
             RouterTarget::Broadcast => {
                 // emit message to self, obviously no need to break into chunks
                 self.events
-                    .push_back(GossipEvent::Emit(self.config.my_id, message.to_vec()));
+                    .push_back(GossipEvent::Emit(self.config.my_id, message.clone()));
 
                 let gossip_messages =
                     self.create_broadcast_gossip_message(msgid, root_id_bytes, message);
@@ -269,11 +301,16 @@ impl Gossip for BroadcastTree {
             }
             // direct messages will not be sent as chunks
             RouterTarget::PointToPoint(to) => {
-                // TODO optimization, if sending to self, could just emit directly here
-
-                let gossip_message =
-                    self.create_gossip_chunk(message, msgid, root_id_bytes, 0, true);
-                self.events.push_back(GossipEvent::Send(to, gossip_message))
+                if to == self.config.my_id {
+                    self.events
+                        .push_back(GossipEvent::Emit(self.config.my_id, message))
+                } else {
+                    let gossip_message =
+                        self.create_gossip_chunk(message, msgid, root_id_bytes, 0, true);
+                    self.events.extend(
+                        gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)),
+                    )
+                }
             }
         }
     }
@@ -281,47 +318,53 @@ impl Gossip for BroadcastTree {
     // raw data is a stream of bytes and is not guaranteed to end on the boundary of a
     // gossip message, so we have to parse through the stream to find a gossip message
     // and store any leftover bytes
-    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, raw_data: &[u8]) {
+    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, raw_data: GossipMessage) {
         self.current_tick = time;
-        let read_buffer = self.read_buffers.entry(from).or_default();
-        read_buffer.extend(raw_data.iter());
+        let (_buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
+        read_buffer.push(raw_data);
 
         loop {
-            let read_buffer = self.read_buffers.entry(from).or_default();
-            let mut start: usize = 0;
-            let mut end: usize = OUTER_HEADER_SIZE;
-            if read_buffer.len() < end {
-                return;
-            }
+            let (buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
 
-            let outer_header: OuterHeader = match bincode::deserialize(&read_buffer[start..end]) {
-                Ok(b) => b,
-                Err(e) => todo!(),
+            match buffer_status {
+                BufferStatus::None => {
+                    if read_buffer.remaining() >= OUTER_HEADER_SIZE {
+                        let outer_header: OuterHeader = match bincode::deserialize(
+                            &read_buffer.copy_to_bytes(OUTER_HEADER_SIZE),
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => todo!(),
+                        };
+                        *buffer_status = BufferStatus::OuterHeader(outer_header);
+                        continue;
+                    }
+                }
+                BufferStatus::OuterHeader(OuterHeader(header_len)) => {
+                    if read_buffer.remaining() >= *header_len as usize {
+                        let header: Header = match bincode::deserialize(
+                            &read_buffer.copy_to_bytes(*header_len as usize),
+                        ) {
+                            Ok(b) => b,
+                            Err(e) => todo!(),
+                        };
+                        *buffer_status = BufferStatus::Header(header);
+                        continue;
+                    }
+                }
+                BufferStatus::Header(header) => {
+                    if read_buffer.remaining() >= header.message_len as usize {
+                        let message_part = read_buffer.copy_to_bytes(header.message_len as usize);
+
+                        // TODO verify gossip message header here before handling?
+
+                        let header = header.clone();
+                        *buffer_status = BufferStatus::None;
+                        self.handle_message_part(from, header, message_part);
+                        continue;
+                    }
+                }
             };
-
-            start = end;
-            end += outer_header.0 as usize;
-            if read_buffer.len() < end {
-                return;
-            }
-
-            let message_header: Header = match bincode::deserialize(&read_buffer[start..end]) {
-                Ok(b) => b,
-                Err(e) => todo!(),
-            };
-
-            start = end;
-            end += message_header.message_len as usize;
-            if read_buffer.len() < end {
-                return;
-            }
-
-            let message_part = read_buffer[start..end].to_vec();
-            let binary_gossip_message = read_buffer.drain(0..end).collect::<Vec<u8>>();
-
-            // TODO verify gossip message header here before handling?
-
-            self.handle_message_part(from, binary_gossip_message, message_header, message_part);
+            break;
         }
     }
 
@@ -333,7 +376,7 @@ impl Gossip for BroadcastTree {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }
@@ -343,13 +386,14 @@ impl Gossip for BroadcastTree {
 mod tests {
     use std::time::Duration;
 
+    use bytes::Bytes;
     use monad_crypto::{
         hasher::{Hasher, HasherType},
         secp256k1::KeyPair,
     };
     use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
     use monad_types::{NodeId, RouterTarget};
-    use rand::{seq::SliceRandom, SeedableRng};
+    use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
     use test_case::test_case;
 
@@ -375,14 +419,15 @@ mod tests {
             num_routes: 2,
         }
         .build();
-        let app_message = "appmessagepayload".as_bytes();
+        let app_message = "appmessagepayload".into();
         g.send(Duration::from_secs(1), RouterTarget::Broadcast, app_message);
 
         // with 2 nodes in the peerlist, peers[1] will always be a child of
         // peers[0] in the any broadcast tree route. There are 2 routes, so
-        // we expect 2 Send events to peers[1], 1 for each route and 1 emit
+        // we expect 7 Send events to peers[1], 3 for each route and 1 emit
         // to self
-        assert_eq!(3, g.events.len());
+        // (times 3 for 3 GossipEvent::Send per create_gossip_message)
+        assert_eq!(7, g.events.len());
         for e in g.events {
             match e {
                 GossipEvent::Send(p, _) => {
@@ -413,10 +458,11 @@ mod tests {
             num_routes,
         }
         .build();
-        let app_message = "appmessagepayload".as_bytes();
+        let app_message = "appmessagepayload".into();
         g.send(Duration::from_secs(1), RouterTarget::Broadcast, app_message);
-        // expecting num_routes number of sends plus 1 event for emit to self
-        assert_eq!(num_routes + 1, g.events.len());
+        // expecting num_routes * 3 number of sends plus 1 event for emit to self
+        // (times 3 for 3 GossipEvent::Send per create_gossip_message)
+        assert_eq!(num_routes * 3 + 1, g.events.len());
 
         let events = g.events.drain(..).collect::<Vec<_>>();
 
@@ -432,7 +478,7 @@ mod tests {
             match e {
                 GossipEvent::Emit(_from, _msg) => continue,
                 GossipEvent::Send(from, msg) => {
-                    receiver.handle_gossip_message(Duration::ZERO, from, msg.as_slice());
+                    receiver.handle_gossip_message(Duration::ZERO, from, msg);
                 }
             }
         }
@@ -447,7 +493,7 @@ mod tests {
             GossipEvent::Emit(_from, msg) => {
                 assert_eq!(
                     "appmessagepayload",
-                    String::from_utf8(msg).expect("bytes cannot have been corrupted")
+                    String::from_utf8(msg.to_vec()).expect("bytes cannot have been corrupted")
                 );
             }
         }
@@ -481,17 +527,17 @@ mod tests {
         .build();
         let app_messages = expected_messages
             .iter()
-            .map(|s| s.as_bytes())
-            .collect::<Vec<&[u8]>>();
+            .map(|s| s.as_bytes().into())
+            .collect::<Vec<Bytes>>();
         for m in app_messages {
             g.send(Duration::ZERO, RouterTarget::Broadcast, m);
         }
+        // times 3 for 3 GossipEvent::Send per create_gossip_message
         // plus 1 for the emit to self
-        assert_eq!((num_routes + 1) * expected_messages.len(), g.events.len());
-
-        let mut rng = ChaCha8Rng::from_seed([seed; 32]);
-        let mut events = g.events.drain(..).collect::<Vec<_>>();
-        events.shuffle(&mut rng);
+        assert_eq!(
+            ((num_routes * 3) + 1) * expected_messages.len(),
+            g.events.len()
+        );
 
         let mut receiver = BroadcastTreeConfig {
             all_peers: peers.clone(),
@@ -502,11 +548,11 @@ mod tests {
         .build();
 
         // handle each individual message part
-        for e in events {
+        for e in g.events {
             match e {
                 GossipEvent::Emit(_from, _msg) => continue,
                 GossipEvent::Send(from, msg) => {
-                    receiver.handle_gossip_message(Duration::ZERO, from, msg.as_slice());
+                    receiver.handle_gossip_message(Duration::ZERO, from, msg);
                 }
             }
         }
@@ -518,7 +564,7 @@ mod tests {
                 GossipEvent::Send(_, _) => (),
                 GossipEvent::Emit(_from, msg) => {
                     assert!(expected_messages.contains(
-                        &String::from_utf8(msg)
+                        &String::from_utf8(msg.to_vec())
                             .expect("bytes cannot have been corrupted")
                             .as_str()
                     ));
@@ -545,21 +591,14 @@ mod tests {
             num_routes: 2,
         }
         .build();
-        let app_message = "appmessagepayload".as_bytes();
+        let app_message = "appmessagepayload".into();
         g.send(
             Duration::from_secs(1),
             RouterTarget::PointToPoint(peers[0]),
             app_message,
         );
-        assert_eq!(1, g.events.len());
 
-        let e = g.events.pop_front().unwrap();
-        match e {
-            GossipEvent::Send(from, msg) => {
-                g.handle_gossip_message(Duration::ZERO, from, msg.as_slice())
-            }
-            GossipEvent::Emit(_from, _msg) => panic!("expecting a GossipEvent::Send"),
-        }
+        // Only one event - for send-to-self Emit
         assert_eq!(1, g.events.len());
 
         match g.events.pop_front().unwrap() {
@@ -569,7 +608,7 @@ mod tests {
             GossipEvent::Emit(_from, msg) => {
                 assert_eq!(
                     "appmessagepayload",
-                    String::from_utf8(msg).expect("bytes cannot have been corrupted")
+                    String::from_utf8(msg.to_vec()).expect("bytes cannot have been corrupted")
                 );
             }
         }

@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use futures::{future::BoxFuture, stream::SelectAll, FutureExt, Stream, StreamExt};
 use monad_crypto::{
     rustls::{self, TlsVerifier},
@@ -42,7 +43,7 @@ where
 
     accept: BoxFuture<'static, Option<Connecting>>,
     inbound_connections: SelectAll<InboundConnection>,
-    outbound_messages: HashMap<NodeId, tokio::sync::mpsc::Sender<Vec<u8>>>,
+    outbound_messages: HashMap<NodeId, tokio::sync::mpsc::Sender<Bytes>>,
 
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
     waker: Option<Waker>,
@@ -116,7 +117,7 @@ where
     G: Gossip,
     M: Message + Deserializable<[u8]> + Send + Sync + 'static,
     <M as Deserializable<[u8]>>::ReadError: 'static,
-    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M> + Clone,
 {
@@ -129,7 +130,7 @@ where
             match command {
                 RouterCommand::Publish { target, message } => {
                     let message = message.serialize();
-                    self.gossip.send(time, target, &message);
+                    self.gossip.send(time, target, message);
 
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
@@ -146,7 +147,7 @@ where
     G: Gossip,
     M: Message + Deserializable<[u8]> + Send + Sync + 'static,
     <M as Deserializable<[u8]>>::ReadError: 'static,
-    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M> + Clone,
 
@@ -180,7 +181,7 @@ where
                     let (from, gossip_message) =
                         message.expect("inbound stream should never be exhausted");
                     this.gossip
-                        .handle_gossip_message(time, from, &gossip_message);
+                        .handle_gossip_message(time, from, gossip_message);
                     continue;
                 }
             }
@@ -195,7 +196,7 @@ where
                         Some(GossipEvent::Send(to, gossip_message)) => {
                             if to == this.me {
                                 this.gossip
-                                    .handle_gossip_message(time, this.me, &gossip_message);
+                                    .handle_gossip_message(time, this.me, gossip_message);
                             } else {
                                 let maybe_unsent_gossip_message = match this
                                     .outbound_messages
@@ -289,7 +290,7 @@ where
 type InboundConnectionError = Box<dyn Error>;
 enum InboundConnection {
     Pending(BoxFuture<'static, Result<(NodeId, RecvStream), InboundConnectionError>>),
-    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Vec<u8>), InboundConnectionError>>),
+    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Bytes), InboundConnectionError>>),
 }
 
 impl InboundConnection {
@@ -310,7 +311,7 @@ impl InboundConnection {
             let mut buf = vec![0_u8; RX_MESSAGE_BUFFER_SIZE];
             let bytes = stream.read(&mut buf).await?;
             buf.truncate(bytes.unwrap_or(0));
-            Ok((peer, stream, buf))
+            Ok((peer, stream, buf.into()))
         };
         Self::Active(fut.boxed())
     }
@@ -320,7 +321,7 @@ impl Stream for InboundConnection
 where
     Self: Unpin,
 {
-    type Item = (NodeId, Vec<u8>);
+    type Item = (NodeId, Bytes);
 
     fn poll_next(
         mut self: Pin<&mut Self>,

@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+use bytes::{Buf, Bytes};
+use bytes_utils::SegmentedBuf;
 use monad_tracing_counter::inc_count;
 use monad_types::NodeId;
 use rand::{prelude::SliceRandom, Rng};
@@ -323,7 +325,7 @@ pub type GenericTransformerPipeline<M> = Vec<GenericTransformer<M>>;
 #[derive(Debug, Clone)]
 pub struct BytesSplitterTransformer {
     rng: ChaCha20Rng,
-    buffers: BTreeMap<ID, VecDeque<LinkMessage<Vec<u8>>>>,
+    buffers: BTreeMap<ID, VecDeque<LinkMessage<Bytes>>>,
 }
 
 impl Default for BytesSplitterTransformer {
@@ -341,30 +343,32 @@ impl BytesSplitterTransformer {
     }
 }
 
-impl Transformer<Vec<u8>> for BytesSplitterTransformer {
-    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+impl Transformer<Bytes> for BytesSplitterTransformer {
+    fn transform(&mut self, message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
         let entry = self.buffers.entry(message.to).or_default();
         entry.push_back(message);
 
         let split_idx = self.rng.gen_range(0..entry.len());
 
-        let mut base_message = entry
-            .drain(0..split_idx)
-            .reduce(|mut base_message, mut merge_message| {
-                base_message.message.append(&mut merge_message.message);
-                base_message
-            })
-            .unwrap_or({
-                let split_message = entry
-                    .front()
-                    .expect("must be at least 1 element (split_idx)");
-                LinkMessage {
-                    from: split_message.from,
-                    to: split_message.to,
-                    from_tick: split_message.from_tick,
-                    message: Vec::new(),
-                }
-            });
+        let accumulator = {
+            let split_message = entry
+                .front()
+                .expect("must be at least 1 element (split_idx)");
+            LinkMessage {
+                from: split_message.from,
+                to: split_message.to,
+                from_tick: split_message.from_tick,
+                message: SegmentedBuf::new(),
+            }
+        };
+
+        let mut base_message =
+            entry
+                .drain(0..split_idx)
+                .fold(accumulator, |mut base_message, merge_message| {
+                    base_message.message.push(merge_message.message);
+                    base_message
+                });
         let split_message = entry
             .front_mut()
             .expect("must be at least 1 element (split_idx)");
@@ -372,11 +376,20 @@ impl Transformer<Vec<u8>> for BytesSplitterTransformer {
         let message_split_idx = self.rng.gen_range(1..=split_message.message.len());
         base_message
             .message
-            .extend(split_message.message.drain(0..message_split_idx));
+            .push(split_message.message.copy_to_bytes(message_split_idx));
 
         if split_message.message.is_empty() {
             entry.pop_front();
         }
+
+        let base_message = LinkMessage {
+            from: base_message.from,
+            to: base_message.to,
+            from_tick: base_message.from_tick,
+            message: base_message
+                .message
+                .copy_to_bytes(base_message.message.remaining()),
+        };
 
         TransformerStream::Continue(vec![(Duration::ZERO, base_message)])
     }
@@ -410,7 +423,7 @@ impl BwWindow {
         }
     }
 
-    fn try_push(&mut self, burst_size: usize, msg: &LinkMessage<Vec<u8>>) -> bool {
+    fn try_push(&mut self, burst_size: usize, msg: &LinkMessage<Bytes>) -> bool {
         // assert msgs are increasing in from_tick
         assert!(self
             .window
@@ -448,8 +461,8 @@ impl BwTransformer {
     }
 }
 
-impl Transformer<Vec<u8>> for BwTransformer {
-    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+impl Transformer<Bytes> for BwTransformer {
+    fn transform(&mut self, message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
         self.window
             .advance_to(message.from_tick, self.sampling_period);
 
@@ -483,8 +496,8 @@ impl PacerTransformer {
     }
 }
 
-impl Transformer<Vec<u8>> for PacerTransformer {
-    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+impl Transformer<Bytes> for PacerTransformer {
+    fn transform(&mut self, mut message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
         // The goal of PacerTransformer is to pace messages at a configurable rate. Given a
         // message_1 that's sent at from_tick_1, the delays to generate for each message chunk is
         // straightforward.
@@ -526,24 +539,28 @@ impl Transformer<Vec<u8>> for PacerTransformer {
             .last_scheduled_ts
             .checked_sub(message.from_tick)
             .unwrap_or(Duration::ZERO);
-        let stream_messages: Vec<StreamMessage<_>> = message
-            .message
-            .chunks(self.burst_bits / 8)
-            .enumerate()
-            .map(|(idx, chunk)| {
-                let message = LinkMessage {
-                    from: message.from,
-                    to: message.to,
-                    message: chunk.to_vec(),
 
-                    from_tick: message.from_tick,
-                };
-                let extra_delay =
-                    idx as f64 * (self.burst_bits as f64 / (self.upload_mbps * 1_000_000) as f64);
-                let delay_2 = schedule_delay + Duration::from_secs_f64(extra_delay);
-                (delay_2, message)
-            })
-            .collect();
+        let mut stream_messages: Vec<StreamMessage<_>> = Vec::new();
+        let mut idx = 0;
+        while !message.message.is_empty() {
+            let chunk = message
+                .message
+                .copy_to_bytes((self.burst_bits / 8).min(message.message.remaining()));
+
+            let sub_message = LinkMessage {
+                from: message.from,
+                to: message.to,
+                message: chunk,
+
+                from_tick: message.from_tick,
+            };
+            let extra_delay =
+                idx as f64 * (self.burst_bits as f64 / (self.upload_mbps * 1_000_000) as f64);
+            let delay_2 = schedule_delay + Duration::from_secs_f64(extra_delay);
+            stream_messages.push((delay_2, sub_message));
+            idx += 1;
+        }
+
         if let Some((delay_1, _)) = stream_messages.last() {
             self.last_scheduled_ts = message.from_tick + *delay_1;
         }
@@ -560,15 +577,15 @@ pub enum BytesTransformer {
     Partition(PartitionTransformer),
     Drop(DropTransformer),
     Periodic(PeriodicTransformer),
-    Replay(ReplayTransformer<Vec<u8>>),
+    Replay(ReplayTransformer<Bytes>),
 
     BytesSplitter(BytesSplitterTransformer),
     Bw(BwTransformer),
     Pacer(PacerTransformer),
 }
 
-impl Transformer<Vec<u8>> for BytesTransformer {
-    fn transform(&mut self, message: LinkMessage<Vec<u8>>) -> TransformerStream<Vec<u8>> {
+impl Transformer<Bytes> for BytesTransformer {
+    fn transform(&mut self, message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
         match self {
             BytesTransformer::Latency(t) => t.transform(message),
             BytesTransformer::XorLatency(t) => t.transform(message),
@@ -586,22 +603,22 @@ impl Transformer<Vec<u8>> for BytesTransformer {
     fn min_external_delay(&self) -> Option<Duration> {
         match self {
             BytesTransformer::Latency(t) => {
-                <LatencyTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+                <LatencyTransformer as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::XorLatency(t) => {
-                <XorLatencyTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+                <XorLatencyTransformer as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::RandLatency(t) => {
-                <RandLatencyTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+                <RandLatencyTransformer as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Partition(t) => {
-                <PartitionTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+                <PartitionTransformer as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Drop(t) => {
-                <DropTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+                <DropTransformer as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Periodic(t) => {
-                <PeriodicTransformer as Transformer<Vec<u8>>>::min_external_delay(t)
+                <PeriodicTransformer as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Replay(t) => t.min_external_delay(),
             BytesTransformer::BytesSplitter(t) => t.min_external_delay(),

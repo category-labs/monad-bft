@@ -43,6 +43,7 @@ jobs:
           -A clippy::int_plus_one
           -A clippy::uninlined-format-args
           -A clippy::enum-variant-names
+          -A clippy::mutable_key_type
       - name: Check
         run: cargo check --all-targets --all-features --verbose
       - name: Run tests

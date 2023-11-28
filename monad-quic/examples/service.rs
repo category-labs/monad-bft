@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
 use monad_crypto::secp256k1::KeyPair;
@@ -204,11 +205,11 @@ impl Message for MockMessage {
     }
 }
 
-impl Serializable<Vec<u8>> for MockMessage {
-    fn serialize(&self) -> Vec<u8> {
-        let mut message = vec![0; self.message_len];
+impl Serializable<Bytes> for MockMessage {
+    fn serialize(&self) -> Bytes {
+        let mut message = BytesMut::zeroed(self.message_len);
         message[0] = self.id;
-        message
+        message.into()
     }
 }
 

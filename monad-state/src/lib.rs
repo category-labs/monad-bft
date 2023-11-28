@@ -1,5 +1,6 @@
 use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
 
+use bytes::Bytes;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
@@ -127,10 +128,10 @@ impl<ST, SCT: SignatureCollection> From<Verified<ST, ConsensusMessage<SCT>>>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<SCT>>);
 
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Vec<u8>>
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Bytes>
     for VerifiedMonadMessage<MS, SCT>
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
     }
 }

@@ -1,5 +1,6 @@
 use std::fs::create_dir_all;
 
+use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use monad_consensus::{
     messages::{
@@ -57,7 +58,7 @@ impl MonadEventBencher {
         };
         println!(
             "size of event: {}",
-            Serializable::<Vec<u8>>::serialize(&event).len()
+            Serializable::<Bytes>::serialize(&event).len()
         );
         Self {
             event,

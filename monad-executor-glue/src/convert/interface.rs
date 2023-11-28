@@ -1,3 +1,4 @@
+use bytes::{Bytes, BytesMut};
 use monad_consensus_types::{
     message_signature::MessageSignature,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
@@ -12,12 +13,16 @@ use crate::MonadEvent;
 
 pub fn serialize_event<S: MessageSignature, SCT: SignatureCollection>(
     event: &MonadEvent<S, SCT>,
-) -> Vec<u8>
+) -> Bytes
 where
     for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
 {
     let proto_event: ProtoMonadEvent = event.into();
-    proto_event.encode_to_vec()
+    let mut buf = BytesMut::new();
+    proto_event
+        .encode(&mut buf)
+        .expect("event serialization shouldn't fail");
+    buf.into()
 }
 
 pub fn deserialize_event<S: MessageSignature, SCT: SignatureCollection>(

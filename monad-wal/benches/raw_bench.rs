@@ -1,5 +1,6 @@
 use std::{error::Error, fmt::Debug, fs::create_dir_all};
 
+use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use monad_types::{Deserializable, Serializable};
 use monad_wal::{wal::*, PersistenceLogger};
@@ -34,9 +35,9 @@ impl std::fmt::Display for ReadError {
 
 impl Error for ReadError {}
 
-impl Serializable<Vec<u8>> for Datablob {
-    fn serialize(&self) -> Vec<u8> {
-        self.data.clone()
+impl Serializable<Bytes> for Datablob {
+    fn serialize(&self) -> Bytes {
+        self.data.clone().into()
     }
 }
 
