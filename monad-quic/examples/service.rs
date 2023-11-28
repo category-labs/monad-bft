@@ -171,13 +171,14 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
 }
 
 #[derive(Clone)]
-struct MockMessage(Vec<u8>);
+struct MockMessage {
+    id: u8,
+    message_len: usize,
+}
 
 impl MockMessage {
     fn new(id: u8, message_len: usize) -> Self {
-        let mut message = vec![0; message_len];
-        message[0] = id;
-        Self(message)
+        Self { id, message_len }
     }
 }
 
@@ -191,7 +192,7 @@ impl Identifiable for MockMessage {
     type Id = u8;
 
     fn id(&self) -> Self::Id {
-        self.0[0]
+        self.id
     }
 }
 
@@ -199,13 +200,15 @@ impl Message for MockMessage {
     type Event = (NodeId, u8);
 
     fn event(self, from: NodeId) -> Self::Event {
-        (from, self.0[0])
+        (from, self.id)
     }
 }
 
 impl Serializable<Vec<u8>> for MockMessage {
     fn serialize(&self) -> Vec<u8> {
-        self.0.clone()
+        let mut message = vec![0; self.message_len];
+        message[0] = self.id;
+        message
     }
 }
 
@@ -213,6 +216,6 @@ impl Deserializable<[u8]> for MockMessage {
     type ReadError = ParseIntError;
 
     fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
-        Ok(Self(message.to_vec()))
+        Ok(Self::new(message[0], message.len()))
     }
 }
