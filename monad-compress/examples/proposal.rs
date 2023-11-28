@@ -12,10 +12,11 @@ use monad_state::VerifiedMonadMessage;
 use monad_testutil::{
     proposal::ProposalGen, signing::get_genesis_config, validators::create_keys_w_validators,
 };
-use monad_types::{NodeId, Serializable};
+use monad_types::{Epoch, NodeId, Round, Serializable};
 use monad_validator::{
-    leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
-    validator_set::ValidatorSetType,
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetMapping, ValidatorSetType},
 };
 use peak_alloc::PeakAlloc;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
@@ -31,6 +32,14 @@ fn main() {
     rng.fill_bytes(&mut transaction_hashes);
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
+    let validators = Vec::from_iter(valset.get_members().clone());
+    let mut validator_sets = ValidatorSetMapping::new();
+    validator_sets.insert(
+        Epoch(1),
+        ValidatorSet::new(validators.clone())
+            .expect("ValidatorData should not have duplicates or invalid entries"),
+    );
+    let epoch_length = Round(100);
     let voting_keys = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))
@@ -53,11 +62,12 @@ fn main() {
         .next_proposal(
             &keys,
             cert_keys.as_slice(),
-            &valset,
+            &validator_sets,
             &election,
             &valmap,
             TransactionHashList::new(transaction_hashes.to_vec()),
             ExecutionArtifacts::zero(),
+            epoch_length,
         )
         .destructure()
         .2;
@@ -67,7 +77,7 @@ fn main() {
         .find(|k| {
             k.pubkey()
                 == election
-                    .get_leader(proposal.block.round, valset.get_list())
+                    .get_leader(proposal.block.round, epoch_length, &validator_sets)
                     .0
         })
         .expect("key in valset");

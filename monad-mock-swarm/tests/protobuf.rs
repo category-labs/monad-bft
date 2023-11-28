@@ -27,8 +27,9 @@ use monad_testutil::{
 };
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
-    leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetType, ValidatorSetMapping}
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetMapping, ValidatorSetType},
 };
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -90,8 +91,11 @@ fn test_consensus_message_event_proposal_bls() {
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
     let validators = Vec::from_iter(valset.get_members().clone());
     let mut validator_sets = ValidatorSetMapping::new();
-    validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone())
-        .expect("ValidatorData should not have duplicates or invalid entries"));
+    validator_sets.insert(
+        Epoch(1),
+        ValidatorSet::new(validators.clone())
+            .expect("ValidatorData should not have duplicates or invalid entries"),
+    );
     let voting_keys = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))
@@ -102,10 +106,11 @@ fn test_consensus_message_event_proposal_bls() {
         BlsSignatureCollection,
         MockValidator,
     >(voting_keys.iter(), &valmap, &MockValidator {});
-    let genesis_qc: QuorumCertificate<BlsSignatureCollection> = QuorumCertificate::genesis_qc::<HasherType>(
-        genesis_vote_info(genesis_block.get_id()),
-        genesis_sigs,
-    );
+    let genesis_qc: QuorumCertificate<BlsSignatureCollection> =
+        QuorumCertificate::genesis_qc::<HasherType>(
+            genesis_vote_info(genesis_block.get_id()),
+            genesis_sigs,
+        );
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
         ProposalGen::new(genesis_qc);

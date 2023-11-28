@@ -51,8 +51,6 @@ impl SwarmRelation for QuicSwarm {
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }

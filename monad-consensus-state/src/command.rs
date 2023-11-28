@@ -10,7 +10,7 @@ use monad_consensus_types::{
     payload::TransactionHashList,
     signature_collection::SignatureCollection,
 };
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
 use crate::blocksync::InFlightBlockSync;
 

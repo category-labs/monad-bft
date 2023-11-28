@@ -22,8 +22,8 @@ use monad_wal::{
 
 use crate::{
     mock::{
-        MockMempool, MockMempoolConfig, MockableExecutor, MockableValidatorSet,
-        MockValidatorSetUpdaterNop,
+        MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop, MockableExecutor,
+        MockableValidatorSet,
     },
     transformer::MonadMessageTransformerPipeline,
 };
@@ -108,10 +108,8 @@ impl SwarmRelation for NoSerSwarm {
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -146,8 +144,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }

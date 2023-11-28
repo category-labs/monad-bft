@@ -1,20 +1,21 @@
 use std::{
     marker::PhantomData,
     pin::Pin,
-    task::{Context, Poll, Waker}, u64,
+    task::{Context, Poll, Waker},
+    u64,
 };
 
 use futures::Stream;
-use monad_executor::Executor;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
+use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, ValidatorSetCommand};
-use monad_types::{ValidatorData, SeqNum};
+use monad_types::{SeqNum, ValidatorData};
 
 pub struct ValidatorSetUpdater<ST, SCT> {
     validator_set: Option<ValidatorData>,
-    // TODO: call waker.wake() when exeuction sends 
+    // TODO: call waker.wake() when exeuction sends
     // validator set updates after executing block s
     epoch_boundary: SeqNum,
     waker: Option<Waker>,

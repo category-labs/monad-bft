@@ -10,9 +10,7 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{
-        MockExecutor, MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop,
-    },
+    mock::{MockExecutor, MockMempool, MockMempoolConfig, MockValidatorSetUpdaterNop},
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
 };
@@ -65,10 +63,8 @@ impl SwarmRelation for ReplaySwarm {
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn run_nodes_until<S, CT, ST, SCT, VT, LT, BST>(
@@ -134,11 +130,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
     >(MockValidator, 4, CONSENSUS_DELTA, 4, 0, Round(100));
-    let (_, mut state_configs_duplicate) = get_configs::<
-        <ReplaySwarm as SwarmRelation>::SignatureType,
-        <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
-        _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0, Round(100));
+    let (_, mut state_configs_duplicate) =
+        get_configs::<
+            <ReplaySwarm as SwarmRelation>::SignatureType,
+            <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
+            _,
+        >(MockValidator, 4, CONSENSUS_DELTA, 4, 0, Round(100));
 
     let pubkeys = peers;
     let router_scheduler_config = |all_peers: Vec<NodeId>, _: NodeId| NoSerRouterConfig {

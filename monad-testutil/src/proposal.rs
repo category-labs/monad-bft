@@ -21,7 +21,10 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round, SeqNum};
-use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
+use monad_validator::{
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetMapping, ValidatorSetType},
+};
 
 pub struct ProposalGen<ST, SCT> {
     round: Round,
@@ -69,10 +72,7 @@ where
         let (leader_key, leader_certkey) = keys
             .iter()
             .zip(certkeys)
-            .find(|(k, _)| k.pubkey() == election.get_leader(
-                self.round,
-                epoch_length,
-                valsets).0)
+            .find(|(k, _)| k.pubkey() == election.get_leader(self.round, epoch_length, valsets).0)
             .expect("key not in valset");
 
         let block = Block::new::<HasherType>(

@@ -22,7 +22,8 @@ pub struct ParentExecutor<R, T, M, L, EL, C, VS> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, ME, LE, EL, CE, VS, E, OM, B, C, S> Executor for ParentExecutor<RE, TE, ME, LE, EL, CE, VS>
+impl<RE, TE, ME, LE, EL, CE, VS, E, OM, B, C, S> Executor
+    for ParentExecutor<RE, TE, ME, LE, EL, CE, VS>
 where
     RE: Executor<Command = RouterCommand<OM>>,
     TE: Executor<Command = TimerCommand<E>>,

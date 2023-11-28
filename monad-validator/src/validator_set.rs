@@ -3,7 +3,7 @@ use std::{
     error, fmt,
 };
 
-use monad_types::{NodeId, Stake, Epoch};
+use monad_types::{Epoch, NodeId, Stake};
 
 pub type Result<T> = std::result::Result<T, ValidatorSetError>;
 
@@ -128,14 +128,14 @@ impl ValidatorSetType for ValidatorSet {
 
 pub struct ValidatorSetMapping<VT>
 where
-    VT: ValidatorSetType
+    VT: ValidatorSetType,
 {
-    validator_sets: HashMap<Epoch, VT>
+    validator_sets: HashMap<Epoch, VT>,
 }
 
 impl<VT> ValidatorSetMapping<VT>
 where
-    VT: ValidatorSetType
+    VT: ValidatorSetType,
 {
     pub fn new() -> Self {
         Self {
@@ -152,12 +152,11 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, get_key};
-    use monad_types::{NodeId, Stake, Epoch};
+    use monad_types::{Epoch, NodeId, Stake};
 
     use super::ValidatorSet;
     use crate::validator_set::ValidatorSetType;

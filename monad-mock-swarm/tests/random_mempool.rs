@@ -9,9 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{
-        MockMempoolRandFail, MockMempoolRandFailConfig, MockValidatorSetUpdaterNop,
-    },
+    mock::{MockMempoolRandFail, MockMempoolRandFailConfig, MockValidatorSetUpdaterNop},
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
 };
@@ -55,10 +53,8 @@ impl SwarmRelation for RandFailSwarm {
     type MempoolConfig = MockMempoolRandFailConfig;
     type MempoolExecutor = MockMempoolRandFail<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]

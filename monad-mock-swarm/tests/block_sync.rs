@@ -30,11 +30,12 @@ mod test {
         assert!(num_nodes >= 4, "test requires at least 4 nodes");
 
         let delta = Duration::from_millis(2);
-        let (pubkeys, state_configs) = get_configs::<
-            <MonadMessageNoSerSwarm as SwarmRelation>::SignatureType,
-            <MonadMessageNoSerSwarm as SwarmRelation>::SignatureCollectionType,
-            _,
-        >(MockValidator, num_nodes, delta, u64::MAX, 0, Round(1000));
+        let (pubkeys, state_configs) =
+            get_configs::<
+                <MonadMessageNoSerSwarm as SwarmRelation>::SignatureType,
+                <MonadMessageNoSerSwarm as SwarmRelation>::SignatureCollectionType,
+                _,
+            >(MockValidator, num_nodes, delta, u64::MAX, 0, Round(1000));
 
         let filter_peers = HashSet::from([ID::new(NodeId(pubkeys[0]))]);
 

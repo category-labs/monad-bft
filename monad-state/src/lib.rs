@@ -35,7 +35,10 @@ use monad_executor_glue::{
     TimerCommand, ValidatorSetCommand,
 };
 use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
-use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
+use monad_validator::{
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetMapping, ValidatorSetType},
+};
 use ref_cast::RefCast;
 
 pub mod convert;
@@ -83,8 +86,7 @@ where
         if let Some(vd) = next_val_set {
             self.validator_sets.insert(
                 next_epoch,
-                VT::new(vd.0)
-                    .expect("ValidatorData should not have duplicates or invalid entries")
+                VT::new(vd.0).expect("ValidatorData should not have duplicates or invalid entries"),
             );
         }
     }
@@ -468,7 +470,12 @@ where
                             ConsensusMessage::BlockSync(msg) => {
                                 // TODO: fix unwrap and handle case where validator set is not in map
                                 let validator_set = self.validator_sets.get(&self.epoch).unwrap();
-                                self.consensus.handle_block_sync(author, msg, validator_set, self.epoch)
+                                self.consensus.handle_block_sync(
+                                    author,
+                                    msg,
+                                    validator_set,
+                                    self.epoch,
+                                )
                             }
                         }
                     }
@@ -574,9 +581,9 @@ where
                         }
                         ConsensusCommand::EpochEnd(seq_num) => {
                             self.advance_epoch();
-                            cmds.push(Command::ValidatorSetCommand(
-                                ValidatorSetCommand::EpochEnd(seq_num),
-                            ))
+                            cmds.push(Command::ValidatorSetCommand(ValidatorSetCommand::EpochEnd(
+                                seq_num,
+                            )))
                         }
                     }
                 }

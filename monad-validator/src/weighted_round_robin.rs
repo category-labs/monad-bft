@@ -3,7 +3,7 @@ use std::{cmp::Ordering, fmt::Debug};
 use monad_types::{NodeId, Round, Stake};
 use tracing::warn;
 
-use crate::validator_set::{ValidatorSetType, ValidatorSetMapping};
+use crate::validator_set::{ValidatorSetMapping, ValidatorSetType};
 
 use super::leader_election::LeaderElection;
 
@@ -74,7 +74,10 @@ impl LeaderElection for WeightedRoundRobin {
             validator_list[round.0 as usize % validator_list.len()]
         } else {
             // TODO: fix panic
-            panic!("validator set for epoch #{} not in validator set mapping", round_epoch.0)
+            panic!(
+                "validator set for epoch #{} not in validator set mapping",
+                round_epoch.0
+            )
         }
     }
 }

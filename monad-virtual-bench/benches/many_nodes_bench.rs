@@ -94,10 +94,8 @@ impl SwarmRelation for NopSwarm {
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 struct BlsSwarm;
@@ -134,10 +132,8 @@ impl SwarmRelation for BlsSwarm {
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type ValidatorSetExecutor = MockValidatorSetUpdaterNop<
-        Self::SignatureType,
-        Self::SignatureCollectionType
-    >;
+    type ValidatorSetExecutor =
+        MockValidatorSetUpdaterNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn many_nodes_nop_timeout() -> u128 {

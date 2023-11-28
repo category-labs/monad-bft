@@ -20,7 +20,8 @@ use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer, validator_set::ValidatorSetUpdater,
+    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
+    validator_set::ValidatorSetUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;

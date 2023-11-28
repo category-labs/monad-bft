@@ -497,7 +497,11 @@ where
             seed,
         ) = peer;
 
-        let peers: Vec<_> = state_config.validators.iter().map(|(key, _)| key.clone()).collect();
+        let peers: Vec<_> = state_config
+            .validators
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect();
 
         // No duplicate ID insertion should be allowed
         assert!(!self.states.contains_key(&id));

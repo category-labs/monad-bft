@@ -24,7 +24,7 @@ use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer, BoxUpdater, Updater, validator_set::ValidatorSetUpdater,
+    timer::TokioTimer, validator_set::ValidatorSetUpdater, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 

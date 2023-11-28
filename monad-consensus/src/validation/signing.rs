@@ -17,8 +17,8 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, Round, Stake, SeqNum};
-use monad_validator::validator_set::{ValidatorSetType, ValidatorSetMapping};
+use monad_types::{NodeId, Round, SeqNum, Stake};
+use monad_validator::validator_set::{ValidatorSetMapping, ValidatorSetType};
 
 use crate::{
     convert::message::UnverifiedConsensusMessage,

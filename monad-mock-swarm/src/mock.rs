@@ -25,8 +25,7 @@ use monad_executor_glue::{
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Epoch, NodeId, Stake, TimeoutVariant, ValidatorData};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger,
-    state_root_hash::MockStateRootHash,
+    checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockStateRootHash,
 };
 use priority_queue::PriorityQueue;
 use rand::{Rng, RngCore};
@@ -670,7 +669,7 @@ pub trait MockableValidatorSet:
 pub struct MockValidatorSetUpdaterNop<ST, SCT> {
     init_validator_set: ValidatorData,
     validator_set: Option<ValidatorData>,
-    phantom: PhantomData<(ST,SCT)>,
+    phantom: PhantomData<(ST, SCT)>,
 }
 
 impl<ST, SCT> MockableValidatorSet for MockValidatorSetUpdaterNop<ST, SCT>
@@ -739,13 +738,12 @@ where
     }
 }
 
-
 pub struct MockValidatorSetUpdater<ST, SCT> {
     val_set_1: ValidatorData,
     val_set_2: ValidatorData,
     epoch_num: Epoch,
     validator_set: Option<ValidatorData>,
-    phantom: PhantomData<(ST,SCT)>,
+    phantom: PhantomData<(ST, SCT)>,
 }
 
 impl<ST, SCT> MockableValidatorSet for MockValidatorSetUpdater<ST, SCT>
@@ -762,9 +760,10 @@ where
             .collect::<Vec<(NodeId, Stake)>>();
 
         let val_set_1: Vec<(NodeId, Stake)> = val_set.clone();
-        let val_set_2: Vec<(NodeId, Stake)> = val_set.clone()
+        let val_set_2: Vec<(NodeId, Stake)> = val_set
+            .clone()
             .into_iter()
-            .map(|(id, _)| {(id, Stake(2))})
+            .map(|(id, _)| (id, Stake(2)))
             .collect();
 
         Self {
@@ -817,7 +816,6 @@ where
         )));
     }
 }
-
 
 #[cfg(test)]
 mod tests {

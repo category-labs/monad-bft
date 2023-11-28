@@ -27,7 +27,10 @@ use monad_crypto::{
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
-use monad_validator::{leader_election::LeaderElection, validator_set::{ValidatorSetType, ValidatorSetMapping}};
+use monad_validator::{
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetMapping, ValidatorSetType},
+};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -147,7 +150,7 @@ where
         txns: FullTransactionList,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        epoch: Epoch,
+        current_epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -157,7 +160,7 @@ where
         v: VoteMessage<SCT>,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        epoch: Epoch,
+        current_epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -167,7 +170,7 @@ where
         tm: TimeoutMessage<SCT>,
         validator_sets: &ValidatorSetMapping<VT>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        epoch: Epoch,
+        current_epoch: Epoch,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -336,8 +339,8 @@ where
         // TODO: fix unwrap and handle case where validator set is not in map
         let validator_set = validator_sets.get(&epoch).unwrap();
 
-        let process_certificate_cmds = self
-            .process_certificate_qc(&p.block.qc, validator_set, &mut current_epoch);
+        let process_certificate_cmds =
+            self.process_certificate_qc(&p.block.qc, validator_set, &mut current_epoch);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -349,15 +352,15 @@ where
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
-            cmds.extend(self.advance_epoch(&self.high_qc, self.get_current_round(), &mut current_epoch));
+            cmds.extend(self.advance_epoch(
+                &self.high_qc,
+                self.get_current_round(),
+                &mut current_epoch,
+            ));
         }
 
         let round = self.pacemaker.get_current_round();
-        let leader = election.get_leader(
-            round,
-            self.config.epoch_length,
-            validator_sets,
-        );
+        let leader = election.get_leader(round, self.config.epoch_length, validator_sets);
 
         let author_pubkey = validator_mapping
             .map
@@ -412,11 +415,8 @@ where
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new::<H>(v, &self.cert_keypair);
 
-            let next_leader = election.get_leader(
-                round + Round(1),
-                self.config.epoch_length,
-                validator_sets,
-            );
+            let next_leader =
+                election.get_leader(round + Round(1), self.config.epoch_length, validator_sets);
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(NodeId(next_leader.0)),
                 message: ConsensusMessage::Vote(vote_msg),
@@ -445,28 +445,35 @@ where
         }
         inc_count!(vote_received);
 
-        let epoch = vote_msg.vote.vote_info.round.get_epoch_num(self.config.epoch_length);
+        let epoch = vote_msg
+            .vote
+            .vote_info
+            .round
+            .get_epoch_num(self.config.epoch_length);
         // TODO: fix unwrap and handle case where validator set is not in map
         let validator_set = validator_sets.get(&epoch).unwrap();
 
         let mut cmds = Vec::new();
-        let (qc, vote_state_cmds) =
-            self.vote_state
-                .process_vote::<H, _>(&author, &vote_msg, validator_set, validator_mapping);
+        let (qc, vote_state_cmds) = self.vote_state.process_vote::<H, _>(
+            &author,
+            &vote_msg,
+            validator_set,
+            validator_mapping,
+        );
         cmds.extend(vote_state_cmds.into_iter().map(Into::into));
 
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             inc_count!(created_qc);
-            cmds.extend(self
-                .process_certificate_qc(&qc,validator_set, &mut current_epoch)
-            );
+            cmds.extend(self.process_certificate_qc(&qc, validator_set, &mut current_epoch));
 
-            if self.nodeid == election.get_leader(
-                self.pacemaker.get_current_round(),
-                self.config.epoch_length,
-                validator_sets,
-            ) {
+            if self.nodeid
+                == election.get_leader(
+                    self.pacemaker.get_current_round(),
+                    self.config.epoch_length,
+                    validator_sets,
+                )
+            {
                 cmds.extend(self.process_new_round_event(None));
             }
         }
@@ -496,8 +503,8 @@ where
         debug!("Remote timeout msg: {:?}", tm);
         inc_count!(remote_timeout_msg);
 
-        let process_certificate_cmds = self
-            .process_certificate_qc(&tm.tminfo.high_qc, validator_set, &mut current_epoch);
+        let process_certificate_cmds =
+            self.process_certificate_qc(&tm.tminfo.high_qc, validator_set, &mut current_epoch);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
@@ -508,7 +515,11 @@ where
                 .map(Into::into);
             cmds.extend(advance_round_cmds);
 
-            cmds.extend(self.advance_epoch(&self.high_qc, self.get_current_round(),&mut current_epoch));
+            cmds.extend(self.advance_epoch(
+                &self.high_qc,
+                self.get_current_round(),
+                &mut current_epoch,
+            ));
         }
 
         let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout::<H, VT>(
@@ -532,17 +543,16 @@ where
         if let Some(tc) = tc {
             debug!("Created TC: {:?}", tc);
             inc_count!(created_tc);
-            let advance_round_cmds = self
-                .pacemaker
-                .advance_round_tc(&tc)
-                .map(Into::into);
+            let advance_round_cmds = self.pacemaker.advance_round_tc(&tc).map(Into::into);
             cmds.extend(advance_round_cmds);
 
-            if self.nodeid == election.get_leader(
-                self.pacemaker.get_current_round(),
-                self.config.epoch_length,
-                validator_sets,
-            ){
+            if self.nodeid
+                == election.get_leader(
+                    self.pacemaker.get_current_round(),
+                    self.config.epoch_length,
+                    validator_sets,
+                )
+            {
                 cmds.extend(self.process_new_round_event(Some(tc)));
             }
         }
@@ -717,7 +727,7 @@ where
         if Rank(qc.info) > Rank(self.high_qc.info) {
             self.high_qc = qc.clone();
         }
-    
+
         cmds
     }
 
@@ -731,11 +741,7 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
-        cmds.extend(self
-            .pacemaker
-            .advance_round_qc(qc)
-            .map(Into::into)
-        );
+        cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
 
         // block sync
         cmds.extend(self.get_blocks_if_missing(qc, validators));
@@ -849,20 +855,27 @@ where
 
     fn process_block_sync_commit(
         &mut self,
-        mut current_epoch: Epoch
-     ) -> Vec<ConsensusCommand<SCT>> {
+        mut current_epoch: Epoch,
+    ) -> Vec<ConsensusCommand<SCT>> {
         let mut cmds = Vec::new();
 
         let bid = self.high_qc.info.vote.id;
 
         if self.pending_block_tree.path_to_root(&bid) {
-            let mut blocks = self.pending_block_tree.get_blocks_on_path_to_root(&bid).unwrap();
+            let mut blocks = self
+                .pending_block_tree
+                .get_blocks_on_path_to_root(&bid)
+                .unwrap();
             blocks.reverse();
 
             for block in blocks {
                 cmds.extend(self.process_qc(&block.get_block().qc));
 
-                cmds.extend(self.advance_epoch(&block.get_block().qc, block.get_round(), &mut current_epoch));
+                cmds.extend(self.advance_epoch(
+                    &block.get_block().qc,
+                    block.get_round(),
+                    &mut current_epoch,
+                ));
             }
         }
 
@@ -873,15 +886,16 @@ where
         &self,
         qc: &QuorumCertificate<SCT>,
         qc_round: Round,
-        current_epoch: &mut Epoch
+        current_epoch: &mut Epoch,
     ) -> Option<ConsensusCommand<SCT>> {
-        if qc_round.get_epoch_num(self.config.epoch_length) > *current_epoch &&
-            self.pending_block_tree.path_to_root(&qc.info.vote.id) {
+        if qc_round.get_epoch_num(self.config.epoch_length) > *current_epoch
+            && self.pending_block_tree.path_to_root(&qc.info.vote.id)
+        {
             *current_epoch = *current_epoch + Epoch(1);
 
-            return Some(ConsensusCommand::EpochEnd(self
-                .pending_block_tree.get_root_seq_num().unwrap()
-            ))
+            return Some(ConsensusCommand::EpochEnd(
+                self.pending_block_tree.get_root_seq_num().unwrap(),
+            ));
         }
 
         None
@@ -934,7 +948,7 @@ mod test {
     use monad_validator::{
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
-        validator_set::{ValidatorSet, ValidatorSetType, ValidatorSetMapping},
+        validator_set::{ValidatorSet, ValidatorSetMapping, ValidatorSetType},
     };
     use test_case::test_case;
     use tracing_test::traced_test;
@@ -960,10 +974,16 @@ mod test {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
         let validators = Vec::from_iter(valset.get_members().clone());
         let mut validator_sets = ValidatorSetMapping::new();
-        validator_sets.insert(Epoch(1), ValidatorSet::new(validators.clone())
-            .expect("ValidatorData should not have duplicates or invalid entries"));
-        validator_sets.insert(Epoch(2), ValidatorSet::new(validators.clone())
-            .expect("ValidatorData should not have duplicates or invalid entries"));
+        validator_sets.insert(
+            Epoch(1),
+            ValidatorSet::new(validators.clone())
+                .expect("ValidatorData should not have duplicates or invalid entries"),
+        );
+        validator_sets.insert(
+            Epoch(2),
+            ValidatorSet::new(validators.clone())
+                .expect("ValidatorData should not have duplicates or invalid entries"),
+        );
 
         let voting_keys = keys
             .iter()
@@ -2671,11 +2691,7 @@ mod test {
         for state in states.iter() {
             assert_eq!(state.get_current_round(), Round(8));
         }
-        let next_leader = election.get_leader(
-            Round(10),
-            epoch_length,
-            &validator_sets,
-        );
+        let next_leader = election.get_leader(Round(10), epoch_length, &validator_sets);
         let mut leader_index = 0;
         // test when observing a qc through vote message, and qc points to a block that doesn't exists yet
         let cp = correct_proposal_gen.next_proposal(
@@ -2726,8 +2742,14 @@ mod test {
             }
         }
         for (i, (author, v)) in votes.iter().enumerate() {
-            let cmds = states[leader_index]
-                .handle_vote_message::<HasherType, _, _>(*author, *v, &validator_sets, &valmap, Epoch(1), &election);
+            let cmds = states[leader_index].handle_vote_message::<HasherType, _, _>(
+                *author,
+                *v,
+                &validator_sets,
+                &valmap,
+                Epoch(1),
+                &election,
+            );
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId, BlockId)> = cmds
                     .into_iter()
@@ -2933,8 +2955,8 @@ mod test {
                 let bsync_cmds: Vec<_> = cmds
                     .iter()
                     .filter_map(|c| match c {
-                        ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
-                        _ => None
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
                     })
                     .collect();
                 assert!(bsync_cmds.len() == 0);
@@ -3014,8 +3036,8 @@ mod test {
                 let bsync_cmds: Vec<_> = cmds
                     .iter()
                     .filter_map(|c| match c {
-                        ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
-                        _ => None
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
                     })
                     .collect();
                 assert!(bsync_cmds.len() == 0);
@@ -3026,8 +3048,8 @@ mod test {
         // timeout on Round(epoch_length)
         let state = &mut states[0];
         let pacemaker_cmds = state
-                .pacemaker
-                .handle_event(&mut state.safety, &state.high_qc);
+            .pacemaker
+            .handle_event(&mut state.safety, &state.high_qc);
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
@@ -3056,7 +3078,10 @@ mod test {
             epoch_length,
         );
         // the highest QC is from Round(epoch_length - 1)
-        assert_eq!(new_epoch_proposal.block.qc.info.vote.round, Round(epoch_length.0 - 1));
+        assert_eq!(
+            new_epoch_proposal.block.qc.info.vote.round,
+            Round(epoch_length.0 - 1)
+        );
         // the new block is for Round(epoch_length + 1)
         assert_eq!(new_epoch_proposal.block.round, Round(epoch_length.0 + 1));
 
@@ -3121,8 +3146,8 @@ mod test {
                 let bsync_cmds: Vec<_> = cmds
                     .iter()
                     .filter_map(|c| match c {
-                        ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
-                        _ => None
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
                     })
                     .collect();
                 assert!(bsync_cmds.len() == 0);
@@ -3164,8 +3189,8 @@ mod test {
         let bsync_cmds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::RequestSync{ peer: _, block_id } => Some(block_id),
-                _ => None
+                ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                _ => None,
             })
             .collect();
         assert!(bsync_cmds.len() == 0);
@@ -3198,8 +3223,8 @@ mod test {
         let bsync_cmds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::RequestSync{ peer, block_id } => Some((peer, block_id)),
-                _ => None
+                ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                _ => None,
             })
             .collect();
         assert!(bsync_cmds.len() == 0);
@@ -3230,10 +3255,10 @@ mod test {
         let bsync_cmds: Vec<_> = cmds
             .iter()
             .filter_map(|c| match c {
-                ConsensusCommand::RequestSync{ peer, block_id } => Some((peer, block_id)),
-                _ => None
+                ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
+                _ => None,
             })
-        .collect();
+            .collect();
         assert!(bsync_cmds.len() == 1);
         let routing_target = bsync_cmds[0].0.clone();
 
@@ -3249,9 +3274,7 @@ mod test {
 
         let msg = BlockSyncMessage::BlockFound(block_epoch_len);
         // blocksync response for state 2
-        let cmds = state_2
-            .handle_block_sync(routing_target, msg, valset, Epoch(1));
-
+        let cmds = state_2.handle_block_sync(routing_target, msg, valset, Epoch(1));
 
         // state 2 should advance epoch
         let epoch_end_cmds: Vec<SeqNum> = cmds
