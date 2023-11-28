@@ -1,8 +1,7 @@
 use monad_types::{NodeId, Round};
 
-use crate::validator_set::{ValidatorSetMapping, ValidatorSetType};
-
 use super::leader_election::LeaderElection;
+use crate::validator_set::{ValidatorSetMapping, ValidatorSetType};
 
 pub struct SimpleRoundRobin {}
 impl LeaderElection for SimpleRoundRobin {

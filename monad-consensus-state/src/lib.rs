@@ -72,6 +72,7 @@ where
         self.pending_block_tree.eq(&other.pending_block_tree)
             && self.vote_state.eq(&other.vote_state)
             && self.high_qc.eq(&other.high_qc)
+            && self.high_commit_qc.eq(&other.high_commit_qc)
             && self.pacemaker.eq(&other.pacemaker)
             && self.safety.eq(&other.safety)
             && self.nodeid.eq(&other.nodeid)
@@ -88,6 +89,7 @@ where
             .field("pending_block_tree", &self.pending_block_tree)
             .field("vote_state", &self.vote_state)
             .field("high_qc", &self.high_qc)
+            .field("high_commit_qc", &self.high_commit_qc)
             .field("pacemaker", &self.pacemaker)
             .field("safety", &self.safety)
             .field("nodeid", &self.nodeid)
@@ -3287,7 +3289,7 @@ mod test {
         assert!(epoch_end_cmds.len() == 1);
         let state_2_seq_num = epoch_end_cmds[0].clone();
 
-        // the sequence number at epoch end should be same as for both states
+        // the sequence number for epoch end should be the same for both states
         assert!(state_1_seq_num == state_2_seq_num);
     }
 }

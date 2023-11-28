@@ -3,9 +3,8 @@ use std::{cmp::Ordering, fmt::Debug};
 use monad_types::{NodeId, Round, Stake};
 use tracing::warn;
 
-use crate::validator_set::{ValidatorSetMapping, ValidatorSetType};
-
 use super::leader_election::LeaderElection;
+use crate::validator_set::{ValidatorSetMapping, ValidatorSetType};
 
 #[derive(Eq, Clone, Copy, Debug)]
 struct Voter {
