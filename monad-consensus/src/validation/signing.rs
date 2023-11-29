@@ -512,18 +512,18 @@ impl ValidatorPubKey for PubKey {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        certificate_signature::CertificateSignature,
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
-        signature_collection::SignatureCollection,
+        signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
         validation::Error,
-        voting::{ValidatorMapping, VoteInfo},
+        voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{
         hasher::{Hash, Hashable, Hasher, HasherType},
-        secp256k1::SecpSignature,
+        secp256k1::{KeyPair, SecpSignature},
     };
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
@@ -534,7 +534,7 @@ mod test {
     use test_case::test_case;
 
     use super::{verify_qc, verify_tc, Unverified, Verified};
-    use crate::messages::message::TimeoutMessage;
+    use crate::{messages::message::TimeoutMessage, validation::signing::VoteMessage};
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -837,5 +837,43 @@ mod test {
         let unverified_byzantine_tmo_msg = Unverified::new(tm, signature);
         let err = unverified_byzantine_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
         assert!(matches!(err, Err(Error::NotWellFormed)));
+    }
+
+    #[test]
+    fn vote_message_test() {
+        let vi = VoteInfo {
+            id: BlockId(Hash([0x00_u8; 32])),
+            round: Round(0),
+            parent_id: BlockId(Hash([0x00_u8; 32])),
+            parent_round: Round(0),
+            seq_num: SeqNum(0),
+        };
+        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+
+        let v = Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        };
+
+        let mut privkey: [u8; 32] = [127; 32];
+        let keypair = KeyPair::from_bytes(&mut privkey.clone()).unwrap();
+        let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
+
+        let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeypair);
+
+        let expected_vote_info_hash = vm.vote.ledger_commit_info.vote_info_hash;
+
+        let svm = Verified::<SignatureType, _>::new::<HasherType>(vm, &keypair);
+        let (author, signature, orig_vm) = svm.destructure();
+        let msg = HasherType::hash_object(&vm);
+        assert_eq!(
+            signature.recover_pubkey(msg.as_ref()).unwrap(),
+            keypair.pubkey()
+        );
+        assert_eq!(author, NodeId(keypair.pubkey()));
+        assert_eq!(
+            expected_vote_info_hash,
+            orig_vm.vote.ledger_commit_info.vote_info_hash
+        );
     }
 }
