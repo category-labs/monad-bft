@@ -37,7 +37,9 @@ macro_rules! inc_count {
 /// (printing) the counter messages
 ///
 /// ```
+/// use tracing_core::LevelFilter;
 /// use tracing_subscriber::{filter::Targets, prelude::*, Registry};
+/// use monad_tracing_counter::{counter::{CounterLayer, MetricFilter}, inc_count};
 ///
 /// let fmt_layer = tracing_subscriber::fmt::layer();
 /// let counter_layer = CounterLayer::new();
