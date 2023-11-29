@@ -20,6 +20,7 @@ use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
+    validator_data::ValidatorData,
     voting::{ValidatorMapping, VoteInfo},
 };
 use monad_crypto::{
@@ -33,7 +34,7 @@ use monad_executor_glue::{
     LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
     TimerCommand,
 };
-use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant, ValidatorData};
+use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
 

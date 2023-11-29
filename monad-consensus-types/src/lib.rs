@@ -14,4 +14,5 @@ pub mod test_utils;
 pub mod timeout;
 pub mod transaction_validator;
 pub mod validation;
+pub mod validator_data;
 pub mod voting;

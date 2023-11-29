@@ -11,9 +11,10 @@ use monad_consensus_types::{
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
+    validator_data::ValidatorData,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant, ValidatorData};
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
 #[derive(Clone)]
 pub enum RouterCommand<OM> {
