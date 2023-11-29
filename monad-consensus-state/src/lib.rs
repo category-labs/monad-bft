@@ -250,6 +250,10 @@ where
             .collect()
     }
 
+    /// Proposals can include NULL blocks which are blocks containing 0 transactions,
+    /// an empty list.
+    /// NULL block proposals are not required to validate the state_root field of the
+    /// proposal's payload
     fn handle_proposal_message<H: Hasher>(
         &mut self,
         author: NodeId,
