@@ -175,7 +175,10 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
             ConsensusEvent::FetchedTxs(p, t) => {
-                f.debug_tuple("FetchedTxs").field(p).field(t).finish()
+                f.debug_tuple("FetchedTxs")
+                    .field(p)
+                    // .field(t)
+                    .finish()
             }
             ConsensusEvent::FetchedFullTxs(p, _) => f
                 .debug_struct("FetchedFullTxs")

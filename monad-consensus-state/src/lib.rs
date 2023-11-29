@@ -284,8 +284,8 @@ where
             }
             StateRootResult::Success => {
                 debug!(
-                    "Received Proposal Message, fetching txns: txns={:?}",
-                    p.block.payload.txns
+                    "Received Proposal Message, fetching txns: txns_len={}",
+                    p.block.payload.txns.as_bytes().len()
                 );
                 inc_count!(rx_proposal);
                 vec![ConsensusCommand::FetchFullTxs(
