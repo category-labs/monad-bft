@@ -49,3 +49,9 @@ impl EthAddress {
         Self(H160(bytes))
     }
 }
+
+impl AsRef<[u8]> for EthAddress {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}

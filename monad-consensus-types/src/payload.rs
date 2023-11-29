@@ -9,6 +9,7 @@ use crate::certificate_signature::{CertificateKeyPair, CertificateSignature};
 
 const BLOOM_SIZE: usize = 256;
 
+/// Type to represent the Ethereum Logs Bloom Filter
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Bloom(pub [u8; BLOOM_SIZE]);
 
@@ -24,6 +25,7 @@ impl AsRef<[u8]> for Bloom {
     }
 }
 
+/// Ethereum unit of gas
 #[repr(transparent)]
 #[derive(Debug, Default, Copy, Clone, Eq, Ord, PartialEq, PartialOrd, AsBytes)]
 pub struct Gas(pub u64);
@@ -34,6 +36,9 @@ impl AsRef<[u8]> for Gas {
     }
 }
 
+/// A subset of Ethereum block header fields that are included in consensus
+/// proposals. The values are populated from the results of executing the
+/// previous block
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionArtifacts {
     pub parent_hash: Hash,
@@ -64,10 +69,11 @@ impl Hashable for ExecutionArtifacts {
         state.update(self.transactions_root);
         state.update(self.receipts_root);
         state.update(self.logs_bloom);
-        state.update(self.gas_used.as_bytes());
+        state.update(self.gas_used);
     }
 }
 
+/// RLP encoded list of the 256-bit hashes of a set of Eth transactions
 #[derive(Clone, PartialEq, Eq)]
 pub struct TransactionHashList(Arc<Vec<u8>>);
 
@@ -93,6 +99,13 @@ impl std::fmt::Debug for TransactionHashList {
     }
 }
 
+impl AsRef<[u8]> for TransactionHashList {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+/// RLP encoded list of a set of full RLP encoded Eth transactions
 // Do NOT derive or implement Default!
 // Empty byte array is not valid RLP
 #[derive(Clone, PartialEq, Eq)]
@@ -113,6 +126,8 @@ impl std::fmt::Debug for FullTransactionList {
         f.debug_tuple("Txns").field(&self.0).finish()
     }
 }
+
+/// randao_reveal uses a proposer's public key to contribute randomness
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct RandaoReveal(pub Vec<u8>);
 
@@ -132,6 +147,14 @@ impl RandaoReveal {
     }
 }
 
+impl AsRef<[u8]> for RandaoReveal {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+/// Contents of a proposal that are part of the Monad protocol
+/// but not in the core bft consensus protocol
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
     pub txns: TransactionHashList,
@@ -143,43 +166,76 @@ pub struct Payload {
 
 impl Hashable for Payload {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.txns.0.as_bytes());
+        state.update(&self.txns);
         self.header.hash(state);
-        state.update(self.seq_num.as_bytes());
-        state.update(self.beneficiary.0.as_bytes());
-        state.update(self.randao_reveal.0.as_bytes());
+        state.update(self.seq_num);
+        state.update(self.beneficiary);
+        state.update(&self.randao_reveal);
     }
 }
 
+/// Provides methods for Consensus to validate state root hashes
 pub trait StateRootValidator {
+    /// Create a new StateRootValidator with the size of the expected
+    /// delay gap between the current Proposal's state root and the state
+    /// root to check against
     fn new(delay: SeqNum) -> Self;
+
+    /// Add the state root hash that corresponds to the sequence number
     fn add_state_root(&mut self, seq_num: SeqNum, root_hash: Hash);
+
+    /// Given the current sequence number, retrieve the state root hash
+    /// that should be used in the current Proposal (accounting for the delay gap)
     fn get_next_state_root(&self, seq_num: SeqNum) -> Option<Hash>;
+
+    /// Given the current sequence number, remove old state root hashes
+    /// that won't be needed anymore (accounting for the delay gap)
     fn remove_old_roots(&mut self, latest_seq_num: SeqNum);
+
+    /// Check the validity of the state root hash in a Proposal from the sequence
+    /// number and state root hash it includes
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: Hash) -> StateRootResult;
 }
 
+/// The outcomes of validating state root hashes
 #[derive(Debug, PartialEq)]
 pub enum StateRootResult {
+    /// State root hash is valid
     Success,
+
+    /// State root hash does not match our expected value
     Mismatch,
+
+    /// State root hash is from a sequence number that exceeds
+    /// what this node has executed. Implies that this node has
+    /// fallen behind
     OutOfRange,
+
+    /// State root hash for the sequence number is missing. Implies
+    /// this node has missed an update from execution
     Missing,
 }
 
+/// Special hash value used in proposals for the first delay-num blocks
+/// from genesis when there isn't a valid state root hash to include.
+const INITIAL_DELAY_STATE_ROOT_HASH: Hash = Hash([0; 32]);
+
 #[derive(Debug, Clone)]
 pub struct StateRoot {
-    // Map executed block seq_num to root hash
+    /// Map executed block seq_num to root hash
     pub root_hashes: BTreeMap<SeqNum, Hash>,
-    // Delay gap between root hash to use for current block
-    // validation
+
+    /// Delay gap between root hash to use for current block
+    /// validation
     pub delay: SeqNum,
 }
 
 impl StateRootValidator for StateRoot {
+    /// creates StateRoot with an initial root hash entry for the genesis block which
+    /// hash sequence number 0
     fn new(delay: SeqNum) -> Self {
         StateRoot {
-            root_hashes: BTreeMap::from([(SeqNum(0), Hash([0; 32]))]),
+            root_hashes: BTreeMap::from([(SeqNum(0), INITIAL_DELAY_STATE_ROOT_HASH)]),
             delay,
         }
     }
@@ -188,9 +244,13 @@ impl StateRootValidator for StateRoot {
         self.root_hashes.insert(seq_num, root_hash);
     }
 
+    /// Gets the state root hash that should be used in a proposal for a given
+    /// sequence number (accounts for the delay gap)
+    /// If the sequence number is less than the delay gap (the initial delay-gap num
+    /// blocks of the network), the INITIAL_DELAY_STATE_ROOT_HASH is used
     fn get_next_state_root(&self, seq_num: SeqNum) -> Option<Hash> {
         if self.delay > seq_num {
-            return Some(Hash([0; 32]));
+            return Some(INITIAL_DELAY_STATE_ROOT_HASH);
         }
 
         self.root_hashes.get(&(seq_num - self.delay)).copied()
@@ -204,14 +264,12 @@ impl StateRootValidator for StateRoot {
             .retain(|k, _| *k > (latest_seq_num - self.delay));
     }
 
+    /// If the sequence number is less than the delay gap (the initial delay-gap num
+    /// blocks of the network), the INITIAL_DELAY_STATE_ROOT_HASH is the expected
+    /// state root hash
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: Hash) -> StateRootResult {
-        // FIXME-1:
-        // for the first N blocks, there are no state roots so we need to decide
-        // how to validate them -- right now, assuming anything with hash=0x0 is
-        // fine
         if self.delay > seq_num {
-            // TODO-1: Magic Value Hash to keep network moving?
-            if Hash([0; 32]) == block_state_root_hash {
+            if block_state_root_hash == INITIAL_DELAY_STATE_ROOT_HASH {
                 return StateRootResult::Success;
             } else {
                 return StateRootResult::Mismatch;
