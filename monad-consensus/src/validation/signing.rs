@@ -724,6 +724,65 @@ mod test {
     }
 
     #[test]
+    fn empty_tc() {
+        let (keypairs, certkeys, vset, vmap) =
+            create_keys_w_validators::<SignatureCollectionType>(2);
+
+        let tc = TimeoutCertificate {
+            round: Round(3),
+            high_qc_rounds: vec![],
+        };
+
+        let vi = VoteInfo {
+            id: BlockId(Hash([0x00_u8; 32])),
+            round: Round(3),
+            parent_id: BlockId(Hash([0x01_u8; 32])),
+            parent_round: Round(2),
+            seq_num: SeqNum(0),
+        };
+
+        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+
+        let msg = HasherType::hash_object(&lci);
+        let mut sigs = Vec::new();
+
+        for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
+            let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), certkey);
+            sigs.push((NodeId(key.pubkey()), s));
+        }
+
+        let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
+
+        let qc = QuorumCertificate::new::<HasherType>(
+            QcInfo {
+                vote: vi,
+                ledger_commit: lci,
+            },
+            sig_col,
+        );
+
+        let tmo_info = TimeoutInfo::<SignatureCollectionType> {
+            round: Round(4),
+            high_qc: qc,
+        };
+
+        let tmo = Timeout::<SignatureCollectionType> {
+            tminfo: tmo_info,
+            last_round_tc: Some(tc),
+        };
+
+        let tmo_msg =
+            TimeoutMessage::<SignatureCollectionType>::new::<HasherType>(tmo, &certkeys[0]);
+        let signed_tmo_msg = Verified::<SignatureType, _>::new::<HasherType>(tmo_msg, &keypairs[0]);
+        let (author, signature, tm) = signed_tmo_msg.destructure();
+
+        let unverified_tmo_msg = Unverified::new(tm, signature);
+        let err = unverified_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
+
+        assert!(matches!(err, Err(Error::InsufficientStake)));
+    }
+
+    #[test]
     fn old_high_qc_in_timeout_msg() {
         let (keypairs, certkeys, vset, vmap) =
             create_keys_w_validators::<SignatureCollectionType>(2);
