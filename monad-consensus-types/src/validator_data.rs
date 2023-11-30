@@ -18,14 +18,14 @@ impl<SCT: SignatureCollection> ValidatorData<SCT> {
     pub fn get_stakes(&self) -> Vec<(NodeId, Stake)> {
         self.0
             .iter()
-            .map(|(node, stake, _)| (node.clone(), stake.clone()))
+            .map(|(node, stake, _)| (*node, *stake))
             .collect()
     }
 
     pub fn get_pubkeys(&self) -> Vec<(NodeId, SignatureCollectionPubKeyType<SCT>)> {
         self.0
             .iter()
-            .map(|(node, _, pubkey)| (node.clone(), pubkey.clone()))
+            .map(|(node, _, pubkey)| (*node, *pubkey))
             .collect()
     }
 }
