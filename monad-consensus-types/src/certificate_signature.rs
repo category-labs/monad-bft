@@ -4,7 +4,6 @@ use monad_crypto::{
     secp256k1::{Error as SecpError, KeyPair as SecpKeyPair, PubKey as SecpPubKey, SecpSignature},
     NopSignature,
 };
-use monad_proto::proto::basic::ProtoPubkey;
 
 use crate::message_signature::MessageSignature;
 
