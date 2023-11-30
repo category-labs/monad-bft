@@ -111,39 +111,29 @@ fn test_proposal_missing_tc() {
     );
 }
 
-// TODO-4: refactor these test with create_keys_w_valdiator
 #[test]
 fn test_proposal_author_not_sender() {
-    let mut vlist = Vec::new();
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(2);
 
-    let author_keypair = get_key(6);
-    let sender_keypair = get_key(7);
-
-    vlist.push((NodeId(author_keypair.pubkey()), Stake(0)));
-    vlist.push((NodeId(sender_keypair.pubkey()), Stake(0)));
-
+    let author_keypair = &keypairs[0];
+    let sender_keypair = &keypairs[1];
     let author = NodeId(author_keypair.pubkey());
+
     let proposal = ProposalMessage {
         block: setup_block(
             author,
             Round(234),
             Round(233),
-            vlist
+            keypairs
                 .iter()
-                .map(|(node_id, _)| node_id.0)
+                .map(|keypair| keypair.pubkey())
                 .collect::<Vec<_>>()
                 .as_ref(),
         ),
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &author_keypair);
-
-    let vset = ValidatorSet::new(vlist).unwrap();
-    let vmap = ValidatorMapping::new(vec![
-        (NodeId(author_keypair.pubkey()), author_keypair.pubkey()),
-        (NodeId(sender_keypair.pubkey()), sender_keypair.pubkey()),
-    ]);
+    let sp = TestSigner::sign_object::<HasherType, _>(proposal, author_keypair);
     assert_eq!(
         sp.verify::<HasherType, _>(&vset, &vmap, &sender_keypair.pubkey())
             .unwrap_err(),
