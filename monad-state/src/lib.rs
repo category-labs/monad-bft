@@ -434,9 +434,15 @@ where
                         };
                         let (author, _, verified_message) = verified_message.destructure();
                         match verified_message {
-                            ConsensusMessage::Proposal(msg) => self
-                                .consensus
-                                .handle_proposal_message::<HasherType>(author, msg),
+                            ConsensusMessage::Proposal(msg) => {
+                                self.consensus.handle_proposal_message::<HasherType, _, _>(
+                                    author,
+                                    msg,
+                                    &self.validator_set,
+                                    &self.validator_mapping,
+                                    &self.leader_election,
+                                )
+                            }
                             ConsensusMessage::Vote(msg) => {
                                 self.consensus.handle_vote_message::<HasherType, _, _>(
                                     author,

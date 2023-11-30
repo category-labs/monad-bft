@@ -132,10 +132,13 @@ where
 
     fn handle_timeout_expiry<H: Hasher>(&mut self) -> Vec<PacemakerCommand<SCT>>;
 
-    fn handle_proposal_message<H: Hasher>(
+    fn handle_proposal_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
         p: ProposalMessage<SCT>,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
@@ -250,27 +253,95 @@ where
             .collect()
     }
 
-    /// Proposals can include NULL blocks which are blocks containing 0 transactions,
-    /// an empty list.
-    /// NULL block proposals are not required to validate the state_root field of the
-    /// proposal's payload
-    fn handle_proposal_message<H: Hasher>(
+    /// Handle the proposal messages with transaction hashes
+    ///
+    /// It processes the QC and TC in the message. We can keep entering new
+    /// rounds  and commit earlier blocks using the QC if the mempool is faulty
+    /// and doesn't return a full proposal.
+    ///
+    /// Checking the leader schedule and `RandaoReveal` here avoids the cost to
+    /// fetch mempool if those are invalid
+    ///
+    /// Proposals can include NULL blocks which are blocks containing 0
+    /// transactions, an empty list.
+    ///
+    /// NULL block proposals are not required to validate the state_root field
+    /// of the proposal's payload
+    fn handle_proposal_message<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
         p: ProposalMessage<SCT>,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
+        debug!("Handle proposal: {:?}", p);
+        inc_count!(handle_proposal);
+        let mut cmds = vec![];
+
+        let process_certificate_cmds = self.process_certificate_qc(&p.block.qc, validators);
+        cmds.extend(process_certificate_cmds);
+
+        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
+            debug!("Handled proposal with TC: {:?}", last_round_tc);
+            inc_count!(proposal_with_tc);
+            let advance_round_cmds = self
+                .pacemaker
+                .advance_round_tc(last_round_tc)
+                .map(Into::into)
+                .into_iter();
+            cmds.extend(advance_round_cmds);
+        }
+
+        let round = self.pacemaker.get_current_round();
+        let block_round_leader = election.get_leader(p.block.get_round(), validators.get_list());
+
+        if author != block_round_leader || p.block.get_author() != block_round_leader {
+            debug!(
+                "Invalid proposal: expected-round={:?} \
+                round={:?} \
+                expected-leader={:?} \
+                author={:?} \
+                block-author={:?}",
+                round,
+                p.block.get_round(),
+                block_round_leader,
+                author,
+                p.block.get_author()
+            );
+            inc_count!(invalid_proposal_round_leader);
+            return cmds;
+        }
+
+        let author_pubkey = validator_mapping
+            .map
+            .get(&author)
+            .expect("proposal author exists in validator_mapping");
+
+        if let Err(e) = p
+            .block
+            .payload
+            .randao_reveal
+            .verify::<SCT::SignatureType>(p.block.get_round(), author_pubkey)
+        {
+            warn!("Invalid randao_reveal signature, reason: {:?}", e);
+            inc_count!(failed_verify_randao_reveal_signature);
+            return cmds;
+        };
+
         // NULL blocks are not required to have state root hashes
         if p.block.payload.txns == TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]) {
             debug!("Received empty block: block={:?}", p.block);
             inc_count!(rx_empty_block);
-            return vec![ConsensusCommand::FetchFullTxs(
+            cmds.push(ConsensusCommand::FetchFullTxs(
                 TransactionHashList::default(),
                 FetchFullTxParams {
                     author,
                     p_block: p.block,
                     p_last_round_tc: p.last_round_tc,
                 },
-            )];
+            ));
+            return cmds;
         }
 
         match self
@@ -281,13 +352,11 @@ where
             // to try and catch up faster. For now, just wait
             StateRootResult::OutOfRange => {
                 inc_count!(rx_execution_lagging);
-                vec![]
             }
             // Don't vote and locally timeout if the proposed state root does not match
             // or if state root is missing
             StateRootResult::Missing | StateRootResult::Mismatch => {
                 inc_count!(rx_bad_state_root);
-                vec![]
             }
             StateRootResult::Success => {
                 debug!(
@@ -295,18 +364,24 @@ where
                     p.block.payload.txns
                 );
                 inc_count!(rx_proposal);
-                vec![ConsensusCommand::FetchFullTxs(
+                cmds.push(ConsensusCommand::FetchFullTxs(
                     p.block.payload.txns.clone(),
                     FetchFullTxParams {
                         author,
                         p_block: p.block,
                         p_last_round_tc: p.last_round_tc,
                     },
-                )]
+                ));
             }
         }
+        cmds
     }
 
+    /// Handles the proposal block with the full transaction plaintext
+    ///
+    /// TODO-2: discuss whether we can skip processing the certificates and
+    /// RandaoReveal as those are duplicated in
+    /// [ConsensusState::handle_proposal_message]
     fn handle_proposal_message_full<H: Hasher, VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
@@ -1016,7 +1091,7 @@ mod test {
     }
 
     #[test]
-    fn enter_proposalmsg_round() {
+    fn enter_proposal_msg_round() {
         let (keys, certkeys, valset, valmap, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
@@ -1034,26 +1109,19 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+        assert_eq!(verified_message.block.round, Round(1));
+
+        // consensus is in Round(1) on start up
+        // so we don't expect Schedule command
+        state.handle_proposal_message::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
-        });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
-        assert!(result.is_some());
 
         let p2 = propgen.next_proposal(
             &keys,
@@ -1065,26 +1133,22 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+        assert_eq!(verified_message.block.round, Round(2));
+
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
-        });
+
+        let result = cmds
+            .iter()
+            .find(|cmd| matches!(cmd, ConsensusCommand::Schedule { .. }));
+        assert!(result.is_some());
 
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
-        assert!(result.is_some());
 
         for _ in 0..4 {
             propgen.next_proposal(
@@ -1107,14 +1171,20 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p7.destructure();
-        state.handle_proposal_message_full::<HasherType, _, _>(
+        assert_eq!(verified_message.block.round, Round(7));
+
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
             author,
             verified_message,
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
             &valset,
             &valmap,
             &election,
         );
+
+        let result = cmds
+            .iter()
+            .find(|cmd| matches!(cmd, ConsensusCommand::Schedule { .. }));
+        assert!(result.is_some());
 
         assert_eq!(state.pacemaker.get_current_round(), Round(7));
     }
@@ -2073,7 +2143,13 @@ mod test {
 
         let (author, _, verified_message) = p1.destructure();
 
-        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message);
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
+            author,
+            verified_message,
+            &valset,
+            &valmap,
+            &election,
+        );
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
@@ -2122,7 +2198,13 @@ mod test {
         );
 
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message);
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
+            author,
+            verified_message,
+            &valset,
+            &valmap,
+            &election,
+        );
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
@@ -2163,7 +2245,13 @@ mod test {
         // p0 should have seqnum 1 and therefore only require state_root 0
         // the state_root 0's hash should be Hash([0x00; 32])
         state.handle_state_root_update(SeqNum(0), Hash([0x00; 32]));
-        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            &valset,
+            &valmap,
+            &election,
+        );
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
@@ -2196,7 +2284,13 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
         state.handle_state_root_update(SeqNum(1), Hash([0x99; 32]));
-        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            &valset,
+            &valmap,
+            &election,
+        );
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
@@ -2232,13 +2326,25 @@ mod test {
 
         let (author, _, verified_message) = p2.destructure();
         state.handle_state_root_update(SeqNum(2), Hash([0xbb; 32]));
-        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            &valset,
+            &valmap,
+            &election,
+        );
+
+        let lc = cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(lc.is_some());
+
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
         assert!(result.is_some());
 
-        let p2_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
@@ -2246,10 +2352,6 @@ mod test {
             &valmap,
             &election,
         );
-        let lc = p2_cmds
-            .iter()
-            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
-        assert!(lc.is_some());
 
         let p3 = proposal_gen.next_proposal(
             &keys,
@@ -2270,13 +2372,25 @@ mod test {
 
         let (author, _, verified_message) = p3.destructure();
         state.handle_state_root_update(SeqNum(3), Hash([0xcc; 32]));
-        let cmds = state.handle_proposal_message::<HasherType>(author, verified_message.clone());
+        let cmds = state.handle_proposal_message::<HasherType, _, _>(
+            author,
+            verified_message.clone(),
+            &valset,
+            &valmap,
+            &election,
+        );
+
+        let lc = cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
+        assert!(lc.is_some());
+
         let result = cmds
             .iter()
             .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
         assert!(result.is_some());
 
-        let p3_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+        state.handle_proposal_message_full::<HasherType, _, _>(
             author,
             verified_message,
             FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
@@ -2284,10 +2398,6 @@ mod test {
             &valmap,
             &election,
         );
-        let lc = p3_cmds
-            .iter()
-            .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
-        assert!(lc.is_some());
 
         // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
         // state_root_validator had updates for 0, 1, 2, 3
