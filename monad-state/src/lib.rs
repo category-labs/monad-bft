@@ -327,6 +327,7 @@ where
             Self::SignatureCollection,
         >,
     > {
+        let _event_span = tracing::info_span!("event_span", ?event).entered();
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {

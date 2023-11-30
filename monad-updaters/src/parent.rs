@@ -33,6 +33,7 @@ where
 {
     type Command = Command<E, OM, B, C, S>;
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
+        let _exec_span = tracing::info_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
             timer_cmds,

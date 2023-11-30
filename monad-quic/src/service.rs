@@ -129,7 +129,12 @@ where
         for command in commands {
             match command {
                 RouterCommand::Publish { target, message } => {
-                    let message = message.serialize();
+                    let message = {
+                        let mut _ser_span = tracing::info_span!("serialize_span").entered();
+                        message.serialize()
+                    };
+                    let mut _publish_span =
+                        tracing::info_span!("publish_span", message_len = message.len()).entered();
                     self.gossip.send(time, target, message);
 
                     if let Some(waker) = self.waker.take() {
@@ -159,6 +164,8 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        let mut _router_poll_span = tracing::info_span!("router_poll_span").entered();
+
         let this = self.deref_mut();
         if this.waker.is_none() {
             this.waker = Some(cx.waker().clone());
@@ -271,11 +278,26 @@ where
                             }
                         }
                         Some(GossipEvent::Emit(from, app_message)) => {
-                            let message = match M::deserialize(&app_message) {
-                                Ok(m) => m,
-                                Err(e) => todo!("err deserializing message: {:?}", e),
+                            let message = {
+                                let mut _deser_span = tracing::info_span!(
+                                    "deserialize_span",
+                                    message_len = app_message.len()
+                                )
+                                .entered();
+                                match M::deserialize(&app_message) {
+                                    Ok(m) => m,
+                                    Err(e) => todo!("err deserializing message: {:?}", e),
+                                }
                             };
-                            return Poll::Ready(Some(message.event(from)));
+                            let event = {
+                                let mut _message_to_event_span = tracing::info_span!(
+                                    "message_to_event_span",
+                                    message_len = app_message.len()
+                                )
+                                .entered();
+                                message.event(from)
+                            };
+                            return Poll::Ready(Some(event));
                         }
                         None => {}
                     }

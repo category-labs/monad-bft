@@ -23,6 +23,7 @@ monad-validator = { path = "../monad-validator" }
 
 bytes = { workspace = true }
 ref-cast = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 monad-tracing-counter = { path = "../monad-tracing-counter" }

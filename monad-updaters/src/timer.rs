@@ -78,6 +78,8 @@ where
 {
     type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut _timer_poll_span = tracing::info_span!("timer_poll_span").entered();
+
         let this = self.deref_mut();
 
         // its possible to get Poll::Ready(None) because the join_set might be empty

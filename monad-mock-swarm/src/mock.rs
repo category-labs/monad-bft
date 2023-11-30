@@ -489,6 +489,8 @@ where
     type Item = MonadEvent<ST, SCT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut _mempool_poll_span = tracing::info_span!("mempool_poll_span").entered();
+
         let this = self.deref_mut();
 
         if let Some(s) = this.fetch_txs_state.take() {

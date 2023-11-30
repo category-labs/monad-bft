@@ -33,7 +33,7 @@ use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
-use tracing::{event, instrument::WithSubscriber, Level};
+use tracing::{event, instrument::WithSubscriber, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::executor::{
@@ -412,13 +412,12 @@ async fn run<MessageSignatureType, SignatureCollectionType>(
         ledger_span.set_parent(cx.clone());
     }
 
-    while let Some(event) = executor.next().await {
-        let commands = {
+    while let Some(event) = executor.next().instrument(ledger_span.clone()).await {
+        {
             let _ledger_span = ledger_span.enter();
-            let _event_span = tracing::info_span!("event_span", ?event).entered();
-            state.update(event)
-        };
-        executor.exec(commands);
+            let commands = state.update(event);
+            executor.exec(commands);
+        }
         let ledger_len = executor.ledger().get_blocks().len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;
