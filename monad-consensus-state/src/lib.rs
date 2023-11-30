@@ -335,7 +335,7 @@ where
         }
 
         let round = self.pacemaker.get_current_round();
-        let leader = election.get_leader(round, validators.get_list());
+        let block_round_leader = election.get_leader(p.block.get_round(), validators.get_list());
 
         let author_pubkey = validator_mapping
             .map
@@ -361,11 +361,9 @@ where
             return cmds;
         };
 
-        self.pending_block_tree
-            .add(full_block.clone())
-            .expect("Failed to add block to blocktree");
-
-        if full_block.get_round() != round || author != leader || full_block.get_author() != leader
+        if full_block.get_round() > round
+            || author != block_round_leader
+            || full_block.get_author() != block_round_leader
         {
             debug!(
                 "Invalid proposal: expected-round={:?} \
@@ -375,11 +373,26 @@ where
                 block-author={:?}",
                 round,
                 full_block.get_round(),
-                leader,
+                block_round_leader,
                 author,
                 full_block.get_author()
             );
             inc_count!(invalid_proposal_round_leader);
+            return cmds;
+        }
+
+        self.pending_block_tree
+            .add(full_block.clone())
+            .expect("Failed to add block to blocktree");
+
+        if full_block.get_round() != round {
+            debug!(
+                "Out-of-order proposal: expected-round={:?} \
+                round={:?}",
+                round,
+                full_block.get_round(),
+            );
+            inc_count!(out_of_order_proposals);
             return cmds;
         }
 
@@ -787,12 +800,14 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus::{
-        messages::message::{BlockSyncResponseMessage, TimeoutMessage, VoteMessage},
+        messages::message::{
+            BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage,
+        },
         pacemaker::PacemakerCommand,
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{BlockType, UnverifiedFullBlock},
+        block::{Block, BlockType, UnverifiedFullBlock},
         certificate_signature::CertificateKeyPair,
         ledger::LedgerCommitInfo,
         multi_sig::MultiSig,
@@ -2680,5 +2695,98 @@ mod test {
             .collect();
         assert_eq!(req.len(), 1);
         assert_eq!(req[0].1, blocks[3].get_id());
+    }
+
+    /// This test asserts that proposal not from the round leader is not added
+    /// to the blocktree
+    ///
+    /// 1. state[0] processes a valid proposal `p1``, accepts it and adds it to
+    ///    the blocktree. There are 2 blocks in the blocktree
+    ///
+    /// 2. state[0] processes an invalid proposal `invalid_p2`. It's rejected
+    ///    and not added to the block tree. It emits an event for
+    ///    `invalid_proposal_round_leader`
+    #[traced_test]
+    #[test]
+    fn test_reject_non_leader_proposal() {
+        let num_state = 4;
+        let (keys, certkeys, valset, valmap, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_state as u32,
+            );
+
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+
+        let verified_p1 = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (_, _, p1) = verified_p1.destructure();
+
+        states[0].handle_proposal_message_full::<HasherType, _, _>(
+            p1.block.author,
+            p1,
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            &valset,
+            &valmap,
+            &election,
+        );
+        assert_eq!(states[0].blocktree().tree().len(), 2);
+
+        let verified_p2 = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &valset,
+            &election,
+            &valmap,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (_, _, p2) = verified_p2.destructure();
+
+        let invalid_author = election.get_leader(Round(4), valset.get_list());
+        assert!(invalid_author != NodeId(states[0].get_keypair().pubkey()));
+        assert!(invalid_author != p2.block.author);
+        let invalid_b2 = Block::new::<HasherType>(
+            invalid_author,
+            p2.block.round,
+            &p2.block.payload,
+            &p2.block.qc,
+        );
+        let invalid_p2 = ProposalMessage {
+            block: invalid_b2,
+            last_round_tc: None,
+        };
+
+        states[0].handle_proposal_message_full::<HasherType, _, _>(
+            invalid_p2.block.author,
+            invalid_p2,
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            &valset,
+            &valmap,
+            &election,
+        );
+
+        // p2 is not added because author is not the round leader
+        assert_eq!(states[0].blocktree().tree().len(), 2);
+
+        logs_assert(|lines: &[&str]| {
+            match lines
+                .iter()
+                .filter(|line| line.contains("monotonic_counter.invalid_proposal_round_leader"))
+                .count()
+            {
+                1 => Ok(()),
+                n => Err(format!("Expected count 1 got {}", n)),
+            }
+        });
     }
 }
