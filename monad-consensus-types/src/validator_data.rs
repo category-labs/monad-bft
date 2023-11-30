@@ -1,41 +1,38 @@
 use monad_proto::{
     error::ProtoError,
-    proto::{validator_set::{ProtoValidatorSetData, ValidatorMapEntry}, basic::ProtoPubkey},
+    proto::{
+        basic::ProtoPubkey,
+        validator_set::{ProtoValidatorSetData, ValidatorMapEntry},
+    },
 };
 use monad_types::{NodeId, Stake};
 
-use crate::signature_collection::{SignatureCollectionPubKeyType, SignatureCollection};
+use crate::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatorData<SCT: SignatureCollection>(
-    pub Vec<(NodeId, Stake, SignatureCollectionPubKeyType<SCT>)>
+    pub Vec<(NodeId, Stake, SignatureCollectionPubKeyType<SCT>)>,
 );
 
 impl<SCT: SignatureCollection> ValidatorData<SCT> {
-    pub fn get_stake_data(&self) -> Vec<(NodeId, Stake)> {
-        self
-        .0
-        .iter()
-        .map(|(node, stake, _)| {
-            (node.clone(), stake.clone())
-        })
-        .collect()
+    pub fn get_stakes(&self) -> Vec<(NodeId, Stake)> {
+        self.0
+            .iter()
+            .map(|(node, stake, _)| (node.clone(), stake.clone()))
+            .collect()
     }
 
     pub fn get_pubkeys(&self) -> Vec<(NodeId, SignatureCollectionPubKeyType<SCT>)> {
-        self
-        .0
-        .iter()
-        .map(|(node, _, pubkey)| {
-            (node.clone(), pubkey.clone())
-        })
-        .collect()
+        self.0
+            .iter()
+            .map(|(node, _, pubkey)| (node.clone(), pubkey.clone()))
+            .collect()
     }
 }
 
 impl<SCT: SignatureCollection> From<&ValidatorData<SCT>> for ProtoValidatorSetData
 where
-    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>
+    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
 {
     fn from(value: &ValidatorData<SCT>) -> Self {
         let vlist = value
@@ -53,7 +50,7 @@ where
 
 impl<SCT: SignatureCollection> TryFrom<ProtoValidatorSetData> for ValidatorData<SCT>
 where
-    ProtoPubkey: TryInto<SignatureCollectionPubKeyType<SCT>, Error = ProtoError>
+    ProtoPubkey: TryInto<SignatureCollectionPubKeyType<SCT>, Error = ProtoError>,
 {
     type Error = ProtoError;
     fn try_from(value: ProtoValidatorSetData) -> std::result::Result<Self, Self::Error> {

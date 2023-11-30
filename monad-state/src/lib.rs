@@ -88,7 +88,8 @@ where
         // FIXME-2 testnet_panic when that's implemented.
         // TODO-3 decide error handling behaviour for prod
         self.upcoming_validator_set = val_set.map(|v| {
-            VT::new(v.get_stake_data()).expect("ValidatorData should not have duplicates or invalid entries")
+            VT::new(v.get_stakes())
+                .expect("ValidatorData should not have duplicates or invalid entries")
         });
     }
 
@@ -101,10 +102,10 @@ where
         self.epoch = epoch;
         // FIXME-2 testnet_panic when that's implemented.
         // TODO-3 decide error handling behaviour for prod
-        self.validator_set = VT::new(val_set.get_stake_data())
+        self.validator_set = VT::new(val_set.get_stakes())
             .expect("ValidatorData should not have duplicates or invalid entries");
         self.upcoming_validator_set = Some(
-            VT::new(upcoming_val_set.get_stake_data())
+            VT::new(upcoming_val_set.get_stakes())
                 .expect("ValidatorData should not have duplicates or invalid entries"),
         );
     }
