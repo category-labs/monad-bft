@@ -78,7 +78,7 @@ where
         self.consensus.blocktree()
     }
 
-    fn advance_epoch(&mut self, val_set: Option<ValidatorData>) {
+    fn advance_epoch(&mut self, val_set: Option<ValidatorData<SCT>>) {
         self.epoch = self.epoch + Epoch(1);
 
         if let Some(vs) = self.upcoming_validator_set.take() {
@@ -88,23 +88,23 @@ where
         // FIXME-2 testnet_panic when that's implemented.
         // TODO-3 decide error handling behaviour for prod
         self.upcoming_validator_set = val_set.map(|v| {
-            VT::new(v.0).expect("ValidatorData should not have duplicates or invalid entries")
+            VT::new(v.get_stake_data()).expect("ValidatorData should not have duplicates or invalid entries")
         });
     }
 
     fn load_epoch(
         &mut self,
         epoch: Epoch,
-        val_set: ValidatorData,
-        upcoming_val_set: ValidatorData,
+        val_set: ValidatorData<SCT>,
+        upcoming_val_set: ValidatorData<SCT>,
     ) {
         self.epoch = epoch;
         // FIXME-2 testnet_panic when that's implemented.
         // TODO-3 decide error handling behaviour for prod
-        self.validator_set = VT::new(val_set.0)
+        self.validator_set = VT::new(val_set.get_stake_data())
             .expect("ValidatorData should not have duplicates or invalid entries");
         self.upcoming_validator_set = Some(
-            VT::new(upcoming_val_set.0)
+            VT::new(upcoming_val_set.get_stake_data())
                 .expect("ValidatorData should not have duplicates or invalid entries"),
         );
     }

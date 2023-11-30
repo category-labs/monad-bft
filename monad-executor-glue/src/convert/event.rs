@@ -3,9 +3,12 @@ use monad_consensus_types::{
 };
 use monad_proto::{error::ProtoError, proto::event::*};
 
-use crate::MonadEvent;
+use crate::{MonadEvent, ConsensusEvent};
 
-impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> for ProtoMonadEvent {
+impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> for ProtoMonadEvent
+where
+    for<'a> &'a ConsensusEvent<S, SCT>: Into<ProtoConsensusEvent>
+{
     fn from(value: &MonadEvent<S, SCT>) -> Self {
         let event = match value {
             MonadEvent::ConsensusEvent(msg) => proto_monad_event::Event::ConsensusEvent(msg.into()),
@@ -16,6 +19,8 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> fo
 
 impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoMonadEvent>
     for MonadEvent<S, SCT>
+where
+    ConsensusEvent<S, SCT>: TryFrom<ProtoConsensusEvent, Error = ProtoError>
 {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {

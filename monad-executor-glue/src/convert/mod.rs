@@ -1,9 +1,9 @@
 use monad_consensus_types::{
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
-    signature_collection::SignatureCollection,
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType}, validator_data::ValidatorData,
 };
-use monad_proto::{error::ProtoError, proto::event::*};
+use monad_proto::{error::ProtoError, proto::{event::*, validator_set::ProtoValidatorSetData, basic::ProtoPubkey}};
 use monad_types::TimeoutVariant;
 
 use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock};
@@ -13,6 +13,8 @@ pub mod interface;
 
 impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
     for ProtoConsensusEvent
+where
+    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>
 {
     fn from(value: &ConsensusEvent<S, SCT>) -> Self {
         let event = match value {
@@ -99,6 +101,8 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>
 
 impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
     for ConsensusEvent<S, SCT>
+where
+    ValidatorData<SCT>: TryFrom<ProtoValidatorSetData, Error = ProtoError>
 {
     type Error = ProtoError;
 

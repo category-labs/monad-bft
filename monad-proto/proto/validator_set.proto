@@ -5,8 +5,9 @@ package monad_proto.validator_set;
 import "basic.proto";
 
 message ValidatorMapEntry {
-    monad_proto.basic.ProtoNodeId key = 1;
-    monad_proto.basic.ProtoStake value = 2;
+    monad_proto.basic.ProtoNodeId node_id = 1;
+    monad_proto.basic.ProtoStake stake = 2;
+    monad_proto.basic.ProtoPubkey pubkey = 3;
 }
 
 message ProtoValidatorSetData {

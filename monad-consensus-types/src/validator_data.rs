@@ -1,45 +1,84 @@
 use monad_proto::{
     error::ProtoError,
-    proto::validator_set::{ProtoValidatorSetData, ValidatorMapEntry},
+    proto::{validator_set::{ProtoValidatorSetData, ValidatorMapEntry}, basic::ProtoPubkey},
 };
 use monad_types::{NodeId, Stake};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidatorData(pub Vec<(NodeId, Stake)>);
+use crate::signature_collection::{SignatureCollectionPubKeyType, SignatureCollection};
 
-impl From<&ValidatorData> for ProtoValidatorSetData {
-    fn from(value: &ValidatorData) -> Self {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatorData<SCT: SignatureCollection>(
+    pub Vec<(NodeId, Stake, SignatureCollectionPubKeyType<SCT>)>
+);
+
+impl<SCT: SignatureCollection> ValidatorData<SCT> {
+    pub fn get_stake_data(&self) -> Vec<(NodeId, Stake)> {
+        self
+        .0
+        .iter()
+        .map(|(node, stake, _)| {
+            (node.clone(), stake.clone())
+        })
+        .collect()
+    }
+
+    pub fn get_pubkeys(&self) -> Vec<(NodeId, SignatureCollectionPubKeyType<SCT>)> {
+        self
+        .0
+        .iter()
+        .map(|(node, _, pubkey)| {
+            (node.clone(), pubkey.clone())
+        })
+        .collect()
+    }
+}
+
+impl<SCT: SignatureCollection> From<&ValidatorData<SCT>> for ProtoValidatorSetData
+where
+    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>
+{
+    fn from(value: &ValidatorData<SCT>) -> Self {
         let vlist = value
             .0
             .iter()
-            .map(|(node, stake)| ValidatorMapEntry {
-                key: Some(node.into()),
-                value: Some(stake.into()),
+            .map(|(node, stake, pubkey)| ValidatorMapEntry {
+                node_id: Some(node.into()),
+                stake: Some(stake.into()),
+                pubkey: Some(pubkey.into()),
             })
             .collect::<Vec<ValidatorMapEntry>>();
         Self { validators: vlist }
     }
 }
 
-impl TryFrom<ProtoValidatorSetData> for ValidatorData {
+impl<SCT: SignatureCollection> TryFrom<ProtoValidatorSetData> for ValidatorData<SCT>
+where
+    ProtoPubkey: TryInto<SignatureCollectionPubKeyType<SCT>, Error = ProtoError>
+{
     type Error = ProtoError;
     fn try_from(value: ProtoValidatorSetData) -> std::result::Result<Self, Self::Error> {
         let mut vlist = ValidatorData(Vec::new());
         for v in value.validators {
             let a = v
-                .key
+                .node_id
                 .ok_or(Self::Error::MissingRequiredField(
                     "ValildatorMapEntry.key".to_owned(),
                 ))?
                 .try_into()?;
             let b = v
-                .value
+                .stake
+                .ok_or(Self::Error::MissingRequiredField(
+                    "ValildatorMapEntry.value".to_owned(),
+                ))?
+                .try_into()?;
+            let c = v
+                .pubkey
                 .ok_or(Self::Error::MissingRequiredField(
                     "ValildatorMapEntry.value".to_owned(),
                 ))?
                 .try_into()?;
 
-            vlist.0.push((a, b));
+            vlist.0.push((a, b, c));
         }
 
         Ok(vlist)
