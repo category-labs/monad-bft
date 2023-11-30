@@ -22,10 +22,10 @@ impl<SCT: SignatureCollection> ValidatorData<SCT> {
             .collect()
     }
 
-    pub fn get_pubkeys(&self) -> Vec<(NodeId, SignatureCollectionPubKeyType<SCT>)> {
+    pub fn get_cert_pubkeys(&self) -> Vec<(NodeId, SignatureCollectionPubKeyType<SCT>)> {
         self.0
             .iter()
-            .map(|(node, _, pubkey)| (*node, *pubkey))
+            .map(|(node, _, cert_pubkey)| (*node, *cert_pubkey))
             .collect()
     }
 }
@@ -38,10 +38,10 @@ where
         let vlist = value
             .0
             .iter()
-            .map(|(node, stake, pubkey)| ValidatorMapEntry {
+            .map(|(node, stake, cert_pubkey)| ValidatorMapEntry {
                 node_id: Some(node.into()),
                 stake: Some(stake.into()),
-                pubkey: Some(pubkey.into()),
+                cert_pubkey: Some(cert_pubkey.into()),
             })
             .collect::<Vec<ValidatorMapEntry>>();
         Self { validators: vlist }
@@ -59,19 +59,19 @@ where
             let a = v
                 .node_id
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ValildatorMapEntry.key".to_owned(),
+                    "ValildatorMapEntry.node_id".to_owned(),
                 ))?
                 .try_into()?;
             let b = v
                 .stake
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ValildatorMapEntry.value".to_owned(),
+                    "ValildatorMapEntry.stake".to_owned(),
                 ))?
                 .try_into()?;
             let c = v
-                .pubkey
+                .cert_pubkey
                 .ok_or(Self::Error::MissingRequiredField(
-                    "ValildatorMapEntry.value".to_owned(),
+                    "ValildatorMapEntry.cert_pubkey".to_owned(),
                 ))?
                 .try_into()?;
 

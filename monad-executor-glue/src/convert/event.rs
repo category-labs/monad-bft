@@ -1,13 +1,17 @@
 use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+    message_signature::MessageSignature,
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_proto::{error::ProtoError, proto::event::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::{basic::ProtoPubkey, event::*},
+};
 
-use crate::{ConsensusEvent, MonadEvent};
+use crate::MonadEvent;
 
 impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> for ProtoMonadEvent
 where
-    for<'a> &'a ConsensusEvent<S, SCT>: Into<ProtoConsensusEvent>,
+    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
 {
     fn from(value: &MonadEvent<S, SCT>) -> Self {
         let event = match value {
@@ -19,7 +23,7 @@ where
 
 impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoMonadEvent> for MonadEvent<S, SCT>
 where
-    ConsensusEvent<S, SCT>: TryFrom<ProtoConsensusEvent, Error = ProtoError>,
+    ProtoPubkey: TryInto<SignatureCollectionPubKeyType<SCT>, Error = ProtoError>,
 {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {
