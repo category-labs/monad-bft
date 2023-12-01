@@ -30,7 +30,6 @@ pub trait ValidatorSetType {
     fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self>
     where
         Self: Sized;
-    fn empty() -> Self;
     fn get_members(&self) -> &HashMap<NodeId, Stake>;
     fn get_list(&self) -> &Vec<NodeId>;
     fn len(&self) -> usize;
@@ -70,14 +69,6 @@ impl ValidatorSetType for ValidatorSet {
             validator_list: vlist,
             total_stake,
         })
-    }
-
-    fn empty() -> Self {
-        ValidatorSet {
-            validators: HashMap::new(),
-            validator_list: Vec::new(),
-            total_stake: Stake(0),
-        }
     }
 
     fn get_members(&self) -> &HashMap<NodeId, Stake> {
@@ -147,8 +138,9 @@ where
         self.validator_sets.get(epoch)
     }
 
-    pub fn insert(&mut self, epoch: Epoch, valset: VT) -> Option<VT> {
-        self.validator_sets.insert(epoch, valset)
+    pub fn insert(&mut self, epoch: Epoch, valset: VT) {
+        let res = self.validator_sets.insert(epoch, valset);
+        assert!(res.is_none());
     }
 }
 
@@ -156,7 +148,7 @@ where
 mod test {
     use monad_crypto::secp256k1::KeyPair;
     use monad_testutil::signing::{create_keys, get_key};
-    use monad_types::{Epoch, NodeId, Stake};
+    use monad_types::{NodeId, Stake};
 
     use super::ValidatorSet;
     use crate::validator_set::ValidatorSetType;

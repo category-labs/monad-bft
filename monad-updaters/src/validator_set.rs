@@ -2,7 +2,6 @@ use std::{
     marker::PhantomData,
     pin::Pin,
     task::{Context, Poll, Waker},
-    u64,
 };
 
 use futures::Stream;
@@ -15,17 +14,11 @@ use monad_types::{SeqNum, ValidatorData};
 
 pub struct ValidatorSetUpdater<ST, SCT> {
     validator_set: Option<ValidatorData>,
-    // TODO: call waker.wake() when exeuction sends
-    // validator set updates after executing block s
+    // TODO: call waker.wake() when exeuction sends or if execution
+    // already sent the validator set updates after executing this block
     epoch_boundary: SeqNum,
     waker: Option<Waker>,
     _marker: PhantomData<(ST, SCT)>,
-}
-
-impl<ST, SCT> ValidatorSetUpdater<ST, SCT> {
-    pub fn ready(&self) -> bool {
-        self.validator_set.is_some()
-    }
 }
 
 impl<ST, SCT> Default for ValidatorSetUpdater<ST, SCT> {
@@ -44,8 +37,8 @@ impl<ST, SCT> Executor for ValidatorSetUpdater<ST, SCT> {
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
-                ValidatorSetCommand::EpochEnd(s) => {
-                    self.epoch_boundary = s;
+                ValidatorSetCommand::EpochEnd(seq_num) => {
+                    self.epoch_boundary = seq_num;
                 }
             }
         }

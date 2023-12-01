@@ -311,23 +311,21 @@ impl<T: SignatureCollection> BlockTree<T> {
 
         let mut bid = b;
 
-        loop {
-            let Some(i) = self.tree.get(bid) else {
-                return None;
-            };
+        while let Some(tree_block) = self.tree.get(bid) {
+            txs.push(tree_block.block.get_block().payload.txns.clone());
 
-            txs.push(i.block.get_block().payload.txns.clone());
-
-            if self.root_match(i) {
+            if self.root_match(tree_block) {
                 return Some(txs);
             }
 
-            let Some(parent_id) = &i.parent else {
+            let Some(parent_id) = &tree_block.parent else {
                 return None;
             };
 
             bid = parent_id;
         }
+
+        None
     }
 
     pub fn get_blocks_on_path_to_root(&self, b: &BlockId) -> Option<Vec<FullBlock<T>>> {
@@ -335,23 +333,21 @@ impl<T: SignatureCollection> BlockTree<T> {
 
         let mut bid = b;
 
-        loop {
-            let Some(i) = self.tree.get(bid) else {
-                return None;
-            };
+        while let Some(tree_block) = self.tree.get(bid) {
+            blocks.push(tree_block.block.clone());
 
-            blocks.push(i.block.clone());
-
-            if self.root_match(i) {
+            if self.root_match(tree_block) {
                 return Some(blocks);
             }
 
-            let Some(parent_id) = &i.parent else {
+            let Some(parent_id) = &tree_block.parent else {
                 return None;
             };
 
             bid = parent_id;
         }
+
+        None
     }
 
     /// returns true if the parent block id in the QC of a block
