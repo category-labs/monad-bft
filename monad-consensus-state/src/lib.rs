@@ -625,7 +625,7 @@ where
         if qc.info.ledger_commit.commit_state_hash.is_some()
             && self
                 .pending_block_tree
-                .path_to_root(&qc.info.vote.parent_id)
+                .has_path_to_root(&qc.info.vote.parent_id)
         {
             let blocks_to_commit = self
                 .pending_block_tree

@@ -7,7 +7,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Round, SeqNum};
+use monad_types::{BlockId, Round};
 use ptree::{builder::TreeBuilder, print_tree};
 use tracing::trace;
 
@@ -16,13 +16,13 @@ type Result<T> = StdResult<T, BlockTreeError>;
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub enum BlockTreeError {
-    BlockNotExist(String),
+    BlockNotExist(BlockId),
 }
 
 impl fmt::Display for BlockTreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BlockNotExist(s) => write!(f, "Block not exist: {}", s),
+            Self::BlockNotExist(bid) => write!(f, "Block not exist: {:?}", bid),
         }
     }
 }
@@ -33,27 +33,42 @@ impl std::error::Error for BlockTreeError {
     }
 }
 
+/// Block in the block tree
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockTreeBlock<T> {
+    /// Consensus full block
     block: FullBlock<T>,
-    parent: Option<BlockId>,
+
+    /// Link to the parent block in the tree. `p_bid == block.qc.vote.block_id`
+    ///
+    /// Meaningless for the root node [BlockTree::root]
+    parent: BlockId,
+
+    /// Link to the child blocks in the tree
+    ///
+    /// Only used to print the tree top-down for debugging
     children: Vec<BlockId>,
 }
 
 impl<T: SignatureCollection> BlockTreeBlock<T> {
-    const CHILD_INDENT: &str = "    ";
-    fn new(b: FullBlock<T>, parent: Option<BlockId>) -> Self {
+    const CHILD_INDENT: &'static str = "    ";
+    fn new(b: FullBlock<T>) -> Self {
         BlockTreeBlock {
+            parent: b.get_parent_id(),
             block: b,
-            parent,
             children: Vec::new(),
         }
     }
 
+    /// Fetches the consensus block from the tree block
     pub fn get_block(&self) -> &FullBlock<T> {
         &self.block
     }
 
+    /// Recursively print the tree top-down. Child blocks are indented and
+    /// printed below their parent, like a numbered list
+    ///
+    /// Format: (round)block_id
     fn tree_fmt(
         &self,
         tree: &BlockTree<T>,
@@ -76,6 +91,7 @@ impl<T: SignatureCollection> BlockTreeBlock<T> {
         Ok(())
     }
 
+    /// An alternative tree formatting with [ptree]
     fn build_ptree<'a>(
         &self,
         tree: &BlockTree<T>,
@@ -98,6 +114,7 @@ impl<T: SignatureCollection> BlockTreeBlock<T> {
 pub enum RootKind {
     /// There is a valid root for the BlockTree which has been committed
     Rooted(BlockId),
+
     /// The BlockTree does not have a committed root but knows which round
     /// should be committed next. Multiple blocks could be added at the RootRound
     /// and the BlockTree should keep them all until one of the branches gets
@@ -109,7 +126,6 @@ pub enum RootKind {
 pub struct BlockTree<T> {
     pub root: RootKind,
     tree: HashMap<BlockId, BlockTreeBlock<T>>,
-    high_round: Round,
 }
 
 impl<T: SignatureCollection> std::fmt::Debug for BlockTree<T> {
@@ -133,13 +149,11 @@ impl<T: SignatureCollection> std::fmt::Debug for BlockTree<T> {
 impl<T: SignatureCollection> BlockTree<T> {
     pub fn new(genesis_block: FullBlock<T>) -> Self {
         let bid = genesis_block.get_id();
-        let round = genesis_block.get_round();
         let mut tree = HashMap::new();
-        tree.insert(bid, BlockTreeBlock::new(genesis_block, None));
+        tree.insert(bid, BlockTreeBlock::new(genesis_block));
         Self {
             root: RootKind::Rooted(bid),
             tree,
-            high_round: round,
         }
     }
 
@@ -147,75 +161,71 @@ impl<T: SignatureCollection> BlockTree<T> {
         Self {
             root: RootKind::Unrooted(root_round),
             tree: HashMap::new(),
-            high_round: Round(0),
         }
     }
 
-    /// let n = new_root_block.round
-    /// Pruning all blocks with lower round than `n` is accurate and complete
-    /// 1)  Nodes that aren't descendents of `n` are added before `n` and have round number smaller than `n`
-    ///     It only prunes blocks not part of the `new_root` subtree -> accurate
-    /// 2)  When prune is called on round `n` block, only round `n+1` block is added (as `n`'s children)
-    ///     All the blocks that remains shouldn't be pruned -> complete
+    /// Prune the block tree and returns the blocks to commit along that branch
+    /// in increasing round. After a successful prune, `new_root` is the root of
+    /// the block tree. All blocks pruned are deallocated
     ///
-    /// Returns the blocks in increasing rounds
+    /// The prune algorithm removes all blocks with lower round than `new_root`
+    ///
+    /// Short proof on the correctness of the algorithm
+    ///
+    /// - On commit, this function is called with the block to commit as
+    ///   the`new_root`. Recall the commit rule stating a QC-of-QC commits the
+    ///   block
+    ///
+    /// - Nodes that aren't descendents of `new_root` are added before
+    ///   `new_root` and have round number smaller than `new_root` It only
+    ///   prunes blocks not part of the `new_root` subtree -> accurate
+    ///
+    /// - When prune is called on round `new_root` block, only round `n+1` block
+    ///   is added (as `new_root`'s children) All the blocks that remains
+    ///   shouldn't be pruned -> complete
     pub fn prune(&mut self, new_root: &BlockId) -> Result<Vec<FullBlock<T>>> {
-        // retain the new root block, remove all other committable block to avoid copying
+        // retain the new root block, remove all other committable block to
+        // avoid copying
         let mut commit: Vec<FullBlock<T>> = Vec::new();
         let new_root_block = &self
             .tree
             .get(new_root)
-            .ok_or(BlockTreeError::BlockNotExist(format!("{:?}", new_root)))?
+            .ok_or(BlockTreeError::BlockNotExist(*new_root))?
             .block;
         let new_root_round = new_root_block.get_round();
-        match self.root {
-            RootKind::Rooted(b) => {
-                if b == *new_root {
-                    inc_count!(blocktree.prune.noop);
-                    return Ok(commit);
-                }
-            }
-            RootKind::Unrooted(r) => {
-                if r == new_root_round {
-                    inc_count!(blocktree.prune.noop);
-                    return Ok(commit);
-                }
-            }
+
+        if self.root_match(new_root_block.get_id(), new_root_round) {
+            inc_count!(blocktree.prune.noop);
+            return Ok(commit);
         }
+
         commit.push(new_root_block.clone());
 
-        let mut cur = new_root_block.get_parent_id();
-        let mut cur_round = new_root_block.get_parent_round();
+        let mut visit_bid = new_root_block.get_parent_id();
+        let mut visit_round = new_root_block.get_parent_round();
 
-        let root_cmp = |b_cur, r_cur| match self.root {
-            RootKind::Rooted(b) => b != b_cur,
-            RootKind::Unrooted(r) => r != r_cur,
-        };
-
-        // traverse up the branch from new_root, removing blocks
-        // and pushing to the commit list. The old root in a
-        // RootKind::Rooted tree has already been committed so
-        // should not be added to the list now
-        while root_cmp(cur, cur_round) {
-            let block = self.tree.remove(&cur).unwrap();
-            cur = block.block.get_parent_id();
-            cur_round = block.block.get_parent_round();
+        // traverse up the branch from new_root, removing blocks and pushing to
+        // the commit list. The old root in a RootKind::Rooted tree has already
+        // been committed so should not be added to the list now
+        while !self.root_match(visit_bid, visit_round) {
+            let block = self.tree.remove(&visit_bid).unwrap();
+            visit_bid = block.block.get_parent_id();
+            visit_round = block.block.get_parent_round();
             commit.push(block.block);
         }
 
-        // if the tree was unrooted, the old root of the branch
-        // traversed was never committed before so it should be
-        // added to the list now
+        // if the tree was unrooted, the old root of the branch traversed was
+        // never committed before so it should be added to the list now
         if matches!(self.root, RootKind::Unrooted(_)) {
-            let block = self.tree.remove(&cur).unwrap();
+            let block = self.tree.remove(&visit_bid).unwrap();
             commit.push(block.block);
         }
 
         self.root = RootKind::Rooted(*new_root);
 
         // garbage collect old blocks
-        // remove any blocks less than or equal to round `n`
-        // should only keep the new root at round `n`, and `n+1` blocks
+        // remove any blocks less than or equal to round `n` should only keep
+        // the new root at round `n`, and `n+1` blocks
         self.tree.retain(|_, b| {
             b.block.get_round() > new_root_round || RootKind::Rooted(b.block.get_id()) == self.root
         });
@@ -225,6 +235,8 @@ impl<T: SignatureCollection> BlockTree<T> {
         Ok(commit)
     }
 
+    /// Add a new block to the block tree if it's not in the tree and is higher
+    /// than the root block's round number
     pub fn add(&mut self, b: FullBlock<T>) -> Result<()> {
         if !self.is_valid_to_insert(&b) {
             inc_count!(blocktree.add.duplicate);
@@ -232,38 +244,38 @@ impl<T: SignatureCollection> BlockTree<T> {
         }
 
         let new_bid = b.get_id();
-        let new_round = b.get_round();
         let parent_bid = b.get_parent_id();
 
-        // if the new block's parent is already in the tree, add
-        // new block to the parent's children
+        // if the new block's parent is already in the tree, add new block to
+        // the parent's children
         if let Some(parent) = self.tree.get_mut(&parent_bid) {
             parent.children.push(new_bid);
         }
 
-        let mut new_btb = BlockTreeBlock::new(b, Some(parent_bid));
+        let mut new_btb = BlockTreeBlock::new(b);
         // find all nodes who would be children of the new block
         let children = self
             .tree
             .iter()
-            .filter(|(_k, v)| v.parent == Some(new_bid))
+            .filter(|(_k, v)| v.parent == new_bid)
             .map(|k| k.0)
             .collect::<Vec<_>>();
 
         new_btb.children.extend(children);
         self.tree.insert(new_bid, new_btb);
-        self.high_round = new_round;
         inc_count!(blocktree.add.success);
         Ok(())
     }
 
-    fn root_match(&self, block_tree_block: &BlockTreeBlock<T>) -> bool {
+    fn root_match(&self, block_id: BlockId, block_round: Round) -> bool {
         match self.root {
-            RootKind::Rooted(b) => block_tree_block.block.get_id() == b,
-            RootKind::Unrooted(r) => block_tree_block.block.get_round() == r,
+            RootKind::Rooted(b) => block_id == b,
+            RootKind::Unrooted(r) => block_round == r,
         }
     }
 
+    /// Find the missing block along the path from `qc` to the tree root.
+    /// Returns the QC certifying that block
     pub fn get_missing_ancestor(&self, qc: &QuorumCertificate<T>) -> Option<QuorumCertificate<T>> {
         match self.root {
             RootKind::Rooted(b) => {
@@ -279,7 +291,7 @@ impl<T: SignatureCollection> BlockTree<T> {
                 }
             }
             RootKind::Unrooted(r) => {
-                if r >= qc.info.vote.round {
+                if r > qc.info.vote.round {
                     return None;
                 }
             }
@@ -287,72 +299,50 @@ impl<T: SignatureCollection> BlockTree<T> {
 
         let mut bid = &qc.info.vote.id;
         let mut current_qc = qc;
-        loop {
-            let Some(i) = self.tree.get(bid) else {
-                return Some(current_qc.clone());
-            };
-            if self.root_match(i) {
+        while let Some(i) = self.tree.get(bid) {
+            if self.root_match(i.block.get_id(), i.block.get_round()) {
                 return None;
             }
-            let Some(parent_id) = &i.parent else {
-                return None;
-            };
-            bid = parent_id;
+            bid = &i.parent;
             current_qc = &i.block.get_block().qc;
         }
+        Some(current_qc.clone())
     }
 
-    pub fn path_to_root(&self, b: &BlockId) -> bool {
-        self.get_txs_on_path_to_root(b).is_some()
+    pub fn has_path_to_root(&self, b: &BlockId) -> bool {
+        let mut visit = b;
+
+        while let Some(btb) = self.tree.get(visit) {
+            if self.root_match(btb.block.get_id(), btb.block.get_round()) {
+                return true;
+            }
+            visit = &btb.parent;
+        }
+        false
     }
 
+    /// Fetches transactions on the path in [`b`, root)
     pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<TransactionHashList>> {
+        // The tree must be rooted, because the path visit stops at the root node
+        debug_assert!(matches!(self.root, RootKind::Rooted(_)));
         let mut txs = Vec::default();
 
-        let mut bid = b;
+        let mut visit = b;
 
-        loop {
-            let Some(i) = self.tree.get(bid) else {
-                return None;
-            };
-
-            txs.push(i.block.get_block().payload.txns.clone());
-
-            if self.root_match(i) {
+        while let Some(btb) = self.tree.get(visit) {
+            if self.root_match(btb.block.get_id(), btb.block.get_round()) {
                 return Some(txs);
             }
 
-            let Some(parent_id) = &i.parent else {
-                return None;
-            };
+            txs.push(btb.block.get_block().payload.txns.clone());
 
-            bid = parent_id;
+            visit = &btb.parent;
         }
+        None
     }
 
-    /// returns true if the parent block id in the QC of a block
-    /// exists in the blocktree.
-    /// Root blocks also return true.
-    pub fn has_parent(&self, b: &FullBlock<T>) -> bool {
-        match self.root {
-            RootKind::Rooted(root_id) => {
-                if root_id == b.get_id() {
-                    return true;
-                }
-            }
-            RootKind::Unrooted(round) => {
-                if round == b.get_round() {
-                    return true;
-                }
-            }
-        }
-
-        self.tree.contains_key(&b.get_parent_id())
-    }
-
-    /// a block is valid to insert if it does not already exist
-    /// in the block tree and its round is greater than the round
-    /// of the root
+    /// A block is valid to insert if it does not already exist in the block
+    /// tree and its round is greater than the round of the root
     pub fn is_valid_to_insert(&self, b: &FullBlock<T>) -> bool {
         return !self.tree.contains_key(&b.get_id()) && {
             match self.root {
@@ -376,10 +366,6 @@ impl<T: SignatureCollection> BlockTree<T> {
             }
             RootKind::Unrooted(_) => Ok(()),
         }
-    }
-
-    pub fn get_seq_num(&self, block_id: BlockId) -> Option<SeqNum> {
-        self.tree.get(&block_id).map(|b| b.block.get_seq_num())
     }
 
     pub fn tree(&self) -> &HashMap<BlockId, BlockTreeBlock<T>> {
@@ -654,12 +640,12 @@ mod test {
         assert!(blocktree.add(b6.clone()).is_ok());
         println!("{:?}", blocktree);
 
-        assert!(blocktree.path_to_root(&b1.get_id()));
-        assert!(blocktree.path_to_root(&b2.get_id()));
-        assert!(blocktree.path_to_root(&b3.get_id()));
-        assert!(blocktree.path_to_root(&b4.get_id()));
-        assert!(blocktree.path_to_root(&b5.get_id()));
-        assert!(blocktree.path_to_root(&b6.get_id()));
+        assert!(blocktree.has_path_to_root(&b1.get_id()));
+        assert!(blocktree.has_path_to_root(&b2.get_id()));
+        assert!(blocktree.has_path_to_root(&b3.get_id()));
+        assert!(blocktree.has_path_to_root(&b4.get_id()));
+        assert!(blocktree.has_path_to_root(&b5.get_id()));
+        assert!(blocktree.has_path_to_root(&b6.get_id()));
 
         // pruning on the old root should return no committable blocks
         let commit = blocktree.prune(&g.get_id()).unwrap();
@@ -671,6 +657,7 @@ mod test {
             vec![b3.get_id(), b5.get_id()]
         );
         println!("{:?}", blocktree);
+        println!("{:?}", blocktree.tree);
 
         // Pruned blocktree
         //     b5
@@ -694,10 +681,10 @@ mod test {
             blocktree.prune(&b4.get_id()).unwrap_err(),
             BlockTreeError::BlockNotExist(_)
         ));
-        assert!(!blocktree.path_to_root(&g.get_id()));
-        assert!(!blocktree.path_to_root(&b1.get_id()));
-        assert!(!blocktree.path_to_root(&b2.get_id()));
-        assert!(!blocktree.path_to_root(&b1.get_id()));
+        assert!(!blocktree.has_path_to_root(&g.get_id()));
+        assert!(!blocktree.has_path_to_root(&b1.get_id()));
+        assert!(!blocktree.has_path_to_root(&b2.get_id()));
+        assert!(!blocktree.has_path_to_root(&b1.get_id()));
 
         // Pruned blocktree after insertion
         //     b5
@@ -826,24 +813,23 @@ mod test {
         let gid = g.get_id();
         let mut blocktree = BlockTree::new(g);
 
-        assert_eq!(blocktree.tree.get(&gid).unwrap().parent, None);
         assert!(blocktree.add(b2.clone()).is_ok());
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(
             blocktree.tree.get(&b2.get_id()).unwrap().parent,
-            Some(b1.get_id())
+            b1.get_id()
         );
-        assert!(!blocktree.path_to_root(&b2.get_id()));
+        assert!(!blocktree.has_path_to_root(&b2.get_id()));
 
         assert!(blocktree.add(b1.clone()).is_ok());
         assert_eq!(blocktree.tree.len(), 3);
-        assert!(blocktree.path_to_root(&b1.get_id()));
-        assert!(blocktree.path_to_root(&b2.get_id()));
+        assert!(blocktree.has_path_to_root(&b1.get_id()));
+        assert!(blocktree.has_path_to_root(&b2.get_id()));
         assert_eq!(
             blocktree.tree.get(&b2.get_id()).unwrap().parent,
-            Some(b1.get_id())
+            b1.get_id()
         );
-        assert_eq!(blocktree.tree.get(&b1.get_id()).unwrap().parent, Some(gid));
+        assert_eq!(blocktree.tree.get(&b1.get_id()).unwrap().parent, gid);
     }
 
     #[test]
@@ -1192,23 +1178,23 @@ mod test {
         .unwrap();
 
         let mut blocktree = BlockTree::<MockSignatures>::new(g.clone());
-        assert!(blocktree.path_to_root(&g.get_id()));
-        assert!(!blocktree.path_to_root(&b1.get_id()));
+        assert!(blocktree.has_path_to_root(&g.get_id()));
+        assert!(!blocktree.has_path_to_root(&b1.get_id()));
 
         assert!(blocktree.add(b2.clone()).is_ok());
-        assert!(!blocktree.path_to_root(&b2.get_id()));
+        assert!(!blocktree.has_path_to_root(&b2.get_id()));
 
         assert!(blocktree.add(b3.clone()).is_ok());
-        assert!(!blocktree.path_to_root(&b3.get_id()));
+        assert!(!blocktree.has_path_to_root(&b3.get_id()));
 
         assert!(blocktree.add(b4.clone()).is_ok());
-        assert!(!blocktree.path_to_root(&b4.get_id()));
+        assert!(!blocktree.has_path_to_root(&b4.get_id()));
 
         assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.path_to_root(&b1.get_id()));
-        assert!(blocktree.path_to_root(&b2.get_id()));
-        assert!(blocktree.path_to_root(&b3.get_id()));
-        assert!(blocktree.path_to_root(&b4.get_id()));
+        assert!(blocktree.has_path_to_root(&b1.get_id()));
+        assert!(blocktree.has_path_to_root(&b2.get_id()));
+        assert!(blocktree.has_path_to_root(&b3.get_id()));
+        assert!(blocktree.has_path_to_root(&b4.get_id()));
         let children = [&b2, &b3, &b4]
             .iter()
             .map(|b| b.get_id())
@@ -1219,12 +1205,12 @@ mod test {
         assert_eq!(a, b);
 
         assert!(blocktree.prune(&b3.get_id()).is_ok());
-        assert!(blocktree.path_to_root(&b3.get_id()));
+        assert!(blocktree.has_path_to_root(&b3.get_id()));
 
-        assert!(!blocktree.path_to_root(&g.get_id()));
-        assert!(!blocktree.path_to_root(&b1.get_id()));
-        assert!(!blocktree.path_to_root(&b2.get_id()));
-        assert!(!blocktree.path_to_root(&b4.get_id()));
+        assert!(!blocktree.has_path_to_root(&g.get_id()));
+        assert!(!blocktree.has_path_to_root(&b1.get_id()));
+        assert!(!blocktree.has_path_to_root(&b2.get_id()));
+        assert!(!blocktree.has_path_to_root(&b4.get_id()));
     }
 
     #[test]
@@ -1343,15 +1329,15 @@ mod test {
 
         assert!(blocktree.add(b4.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b4.get_id()));
+        assert!(blocktree.has_path_to_root(&b4.get_id()));
 
         assert!(blocktree.add(b5.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b5.get_id()));
+        assert!(blocktree.has_path_to_root(&b5.get_id()));
 
         assert!(blocktree.add(b6.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b6.get_id()));
+        assert!(blocktree.has_path_to_root(&b6.get_id()));
 
         let commit = blocktree.prune(&b6.get_id()).unwrap();
         assert_eq!(
@@ -1529,23 +1515,23 @@ mod test {
 
         assert!(blocktree.add(b2.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b2.get_id()));
+        assert!(blocktree.has_path_to_root(&b2.get_id()));
 
         assert!(blocktree.add(b3.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b3.get_id()));
+        assert!(blocktree.has_path_to_root(&b3.get_id()));
 
         assert!(blocktree.add(b4.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b4.get_id()));
+        assert!(blocktree.has_path_to_root(&b4.get_id()));
 
         assert!(blocktree.add(b5.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b5.get_id()));
+        assert!(blocktree.has_path_to_root(&b5.get_id()));
 
         assert!(blocktree.add(b6.clone()).is_ok());
         assert!(matches!(blocktree.root, RootKind::Unrooted(Round(4))));
-        assert!(blocktree.path_to_root(&b6.get_id()));
+        assert!(blocktree.has_path_to_root(&b6.get_id()));
 
         let commit = blocktree.prune(&b6.get_id()).unwrap();
         assert_eq!(
@@ -1555,105 +1541,6 @@ mod test {
 
         assert_eq!(blocktree.tree.len(), 1);
         assert!(matches!(blocktree.root, RootKind::Rooted(b) if b == b6.get_id()));
-    }
-
-    #[test]
-    fn test_has_parent() {
-        let payload = Payload {
-            txns: TransactionHashList::empty(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
-
-        let g = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(0),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
-                        },
-                        ledger_commit: LedgerCommitInfo::default(),
-                    },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
-            ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
-
-        let v1 = VoteInfo {
-            id: g.get_id(),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-        };
-
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(1),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
-                    },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
-            ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
-
-        let v4 = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(3),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(3),
-            seq_num: SeqNum(0),
-        };
-
-        let b4 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(4),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
-                    },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
-            ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
-
-        let mut rooted_blocktree = BlockTree::<MockSignatures>::new(g.clone());
-        assert!(rooted_blocktree.add(b1.clone()).is_ok());
-        assert!(rooted_blocktree.add(b4.clone()).is_ok());
-
-        assert!(rooted_blocktree.has_parent(&b1));
-        assert!(rooted_blocktree.has_parent(&g));
-        assert!(!rooted_blocktree.has_parent(&b4));
-
-        let mut unrooted_blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
-        assert!(unrooted_blocktree.add(b4.clone()).is_ok());
-        assert!(unrooted_blocktree.has_parent(&b4));
     }
 
     #[test]
