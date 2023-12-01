@@ -10,7 +10,8 @@ use monad_crypto::{
 
 use crate::{
     messages::message::{
-        BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+        BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+        VoteMessage,
     },
     validation::signing::Verified,
 };
@@ -21,7 +22,7 @@ pub enum ConsensusMessage<SCT: SignatureCollection> {
     Vote(VoteMessage<SCT>),
     Timeout(TimeoutMessage<SCT>),
     RequestBlockSync(RequestBlockSyncMessage),
-    BlockSync(BlockSyncMessage<SCT>),
+    BlockSync(BlockSyncResponseMessage<SCT>),
 }
 
 impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {
@@ -43,7 +44,7 @@ where
     fn hash(&self, state: &mut impl Hasher) {
         match self {
             ConsensusMessage::Proposal(m) => m.hash(state),
-            // FIXME:
+            // FIXME-2:
             // it can be confusing as we are hashing only part of the message
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct

@@ -21,7 +21,6 @@ use iced::{
     },
     Application, Color, Command, Event, Length, Settings, Theme, Vector,
 };
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
@@ -68,7 +67,6 @@ impl SwarmRelation for VizSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;

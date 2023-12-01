@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use monad_consensus_types::{
     quorum_certificate::QuorumCertificate,
@@ -17,32 +17,64 @@ use crate::{
     validation::{message::well_formed, safety::Safety},
 };
 
+/// Pacemaker is responsible for tracking and advancing rounds
+/// Rounds are advanced when QC/TCs are received.
+/// Local round timeouts produce a timeout msg which is broadcast
+/// to other nodes
+/// Timeout msgs from other nodes are received and collected into
+/// a Timeout Certificate which will advance the round
 #[derive(PartialEq, Eq, Debug)]
 pub struct Pacemaker<SCT: SignatureCollection> {
+    /// upper transmission delay bound
+    /// this is used to calculate the local round timeout duration
     delta: Duration,
 
     current_round: Round,
+
+    /// None if we advanced to the current round via QC
+    /// Some(TC) if we advanced to the current round via TC
     last_round_tc: Option<TimeoutCertificate<SCT>>,
 
-    // only need to store for current round
-    pending_timeouts: HashMap<NodeId, TimeoutMessage<SCT>>,
+    /// map of the TimeoutMessages from other Nodes
+    /// only needs to be stored for the current round as timeout messages
+    /// carry a QC which will be processed and advance the node to the
+    /// highest known round
+    pending_timeouts: BTreeMap<NodeId, TimeoutMessage<SCT>>,
 
-    // used to not duplicate broadcast/tc
+    /// States for TimeoutMessage handling, ensures we only broadcast
+    /// one message at each phase of handling
     phase: PhaseHonest,
 }
 
+/// The different states of TimeoutMessage handling
 #[derive(Debug, PartialEq, Eq)]
 enum PhaseHonest {
+    /// Unsure that any honest timeout messages have been received
+    /// ie, this Node itself has not timed out and it has less than F+1
+    /// external timeout messages
     Zero,
+
+    /// At least one honest timeout message has been received
+    /// This requires either a local timeout (Node assumes itself to be honest)
+    /// or F+1 external timeout messages
     One,
+
+    /// 2F+1 timeout messages received
     Supermajority,
 }
 
 #[derive(Debug)]
 pub enum PacemakerCommand<SCT: SignatureCollection> {
+    /// create the Timeout which can be signed to create a TimeoutMessage
     PrepareTimeout(Timeout<SCT>),
+
+    /// broadcast this node's TimeoutMessage to all other nodes
     Broadcast(TimeoutMessage<SCT>),
+
+    /// schedule a local round timeout event after duration
     Schedule { duration: Duration },
+
+    /// cancel the current local round timeout
     ScheduleReset,
 }
 
@@ -56,7 +88,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             delta,
             current_round,
             last_round_tc,
-            pending_timeouts: HashMap::new(),
+            pending_timeouts: BTreeMap::new(),
 
             phase: PhaseHonest::Zero,
         }
@@ -70,8 +102,11 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         self.delta * 4
     }
 
+    /// enter a new round. Phase is set to PhaseHonest::Zero and all
+    /// pending timeout messages are cleared.
+    /// Creates the command to start the local round timeout
     #[must_use]
-    fn start_timer(&mut self, new_round: Round) -> PacemakerCommand<SCT> {
+    fn enter_round(&mut self, new_round: Round) -> PacemakerCommand<SCT> {
         assert!(new_round > self.current_round);
 
         self.phase = PhaseHonest::Zero;
@@ -84,6 +119,9 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         }
     }
 
+    /// invoked on local round timeout
+    /// creates the TimeoutMessage to be broadcast and reschedules
+    /// the local round timer
     #[must_use]
     fn local_timeout_round(
         &self,
@@ -113,6 +151,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         cmds
     }
 
+    /// handle the local timeout event
     #[must_use]
     pub fn handle_event(
         &mut self,
@@ -123,6 +162,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         self.local_timeout_round(safety, high_qc)
     }
 
+    /// handle timeout messages from external nodes
+    /// if f+1 timeout messages are received, broadcast a timeout message if it
+    /// has not done so before
+    /// if 2f+1 timeout messages are received, create the Timeout Certificate
     #[must_use]
     pub fn process_remote_timeout<H: Hasher, VST: ValidatorSetType>(
         &mut self,
@@ -131,18 +174,21 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
         author: NodeId,
-        tmo: TimeoutMessage<SCT>,
+        timeout_msg: TimeoutMessage<SCT>,
     ) -> (Option<TimeoutCertificate<SCT>>, Vec<PacemakerCommand<SCT>>) {
         let mut ret_commands = Vec::new();
 
-        let tm_info = &tmo.timeout.tminfo;
+        let tm_info = &timeout_msg.timeout.tminfo;
         if tm_info.round < self.current_round {
             return (None, ret_commands);
         }
+        // timeout messages carry a high QC which must have been processed
+        // prior to entering this function. Processing that QC guarantees
+        // this invariant
         assert_eq!(tm_info.round, self.current_round);
 
         // it's fine to overwrite if already exists
-        self.pending_timeouts.insert(author, tmo.clone());
+        self.pending_timeouts.insert(author, timeout_msg.clone());
 
         let mut timeouts: Vec<NodeId> = self.pending_timeouts.keys().copied().collect();
 
@@ -153,14 +199,14 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         }
 
         let mut ret_tc: Option<TimeoutCertificate<SCT>> = None;
+        // try to create a TimeoutCertificate from the pending timeouts, filtering out
+        // invalid timeout messages if there are signature errors
         while self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
             match TimeoutCertificate::new::<H>(
                 tm_info.round,
                 self.pending_timeouts
                     .iter()
-                    .map(|(node_id, tmo_msg)| {
-                        (*node_id, tmo_msg.timeout.tminfo.clone(), tmo_msg.sig)
-                    })
+                    .map(|(node_id, tm_msg)| (*node_id, tm_msg.timeout.tminfo.clone(), tm_msg.sig))
                     .collect::<Vec<_>>()
                     .as_slice(),
                 validator_mapping,
@@ -184,6 +230,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         (ret_tc, ret_commands)
     }
 
+    /// remove invalid timeout messages and collect evidence
     #[must_use]
     fn handle_invalid_timeout(
         &mut self,
@@ -191,13 +238,15 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     ) -> Vec<PacemakerCommand<SCT>> {
         for (node_id, sig) in invalid_timeouts {
             let removed = self.pending_timeouts.remove(&node_id);
-            // TODO: debug assert
-            assert_eq!(removed.expect("Timeout removed").sig, sig);
+            debug_assert_eq!(removed.expect("Timeout removed").sig, sig);
         }
-        // TODO: evidence collection
+        // TODO-3: evidence collection
         vec![]
     }
 
+    /// advance the round based on a TC
+    /// sets the last_round_tc to this TC
+    /// TCs from older rounds are ignored
     #[must_use]
     pub fn advance_round_tc(
         &mut self,
@@ -208,9 +257,12 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         }
         let round = tc.round;
         self.last_round_tc = Some(tc.clone());
-        Some(self.start_timer(round + Round(1)))
+        Some(self.enter_round(round + Round(1)))
     }
 
+    /// advance the round based on a QC
+    /// clears last_round_tc
+    /// QCs from older rounds are ignored
     #[must_use]
     pub fn advance_round_qc(
         &mut self,
@@ -220,7 +272,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             return None;
         }
         self.last_round_tc = None;
-        Some(self.start_timer(qc.info.vote.round + Round(1)))
+        Some(self.enter_round(qc.info.vote.round + Round(1)))
     }
 }
 

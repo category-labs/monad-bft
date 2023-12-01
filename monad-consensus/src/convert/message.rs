@@ -14,7 +14,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
         },
     },
     validation::signing::{Unverified, Verified},
@@ -124,14 +125,14 @@ impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
     }
 }
 
-impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMessage {
-    fn from(value: &BlockSyncMessage<SCT>) -> Self {
+impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>> for ProtoBlockSyncMessage {
+    fn from(value: &BlockSyncResponseMessage<SCT>) -> Self {
         Self {
             oneof_message: Some(match value.deref() {
-                BlockSyncMessage::BlockFound(b) => {
+                BlockSyncResponseMessage::BlockFound(b) => {
                     proto_block_sync_message::OneofMessage::BlockFound(b.into())
                 }
-                BlockSyncMessage::NotAvailable(bid) => {
+                BlockSyncResponseMessage::NotAvailable(bid) => {
                     proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
                 }
             }),
@@ -139,16 +140,16 @@ impl<SCT: SignatureCollection> From<&BlockSyncMessage<SCT>> for ProtoBlockSyncMe
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncMessage<SCT> {
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncResponseMessage<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
         Ok(match value.oneof_message {
             Some(proto_block_sync_message::OneofMessage::BlockFound(b)) => {
-                BlockSyncMessage::BlockFound(b.try_into()?)
+                BlockSyncResponseMessage::BlockFound(b.try_into()?)
             }
             Some(proto_block_sync_message::OneofMessage::NotAvailable(bid)) => {
-                BlockSyncMessage::NotAvailable(bid.try_into()?)
+                BlockSyncResponseMessage::NotAvailable(bid.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "BlockSyncMessage.oneofmessage".to_owned(),

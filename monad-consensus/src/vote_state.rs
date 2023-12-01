@@ -143,7 +143,7 @@ mod test {
     };
     use monad_crypto::{
         hasher::{Hash, Hasher, HasherType},
-        secp256k1::{KeyPair, SecpSignature},
+        secp256k1::SecpSignature,
     };
     use monad_testutil::{
         signing::{get_key, *},
@@ -157,33 +157,6 @@ mod test {
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
-
-    // FIXME: we don't need to create Verified<VoteMessage> as the vote signature
-    // is now in the VoteMessage
-    fn create_signed_vote_message<SCT: SignatureCollection>(
-        keypair: &KeyPair,
-        certkeypair: &SignatureCollectionKeyPairType<SCT>,
-        vote_round: Round,
-    ) -> Verified<SecpSignature, VoteMessage<SCT>> {
-        let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: vote_round,
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-        };
-
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi);
-
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: lci,
-        };
-
-        let vm = VoteMessage::new::<HasherType>(v, certkeypair);
-
-        Verified::new::<HasherType>(vm, keypair)
-    }
 
     fn create_vote_message<SCT: SignatureCollection>(
         certkeypair: &SignatureCollectionKeyPairType<SCT>,
@@ -224,13 +197,17 @@ mod test {
 
         // add one vote for rounds 0-3
         for i in 0..4 {
-            let svm = create_signed_vote_message::<SignatureCollectionType>(
-                &keys[0],
+            let svm = create_vote_message::<SignatureCollectionType>(
                 &cert_keys[0],
                 Round(i.try_into().unwrap()),
+                true,
             );
-            let (_qc, cmds) =
-                votestate.process_vote::<HasherType, _>(svm.author(), &*svm, &valset, &val_map);
+            let (_qc, cmds) = votestate.process_vote::<HasherType, _>(
+                &NodeId(cert_keys[0].pubkey()),
+                &svm,
+                &valset,
+                &val_map,
+            );
             assert!(cmds.is_empty());
         }
 
@@ -238,10 +215,14 @@ mod test {
 
         // add supermajority number of votes for round 4, expecting older rounds to be
         // removed
-        for (key, certkey) in keys.iter().zip(cert_keys.iter()).take(4) {
-            let svm = create_signed_vote_message::<SignatureCollectionType>(key, certkey, Round(4));
-            let _qc =
-                votestate.process_vote::<HasherType, _>(svm.author(), &*svm, &valset, &val_map);
+        for certkey in cert_keys.iter().take(4) {
+            let svm = create_vote_message::<SignatureCollectionType>(certkey, Round(4), true);
+            let _qc = votestate.process_vote::<HasherType, _>(
+                &NodeId(certkey.pubkey()),
+                &svm,
+                &valset,
+                &val_map,
+            );
         }
         votestate.start_new_round(Round(5));
 
@@ -256,24 +237,37 @@ mod test {
 
         // add one vote for rounds 0-3 and 5-8
         for i in 0..4 {
-            let svm =
-                create_signed_vote_message(&keys[0], &cert_keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<HasherType, _>(svm.author(), &*svm, &valset, &vmap);
+            let svm = create_vote_message(&cert_keys[0], Round(i.try_into().unwrap()), true);
+            let _qc = votestate.process_vote::<HasherType, _>(
+                &NodeId(cert_keys[0].pubkey()),
+                &svm,
+                &valset,
+                &vmap,
+            );
         }
 
         for i in 5..9 {
-            let svm =
-                create_signed_vote_message(&keys[0], &cert_keys[0], Round(i.try_into().unwrap()));
-            let _qc = votestate.process_vote::<HasherType, _>(svm.author(), &*svm, &valset, &vmap);
+            let svm = create_vote_message(&cert_keys[0], Round(i.try_into().unwrap()), true);
+            let _qc = votestate.process_vote::<HasherType, _>(
+                &NodeId(cert_keys[0].pubkey()),
+                &svm,
+                &valset,
+                &vmap,
+            );
         }
 
         assert_eq!(votestate.pending_votes.len(), 8);
 
         // add supermajority number of votes for round 4, expecting older rounds to be
         // removed
-        for (key, certkey) in keys.iter().zip(cert_keys.iter().take(4)) {
-            let svm = create_signed_vote_message::<SignatureCollectionType>(key, certkey, Round(4));
-            let _qc = votestate.process_vote::<HasherType, _>(svm.author(), &*svm, &valset, &vmap);
+        for certkey in cert_keys.iter().take(4) {
+            let svm = create_vote_message::<SignatureCollectionType>(certkey, Round(4), true);
+            let _qc = votestate.process_vote::<HasherType, _>(
+                &NodeId(certkey.pubkey()),
+                &svm,
+                &valset,
+                &vmap,
+            );
         }
         votestate.start_new_round(Round(5));
 
@@ -359,11 +353,11 @@ mod test {
 
         // create a vote for round 0 from one node, but add it supermajority number of times
         // this should not result in QC creation
-        let svm = create_signed_vote_message(&keys[0], &certkeys[0], Round(0));
-        let (author, _sig, msg) = svm.destructure();
+        let svm = create_vote_message(&certkeys[0], Round(0), true);
+        let author = NodeId(certkeys[0].pubkey());
 
         for _ in 0..4 {
-            let (qc, cmds) = votestate.process_vote::<HasherType, _>(&author, &msg, &valset, &vmap);
+            let (qc, cmds) = votestate.process_vote::<HasherType, _>(&author, &svm, &valset, &vmap);
             assert!(cmds.is_empty());
             assert!(qc.is_none());
         }

@@ -98,7 +98,7 @@ fn main() {
         PEAK_ALLOC.peak_usage_as_mb()
     );
     // compress proposal
-    let algo = BrotliCompression::new(11, 22);
+    let algo = BrotliCompression::new(11, 22, Vec::new());
     let mut compressed = Vec::new();
     algo.compress(&proposal_bytes, &mut compressed)
         .expect("compression success");

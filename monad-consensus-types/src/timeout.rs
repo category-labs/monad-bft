@@ -110,7 +110,6 @@ impl<SCT> TimeoutCertificate<SCT> {
             .iter()
             .map(|v| v.high_qc_round.qc_round)
             .max()
-            // TODO-2 can we unwrap here?
-            .unwrap_or(Round(0))
+            .expect("verification of received TimeoutCertificates should have rejected any with empty high_qc_rounds")
     }
 }

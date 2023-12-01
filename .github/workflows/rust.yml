@@ -47,3 +47,5 @@ jobs:
         run: cargo check --all-targets --all-features --verbose
       - name: Run tests
         run: cargo test --release --all-targets --all-features --verbose
+      - name: Run doc tests
+        run: cargo test --release --doc --all-features --verbose

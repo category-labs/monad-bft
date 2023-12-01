@@ -6,7 +6,8 @@ pub mod test_tool {
     use monad_consensus::messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
         },
     };
     use monad_consensus_types::{
@@ -35,7 +36,7 @@ pub mod test_tool {
     type H = Sha256Hash;
     type QC = QuorumCertificate<SC>;
 
-    /// FIXME these should take in from/to/from_tick as params, not have defaults
+    /// FIXME-3 these should take in from/to/from_tick as params, not have defaults
     pub fn get_mock_message() -> LinkMessage<String> {
         let keys = create_keys(2);
         LinkMessage {
@@ -137,7 +138,7 @@ pub mod test_tool {
     }
 
     pub fn fake_block_sync(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
-        let internal_msg = BlockSyncMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
+        let internal_msg = BlockSyncResponseMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
         ConsensusMessage::BlockSync(internal_msg)
             .sign::<HasherType, NopSignature>(kp)
             .into()

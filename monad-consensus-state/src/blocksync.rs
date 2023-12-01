@@ -1,15 +1,20 @@
-use core::fmt;
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    time::Duration,
-};
+//! BlockSync is a mechanism for nodes to request the block that is pointed to
+//! by a QC that it has received.
+//! Receiving a QC which does not point to any block in the pending blocktree implies
+//! blocks are missing because an honest majority nodes in the network formed a QC and
+//! created a proposal including it.
+//! It is possible to miss blocks because of faults or messages arriving delayed or
+//! out-of-order
+//! BlockSync is achieved by sending a request with the blockid to an arbitrary node.
+//! If a request times out or fails, another node is chosen.
 
-use monad_consensus::messages::message::BlockSyncMessage;
+use core::fmt;
+use std::{collections::HashMap, time::Duration};
+
+use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::{BlockType, FullBlock},
-    quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
-    transaction_validator::TransactionValidator,
+    block::FullBlock, quorum_certificate::QuorumCertificate,
+    signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, TimeoutVariant};
@@ -18,19 +23,33 @@ use tracing::debug;
 
 use crate::command::ConsensusCommand;
 
-const DEFAULT_PEER_INDEX: usize = 0;
+const DEFAULT_NODE_INDEX: usize = 0;
 
+/// Represents a blocksync request that has been made and
+/// that we are waiting for
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub struct InFlightBlockSync<SCT> {
-    pub req_target: NodeId,
-    pub retry_cnt: usize,
-    pub qc: QuorumCertificate<SCT>, // qc responsible for this event
+struct InFlightRequest<SCT> {
+    /// The node we are requesting the block from
+    req_target: NodeId,
+
+    /// The number of times we have tried making this request
+    retry_cnt: usize,
+
+    /// The QC which triggers this request for a missing block
+    qc: QuorumCertificate<SCT>,
 }
 
+/// Possible results from handling a BlockSyncMessage, which is
+/// the reply to a request
 pub enum BlockSyncResult<SCT: SignatureCollection> {
-    Success(FullBlock<SCT>),            // retrieved and validated
-    Failed(Vec<ConsensusCommand<SCT>>), // unable to retrieve
-    IllegalResponse,                    // never requested from this peer or never requested
+    /// retrieved and validated
+    Success(FullBlock<SCT>),
+
+    /// unable to retrieve
+    Failed(Vec<ConsensusCommand<SCT>>),
+
+    /// never requested from this node or never requested
+    UnexpectedResponse,
 }
 
 impl<SCT: SignatureCollection> fmt::Debug for BlockSyncResult<SCT> {
@@ -38,13 +57,13 @@ impl<SCT: SignatureCollection> fmt::Debug for BlockSyncResult<SCT> {
         match self {
             BlockSyncResult::Success(_) => write!(f, "successful"),
             BlockSyncResult::Failed(_) => write!(f, "failed"),
-            BlockSyncResult::IllegalResponse => write!(f, "illegal"),
+            BlockSyncResult::UnexpectedResponse => write!(f, "unexpected"),
         }
     }
 }
 
 impl<SCT: SignatureCollection> BlockSyncResult<SCT> {
-    fn log(&self, bid: BlockId) {
+    pub fn log(&self, bid: BlockId) {
         match self {
             BlockSyncResult::Success(_) => {
                 inc_count!(block_sync_response_successful);
@@ -52,8 +71,8 @@ impl<SCT: SignatureCollection> BlockSyncResult<SCT> {
             BlockSyncResult::Failed(_) => {
                 inc_count!(block_sync_response_failed);
             }
-            BlockSyncResult::IllegalResponse => {
-                inc_count!(block_sync_response_illegal);
+            BlockSyncResult::UnexpectedResponse => {
+                inc_count!(block_sync_response_unexpected);
             }
         };
 
@@ -61,7 +80,7 @@ impl<SCT: SignatureCollection> BlockSyncResult<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
+impl<SCT: SignatureCollection> InFlightRequest<SCT> {
     pub fn new(req_target: NodeId, retry_cnt: usize, qc: QuorumCertificate<SCT>) -> Self {
         Self {
             req_target,
@@ -70,131 +89,127 @@ impl<SCT: SignatureCollection> InFlightBlockSync<SCT> {
         }
     }
 }
+
+/// Tracks inflight requests
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockSyncManager<SCT> {
-    requests: HashMap<BlockId, InFlightBlockSync<SCT>>,
-    id: NodeId,
-    // how long does it take before giving up on current block sync request
+pub struct BlockSyncRequester<SCT> {
+    /// current inflight requests
+    requests: HashMap<BlockId, InFlightRequest<SCT>>,
+
+    /// this node
+    my_id: NodeId,
+
+    /// amount of time to wait for response to a request
+    /// before giving up on that specific request
     tmo_duration: Duration,
 }
 
-fn choose_peer(my_id: NodeId, peers: &[NodeId], mut cnt: usize) -> Option<(NodeId, usize)> {
-    if peers.is_empty() || (peers.len() == 1 && peers[0] == my_id) {
-        None
-    } else {
-        let mut peer;
-        loop {
-            peer = peers[(cnt) % peers.len()];
-            if peer != my_id {
-                break;
-            }
-            cnt += 1;
-        }
-        Some((peer, cnt))
-    }
-}
-
-impl<SCT> BlockSyncManager<SCT>
+impl<SCT> BlockSyncRequester<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn new(id: NodeId, tmo_duration: Duration) -> Self {
+    pub fn new(my_id: NodeId, tmo_duration: Duration) -> Self {
         Self {
             requests: HashMap::new(),
-            id,
+            my_id,
             tmo_duration,
         }
     }
 
-    pub fn get_timeout(&self, id: BlockId) -> ConsensusCommand<SCT> {
+    pub fn create_timeout_command(&self, id: BlockId) -> ConsensusCommand<SCT> {
         ConsensusCommand::Schedule {
             duration: self.tmo_duration,
             on_timeout: TimeoutVariant::BlockSync(id),
         }
     }
 
+    fn create_request_command(&self, sync: &InFlightRequest<SCT>) -> ConsensusCommand<SCT> {
+        ConsensusCommand::RequestSync {
+            peer: sync.req_target,
+            block_id: sync.qc.info.vote.id,
+        }
+    }
+
+    /// create a command to request the block for the given QC
+    /// does nothing if there is already a pending request for the QC
     pub fn request<VT: ValidatorSetType>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validator_set: &VT,
     ) -> Vec<ConsensusCommand<SCT>> {
-        let id = &qc.info.vote.id;
-        let req = match self.requests.entry(*id) {
-            Entry::Occupied(_) => None,
-            Entry::Vacant(entry) => {
-                debug!("Block sync request: bid={:?}, qc={:?}", id, qc);
-                inc_count!(block_sync_request);
-                if let Some((peer, cnt)) =
-                    choose_peer(self.id, validator_set.get_list(), DEFAULT_PEER_INDEX)
-                {
-                    let req = InFlightBlockSync::new(peer, cnt, qc.clone());
-                    let req_cmd = (&req).into();
-                    entry.insert(req);
-                    Some(req_cmd)
-                } else {
-                    // no peer possible given the validator_set
-                    None
-                }
-            }
-        };
-        if let Some(command) = req {
-            vec![command, self.get_timeout(*id)]
-        } else {
-            vec![]
-        }
+        self.request_helper(qc, validator_set, DEFAULT_NODE_INDEX)
     }
 
-    pub fn handle_retrieval<VT: ValidatorSetType, TV: TransactionValidator>(
+    // this function creates a request and creates the appropriate commands
+    // to execute the request and creates/stores an InFlightRequest to track
+    // the request
+    fn request_helper<VT: ValidatorSetType>(
+        &mut self,
+        qc: &QuorumCertificate<SCT>,
+        validator_set: &VT,
+        req_cnt: usize,
+    ) -> Vec<ConsensusCommand<SCT>> {
+        let id = qc.info.vote.id;
+
+        if self.requests.contains_key(&id) {
+            return vec![];
+        }
+
+        debug!("Block sync request: bid={:?}, qc={:?}", id, qc);
+        inc_count!(block_sync_request);
+
+        let (req_peer, cnt) = self.choose_peer(validator_set.get_list(), req_cnt);
+        let req = InFlightRequest::new(req_peer, cnt, qc.clone());
+        let req_cmd = self.create_request_command(&req);
+        self.requests.insert(id, req);
+
+        vec![req_cmd, self.create_timeout_command(id)]
+    }
+
+    /// Handle the response to a BlockSync request
+    /// If the request was not fulfilled, the request is tried again with
+    /// a different node
+    pub fn handle_response<VT: ValidatorSetType, TV: TransactionValidator>(
         &mut self,
         author: &NodeId,
-        msg: BlockSyncMessage<SCT>,
+        msg: BlockSyncResponseMessage<SCT>,
         validator_set: &VT,
         transaction_validator: &TV,
     ) -> BlockSyncResult<SCT> {
-        let bid = match &msg {
-            BlockSyncMessage::BlockFound(b) => b.block.get_id(),
-            BlockSyncMessage::NotAvailable(bid) => *bid,
-        };
-        let result = if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
-            let InFlightBlockSync {
-                req_target,
-                retry_cnt,
-                qc: _,
-            } = entry.get_mut();
+        let bid = msg.get_block_id();
 
-            // TODO-3: remove this check and check it at router level
-            if author != req_target {
-                return BlockSyncResult::IllegalResponse;
-            }
+        if self
+            .requests
+            .get(&bid)
+            .is_some_and(|r| r.req_target != *author)
+        {
+            return BlockSyncResult::UnexpectedResponse;
+        }
 
+        if let Some(pending_req) = self.requests.remove(&bid) {
             match msg {
-                BlockSyncMessage::BlockFound(unverified_full_block) => {
+                BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
                     if let Some(full_block) =
                         FullBlock::try_from_unverified(unverified_full_block, transaction_validator)
                     {
-                        // block retrieve and validate successful
-                        entry.remove_entry();
                         return BlockSyncResult::Success(full_block);
                     }
                 }
-                BlockSyncMessage::NotAvailable(_) => {}
+                BlockSyncResponseMessage::NotAvailable(_) => {}
             };
 
-            // if we can find a new request target
-            if let Some((peer, cnt)) =
-                choose_peer(self.id, validator_set.get_list(), *retry_cnt + 1)
-            {
-                *req_target = peer;
-                *retry_cnt = cnt;
-            }
-            BlockSyncResult::Failed(vec![entry.get().into(), self.get_timeout(bid)])
+            BlockSyncResult::Failed(self.request_helper(
+                &pending_req.qc,
+                validator_set,
+                pending_req.retry_cnt + 1,
+            ))
         } else {
-            BlockSyncResult::IllegalResponse
-        };
-        result.log(bid);
-        result
+            BlockSyncResult::UnexpectedResponse
+        }
     }
 
+    /// If we receive a BlockSync timeout for a blockid, retry with a new
+    /// target node
     pub fn handle_timeout<VT: ValidatorSetType>(
         &mut self,
         bid: BlockId,
@@ -204,24 +219,28 @@ where
         let mut cmds = vec![ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSync(
             bid,
         ))];
-        // if block_sync manager still care about the block
-        if let Entry::Occupied(mut entry) = self.requests.entry(bid) {
-            let InFlightBlockSync {
-                req_target,
-                retry_cnt,
-                qc: _,
-            } = entry.get_mut();
-            // if we can find a new request target
-            if let Some((peer, cnt)) =
-                choose_peer(self.id, validator_set.get_list(), *retry_cnt + 1)
-            {
-                *req_target = peer;
-                *retry_cnt = cnt;
-            }
-            // block retrieve failed, re-request
-            cmds.extend(vec![entry.get().into(), self.get_timeout(bid)]);
+
+        if let Some(pending_req) = self.requests.remove(&bid) {
+            cmds.extend(self.request_helper(
+                &pending_req.qc,
+                validator_set,
+                pending_req.retry_cnt + 1,
+            ));
         }
         cmds
+    }
+
+    // choose a node for a request that is not self.
+    fn choose_peer(&self, peers: &[NodeId], mut cnt: usize) -> (NodeId, usize) {
+        debug_assert!(peers.len() > 1);
+
+        let mut peer = peers[(cnt) % peers.len()];
+        while peer == self.my_id {
+            cnt += 1;
+            peer = peers[(cnt) % peers.len()];
+        }
+
+        (peer, cnt)
     }
 }
 
@@ -250,8 +269,8 @@ mod test {
     use monad_types::{BlockId, NodeId, Round, SeqNum, TimeoutVariant};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
-    use super::BlockSyncManager;
-    use crate::{command::ConsensusCommand, BlockSyncMessage, BlockSyncResult};
+    use super::BlockSyncRequester;
+    use crate::{command::ConsensusCommand, BlockSyncResponseMessage, BlockSyncResult};
     type SC = MockSignatures;
     type VT = ValidatorSet;
     type QC = QuorumCertificate<SC>;
@@ -311,7 +330,7 @@ mod test {
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
         let keypair = get_key(6);
-        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
+        let mut manager = BlockSyncRequester::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
 
         let qc = &QC::new::<HasherType>(
@@ -371,9 +390,9 @@ mod test {
     }
 
     #[test]
-    fn test_handle_retrieval() {
+    fn test_handle_request() {
         let keypair = get_key(6);
-        let mut manager = BlockSyncManager::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
+        let mut manager = BlockSyncRequester::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
         let transaction_validator = TV::default();
 
@@ -520,29 +539,32 @@ mod test {
             ),
         );
 
-        let msg_no_block_1 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x01_u8; 32])));
+        let msg_no_block_1 =
+            BlockSyncResponseMessage::<SC>::NotAvailable(BlockId(Hash([0x01_u8; 32])));
 
-        let msg_with_block_1 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+        let msg_with_block_1 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_1.clone(),
             full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
-        let msg_no_block_2 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x02_u8; 32])));
+        let msg_no_block_2 =
+            BlockSyncResponseMessage::<SC>::NotAvailable(BlockId(Hash([0x02_u8; 32])));
 
-        let msg_with_block_2 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+        let msg_with_block_2 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_2.clone(),
             full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
-        let msg_no_block_3 = BlockSyncMessage::<SC>::NotAvailable(BlockId(Hash([0x03_u8; 32])));
+        let msg_no_block_3 =
+            BlockSyncResponseMessage::<SC>::NotAvailable(BlockId(Hash([0x03_u8; 32])));
 
-        let msg_with_block_3 = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+        let msg_with_block_3 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_3.clone(),
             full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
         // arbitrary response should be rejected
-        let BlockSyncResult::<SC>::IllegalResponse = manager.handle_retrieval(
+        let BlockSyncResult::<SC>::UnexpectedResponse = manager.handle_response(
             &NodeId(keypair.pubkey()),
             msg_no_block_1,
             &valset,
@@ -553,7 +575,7 @@ mod test {
 
         // valid message from invalid individual should still get dropped
 
-        let BlockSyncResult::<SC>::IllegalResponse = manager.handle_retrieval(
+        let BlockSyncResult::<SC>::UnexpectedResponse = manager.handle_response(
             &NodeId(keypair.pubkey()),
             msg_with_block_2.clone(),
             &valset,
@@ -562,7 +584,7 @@ mod test {
             panic!("illegal response is processed");
         };
 
-        let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_retrieval(
+        let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_response(
             &peer_2,
             msg_no_block_2.clone(),
             &valset,
@@ -580,13 +602,13 @@ mod test {
         };
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(&peer_1, msg_with_block_1, &valset, &transaction_validator)
+            manager.handle_response(&peer_1, msg_with_block_1, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
 
         let BlockSyncResult::<SC>::Failed(retry_command) =
-            manager.handle_retrieval(&peer_3, msg_no_block_3, &valset, &transaction_validator)
+            manager.handle_response(&peer_3, msg_no_block_3, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -602,7 +624,7 @@ mod test {
         assert!(b.get_block() == &block_1);
 
         let BlockSyncResult::<SC>::Failed(retry_command) =
-            manager.handle_retrieval(peer_2, msg_no_block_2, &valset, &transaction_validator)
+            manager.handle_response(peer_2, msg_no_block_2, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -616,7 +638,7 @@ mod test {
         };
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(peer_3, msg_with_block_3, &valset, &transaction_validator)
+            manager.handle_response(peer_3, msg_with_block_3, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -624,7 +646,7 @@ mod test {
         assert!(b.get_block() == &block_3);
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(peer_2, msg_with_block_2, &valset, &transaction_validator)
+            manager.handle_response(peer_2, msg_with_block_2, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -636,7 +658,7 @@ mod test {
     fn test_never_request_to_self() {
         let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
         let my_id = valset.get_list()[0];
-        let mut manager = BlockSyncManager::<SC>::new(my_id, Duration::MAX);
+        let mut manager = BlockSyncRequester::<SC>::new(my_id, Duration::MAX);
 
         let qc = &QC::new::<HasherType>(
             QcInfo {
@@ -663,10 +685,10 @@ mod test {
         assert!(peer == valset.get_list()[1]);
         assert!(bid == qc.info.vote.id);
         let transaction_validator = TV::default();
-        let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
+        let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
         for _ in 0..10 {
             for i in 2..31 {
-                let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_retrieval(
+                let BlockSyncResult::<SC>::Failed(retry_command) = manager.handle_response(
                     &peer,
                     msg_failed.clone(),
                     &valset,
@@ -702,7 +724,7 @@ mod test {
         // Request, Failed, natural timeout
         let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
         let my_id = valset.get_list()[0];
-        let mut manager = BlockSyncManager::<SC>::new(my_id, Duration::MAX);
+        let mut manager = BlockSyncRequester::<SC>::new(my_id, Duration::MAX);
 
         let qc = &QC::new::<HasherType>(
             QcInfo {
@@ -742,12 +764,12 @@ mod test {
         assert!(bid == qc.info.vote.id);
 
         // similarly, failure of message should have also triggered a timeout
-        let msg_failed = BlockSyncMessage::<SC>::NotAvailable(bid);
+        let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
 
         let transaction_validator = TV::default();
 
         let BlockSyncResult::<SC>::Failed(retry_command) =
-            manager.handle_retrieval(&peer, msg_failed, &valset, &transaction_validator)
+            manager.handle_response(&peer, msg_failed, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };
@@ -815,13 +837,13 @@ mod test {
         };
         let block = Block::new::<FakeHasher1>(peer, Round(3), &payload, qc);
 
-        let msg_with_block = BlockSyncMessage::<SC>::BlockFound(UnverifiedFullBlock {
+        let msg_with_block = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block.clone(),
             full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
         });
 
         let BlockSyncResult::<SC>::Success(b) =
-            manager.handle_retrieval(&peer, msg_with_block, &valset, &transaction_validator)
+            manager.handle_response(&peer, msg_with_block, &valset, &transaction_validator)
         else {
             panic!("illegal response is processed");
         };

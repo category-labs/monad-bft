@@ -10,7 +10,6 @@ bench = false
 
 [dependencies]
 monad-blocktree = { path = "../monad-blocktree" }
-monad-block-sync = { path = "../monad-block-sync" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
@@ -26,6 +25,7 @@ ref-cast = { workspace = true }
 
 [dev-dependencies]
 monad-tracing-counter = { path = "../monad-tracing-counter" }
+monad-testutil = { path = "../monad-testutil" }
 
 
 rand = { workspace = true }

@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::FullBlock,
@@ -135,7 +134,6 @@ type MonadStateType<MessageSignatureType, SignatureCollectionType> = MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
-    BlockSyncState,
 >;
 
 pub struct StateConfig<SignatureCollectionType: SignatureCollection> {

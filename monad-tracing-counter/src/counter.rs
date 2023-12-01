@@ -9,9 +9,13 @@ use std::{
 use tracing_core::{field::Visit, span, Event, Interest, Metadata, Subscriber as CoreSubscriber};
 use tracing_subscriber::layer::Filter;
 
+/// The prefix is the same as what
+/// [tracing_opentelemetry::MetricsLayer] is using, so we can swap the
+/// metrics backend without changing the code
 const METRIC_PREFIX_MONOTONIC_COUNTER: &str = "monotonic_counter.";
 const METRIC_STATUS: &str = "metric_status";
 
+/// Emit a trace event to print counter status, used with [`CounterLayer`]
 #[macro_export]
 macro_rules! counter_status {
     () => {{
@@ -20,6 +24,7 @@ macro_rules! counter_status {
     }};
 }
 
+/// Emit a trace event to increment the counter, used with [`CounterLayer`]
 #[macro_export]
 macro_rules! inc_count {
     ($($k:ident).+) => {{
@@ -28,6 +33,29 @@ macro_rules! inc_count {
     }};
 }
 
+/// This filter can prevent other layers (e.g. fmt layer) from capturing
+/// (printing) the counter messages
+///
+/// ```
+/// use tracing_core::LevelFilter;
+/// use tracing_subscriber::{filter::Targets, prelude::*, Registry};
+/// use monad_tracing_counter::{counter::{CounterLayer, MetricFilter}, inc_count};
+///
+/// let fmt_layer = tracing_subscriber::fmt::layer();
+/// let counter_layer = CounterLayer::new();
+///
+/// let subscriber = Registry::default()
+///     .with(
+///         fmt_layer
+///             .with_filter(MetricFilter {})
+///             .with_filter(Targets::new().with_default(LevelFilter::TRACE)),
+///      )
+///     .with(counter_layer);
+///
+/// // the fmt layer won't capture the trace event outputted for the counter
+/// inc_count!(metric_name);
+///
+/// ```
 pub struct MetricFilter;
 
 impl<S> Filter<S> for MetricFilter {
@@ -105,6 +133,9 @@ impl<'a> Visit for Visitor<'a> {
     }
 }
 
+/// A [tracing_subscriber::layer::Layer] to collect event counter metrics. It's
+/// aware of NodeId spans and prefixes the metrics name with the NodeId, making
+/// it useful in [monad_mock_swarm::mock_swarm] tests
 pub struct CounterLayer {
     counts: RwLock<HashMap<String, AtomicUsize>>,
     spans: RwLock<HashMap<span::Id, String>>,
@@ -209,16 +240,27 @@ where
     }
 
     fn on_close(&self, id: span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // span id management
+        // the span is closed: remove the span node metadata to save memory
         self.spans.write().unwrap().remove(&id);
     }
 
     fn on_id_change(
         &self,
-        _old: &span::Id,
-        _new: &span::Id,
+        old: &span::Id,
+        new: &span::Id,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        // TODO: move prefix to a different id
+        // this function doesn't get triggered by
+        // [tracing_subscriber::Registry::default()] because the `clone_span`
+        // implementation always return the same span::Id
+
+        // both new and old should point to the same span prefix
+
+        let mut spans_w = self.spans.write().unwrap();
+        let maybe_span_info = spans_w.get(old).cloned();
+
+        if let Some(span_info) = maybe_span_info {
+            spans_w.insert(new.clone(), span_info);
+        }
     }
 }

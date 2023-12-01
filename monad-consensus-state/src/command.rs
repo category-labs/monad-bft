@@ -12,8 +12,6 @@ use monad_consensus_types::{
 };
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
-use crate::blocksync::InFlightBlockSync;
-
 pub enum ConsensusCommand<SCT: SignatureCollection> {
     Publish {
         target: RouterTarget,
@@ -63,15 +61,6 @@ impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<
             PacemakerCommand::ScheduleReset => {
                 ConsensusCommand::ScheduleReset(TimeoutVariant::Pacemaker)
             }
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> From<&InFlightBlockSync<SCT>> for ConsensusCommand<SCT> {
-    fn from(sync: &InFlightBlockSync<SCT>) -> Self {
-        ConsensusCommand::RequestSync {
-            peer: sync.req_target,
-            block_id: sync.qc.info.vote.id,
         }
     }
 }

@@ -1,4 +1,3 @@
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
@@ -35,7 +34,6 @@ impl SwarmRelation for QuicSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;

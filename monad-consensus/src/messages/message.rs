@@ -1,5 +1,5 @@
 use monad_consensus_types::{
-    block::{Block, UnverifiedFullBlock},
+    block::{Block, BlockType, UnverifiedFullBlock},
     certificate_signature::CertificateSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
@@ -98,18 +98,27 @@ impl Hashable for RequestBlockSyncMessage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncMessage<T> {
+pub enum BlockSyncResponseMessage<T> {
     BlockFound(UnverifiedFullBlock<T>),
     NotAvailable(BlockId),
 }
 
-impl<T: SignatureCollection> Hashable for BlockSyncMessage<T> {
+impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
+    pub fn get_block_id(&self) -> BlockId {
+        match self {
+            BlockSyncResponseMessage::BlockFound(b) => b.block.get_id(),
+            BlockSyncResponseMessage::NotAvailable(bid) => *bid,
+        }
+    }
+}
+
+impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
         match self {
-            BlockSyncMessage::BlockFound(unverified_full_block) => {
+            BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
                 unverified_full_block.hash(state)
             }
-            BlockSyncMessage::NotAvailable(bid) => state.update(bid.0.as_bytes()),
+            BlockSyncResponseMessage::NotAvailable(bid) => state.update(bid.0.as_bytes()),
         }
     }
 }

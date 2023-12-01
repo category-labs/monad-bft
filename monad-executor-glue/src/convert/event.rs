@@ -1,11 +1,18 @@
 use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+    message_signature::MessageSignature,
+    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
 };
-use monad_proto::{error::ProtoError, proto::event::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::{basic::ProtoPubkey, event::*},
+};
 
 use crate::MonadEvent;
 
-impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> for ProtoMonadEvent {
+impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> for ProtoMonadEvent
+where
+    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
+{
     fn from(value: &MonadEvent<S, SCT>) -> Self {
         let event = match value {
             MonadEvent::ConsensusEvent(msg) => proto_monad_event::Event::ConsensusEvent(msg.into()),
@@ -14,8 +21,9 @@ impl<S: MessageSignature, SCT: SignatureCollection> From<&MonadEvent<S, SCT>> fo
     }
 }
 
-impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoMonadEvent>
-    for MonadEvent<S, SCT>
+impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoMonadEvent> for MonadEvent<S, SCT>
+where
+    ProtoPubkey: TryInto<SignatureCollectionPubKeyType<SCT>, Error = ProtoError>,
 {
     type Error = ProtoError;
     fn try_from(value: ProtoMonadEvent) -> Result<Self, Self::Error> {

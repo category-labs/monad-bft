@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     bls::BlsSignatureCollection, payload::StateRoot, transaction_validator::MockValidator,
@@ -38,7 +37,6 @@ impl SwarmRelation for BLSSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
-        BlockSyncState,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;

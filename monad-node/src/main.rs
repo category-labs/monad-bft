@@ -6,7 +6,6 @@ use std::{
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
-use monad_block_sync::BlockSyncState;
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
@@ -51,7 +50,6 @@ type MonadState = monad_state::MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
-    BlockSyncState,
 >;
 type MonadConfig = <MonadState as State>::Config;
 
@@ -85,7 +83,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     )
     .await;
 
-    // FIXME hack so all tcp sockets are bound before they try and send mesages
+    // FIXME-1 hack so all tcp sockets are bound before they try and send mesages
     // we can delete this once we support retry at the monad-p2p executor level
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 

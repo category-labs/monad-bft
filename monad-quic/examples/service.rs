@@ -2,11 +2,12 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     num::ParseIntError,
+    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
 use clap::Parser;
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
 use monad_executor_glue::{Identifiable, Message, RouterCommand};
@@ -22,13 +23,16 @@ struct Args {
 }
 
 pub fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_micros()
+        .init();
     let args = Args::parse();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(service(args.addresses, 1, 5_000 * 32))
+    rt.block_on(service(args.addresses, 1, 5_000 * 32));
 }
 
 async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
@@ -78,61 +82,88 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
         .collect::<Vec<Service<_, MockGossip, MockMessage, MockMessage>>>();
 
     // broadcast from first peer
-    services[0].exec(
-        (0..num_broadcast)
-            .map(|idx| RouterCommand::Publish {
-                target: RouterTarget::Broadcast,
-                message: MockMessage::new(idx, message_len),
-            })
-            .collect(),
-    );
+    services[0].exec(vec![RouterCommand::Publish {
+        target: RouterTarget::Broadcast,
+        message: MockMessage::new(0, 8),
+    }]);
+
+    let broadcast_commands: Vec<_> = (1..=num_broadcast)
+        .map(|idx| RouterCommand::Publish {
+            target: RouterTarget::Broadcast,
+            message: MockMessage::new(idx, message_len),
+        })
+        .collect();
     // messages from first peer expected
     let expected_messages: HashSet<(NodeId, u8)> = peers
         .first()
         .iter()
         .copied()
-        .flat_map(|peer| (0..num_broadcast).map(|message_id| (*peer, message_id)))
+        .flat_map(|peer| (1..=num_broadcast).map(|message_id| (*peer, message_id)))
         .collect();
 
-    let (wg, _) = tokio::sync::broadcast::channel::<()>(num_peers as usize);
-    futures_util::future::join_all(
-        services
-            .into_iter()
-            .enumerate()
-            .map(|(idx, mut service)| {
-                let mut expected_messages = expected_messages.clone();
-                let wg = wg.clone();
-                let mut rx = wg.subscribe();
-                async move {
-                    let start = Instant::now();
+    let mux = Arc::new(RwLock::new(0_u8));
+    let start_mux = Arc::new(RwLock::new(None));
+    services
+        .into_iter()
+        .enumerate()
+        .for_each(|(idx, mut service)| {
+            let mut broadcast_commands = Some(broadcast_commands.clone());
+            let mux = mux.clone();
+            let start_mux = start_mux.clone();
+            let mut expected_messages = expected_messages.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+
+                rt.block_on(async move {
+                    let mut num_ack_rx = 0;
                     while !expected_messages.is_empty() {
                         let message = service.next().await.expect("never terminates");
-                        assert!(expected_messages.remove(&message));
-                    }
-                    eprintln!(
-                        "took {:?} for node={} to rx all messages",
-                        start.elapsed(),
-                        idx
-                    );
-                    wg.send(()).unwrap();
-                    let mut num_done = 0;
-                    while num_done < num_peers {
-                        if let futures_util::future::Either::Left((result, _)) =
-                            futures_util::future::select(rx.recv().boxed(), service.next().boxed())
-                                .await
-                        {
-                            result.unwrap();
-                            num_done += 1;
+                        if message.1 == 0 {
+                            if idx != 0 {
+                                // send ack
+                                service.exec(vec![RouterCommand::Publish {
+                                    target: RouterTarget::PointToPoint(message.0),
+                                    message: MockMessage::new(0, 5),
+                                }]);
+                            } else {
+                                num_ack_rx += 1;
+                                assert!(num_ack_rx <= num_peers);
+                                if num_ack_rx == num_peers {
+                                    // all acks received, warmed up, broadcast payload
+                                    tracing::info!("START");
+                                    let now = Instant::now();
+                                    *start_mux.write().unwrap() = Some(now);
+                                    tracing::info!("exec broadcast payload");
+                                    service.exec(broadcast_commands.take().unwrap());
+                                    tracing::info!(
+                                        "done broadcast payload, elapsed={:?}",
+                                        now.elapsed()
+                                    );
+                                }
+                            }
+                        } else {
+                            assert!(expected_messages.remove(&message));
                         }
                     }
-                }
-            })
-            .map(tokio::spawn),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap();
+                    tracing::info!(
+                        "took {:?} for node={} to rx all messages",
+                        (*start_mux.read().unwrap()).unwrap().elapsed(),
+                        idx
+                    );
+                    *mux.write().unwrap() += 1;
+                    service.next().await;
+                    unreachable!("should yield forever");
+                });
+            });
+        });
+
+    while *mux.read().unwrap() < num_peers {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::process::exit(0)
 }
 
 #[derive(Clone)]

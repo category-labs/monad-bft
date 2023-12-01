@@ -4,7 +4,7 @@ use monad_proto::{
 };
 use zerocopy::AsBytes;
 
-use crate::{hasher::Hash, PubKey};
+use crate::{bls12_381::BlsPubKey, hasher::Hash, PubKey};
 
 impl From<&PubKey> for ProtoPubkey {
     fn from(value: &PubKey) -> Self {
@@ -14,11 +14,28 @@ impl From<&PubKey> for ProtoPubkey {
     }
 }
 
+impl From<&BlsPubKey> for ProtoPubkey {
+    fn from(value: &BlsPubKey) -> Self {
+        Self {
+            pubkey: value.serialize(),
+        }
+    }
+}
+
 impl TryFrom<ProtoPubkey> for PubKey {
     type Error = ProtoError;
 
     fn try_from(value: ProtoPubkey) -> Result<Self, Self::Error> {
         PubKey::from_slice(value.pubkey.as_bytes())
+            .map_err(|e| ProtoError::CryptoError(format!("{}", e)))
+    }
+}
+
+impl TryFrom<ProtoPubkey> for BlsPubKey {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoPubkey) -> Result<Self, Self::Error> {
+        BlsPubKey::deserialize(value.pubkey.as_slice())
             .map_err(|e| ProtoError::CryptoError(format!("{}", e)))
     }
 }

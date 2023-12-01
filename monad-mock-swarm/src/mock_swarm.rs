@@ -5,7 +5,6 @@ use std::{
 };
 
 use itertools::Itertools;
-use monad_block_sync::BlockSyncProcess;
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
@@ -92,7 +91,7 @@ where
                                 timestamp: tick,
                                 event: event.clone(),
                             };
-                            self.logger.push(&timed_event).unwrap(); // FIXME: propagate the error
+                            self.logger.push(&timed_event).unwrap(); // FIXME-4: propagate the error
                             let node_span = info_span!("node", id = ?self.id);
                             let _guard = node_span.enter();
                             let commands = self.state.update(event.clone());
@@ -113,7 +112,7 @@ where
                             for (delay, msg) in transformed {
                                 let sched_tick = tick + delay;
 
-                                // FIXME: do we need to transform msg to self?
+                                // FIXME-3: do we need to transform msg to self?
                                 if msg.to == self.id {
                                     self.pending_inbound_messages
                                         .entry(sched_tick)
@@ -204,16 +203,15 @@ impl UntilTerminator {
     }
 }
 
-impl<S, CT, ST, SCT, VT, LT, BST> NodesTerminator<S> for UntilTerminator
+impl<S, CT, ST, SCT, VT, LT> NodesTerminator<S> for UntilTerminator
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, BST>>,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT>>,
 
     CT: ConsensusProcess<SCT> + PartialEq + Eq,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
-    BST: BlockSyncProcess<SCT, VT>,
 {
     fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         nodes.tick > self.until_tick

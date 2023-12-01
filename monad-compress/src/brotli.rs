@@ -1,8 +1,14 @@
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, ErrorKind};
 
-use brotli::{CompressorWriter, Decompressor};
+use brotli::{
+    enc::BrotliEncoderInitParams, writer::StandardAlloc, Allocator,
+    BrotliCompressCustomIoCustomDict, BrotliDecompressCustomIoCustomDict, IoReaderWrapper,
+    IoWriterWrapper, SliceWrapperMut,
+};
 
 use crate::CompressionAlgo;
+
+pub const MAX_COMPRESSION_LEVEL: u32 = 11;
 
 pub struct BrotliCompression {
     // quality range 0..=11
@@ -12,6 +18,7 @@ pub struct BrotliCompression {
     // 10..=30 with large_window_size feature
     window_bits: u32,
     // library default is 11/22 for Brotli
+    custom_dictionary: Vec<u8>,
 }
 
 impl Default for BrotliCompression {
@@ -19,6 +26,7 @@ impl Default for BrotliCompression {
         Self {
             quality: 11,
             window_bits: 22,
+            custom_dictionary: Vec::new(),
         }
     }
 }
@@ -27,34 +35,91 @@ impl CompressionAlgo for BrotliCompression {
     type CompressError = std::io::Error;
     type DecompressError = std::io::Error;
 
-    fn new(quality: u32, window_bits: u32) -> Self {
+    fn new(quality: u32, window_bits: u32, custom_dictionary: Vec<u8>) -> Self {
         Self {
-            quality,
+            quality: quality.min(MAX_COMPRESSION_LEVEL),
             window_bits,
+            custom_dictionary,
         }
     }
 
     fn compress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::CompressError> {
-        let mut writer = CompressorWriter::new(output, 4096, self.quality, self.window_bits);
-        writer.write_all(input)?;
-        writer.flush()
+        let mut input_buffer = StandardAlloc {}.alloc_cell(4096);
+        let mut output_buffer = StandardAlloc {}.alloc_cell(4096);
+        let mut params = BrotliEncoderInitParams();
+        params.quality = self.quality as i32;
+        params.lgwin = self.window_bits as i32;
+
+        BrotliCompressCustomIoCustomDict(
+            &mut IoReaderWrapper(&mut Cursor::new(input)),
+            &mut IoWriterWrapper(output),
+            input_buffer.slice_mut(),
+            output_buffer.slice_mut(),
+            &params,
+            StandardAlloc {},
+            &mut |_a1, _a2, _a3, _a4| {},
+            &self.custom_dictionary,
+            std::io::Error::new(ErrorKind::UnexpectedEof, "Unexpected EOF"),
+        )
+        .map(|_size| ())
     }
 
     fn decompress(&self, input: &[u8], output: &mut Vec<u8>) -> Result<(), Self::DecompressError> {
-        let mut reader = Decompressor::new(Cursor::new(input), 4096);
+        let mut input_buffer = StandardAlloc {}.alloc_cell(4096);
+        let mut output_buffer = StandardAlloc {}.alloc_cell(4096);
 
-        reader.read_to_end(output)?;
-        Ok(())
+        BrotliDecompressCustomIoCustomDict(
+            &mut IoReaderWrapper(&mut Cursor::new(input)),
+            &mut IoWriterWrapper(output),
+            input_buffer.slice_mut(),
+            output_buffer.slice_mut(),
+            StandardAlloc {},
+            StandardAlloc {},
+            StandardAlloc {},
+            self.custom_dictionary.clone().into(),
+            std::io::Error::new(ErrorKind::UnexpectedEof, "Unexpected EOF"),
+        )
     }
 }
 
 #[cfg(test)]
 mod test {
+    use std::{fs::File, io::Read};
+
     use super::*;
     #[test]
     fn test_lossless_compression() {
-        let data = [0xfe_u8; 5000];
-        let algo = BrotliCompression::new(11, 22);
+        let mut data = Vec::new();
+        File::open("examples/txbatch.rlp")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+
+        let algo = BrotliCompression::new(4, 22, Vec::new());
+
+        let mut compressed = Vec::new();
+        assert!(algo.compress(&data, &mut compressed).is_ok());
+        assert!(compressed.len() < data.len());
+
+        let mut decompressed = Vec::new();
+        assert!(algo.decompress(&compressed, &mut decompressed).is_ok());
+        assert_eq!(data, decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_lossless_compression_with_custom_dictionary() {
+        let mut dictionary = Vec::new();
+
+        let dictionary_path = "examples/example.dict";
+        let mut dictionary_file = File::open(dictionary_path).expect("file exists");
+        dictionary_file.read_to_end(&mut dictionary).unwrap();
+
+        let mut data = Vec::new();
+        File::open("examples/txbatch.rlp")
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        let algo = BrotliCompression::new(4, 22, dictionary);
 
         let mut compressed = Vec::new();
         assert!(algo.compress(&data, &mut compressed).is_ok());
