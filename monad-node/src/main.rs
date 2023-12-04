@@ -16,7 +16,7 @@ use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
-use monad_types::{NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -109,7 +109,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             .bootstrap
             .peers
             .into_iter()
-            .map(|peer| (peer.pubkey, peer.certkey))
+            .map(|peer| (peer.pubkey, Stake(1), peer.certkey))
             .collect(),
         key: node_state.identity,
         certkey: node_state.certkey,

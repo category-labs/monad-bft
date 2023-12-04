@@ -21,7 +21,7 @@ use monad_mock_swarm::{
 };
 use monad_state::MonadConfig;
 use monad_transformer::ID;
-use monad_types::{NodeId, SeqNum};
+use monad_types::{NodeId, SeqNum, Stake};
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -91,7 +91,7 @@ pub fn complete_config<
             validators: validator_mapping
                 .map
                 .iter()
-                .map(|(node_id, sctpubkey)| (node_id.0, *sctpubkey))
+                .map(|(node_id, sctpubkey)| (node_id.0, Stake(1), *sctpubkey))
                 .collect::<Vec<_>>(),
             delta,
             consensus_config: ConsensusConfig {

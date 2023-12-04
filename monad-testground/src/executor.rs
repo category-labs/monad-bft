@@ -20,6 +20,7 @@ use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gos
 use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
 use monad_quic::service::UnsafeNoAuthQuinnConfig;
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_types::Stake;
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
@@ -170,7 +171,11 @@ where
 {
     MonadStateType::init(MonadConfig {
         transaction_validator: MockValidator {},
-        validators: config.genesis_peers,
+        validators: config
+            .genesis_peers
+            .into_iter()
+            .map(|(pk, cert_pk)| (pk, Stake(1), cert_pk))
+            .collect(),
         key: config.key,
         certkey: config.cert_key,
         beneficiary: EthAddress::default(),

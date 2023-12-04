@@ -221,7 +221,7 @@ where
 
 pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub transaction_validator: TV,
-    pub validators: Vec<(PubKey, SignatureCollectionPubKeyType<SCT>)>,
+    pub validators: Vec<(PubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
     pub key: KeyPair,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub beneficiary: EthAddress,
@@ -263,17 +263,16 @@ where
             >,
         >,
     ) {
-        // FIXME-1 stake should be configurable
         let staking_list = config
             .validators
             .iter()
-            .map(|(pubkey, _)| (NodeId(*pubkey), Stake(1)))
+            .map(|(pubkey, stake, _)| (NodeId(*pubkey), *stake))
             .collect::<Vec<_>>();
 
         let voting_identities = config
             .validators
             .into_iter()
-            .map(|(pubkey, certpubkey)| (NodeId(pubkey), certpubkey))
+            .map(|(pubkey, _, certpubkey)| (NodeId(pubkey), certpubkey))
             .collect::<Vec<_>>();
 
         // create the initial validator set
