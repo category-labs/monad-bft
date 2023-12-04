@@ -546,6 +546,12 @@ where
             let advance_round_cmds = self.pacemaker.advance_round_tc(&tc).map(Into::into);
             cmds.extend(advance_round_cmds);
 
+            cmds.extend(self.advance_epoch(
+                &self.high_qc,
+                self.get_current_round(),
+                &mut current_epoch,
+            ));
+
             if self.nodeid
                 == election.get_leader(
                     self.pacemaker.get_current_round(),
@@ -2917,8 +2923,104 @@ mod test {
     }
 
     #[test]
-    fn test_epoch_end_through_tc() {
+    fn test_epoch_end_through_proposal_tc() {
         let num_state = 2;
+        let (keys, certkeys, validators_epoch_mapping, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_state as u32,
+            );
+        let valset = validators_epoch_mapping.get_val_set(&Epoch(1)).unwrap();
+        let val_cert_pubkeys = validators_epoch_mapping
+            .get_cert_pubkeys(&Epoch(1))
+            .unwrap();
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut blocks = vec![];
+        let epoch_length = states[0].config.epoch_length;
+        for _ in 0..epoch_length.0 {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &validators_epoch_mapping,
+                &election,
+                Default::default(),
+                ExecutionArtifacts::zero(),
+                epoch_length,
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for state in states.iter_mut() {
+                let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::new(Vec::new()),
+                    &validators_epoch_mapping,
+                    Epoch(1),
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+            blocks.push(verified_message.block);
+        }
+
+        // verify all states are in Round(epoch_length)
+        for state in &states {
+            assert!(state.get_current_round() == epoch_length)
+        }
+
+        // generate TC for Round(epoch_length)
+        let _ = propgen.next_tc(&keys, &certkeys, valset, val_cert_pubkeys);
+
+        // proposal for Round(epoch_length+1) has QC(epoch_length - 1) and TC(epoch_length)
+        let new_epoch_proposal = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &validators_epoch_mapping,
+            &election,
+            Default::default(),
+            ExecutionArtifacts::zero(),
+            epoch_length,
+        );
+        // the highest QC is from Round(epoch_length - 1)
+        assert_eq!(
+            new_epoch_proposal.block.qc.info.vote.round,
+            Round(epoch_length.0 - 1)
+        );
+        // the new block is for Round(epoch_length + 1)
+        assert_eq!(new_epoch_proposal.block.round, Round(epoch_length.0 + 1));
+
+        let (author, _, verified_message) = new_epoch_proposal.destructure();
+        // advance round (and end epoch) through TC
+        let cmds = states[0].handle_proposal_message_full::<HasherType, _, _>(
+            author,
+            verified_message,
+            FullTransactionList::new(Vec::new()),
+            &validators_epoch_mapping,
+            Epoch(1),
+            &election,
+        );
+        let epoch_end_cmds: Vec<SeqNum> = cmds
+            .into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::EpochEnd(seq_num) => Some(seq_num),
+                _ => None,
+            })
+            .collect();
+
+        assert!(epoch_end_cmds.len() == 1);
+    }
+
+    #[test]
+    fn test_epoch_end_through_local_tc() {
+        let num_state = 4;
         let (keys, certkeys, validators_epoch_mapping, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
                 num_state as u32,
@@ -2989,36 +3091,25 @@ mod test {
         assert_eq!(tmo.tminfo.round, Round(epoch_length.0));
 
         // generate TC for Round(epoch_length)
-        let _ = propgen.next_tc(&keys, &certkeys, valset, val_cert_pubkeys);
+        let tmo_msgs = propgen.next_tc(&keys, &certkeys, valset, val_cert_pubkeys);
 
-        // proposal for Round(epoch_length+1) has QC(epoch_length - 1) and TC(epoch_length)
-        let new_epoch_proposal = propgen.next_proposal(
-            &keys,
-            &certkeys,
-            &validators_epoch_mapping,
-            &election,
-            Default::default(),
-            ExecutionArtifacts::zero(),
-            epoch_length,
-        );
-        // the highest QC is from Round(epoch_length - 1)
-        assert_eq!(
-            new_epoch_proposal.block.qc.info.vote.round,
-            Round(epoch_length.0 - 1)
-        );
-        // the new block is for Round(epoch_length + 1)
-        assert_eq!(new_epoch_proposal.block.round, Round(epoch_length.0 + 1));
+        let (_, tmo_msgs) = tmo_msgs.split_first().unwrap();
+        let mut cmds: Vec<ConsensusCommand<SignatureCollectionType>> = Vec::new();
 
-        let (author, _, verified_message) = new_epoch_proposal.destructure();
-        // advance round (and end epoch) through TC
-        let cmds = states[0].handle_proposal_message_full::<HasherType, _, _>(
-            author,
-            verified_message,
-            FullTransactionList::new(Vec::new()),
-            &validators_epoch_mapping,
-            Epoch(1),
-            &election,
-        );
+        // handle the three timeout messages from other nodes
+        for tmo_msg in tmo_msgs {
+            let (author, _, tm) = tmo_msg.clone().destructure();
+
+            cmds.extend(states[0].handle_timeout_message::<HasherType, _, _>(
+                author,
+                tm,
+                &validators_epoch_mapping,
+                Epoch(1),
+                &election,
+            ));
+        }
+
+        // state should generate an EpochEnd command by creating a TC locally
         let epoch_end_cmds: Vec<SeqNum> = cmds
             .into_iter()
             .filter_map(|c| match c {

@@ -492,9 +492,9 @@ where
                         self.consensus.handle_state_root_update(seq_num, root_hash);
                         Vec::new()
                     }
-                    ConsensusEvent::UpdateNextValSet(valset) => {
-                        self.update_next_val_set(valset);
-                        Vec::new()
+                    ConsensusEvent::UpdateNextValSet(val_data) => {
+                        self.update_next_val_set(val_data);
+                        vec![ConsensusCommand::EpochEndReset]
                     }
                 };
 
@@ -594,6 +594,9 @@ where
                                 seq_num,
                             )))
                         }
+                        ConsensusCommand::EpochEndReset => cmds.push(Command::ValidatorSetCommand(
+                            ValidatorSetCommand::EpochEndReset,
+                        )),
                     }
                 }
 

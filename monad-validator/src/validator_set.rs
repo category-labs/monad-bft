@@ -157,10 +157,11 @@ where
         val_stakes: VT,
         val_cert_pubkeys: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     ) {
-        self.validator_sets
+        let res = self
+            .validator_sets
             .insert(epoch, (val_stakes, val_cert_pubkeys));
-        // TODO: fix assert on replaying events and commands
-        // assert!(res.is_none());
+
+        assert!(res.is_none());
     }
 }
 

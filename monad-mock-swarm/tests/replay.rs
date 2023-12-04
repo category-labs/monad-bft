@@ -153,7 +153,7 @@ pub fn recover_nodes_msg_delays(
         Duration::from_millis(2),
         4,
         proposal_size,
-        Round(100),
+        epoch_length,
     );
 
     let peers_clone = pubkeys_clone

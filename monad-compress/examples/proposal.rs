@@ -33,18 +33,23 @@ fn main() {
     rng.fill_bytes(&mut transaction_hashes);
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
-    let validators = Vec::from_iter(valset.get_members().clone());
+
+    let validator_stakes = Vec::from_iter(valset.get_members().clone());
+
     let mut validators_epoch_mapping = ValidatorsEpochMapping::new();
     validators_epoch_mapping.insert(
         Epoch(1),
-        ValidatorSet::new(validators)
+        ValidatorSet::new(validator_stakes)
             .expect("ValidatorData should not have duplicates or invalid entries"),
         ValidatorMapping::new(valmap),
     );
+
     let valmap = validators_epoch_mapping
         .get_cert_pubkeys(&Epoch(1))
         .unwrap();
+
     let epoch_length = Round(100);
+
     let voting_keys = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))

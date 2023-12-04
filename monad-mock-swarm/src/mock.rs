@@ -727,6 +727,9 @@ impl<ST, SCT: SignatureCollection> Executor for MockValidatorSetUpdaterNop<ST, S
                 ValidatorSetCommand::EpochEnd(_) => {
                     self.validator_set = Some(self.init_validator_set.clone());
                 }
+                ValidatorSetCommand::EpochEndReset => {
+                    self.validator_set = None;
+                }
             }
         }
     }
@@ -809,6 +812,9 @@ impl<ST, SCT: SignatureCollection> Executor for MockValidatorSetUpdater<ST, SCT>
                     } else {
                         self.validator_set = Some(self.val_set_2.clone());
                     }
+                }
+                ValidatorSetCommand::EpochEndReset => {
+                    self.validator_set = None;
                 }
             }
         }

@@ -45,6 +45,9 @@ impl<ST, SCT: SignatureCollection> Executor for ValidatorSetUpdater<ST, SCT> {
                 ValidatorSetCommand::EpochEnd(seq_num) => {
                     self.epoch_boundary = seq_num;
                 }
+                ValidatorSetCommand::EpochEndReset => {
+                    self.validator_set = None;
+                }
             }
         }
     }
@@ -68,7 +71,7 @@ where
         Poll::Ready(Some(MonadEvent::ConsensusEvent(
             monad_executor_glue::ConsensusEvent::UpdateNextValSet(
                 this.validator_set
-                    .take()
+                    .clone()
                     .expect("there should be a ValidatorData object"),
             ),
         )))

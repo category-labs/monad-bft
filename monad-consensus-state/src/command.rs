@@ -43,7 +43,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     CheckpointSave(Checkpoint<SCT>),
     StateRootHash(FullBlock<SCT>),
     EpochEnd(SeqNum),
-    // - to handle this command, we need to call message_state.set_round()
+    EpochEndReset,
 }
 
 impl<SCT: SignatureCollection> From<PacemakerCommand<SCT>> for ConsensusCommand<SCT> {

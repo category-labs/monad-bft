@@ -15,6 +15,5 @@ monad-types = { path = "../monad-types" }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-testutil = { path = "../monad-testutil" }
