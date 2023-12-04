@@ -73,7 +73,7 @@ impl MonadEventBencher {
 }
 
 fn bench_proposal(c: &mut Criterion) {
-    let txns = TransactionHashList::new(vec![0x23_u8; 32 * 10000]);
+    let txns = TransactionHashList::new(vec![0x23_u8; 32 * 10000].into());
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
         create_keys_w_validators::<MultiSig<SecpSignature>>(1);
     let author_keypair = &keypairs[0];

@@ -409,7 +409,7 @@ mod test {
         hasher::{Hash, HasherType},
         secp256k1::KeyPair,
     };
-    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+    use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
@@ -427,7 +427,7 @@ mod test {
     #[test]
     fn test_prune() {
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -452,7 +452,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -478,7 +478,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -504,7 +504,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -530,7 +530,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -556,7 +556,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -582,7 +582,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -608,7 +608,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -634,7 +634,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -732,7 +732,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -744,7 +744,7 @@ mod test {
     #[test]
     fn test_add_parent_not_exist() {
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -769,7 +769,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -795,7 +795,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -821,7 +821,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -856,7 +856,7 @@ mod test {
                 node_id(),
                 Round(0),
                 &Payload {
-                    txns: TransactionHashList::default(),
+                    txns: TransactionHashList::empty(),
                     header: ExecutionArtifacts::zero(),
                     seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
@@ -876,7 +876,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -894,7 +894,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionHashList::new(vec![1]),
+                    txns: TransactionHashList::new(vec![1].into()),
                     header: ExecutionArtifacts::zero(),
                     seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
@@ -908,7 +908,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -918,7 +918,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionHashList::new(vec![2]),
+                    txns: TransactionHashList::new(vec![2].into()),
                     header: ExecutionArtifacts::zero(),
                     seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
@@ -932,7 +932,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -950,7 +950,7 @@ mod test {
                 node_id(),
                 Round(2),
                 &Payload {
-                    txns: TransactionHashList::new(vec![3]),
+                    txns: TransactionHashList::new(vec![3].into()),
                     header: ExecutionArtifacts::zero(),
                     seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
@@ -964,7 +964,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1001,7 +1001,7 @@ mod test {
                 node_id(),
                 Round(0),
                 &Payload {
-                    txns: TransactionHashList::default(),
+                    txns: TransactionHashList::empty(),
                     header: ExecutionArtifacts::zero(),
                     seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
@@ -1021,7 +1021,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1039,7 +1039,7 @@ mod test {
                 node_id(),
                 Round(1),
                 &Payload {
-                    txns: TransactionHashList::new(vec![1]),
+                    txns: TransactionHashList::new(vec![1].into()),
                     header: ExecutionArtifacts::zero(),
                     seq_num: SeqNum(0),
                     beneficiary: EthAddress::default(),
@@ -1053,7 +1053,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1076,7 +1076,7 @@ mod test {
     #[test]
     fn paths_to_root() {
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -1101,7 +1101,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1127,7 +1127,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1153,7 +1153,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1171,7 +1171,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1189,7 +1189,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1235,7 +1235,7 @@ mod test {
         let mut blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
 
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -1261,7 +1261,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1287,7 +1287,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1313,7 +1313,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1339,7 +1339,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1370,7 +1370,7 @@ mod test {
         let mut blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
 
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -1395,7 +1395,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1421,7 +1421,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1447,7 +1447,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1473,7 +1473,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1499,7 +1499,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1525,7 +1525,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1563,7 +1563,7 @@ mod test {
     #[test]
     fn test_has_parent() {
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -1589,7 +1589,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1615,7 +1615,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1641,7 +1641,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1663,7 +1663,7 @@ mod test {
     fn test_is_valid() {
         let blocktree = BlockTree::<MockSignatures>::new_unrooted(Round(4));
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -1688,7 +1688,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1714,7 +1714,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1740,7 +1740,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1763,7 +1763,7 @@ mod test {
         //  b2    b3    b4
 
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -1788,7 +1788,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1814,7 +1814,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1840,7 +1840,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1858,7 +1858,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();
@@ -1876,7 +1876,7 @@ mod test {
                     MockSignatures::with_pubkeys(&[]),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator {},
         )
         .unwrap();

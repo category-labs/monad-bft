@@ -55,7 +55,7 @@ const SERVER_NAME: &str = "MONAD";
 
 impl<G: Gossip, IM, OM> RouterScheduler for QuicRouterScheduler<G, IM, OM>
 where
-    IM: Deserializable<[u8]>,
+    IM: Deserializable<Bytes>,
     OM: Serializable<Bytes>,
 {
     type Config = QuicRouterSchedulerConfig<G>;
@@ -280,7 +280,7 @@ enum QuicEventType {
 
 impl<G: Gossip, IM, OM> QuicRouterScheduler<G, IM, OM>
 where
-    IM: Deserializable<[u8]>,
+    IM: Deserializable<Bytes>,
     OM: Serializable<Bytes>,
 {
     fn peek_event(&self) -> Option<(Duration, QuicEventType)> {

@@ -1,3 +1,4 @@
+use bytes::{Bytes, BytesMut};
 use reth_primitives::{Address, TransactionSignedEcRecovered, TxHash, H160};
 use reth_rlp::{Decodable, Encodable};
 
@@ -10,17 +11,16 @@ pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 pub struct EthTransactionList(pub Vec<TxHash>);
 
 impl EthTransactionList {
-    pub fn rlp_encode(self) -> Vec<u8> {
-        let mut buf = Vec::default();
+    pub fn rlp_encode(self) -> Bytes {
+        let mut buf = BytesMut::new();
 
         self.0.encode(&mut buf);
 
-        buf
+        buf.into()
     }
 
-    // FIXME-2 does this need to take ownership?
-    pub fn rlp_decode(rlp_data: Vec<u8>) -> Result<Self, reth_rlp::DecodeError> {
-        Vec::<TxHash>::decode(&mut rlp_data.as_slice()).map(Self)
+    pub fn rlp_decode(rlp_data: Bytes) -> Result<Self, reth_rlp::DecodeError> {
+        Vec::<TxHash>::decode(&mut rlp_data.as_ref()).map(Self)
     }
 }
 
@@ -28,16 +28,16 @@ impl EthTransactionList {
 pub struct EthFullTransactionList(pub Vec<TransactionSignedEcRecovered>);
 
 impl EthFullTransactionList {
-    pub fn rlp_encode(self) -> Vec<u8> {
-        let mut buf = Vec::default();
+    pub fn rlp_encode(self) -> Bytes {
+        let mut buf = BytesMut::default();
 
         self.0.encode(&mut buf);
 
-        buf
+        buf.into()
     }
 
-    pub fn rlp_decode(rlp_data: Vec<u8>) -> Result<Self, reth_rlp::DecodeError> {
-        Vec::<TransactionSignedEcRecovered>::decode(&mut rlp_data.as_slice()).map(Self)
+    pub fn rlp_decode(rlp_data: Bytes) -> Result<Self, reth_rlp::DecodeError> {
+        Vec::<TransactionSignedEcRecovered>::decode(&mut rlp_data.as_ref()).map(Self)
     }
 }
 

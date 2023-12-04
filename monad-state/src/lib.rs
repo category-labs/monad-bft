@@ -144,27 +144,15 @@ impl<MS: MessageSignature, SCT: SignatureCollection>
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<[u8]>
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<Bytes>
     for MonadMessage<MS, SCT>
 {
     type ReadError = monad_proto::error::ProtoError;
 
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
-        Ok(MonadMessage(
-            monad_consensus::convert::interface::deserialize_unverified_consensus_message(message)?,
-        ))
-    }
-}
-
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<Vec<u8>>
-    for MonadMessage<MS, SCT>
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(message: &Vec<u8>) -> Result<Self, Self::ReadError> {
+    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
         Ok(MonadMessage(
             monad_consensus::convert::interface::deserialize_unverified_consensus_message(
-                message.as_ref(),
+                message.clone(),
             )?,
         ))
     }

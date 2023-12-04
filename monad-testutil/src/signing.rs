@@ -19,7 +19,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, PubKey, SecpSignature},
 };
-use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
@@ -100,7 +100,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         let mut hasher = HasherType::new();
         hasher.update(b.author.0.bytes());
         hasher.update(b.round);
-        hasher.update(b.payload.txns.as_bytes());
+        hasher.update(b.payload.txns.bytes());
         hasher.update(b.payload.header.parent_hash);
         hasher.update(b.payload.header.state_root);
         hasher.update(b.payload.header.transactions_root);
@@ -165,7 +165,7 @@ where
     SCT: SignatureCollection,
     TVT: TransactionValidator,
 {
-    let genesis_txn = TransactionHashList::default();
+    let genesis_txn = TransactionHashList::empty();
     let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc::<H>();
     let genesis_block = Block::<SCT>::new::<H>(
         // FIXME-4 init from genesis config, don't use random key
@@ -192,12 +192,7 @@ where
 
     let sigs = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
     (
-        FullBlock::from_block(
-            genesis_block,
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            tvt,
-        )
-        .unwrap(),
+        FullBlock::from_block(genesis_block, FullTransactionList::empty(), tvt).unwrap(),
         sigs,
     )
 }

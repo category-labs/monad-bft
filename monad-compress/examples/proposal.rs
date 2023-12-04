@@ -57,7 +57,7 @@ fn main() {
             &valset,
             &election,
             &valmap,
-            TransactionHashList::new(transaction_hashes.to_vec()),
+            TransactionHashList::new(transaction_hashes.to_vec().into()),
             ExecutionArtifacts::zero(),
         )
         .destructure()

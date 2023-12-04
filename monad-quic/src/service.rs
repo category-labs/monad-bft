@@ -115,8 +115,8 @@ impl<QC, G, M, OM> Executor for Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
-    <M as Deserializable<[u8]>>::ReadError: 'static,
+    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M> + Clone,
@@ -150,8 +150,8 @@ impl<QC, G, M, OM> Stream for Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
-    <M as Deserializable<[u8]>>::ReadError: 'static,
+    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
     OM: Into<M> + AsRef<M> + Clone,

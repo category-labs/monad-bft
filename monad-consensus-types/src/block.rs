@@ -91,6 +91,7 @@ impl<T: SignatureCollection> Block<T> {
             payload: payload.clone(),
             qc: qc.clone(),
             id: {
+                let mut _block_hash_span = tracing::info_span!("block_hash_span").entered();
                 let mut state = H::new();
                 state.update(author.0.bytes());
                 state.update(round.as_bytes());
@@ -156,7 +157,7 @@ impl<T> From<FullBlock<T>> for UnverifiedFullBlock<T> {
 impl<T: SignatureCollection> Hashable for UnverifiedFullBlock<T> {
     fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
-        state.update(self.full_txs.as_bytes());
+        state.update(self.full_txs.bytes());
     }
 }
 

@@ -109,7 +109,7 @@ where
 
                     match task {
                         ControllerTaskCommand::FetchTxs(num_max_txs, pending_blocktree_txs) => {
-                            let Ok(pending_blocktree_txs) = pending_blocktree_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.as_bytes().to_vec())).collect::<Result<Vec<_>, _>>() else {
+                            let Ok(pending_blocktree_txs) = pending_blocktree_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.bytes().clone())).collect::<Result<Vec<_>, _>>() else {
                                 error!("Invalid pending_blocktree_txs!");
                                 continue;
                             };
@@ -120,7 +120,7 @@ where
                                 .await?;
                         }
                         ControllerTaskCommand::FetchFullTxs(txs) => {
-                            let txs = match EthTransactionList::rlp_decode(txs.as_bytes().to_vec()) {
+                            let txs = match EthTransactionList::rlp_decode(txs.bytes().clone()) {
                                 Ok(txs) => txs,
                                 Err(_) => {
                                     // TODO-1: add warn log
@@ -136,7 +136,7 @@ where
                             .await?;
                         }
                         ControllerTaskCommand::DrainTxs(drain_txs) => {
-                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.as_bytes().to_vec())).collect::<Result<Vec<EthTransactionList>, _>>() else {
+                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.bytes().clone())).collect::<Result<Vec<EthTransactionList>, _>>() else {
                                 error!("Invalid drain_txs!");
                                 continue;
                             };

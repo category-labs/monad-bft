@@ -4257,6 +4257,7 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -4295,6 +4296,7 @@ name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
  "bitvec",
+ "bytes",
  "criterion",
  "monad-crypto",
  "monad-eth-types",
@@ -4335,6 +4337,7 @@ dependencies = [
 name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "reth-primitives",
  "reth-rlp",
  "serde",

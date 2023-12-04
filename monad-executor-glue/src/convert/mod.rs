@@ -54,7 +54,7 @@ where
                     high_qc: Some((&fetched.high_qc).into()),
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
-                    tx_hashes: txns.as_bytes().to_vec(),
+                    tx_hashes: txns.bytes().clone(),
                     seq_num: Some((&fetched.seq_num).into()),
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
@@ -66,7 +66,7 @@ where
                     p_last_round_tc: fetched_full.p_last_round_tc.as_ref().map(Into::into),
                     full_txs: txns
                         .as_ref()
-                        .map(|txns| txns.as_bytes().to_vec())
+                        .map(|txns| txns.bytes().clone())
                         .unwrap_or_default(),
                 })
             }

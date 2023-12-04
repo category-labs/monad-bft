@@ -30,7 +30,7 @@ pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SC
 }
 
 fn generate_block_body(monad_full_txs: FullTransactionList) -> BlockBody {
-    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.as_bytes().to_vec())
+    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.bytes().clone())
         .unwrap()
         .0
         .into_iter()
@@ -117,7 +117,7 @@ mod test {
                 NodeId(pubkey),
                 Round(0),
                 &Payload {
-                    txns: TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]),
+                    txns: TransactionHashList::new(vec![EMPTY_RLP_TX_LIST].into()),
                     header: ExecutionArtifacts {
                         parent_hash: Hash::default(),
                         state_root: Hash::default(),
@@ -147,7 +147,7 @@ mod test {
                     MultiSig::default(),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),
             &MockValidator::default(),
         )
         .unwrap();

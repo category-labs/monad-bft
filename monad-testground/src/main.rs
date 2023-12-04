@@ -25,7 +25,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     secp256k1::{KeyPair, SecpSignature},
 };
-use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+use monad_eth_types::EthAddress;
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
@@ -240,7 +240,7 @@ where
         .map(|(keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
         .collect::<Vec<_>>();
     let genesis_block = {
-        let genesis_txn = TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]);
+        let genesis_txn = TransactionHashList::empty();
         let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(
@@ -256,7 +256,7 @@ where
                 },
                 &genesis_prime_qc,
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::empty(),
             &MockValidator,
         )
         .unwrap()

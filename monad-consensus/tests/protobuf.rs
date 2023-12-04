@@ -146,7 +146,7 @@ test_all_combination!(test_vote_message, |num_keys| {
     let verified_votemsg = Verified::<NopSignature, _>::new::<HasherType>(votemsg, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
-    let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
     let verified_rx_vote = rx_msg
         .verify::<HasherType, _>(&validators, &validator_mapping, &author_keypair.pubkey())
@@ -218,7 +218,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
         Verified::<NopSignature, _>::new::<HasherType>(tmo_message, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
-    let rx_msg = deserialize_unverified_consensus_message(rx_buf.as_ref()).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
     let verified_rx_tmo_messaage =
         rx_msg.verify::<HasherType, _>(&validators, &validator_mapping, &author_keypair.pubkey());
@@ -235,7 +235,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         NodeId(author_keypair.pubkey()),
         Round(233),
         Round(232),
-        TransactionHashList::new(vec![1, 2, 3, 4]),
+        TransactionHashList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         &validator_map,
@@ -247,7 +247,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     let verified_msg = Verified::<NopSignature, _>::new::<HasherType>(proposal, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
-    let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
     let verified_rx_msg =
         rx_msg.verify::<HasherType, _>(&validators, &validator_map, &author_keypair.pubkey());
@@ -264,7 +264,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         NodeId(author_keypair.pubkey()),
         Round(233),
         Round(231),
-        TransactionHashList::new(vec![1, 2, 3, 4]),
+        TransactionHashList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         &validator_map,
@@ -290,7 +290,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let verified_msg = Verified::<NopSignature, _>::new::<HasherType>(msg, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
-    let rx_msg = deserialize_unverified_consensus_message(&rx_buf).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
     let verified_rx_msg =
         rx_msg.verify::<HasherType, _>(&validators, &validator_map, &author_keypair.pubkey());

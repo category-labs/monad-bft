@@ -20,7 +20,7 @@ use crate::{
 impl From<&TransactionHashList> for ProtoTransactionList {
     fn from(value: &TransactionHashList) -> Self {
         Self {
-            data: value.as_bytes().to_vec(),
+            data: value.bytes().clone(),
         }
     }
 }
@@ -80,7 +80,7 @@ impl<SCT: SignatureCollection> From<&UnverifiedFullBlock<SCT>> for ProtoUnverifi
     fn from(value: &UnverifiedFullBlock<SCT>) -> Self {
         Self {
             block: Some((&value.block).into()),
-            full_txs: value.full_txs.as_bytes().to_vec(),
+            full_txs: value.full_txs.bytes().clone(),
         }
     }
 }
@@ -105,7 +105,7 @@ impl<SCT: SignatureCollection> From<&FullBlock<SCT>> for ProtoUnverifiedFullBloc
     fn from(value: &FullBlock<SCT>) -> Self {
         Self {
             block: Some(value.get_block().into()),
-            full_txs: value.get_full_txs().as_bytes().to_vec(),
+            full_txs: value.get_full_txs().bytes().clone(),
         }
     }
 }
@@ -126,7 +126,7 @@ impl TryFrom<ProtoGas> for Gas {
 impl From<&Bloom> for ProtoBloom {
     fn from(value: &Bloom) -> Self {
         Self {
-            bloom: value.0.to_vec(),
+            bloom: value.0.to_vec().into(),
         }
     }
 }
@@ -134,9 +134,9 @@ impl From<&Bloom> for ProtoBloom {
 impl TryFrom<ProtoBloom> for Bloom {
     type Error = ProtoError;
     fn try_from(value: ProtoBloom) -> Result<Self, Self::Error> {
-        Ok(Self(value.bloom.try_into().map_err(|e: Vec<_>| {
-            Self::Error::WrongHashLen(format!("{}", e.len()))
-        })?))
+        Ok(Self(value.bloom.to_vec().try_into().map_err(
+            |e: Vec<_>| Self::Error::WrongHashLen(format!("{}", e.len())),
+        )?))
     }
 }
 
@@ -203,8 +203,8 @@ impl From<&Payload> for ProtoPayload {
             txns: Some((&(value.txns)).into()),
             header: Some((&(value.header)).into()),
             seq_num: Some((&(value.seq_num)).into()),
-            beneficiary: value.beneficiary.0.to_vec(),
-            randao_reveal: value.randao_reveal.0.clone(),
+            beneficiary: value.beneficiary.0.to_vec().into(),
+            randao_reveal: value.randao_reveal.0.to_vec().into(),
         }
     }
 }
@@ -232,10 +232,11 @@ impl TryFrom<ProtoPayload> for Payload {
             beneficiary: EthAddress::from_bytes(
                 value
                     .beneficiary
+                    .to_vec()
                     .try_into()
                     .map_err(|_| Self::Error::WrongHashLen("Payload.beneficiary".to_owned()))?,
             ),
-            randao_reveal: RandaoReveal(value.randao_reveal),
+            randao_reveal: RandaoReveal(value.randao_reveal.to_vec()),
         })
     }
 }

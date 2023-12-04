@@ -27,7 +27,7 @@ fn setup_block(
     qc_round: Round,
     signers: &[PubKey],
 ) -> Block<MockSignatures> {
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: qc_round,

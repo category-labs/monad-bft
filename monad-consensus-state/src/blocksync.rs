@@ -261,7 +261,7 @@ mod test {
         voting::VoteInfo,
     };
     use monad_crypto::hasher::{Hash, Hasher, HasherType};
-    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+    use monad_eth_types::EthAddress;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
@@ -475,7 +475,7 @@ mod test {
         assert!(bid == qc_3.info.vote.id);
 
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -544,7 +544,7 @@ mod test {
 
         let msg_with_block_1 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_1.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
         let msg_no_block_2 =
@@ -552,7 +552,7 @@ mod test {
 
         let msg_with_block_2 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_2.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
         let msg_no_block_3 =
@@ -560,7 +560,7 @@ mod test {
 
         let msg_with_block_3 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_3.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
         // arbitrary response should be rejected
@@ -829,7 +829,7 @@ mod test {
 
         // if somehow we sync up on the block, timeout should be ignored
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -839,7 +839,7 @@ mod test {
 
         let msg_with_block = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
         let BlockSyncResult::<SC>::Success(b) =

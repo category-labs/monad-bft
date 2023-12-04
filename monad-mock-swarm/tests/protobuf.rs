@@ -7,7 +7,7 @@ use monad_consensus_types::{
     bls::BlsSignatureCollection,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::ExecutionArtifacts,
+    payload::{ExecutionArtifacts, TransactionHashList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     transaction_validator::MockValidator,
     voting::{Vote, VoteInfo},
@@ -109,7 +109,7 @@ fn test_consensus_message_event_proposal_bls() {
         &valset,
         &election,
         &valmap,
-        Default::default(),
+        TransactionHashList::empty(),
         ExecutionArtifacts::zero(),
     );
 

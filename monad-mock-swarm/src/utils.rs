@@ -71,7 +71,7 @@ pub mod test_tool {
 
     pub fn fake_block(round: Round) -> Block<SC> {
         let payload = Payload {
-            txns: TransactionHashList::default(),
+            txns: TransactionHashList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),

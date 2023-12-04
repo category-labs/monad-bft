@@ -15,7 +15,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     secp256k1::{KeyPair, PubKey},
 };
-use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round, SeqNum};
 
 use crate::{error::NodeSetupError, SignatureCollectionType, TransactionValidatorType};
@@ -57,10 +57,8 @@ fn build_genesis_block(
     author: PubKey,
 ) -> Result<FullBlock<SignatureCollectionType>, NodeSetupError> {
     // TODO-2: Deserialize transactions from GenesisConfig
-    let (genesis_txs, genesis_full_txs) = (
-        TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]),
-        FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-    );
+    let (genesis_txs, genesis_full_txs) =
+        (TransactionHashList::empty(), FullTransactionList::empty());
 
     let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
     let genesis_execution_header = ExecutionArtifacts::zero();

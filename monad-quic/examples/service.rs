@@ -214,10 +214,10 @@ impl Serializable<Bytes> for MockMessage {
     }
 }
 
-impl Deserializable<[u8]> for MockMessage {
+impl Deserializable<Bytes> for MockMessage {
     type ReadError = ParseIntError;
 
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
+    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
         Ok(Self::new(message[0], message.len()))
     }
 }
