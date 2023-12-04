@@ -171,8 +171,8 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let f0 = failure_idx[0];
     let f1 = failure_idx[1];
 
-    // println!("f0 {:?}", pubkeys[f0]);
-    // println!("f1 {:?}", pubkeys[f1]);
+    println!("f0 {:?}", pubkeys[f0]);
+    println!("f1 {:?}", pubkeys[f1]);
 
     assert!(f0 < 4);
     assert!(f0 < f1);
@@ -287,15 +287,15 @@ fn replay_one_honest(failure_idx: &[usize]) {
     );
 
     // assert that block sync isn't triggered
-    // logs_assert(|lines: &[&str]| {
-    //     assert!(!lines.is_empty());
-    //     match lines
-    //         .iter()
-    //         .filter(|line| line.contains("monotonic_counter.block_sync_request"))
-    //         .count()
-    //     {
-    //         0 => Ok(()),
-    //         n => Err(format!("Block sync triggered {} times", n)),
-    //     }
-    // })
+    logs_assert(|lines: &[&str]| {
+        assert!(!lines.is_empty());
+        match lines
+            .iter()
+            .filter(|line| line.contains("monotonic_counter.block_sync_request"))
+            .count()
+        {
+            0 => Ok(()),
+            n => Err(format!("Block sync triggered {} times", n)),
+        }
+    })
 }

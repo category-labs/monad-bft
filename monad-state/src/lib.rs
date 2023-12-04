@@ -56,7 +56,6 @@ where
     epoch: Epoch,
     leader_election: LT,
     validators_epoch_mapping: ValidatorsEpochMapping<VT, SCT>,
-    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     block_sync_respond: BlockSyncResponder,
 
     _pd: PhantomData<ST>,
@@ -267,7 +266,7 @@ where
             VT::new(staking_list.clone()).expect("failed to create first validator set");
         let val_set_2 = VT::new(staking_list).expect("failed to create second validator set");
         let val_cert_pubkeys_1 = ValidatorMapping::new(voting_identities.clone());
-        let val_cert_pubkeys_2 = ValidatorMapping::new(voting_identities.clone());
+        let val_cert_pubkeys_2 = ValidatorMapping::new(voting_identities);
 
         let mut val_epoch_map = ValidatorsEpochMapping::new();
         val_epoch_map.insert(Epoch(1), val_set_1, val_cert_pubkeys_1);
@@ -282,7 +281,6 @@ where
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             validators_epoch_mapping: val_epoch_map,
-            validator_mapping: ValidatorMapping::new(voting_identities),
             leader_election: election,
             epoch: Epoch(1),
             consensus: CT::new(
