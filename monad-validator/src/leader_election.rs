@@ -1,16 +1,18 @@
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_types::{NodeId, Round};
 
-use crate::validator_set::{ValidatorSetMapping, ValidatorSetType};
+use crate::validator_set::{ValidatorSetType, ValidatorsEpochMapping};
 
 // VotingPower is i64
 pub trait LeaderElection {
     fn new() -> Self;
-    fn get_leader<VT>(
+    fn get_leader<VT, SCT>(
         &self,
         round: Round,
         epoch_length: Round,
-        validator_sets: &ValidatorSetMapping<VT>,
+        validators_epoch_mapping: &ValidatorsEpochMapping<VT, SCT>,
     ) -> NodeId
     where
-        VT: ValidatorSetType;
+        VT: ValidatorSetType,
+        SCT: SignatureCollection;
 }

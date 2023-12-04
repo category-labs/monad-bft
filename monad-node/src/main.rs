@@ -15,12 +15,12 @@ use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
+use monad_mock_swarm::mock::MockValidatorSetUpdaterNop;
 use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
-    validator_set::ValidatorSetUpdater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;
@@ -101,7 +101,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
-        validator_set: ValidatorSetUpdater::default(),
+        validator_set: MockValidatorSetUpdaterNop::default(),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {

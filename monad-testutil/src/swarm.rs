@@ -102,7 +102,7 @@ pub fn complete_config<
                 proposal_size,
                 state_root_delay: SeqNum(state_root_delay),
                 propose_with_missing_blocks: false,
-                epoch_length: epoch_length,
+                epoch_length,
             },
             genesis_block: genesis_block.clone(),
             genesis_vote_info: genesis_vote_info(genesis_block.get_id()),

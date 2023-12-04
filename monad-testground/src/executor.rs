@@ -14,16 +14,16 @@ use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor, State};
 use monad_executor_glue::{
-    Command, ExecutionLedgerCommand, MempoolCommand, MonadEvent, RouterCommand,
+    Command, ExecutionLedgerCommand, MempoolCommand, MonadEvent, RouterCommand, ValidatorSetCommand,
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
-use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
+use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool, MockValidatorSetUpdaterNop};
 use monad_quic::service::UnsafeNoAuthQuinnConfig;
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer, validator_set::ValidatorSetUpdater, BoxUpdater, Updater,
+    timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
@@ -90,7 +90,11 @@ pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
     >,
     BoxExecutor<'static, ExecutionLedgerCommand<SignatureCollectionType>>,
     MockCheckpoint<Checkpoint<SignatureCollectionType>>,
-    ValidatorSetUpdater<MessageSignatureType, SignatureCollectionType>,
+    BoxUpdater<
+        'static,
+        ValidatorSetCommand,
+        MonadEvent<MessageSignatureType, SignatureCollectionType>,
+    >,
 >
 where
     MessageSignatureType: MessageSignature + Unpin,
@@ -124,7 +128,7 @@ where
             ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::default()),
         },
         checkpoint: MockCheckpoint::default(),
-        validator_set: ValidatorSetUpdater::default(),
+        validator_set: Updater::boxed(MockValidatorSetUpdaterNop::default()),
     }
 }
 

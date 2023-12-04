@@ -29,7 +29,7 @@ use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetMapping, ValidatorSetType},
+    validator_set::{ValidatorSet, ValidatorSetType, ValidatorsEpochMapping},
 };
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -90,12 +90,16 @@ fn test_consensus_message_event_vote_multisig() {
 fn test_consensus_message_event_proposal_bls() {
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
     let validators = Vec::from_iter(valset.get_members().clone());
-    let mut validator_sets = ValidatorSetMapping::new();
-    validator_sets.insert(
+    let mut validators_epoch_mapping = ValidatorsEpochMapping::new();
+    validators_epoch_mapping.insert(
         Epoch(1),
-        ValidatorSet::new(validators.clone())
+        ValidatorSet::new(validators)
             .expect("ValidatorData should not have duplicates or invalid entries"),
+        valmap,
     );
+    let valmap = validators_epoch_mapping
+        .get_cert_pubkeys(&Epoch(1))
+        .unwrap();
     let voting_keys = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))
@@ -105,7 +109,7 @@ fn test_consensus_message_event_proposal_bls() {
         HasherType,
         BlsSignatureCollection,
         MockValidator,
-    >(voting_keys.iter(), &valmap, &MockValidator {});
+    >(voting_keys.iter(), valmap, &MockValidator {});
     let genesis_qc: QuorumCertificate<BlsSignatureCollection> =
         QuorumCertificate::genesis_qc::<HasherType>(
             genesis_vote_info(genesis_block.get_id()),
@@ -119,9 +123,8 @@ fn test_consensus_message_event_proposal_bls() {
     let proposal = propgen.next_proposal(
         &keys,
         cert_keys.as_slice(),
-        &validator_sets,
+        &validators_epoch_mapping,
         &election,
-        &valmap,
         Default::default(),
         ExecutionArtifacts::zero(),
         epoch_length,

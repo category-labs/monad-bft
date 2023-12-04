@@ -165,7 +165,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),
-    UpdateNextValSet(Option<ValidatorData>),
+    UpdateNextValSet(ValidatorData<SCT>),
     StateUpdate((SeqNum, ConsensusHash)),
 }
 

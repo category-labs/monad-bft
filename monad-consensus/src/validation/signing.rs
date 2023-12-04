@@ -18,7 +18,7 @@ use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
-use monad_validator::validator_set::{ValidatorSetMapping, ValidatorSetType};
+use monad_validator::validator_set::{ValidatorSetType, ValidatorsEpochMapping};
 
 use crate::{
     convert::message::UnverifiedConsensusMessage,
@@ -110,8 +110,7 @@ where
     // signatures for the present TC or QC
     pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
-        validator_sets: &ValidatorSetMapping<VT>,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        validators_epoch_mapping: &ValidatorsEpochMapping<VT, SCT>,
         current_round: Round,
         epoch_length: Round,
         sender: &PubKey,
@@ -121,12 +120,15 @@ where
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {
                 let round = m.block.round;
-                let validators = validator_sets
-                    .get(&round.get_epoch_num(epoch_length))
+                let validator_set = validators_epoch_mapping
+                    .get_val_set(&round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
+                let validator_cert_pubkeys = validators_epoch_mapping
+                    .get_cert_pubkeys(&round.get_epoch_num(epoch_length))
                     .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    validators,
-                    validator_mapping,
+                    validator_set,
+                    validator_cert_pubkeys,
                     sender,
                 )?;
                 Verified {
@@ -139,11 +141,11 @@ where
             }
             ConsensusMessage::Vote(m) => {
                 let round = m.vote.vote_info.round;
-                let validators = validator_sets
-                    .get(&round.get_epoch_num(epoch_length))
+                let validator_set = validators_epoch_mapping
+                    .get_val_set(&round.get_epoch_num(epoch_length))
                     .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validators.get_members(), sender)?;
+                    .verify::<H>(validator_set.get_members(), sender)?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -154,12 +156,15 @@ where
             }
             ConsensusMessage::Timeout(m) => {
                 let round = m.timeout.tminfo.round;
-                let validators = validator_sets
-                    .get(&round.get_epoch_num(epoch_length))
+                let validator_set = validators_epoch_mapping
+                    .get_val_set(&round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
+                let validator_cert_pubkeys = validators_epoch_mapping
+                    .get_cert_pubkeys(&round.get_epoch_num(epoch_length))
                     .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    validators,
-                    validator_mapping,
+                    validator_set,
+                    validator_cert_pubkeys,
                     sender,
                 )?;
                 Verified {
@@ -171,11 +176,11 @@ where
                 }
             }
             ConsensusMessage::RequestBlockSync(m) => {
-                let validators = validator_sets
-                    .get(&current_round.get_epoch_num(epoch_length))
+                let validator_set = validators_epoch_mapping
+                    .get_val_set(&current_round.get_epoch_num(epoch_length))
                     .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validators.get_members(), sender)?;
+                    .verify::<H>(validator_set.get_members(), sender)?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -185,12 +190,15 @@ where
                 }
             }
             ConsensusMessage::BlockSync(m) => {
-                let validators = validator_sets
-                    .get(&current_round.get_epoch_num(epoch_length))
+                let validator_set = validators_epoch_mapping
+                    .get_val_set(&current_round.get_epoch_num(epoch_length))
+                    .ok_or(Error::ValSetUnavailable)?;
+                let validator_cert_pubkeys = validators_epoch_mapping
+                    .get_cert_pubkeys(&current_round.get_epoch_num(epoch_length))
                     .ok_or(Error::ValSetUnavailable)?;
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    validators,
-                    validator_mapping,
+                    validator_set,
+                    validator_cert_pubkeys,
                     sender,
                 )?;
                 Verified {

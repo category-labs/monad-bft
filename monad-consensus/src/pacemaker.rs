@@ -296,7 +296,7 @@ mod test {
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, SeqNum, Stake};
+    use monad_types::{BlockId, SeqNum, Stake};
     use monad_validator::validator_set::ValidatorSet;
     use zerocopy::AsBytes;
 

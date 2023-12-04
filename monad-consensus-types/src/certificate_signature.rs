@@ -8,7 +8,7 @@ use monad_crypto::{
 use crate::message_signature::MessageSignature;
 
 pub trait CertificateKeyPair: Send + Sized + Sync + 'static {
-    type PubKeyType: std::cmp::Eq + std::fmt::Debug + std::hash::Hash + Copy + Send;
+    type PubKeyType: std::cmp::Eq + std::fmt::Debug + std::hash::Hash + Clone + Copy + Send + Unpin;
     type Error: std::error::Error + Send + Sync;
 
     fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error>;

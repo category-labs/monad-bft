@@ -498,7 +498,7 @@ where
         let peers: Vec<_> = state_config
             .validators
             .iter()
-            .map(|(key, _)| key.clone())
+            .map(|(key, cert_pubkey)| (*key, *cert_pubkey))
             .collect();
 
         // No duplicate ID insertion should be allowed

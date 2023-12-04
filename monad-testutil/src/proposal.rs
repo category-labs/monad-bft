@@ -23,7 +23,7 @@ use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection,
-    validator_set::{ValidatorSetMapping, ValidatorSetType},
+    validator_set::{ValidatorSetType, ValidatorsEpochMapping},
 };
 
 pub struct ProposalGen<ST, SCT> {
@@ -53,9 +53,8 @@ where
         &mut self,
         keys: &[KeyPair],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        valsets: &ValidatorSetMapping<VT>,
+        validators_epoch_mapping: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         txns: TransactionHashList,
         execution_header: ExecutionArtifacts,
         epoch_length: Round,
@@ -72,7 +71,12 @@ where
         let (leader_key, leader_certkey) = keys
             .iter()
             .zip(certkeys)
-            .find(|(k, _)| k.pubkey() == election.get_leader(self.round, epoch_length, valsets).0)
+            .find(|(k, _)| {
+                k.pubkey()
+                    == election
+                        .get_leader(self.round, epoch_length, validators_epoch_mapping)
+                        .0
+            })
             .expect("key not in valset");
 
         let block = Block::new::<HasherType>(
@@ -88,8 +92,11 @@ where
             qc,
         );
 
+        let validator_cert_pubkeys = validators_epoch_mapping
+            .get_cert_pubkeys(&self.round.get_epoch_num(epoch_length))
+            .expect("should have the current validator certificate pubkeys");
         self.high_qc = self.qc.clone();
-        self.qc = self.get_next_qc(certkeys, &block, validator_mapping);
+        self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
 
         let proposal = ProposalMessage {
             block,

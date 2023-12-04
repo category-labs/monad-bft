@@ -3,6 +3,10 @@ use std::{
     error, fmt,
 };
 
+use monad_consensus_types::{
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    voting::ValidatorMapping,
+};
 use monad_types::{Epoch, NodeId, Stake};
 
 pub type Result<T> = std::result::Result<T, ValidatorSetError>;
@@ -117,16 +121,18 @@ impl ValidatorSetType for ValidatorSet {
     }
 }
 
-pub struct ValidatorSetMapping<VT>
+pub struct ValidatorsEpochMapping<VT, SCT>
 where
     VT: ValidatorSetType,
+    SCT: SignatureCollection,
 {
-    validator_sets: HashMap<Epoch, VT>,
+    validator_sets: HashMap<Epoch, (VT, ValidatorMapping<SignatureCollectionKeyPairType<SCT>>)>,
 }
 
-impl<VT> ValidatorSetMapping<VT>
+impl<VT, SCT> ValidatorsEpochMapping<VT, SCT>
 where
     VT: ValidatorSetType,
+    SCT: SignatureCollection,
 {
     pub fn new() -> Self {
         Self {
@@ -134,13 +140,36 @@ where
         }
     }
 
-    pub fn get(&self, epoch: &Epoch) -> Option<&VT> {
-        self.validator_sets.get(epoch)
+    pub fn get_val_set(&self, epoch: &Epoch) -> Option<&VT> {
+        self.validator_sets.get(epoch).map(|vs| &vs.0)
     }
 
-    pub fn insert(&mut self, epoch: Epoch, valset: VT) {
-        let res = self.validator_sets.insert(epoch, valset);
-        assert!(res.is_none());
+    pub fn get_cert_pubkeys(
+        &self,
+        epoch: &Epoch,
+    ) -> Option<&ValidatorMapping<SignatureCollectionKeyPairType<SCT>>> {
+        self.validator_sets.get(epoch).map(|vs| &vs.1)
+    }
+
+    pub fn insert(
+        &mut self,
+        epoch: Epoch,
+        val_stakes: VT,
+        val_cert_pubkeys: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    ) {
+        self.validator_sets
+            .insert(epoch, (val_stakes, val_cert_pubkeys));
+        // assert!(res.is_none());
+    }
+}
+
+impl<VT, SCT> Default for ValidatorsEpochMapping<VT, SCT>
+where
+    VT: ValidatorSetType,
+    SCT: SignatureCollection,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

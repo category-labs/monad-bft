@@ -149,7 +149,7 @@ mod test {
         signing::{get_key, *},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+    use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::VoteState;

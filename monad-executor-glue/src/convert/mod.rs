@@ -88,7 +88,7 @@ where
             }
             ConsensusEvent::UpdateNextValSet(validator_set) => {
                 proto_consensus_event::Event::UpdateNextValSet(ProtoUpdateNextValSetEvent {
-                    validator_set: validator_set.as_ref().map(|x| x.into()),
+                    validator_set: Some(validator_set.into()),
                 })
             }
         };
@@ -242,13 +242,14 @@ where
                 ConsensusEvent::StateUpdate((s, h))
             }
             Some(proto_consensus_event::Event::UpdateNextValSet(val_set_event)) => {
-                match val_set_event.validator_set {
-                    None => ConsensusEvent::UpdateNextValSet(None),
-                    Some(vs) => {
-                        let a = vs.try_into()?;
-                        ConsensusEvent::UpdateNextValSet(Some(a))
-                    }
-                }
+                let vs = val_set_event
+                    .validator_set
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::UpdateNextValSet::validator_set".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                ConsensusEvent::UpdateNextValSet(vs)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),

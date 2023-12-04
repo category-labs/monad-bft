@@ -6,6 +6,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, TransactionHashList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     transaction_validator::MockValidator,
+    voting::ValidatorMapping,
 };
 use monad_crypto::{hasher::HasherType, secp256k1::SecpSignature};
 use monad_state::VerifiedMonadMessage;
@@ -16,7 +17,7 @@ use monad_types::{Epoch, NodeId, Round, Serializable};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetMapping, ValidatorSetType},
+    validator_set::{ValidatorSet, ValidatorSetType, ValidatorsEpochMapping},
 };
 use peak_alloc::PeakAlloc;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
@@ -33,12 +34,16 @@ fn main() {
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
     let validators = Vec::from_iter(valset.get_members().clone());
-    let mut validator_sets = ValidatorSetMapping::new();
-    validator_sets.insert(
+    let mut validators_epoch_mapping = ValidatorsEpochMapping::new();
+    validators_epoch_mapping.insert(
         Epoch(1),
-        ValidatorSet::new(validators.clone())
+        ValidatorSet::new(validators)
             .expect("ValidatorData should not have duplicates or invalid entries"),
+        ValidatorMapping::new(valmap),
     );
+    let valmap = validators_epoch_mapping
+        .get_cert_pubkeys(&Epoch(1))
+        .unwrap();
     let epoch_length = Round(100);
     let voting_keys = keys
         .iter()
@@ -49,7 +54,7 @@ fn main() {
         HasherType,
         BlsSignatureCollection,
         MockValidator,
-    >(voting_keys.iter(), &valmap, &MockValidator {});
+    >(voting_keys.iter(), valmap, &MockValidator {});
     let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
@@ -62,9 +67,8 @@ fn main() {
         .next_proposal(
             &keys,
             cert_keys.as_slice(),
-            &validator_sets,
+            &validators_epoch_mapping,
             &election,
-            &valmap,
             TransactionHashList::new(transaction_hashes.to_vec()),
             ExecutionArtifacts::zero(),
             epoch_length,
@@ -77,7 +81,11 @@ fn main() {
         .find(|k| {
             k.pubkey()
                 == election
-                    .get_leader(proposal.block.round, epoch_length, &validator_sets)
+                    .get_leader(
+                        proposal.block.round,
+                        epoch_length,
+                        &validators_epoch_mapping,
+                    )
                     .0
         })
         .expect("key in valset");

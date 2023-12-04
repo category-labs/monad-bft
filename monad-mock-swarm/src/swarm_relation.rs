@@ -71,6 +71,7 @@ pub trait SwarmRelation {
 
     type ValidatorSetExecutor: MockableValidatorSet<
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        SignatureCollection = Self::SignatureCollectionType,
     >;
 }
 
