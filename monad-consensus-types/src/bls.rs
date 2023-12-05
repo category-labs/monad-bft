@@ -155,7 +155,7 @@ impl SignatureCollection for BlsSignatureCollection {
     type SignatureType = BlsSignature;
 
     fn new(
-        sigs: Vec<(NodeId, Self::SignatureType)>,
+        sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
@@ -166,14 +166,14 @@ impl SignatureCollection for BlsSignatureCollection {
         for (i, node_id) in validator_mapping.map.keys().enumerate() {
             validator_index.insert(*node_id, i);
         }
-        for (node_id, sig) in sigs.iter() {
-            if !validator_mapping.map.contains_key(node_id) {
-                non_validator.push((*node_id, *sig));
+        for (node_id, sig) in sigs {
+            if !validator_mapping.map.contains_key(&node_id) {
+                non_validator.push((node_id, sig));
             }
-            let entry = sigs_map.entry(*node_id).or_insert(*sig);
-            if *entry != *sig {
+            let entry = sigs_map.entry(node_id).or_insert(sig);
+            if *entry != sig {
                 return Err(SignatureCollectionError::ConflictingSignatures((
-                    *node_id, *entry, *sig,
+                    node_id, *entry, sig,
                 )));
             }
         }

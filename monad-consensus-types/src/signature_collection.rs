@@ -56,7 +56,7 @@ pub trait SignatureCollection:
     type SignatureType: CertificateSignature;
 
     fn new(
-        sigs: Vec<(NodeId, Self::SignatureType)>,
+        sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::SignatureType>>;

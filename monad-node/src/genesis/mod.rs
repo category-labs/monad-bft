@@ -99,8 +99,7 @@ fn build_genesis_signatures(
 
     let sigs = signatures
         .into_iter()
-        .map(|sig_config| (NodeId(sig_config.id), sig_config.signature))
-        .collect();
+        .map(|sig_config| (NodeId(sig_config.id), sig_config.signature));
 
     Ok(SignatureCollectionType::new(
         sigs,

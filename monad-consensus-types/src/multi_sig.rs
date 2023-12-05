@@ -37,7 +37,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
     type SignatureType = S;
 
     fn new(
-        sigs: Vec<(NodeId, Self::SignatureType)>,
+        sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
@@ -47,7 +47,7 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         // "slashable" behavior
         let mut invalid_sigs = Vec::new();
 
-        for (node_id, sig) in sigs.into_iter() {
+        for (node_id, sig) in sigs {
             // check if node_id is in validator_mapping
             if let Some(pubkey) = validator_mapping.map.get(&node_id) {
                 if let Ok(pubkey_recovered) = sig.recover_pubkey(msg) {

@@ -48,6 +48,7 @@ fn create_signed_vote_message(
 
 fn setup_ctx(
     num_nodes: u32,
+    num_rounds: u64,
 ) -> (
     Vec<KeyPair>,
     ValidatorSet,
@@ -58,13 +59,16 @@ fn setup_ctx(
         create_keys_w_validators::<SignatureCollectionType>(num_nodes);
 
     let mut votes = Vec::new();
-    for i in 0..num_nodes {
-        let svm = create_signed_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(0));
-        let vm = svm
-            .verify::<HasherType>(valset.get_members(), &keys[i as usize].pubkey())
-            .unwrap();
+    for j in 0..num_rounds {
+        for i in 0..num_nodes {
+            let svm =
+                create_signed_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(j));
+            let vm = svm
+                .verify::<HasherType>(valset.get_members(), &keys[i as usize].pubkey())
+                .unwrap();
 
-        votes.push(vm);
+            votes.push(vm);
+        }
     }
 
     (keys, valset, vmap, votes)
@@ -92,7 +96,7 @@ fn verify_qcs(
 #[test_case(4 ; "min nodes")]
 #[test_case(15 ; "multiple nodes")]
 fn test_votes(num_nodes: u32) {
-    let (_, valset, vmap, votes) = setup_ctx(num_nodes);
+    let (_, valset, vmap, votes) = setup_ctx(num_nodes, 1);
 
     let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();
@@ -116,14 +120,14 @@ fn test_votes(num_nodes: u32) {
 #[test_case(8, 2 ; "multiple nodes 1 reset")]
 #[test_case(20, 5 ; "multiple nodes multiple resets")]
 fn test_reset(num_nodes: u32, num_rounds: u32) {
-    let (_, valset, vmap, votes) = setup_ctx(num_nodes);
+    let (_, valset, vmap, votes) = setup_ctx(num_nodes, num_rounds.into());
 
     let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();
 
     for k in 0..num_rounds {
         for i in 0..num_nodes {
-            let v = &votes[i as usize];
+            let v = &votes[(k * num_nodes + i) as usize];
             let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
             assert!(cmds.is_empty());
             qcs.push(qc);
@@ -143,7 +147,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 #[test_case(4 ; "min nodes")]
 #[test_case(15 ; "multiple nodes")]
 fn test_minority(num_nodes: u32) {
-    let (_, valset, vmap, votes) = setup_ctx(num_nodes);
+    let (_, valset, vmap, votes) = setup_ctx(num_nodes, 1);
 
     let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();

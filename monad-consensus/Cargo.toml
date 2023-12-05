@@ -16,6 +16,7 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
 prost = { workspace = true }
+tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
@@ -23,4 +24,3 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-testutil = { path = "../monad-testutil" }
 
 test-case = { workspace = true }
-tracing = { workspace = true }

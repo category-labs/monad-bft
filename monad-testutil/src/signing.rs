@@ -55,7 +55,7 @@ impl SignatureCollection for MockSignatures {
     type SignatureType = SecpSignature;
 
     fn new(
-        _sigs: Vec<(NodeId, Self::SignatureType)>,
+        _sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
         _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
         _msg: &[u8],
     ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {

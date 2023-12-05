@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use monad_consensus_types::{
+    certificate_signature::CertificateSignature,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -10,24 +11,46 @@ use monad_consensus_types::{
 use monad_crypto::hasher::{Hash, Hasher};
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
+use tracing::error;
 
 use crate::messages::message::VoteMessage;
 
-// accumulate votes and create a QC if enough votes are received
-// only one QC should be created in a round using the first supermajority of votes received
-// At the end of a round, older rounds can be cleaned up
+/// VoteState accumulates votes and creates a QC if enough votes are received
+/// Only one QC should be created in a round using the first supermajority of votes received
+/// At the end of a round, older rounds can be cleaned up
 #[derive(Debug, PartialEq, Eq)]
 pub struct VoteState<SCT: SignatureCollection> {
-    pending_votes:
-        BTreeMap<Round, HashMap<Hash, (Vec<(NodeId, SCT::SignatureType)>, HashSet<NodeId>)>>,
-    qc_created: BTreeSet<Round>,
+    /// Received pending votes for rounds >= self.earliest_round
+    pending_votes: BTreeMap<Round, RoundVoteState<SCT::SignatureType>>,
+    /// The earliest round that we'll accept votes for
+    /// We use this to not build the same QC twice, and to know which votes are stale
+    earliest_round: Round,
 }
 
 impl<SCT: SignatureCollection> Default for VoteState<SCT> {
     fn default() -> Self {
         VoteState {
             pending_votes: BTreeMap::new(),
-            qc_created: BTreeSet::new(),
+            earliest_round: Round(0),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RoundVoteState<ST: CertificateSignature> {
+    /// Pending votes, keyed by vote hash
+    /// It's possible for a Node to have pending votes in multiple buckets if they're malicious
+    pending_votes: HashMap<Hash, BTreeMap<NodeId, ST>>,
+    // All vote hashes each node has voted on; multiple vote hashes for a given node implies
+    // they're malicious
+    node_votes: HashMap<NodeId, HashSet<ST>>,
+}
+
+impl<ST: CertificateSignature> Default for RoundVoteState<ST> {
+    fn default() -> Self {
+        RoundVoteState {
+            pending_votes: HashMap::new(),
+            node_votes: HashMap::new(),
         }
     }
 }
@@ -54,7 +77,11 @@ where
 
         let mut ret_commands = Vec::new();
 
-        if self.qc_created.contains(&round) {
+        if round < self.earliest_round {
+            error!(
+                "process_vote called on round < self.earliest_round: {:?} < {:?}",
+                round, self.earliest_round
+            );
             return (None, ret_commands);
         }
 
@@ -65,18 +92,24 @@ where
 
         let vote_idx = H::hash_object(&vote);
 
-        let round_pending_votes = self.pending_votes.entry(round).or_default();
-        let pending_entry = round_pending_votes
-            .entry(vote_idx)
-            .or_insert((Vec::new(), HashSet::new()));
+        // pending votes for a given round + vote hash
+        let round_state = self.pending_votes.entry(round).or_default();
+        let node_votes = round_state.node_votes.entry(*author).or_default();
+        node_votes.insert(vote_msg.sig);
+        if node_votes.len() > 1 {
+            // TODO: collect double vote as evidence
+        }
 
-        pending_entry.0.push((*author, vote_msg.sig));
-        pending_entry.1.insert(*author);
+        // pending votes for a given round + vote hash
+        let round_pending_votes = round_state.pending_votes.entry(vote_idx).or_default();
+        round_pending_votes.insert(*author, vote_msg.sig);
 
-        while validators.has_super_majority_votes(&pending_entry.1) {
-            assert!(!self.qc_created.contains(&round));
+        while validators.has_super_majority_votes(round_pending_votes.keys()) {
+            assert!(round >= self.earliest_round);
             match SCT::new(
-                pending_entry.0.clone(),
+                round_pending_votes
+                    .iter()
+                    .map(|(node, signature)| (*node, *signature)),
                 validator_mapping,
                 vote_idx.as_ref(),
             ) {
@@ -88,17 +121,24 @@ where
                         },
                         sigcol,
                     );
-                    self.qc_created.insert(round);
+                    // we update self.earliest round so that we no longer will build a QC for
+                    // current round
+                    self.earliest_round = round + Round(1);
                     return (Some(qc), ret_commands);
                 }
-                Err(err) => match err {
-                    SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs) => {
-                        ret_commands.extend(Self::handle_invalid_vote(pending_entry, invalid_sigs));
-                    }
-                    _ => {
-                        unreachable!("unexpected error {}", err);
-                    }
-                },
+                Err(SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs)) => {
+                    // remove invalid signatures from round_pending_votes, and populate commands
+                    let cmds = Self::handle_invalid_vote(round_pending_votes, invalid_sigs);
+                    ret_commands.extend(cmds);
+                }
+                Err(
+                    SignatureCollectionError::NodeIdNotInMapping(_)
+                    | SignatureCollectionError::ConflictingSignatures(_)
+                    | SignatureCollectionError::InvalidSignaturesVerify(_)
+                    | SignatureCollectionError::DeserializeError(_),
+                ) => {
+                    unreachable!("InvalidSignaturesCreate is only expected error from creating SC");
+                }
             }
         }
 
@@ -107,25 +147,20 @@ where
 
     #[must_use]
     fn handle_invalid_vote(
-        pending_entry: &mut (Vec<(NodeId, SCT::SignatureType)>, HashSet<NodeId>),
+        pending_entry: &mut BTreeMap<NodeId, SCT::SignatureType>,
         invalid_votes: Vec<(NodeId, SCT::SignatureType)>,
     ) -> Vec<VoteStateCommand> {
         let invalid_vote_set = invalid_votes
             .into_iter()
             .map(|(a, _)| a)
             .collect::<HashSet<_>>();
-        pending_entry
-            .0
-            .retain(|(node_id, _)| !invalid_vote_set.contains(node_id));
-        pending_entry
-            .1
-            .retain(|node_id| !invalid_vote_set.contains(node_id));
+        pending_entry.retain(|node_id, _| !invalid_vote_set.contains(node_id));
         // TODO: evidence
         vec![]
     }
 
     pub fn start_new_round(&mut self, new_round: Round) {
-        self.qc_created.retain(|k| *k >= new_round);
+        self.earliest_round = new_round;
         self.pending_votes.retain(|k, _| *k >= new_round);
     }
 }
@@ -196,6 +231,7 @@ mod test {
             create_keys_w_validators::<SignatureCollectionType>(4);
 
         // add one vote for rounds 0-3
+        let mut votes = Vec::new();
         for i in 0..4 {
             let svm = create_vote_message::<SignatureCollectionType>(
                 &cert_keys[0],
@@ -208,6 +244,7 @@ mod test {
                 &valset,
                 &val_map,
             );
+            votes.push(svm);
             assert!(cmds.is_empty());
         }
 
@@ -226,6 +263,19 @@ mod test {
         }
         votestate.start_new_round(Round(5));
 
+        assert_eq!(votestate.pending_votes.len(), 0);
+
+        // apply old votes again
+        for svm in votes {
+            let (_qc, cmds) = votestate.process_vote::<HasherType, _>(
+                &NodeId(cert_keys[0].pubkey()),
+                &svm,
+                &valset,
+                &val_map,
+            );
+        }
+
+        // pending_votes should still be 0 after starting a new round and processing old votes
         assert_eq!(votestate.pending_votes.len(), 0);
     }
 
@@ -305,8 +355,9 @@ mod test {
         let _ = vote_state.process_vote::<HasherType, _>(svm.author(), &*svm, &vset, &vmap);
         assert_eq!(vote_state.pending_votes.len(), 1);
 
+        assert_eq!(vote_state.earliest_round, Round(1));
         // pretend a qc was not created so we can add more votes without reseting the vote state
-        vote_state.qc_created.clear();
+        vote_state.earliest_round = Round(0);
 
         // add an invalid vote message (the vote_info doesn't match what created the ledger_commit_info)
         vi = VoteInfo {
@@ -387,20 +438,9 @@ mod test {
                 .pending_votes
                 .get(&vote_round)
                 .unwrap()
-                .get(&vote_idx)
-                .unwrap()
-                .0
-                .len()
-                == 1
-        );
-        assert!(
-            votestate
                 .pending_votes
-                .get(&vote_round)
-                .unwrap()
                 .get(&vote_idx)
                 .unwrap()
-                .1
                 .len()
                 == 1
         );
@@ -417,20 +457,9 @@ mod test {
                 .pending_votes
                 .get(&vote_round)
                 .unwrap()
-                .get(&vote_idx)
-                .unwrap()
-                .0
-                .len()
-                == 2
-        );
-        assert!(
-            votestate
                 .pending_votes
-                .get(&vote_round)
-                .unwrap()
                 .get(&vote_idx)
                 .unwrap()
-                .1
                 .len()
                 == 2
         );
@@ -449,20 +478,9 @@ mod test {
                 .pending_votes
                 .get(&vote_round)
                 .unwrap()
-                .get(&vote_idx)
-                .unwrap()
-                .0
-                .len()
-                == 2
-        );
-        assert!(
-            votestate
                 .pending_votes
-                .get(&vote_round)
-                .unwrap()
                 .get(&vote_idx)
                 .unwrap()
-                .1
                 .len()
                 == 2
         );
@@ -513,20 +531,9 @@ mod test {
                 .pending_votes
                 .get(&vote_round)
                 .unwrap()
-                .get(&vote_idx)
-                .unwrap()
-                .0
-                .len()
-                == 1
-        );
-        assert!(
-            votestate
                 .pending_votes
-                .get(&vote_round)
-                .unwrap()
                 .get(&vote_idx)
                 .unwrap()
-                .1
                 .len()
                 == 1
         );
@@ -545,20 +552,9 @@ mod test {
                 .pending_votes
                 .get(&vote_round)
                 .unwrap()
-                .get(&vote_idx)
-                .unwrap()
-                .0
-                .len()
-                == 2
-        );
-        assert!(
-            votestate
                 .pending_votes
-                .get(&vote_round)
-                .unwrap()
                 .get(&vote_idx)
                 .unwrap()
-                .1
                 .len()
                 == 2
         );
@@ -590,20 +586,9 @@ mod test {
                 .pending_votes
                 .get(&vote_round)
                 .unwrap()
-                .get(&vote_idx)
-                .unwrap()
-                .0
-                .len()
-                == 2
-        );
-        assert!(
-            votestate
                 .pending_votes
-                .get(&vote_round)
-                .unwrap()
                 .get(&vote_idx)
                 .unwrap()
-                .1
                 .len()
                 == 2
         );
