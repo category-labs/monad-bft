@@ -4,6 +4,10 @@ use monad_types::{Deserializable, Serializable};
 
 use crate::{aof::AppendOnlyFile, PersistenceLogger};
 
+/// Header prepended to each event in the log
+type EventHeaderType = u32;
+const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
+
 #[derive(Debug)]
 pub enum WALError<E: Error> {
     IOError(io::Error),
@@ -30,12 +34,17 @@ where
 
 impl<E> std::error::Error for WALError<E> where E: Error {}
 
+/// Config for a write-ahead-log
 #[derive(Clone)]
 pub struct WALoggerConfig {
     pub file_path: PathBuf,
+
+    /// option for fsync after write. There is a cost to doing
+    /// an fsync so its left configurable
     pub sync: bool,
 }
 
+/// Write-ahead-logger that Serializes/Deserializes Events to an append-only-file
 #[derive(Debug)]
 pub struct WALogger<M> {
     _marker: PhantomData<M>,
@@ -94,7 +103,7 @@ where
         message: &M,
     ) -> Result<(), <Self as PersistenceLogger>::Error> {
         let msg_buf = message.serialize();
-        let len_buf = msg_buf.len().to_be_bytes().to_vec();
+        let len_buf = (msg_buf.len() as EventHeaderType).to_le_bytes();
 
         self.file_handle.write_all(&len_buf)?;
         self.file_handle.write_all(&msg_buf)?;
@@ -106,7 +115,7 @@ where
 
     pub fn push(&mut self, message: &M) -> Result<(), <Self as PersistenceLogger>::Error> {
         let mut msg_buf = message.serialize();
-        let mut buf = msg_buf.len().to_be_bytes().to_vec();
+        let mut buf = (msg_buf.len() as EventHeaderType).to_le_bytes().to_vec();
         buf.append(&mut msg_buf);
         self.file_handle.write_all(&buf)?;
         if self.sync {
@@ -116,10 +125,10 @@ where
     }
 
     fn load_one(&mut self) -> Result<(M, u64), <Self as PersistenceLogger>::Error> {
-        let mut len_buf = [0u8; 8];
+        let mut len_buf = [0u8; EVENT_HEADER_LEN];
         self.file_handle.read_exact(&mut len_buf)?;
-        let len = usize::from_be_bytes(len_buf);
-        let mut buf = vec![0u8; len];
+        let len = EventHeaderType::from_le_bytes(len_buf);
+        let mut buf = vec![0u8; len as usize];
         self.file_handle.read_exact(&mut buf)?;
         let offset = (len_buf.len() + buf.len()) as u64;
         let msg = M::deserialize(&buf).map_err(WALError::DeserError)?;
