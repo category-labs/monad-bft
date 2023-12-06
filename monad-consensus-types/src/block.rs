@@ -9,23 +9,47 @@ use crate::{
     transaction_validator::TransactionValidator,
 };
 
+/// This trait represents a consensus block
 pub trait BlockType: Clone + PartialEq + Eq {
+    /// Unique hash for the block
     fn get_id(&self) -> BlockId;
+
+    /// Round in which this block was proposed
     fn get_round(&self) -> Round;
+
+    /// Node which proposed this block
     fn get_author(&self) -> NodeId;
 
+    /// returns the BlockId for the block referenced by
+    /// the QC contained in this block
     fn get_parent_id(&self) -> BlockId;
+
+    /// returns the Round for the block referenced by
+    /// the QC contained in this block
     fn get_parent_round(&self) -> Round;
 
+    /// Sequence number when this block was proposed
     fn get_seq_num(&self) -> SeqNum;
 }
 
+/// structure of the consensus block
+/// the payload field is used to carry the data of the block
+/// which is agnostic to the actual protocol of consensus
 #[derive(Clone)]
 pub struct Block<T> {
+    /// proposer of this block
     pub author: NodeId,
+
+    /// round this block was proposed in
     pub round: Round,
+
+    /// protocol agnostic data for the blockchain
     pub payload: Payload,
+
+    /// Certificate of votes for this block
     pub qc: QuorumCertificate<T>,
+
+    /// Unique hash used to identify the block
     id: BlockId,
 }
 
@@ -106,6 +130,8 @@ impl<T: SignatureCollection> BlockType for Block<T> {
     }
 }
 
+/// A block alongside the list of RLP encoded full transactions
+/// The transactions have not been verified
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnverifiedFullBlock<T> {
     pub block: Block<T>,
@@ -134,6 +160,8 @@ impl<T: SignatureCollection> Hashable for UnverifiedFullBlock<T> {
     }
 }
 
+/// A block alongside the list of RLP encoded full transactions
+/// The transaction are verified on creation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FullBlock<T> {
     block: Block<T>,
@@ -141,6 +169,8 @@ pub struct FullBlock<T> {
 }
 
 impl<T> FullBlock<T> {
+    /// Create a FullBlock from a Block and list of full transactions
+    /// takes in a TransactionValidator to validate the list of transactions
     pub fn from_block(
         block: Block<T>,
         full_txs: FullTransactionList,
@@ -151,6 +181,8 @@ impl<T> FullBlock<T> {
             .then_some(Self { block, full_txs })
     }
 
+    /// Try to create a FullBlock from an UnverifiedFullBlock, verifying
+    /// with the TransactionValidator
     pub fn try_from_unverified(
         unverified: UnverifiedFullBlock<T>,
         validator: &impl TransactionValidator,
