@@ -6,7 +6,10 @@ use std::{
     ops::{Add, AddAssign, Sub, SubAssign},
 };
 
-use monad_crypto::{hasher::Hash, secp256k1::PubKey};
+use monad_crypto::{
+    hasher::{Hash, Hashable, Hasher},
+    secp256k1::PubKey,
+};
 use zerocopy::AsBytes;
 
 #[repr(transparent)]
@@ -129,6 +132,12 @@ impl std::fmt::Debug for BlockId {
             "{:>02x}{:>02x}..{:>02x}{:>02x}",
             self.0[0], self.0[1], self.0[30], self.0[31]
         )
+    }
+}
+
+impl Hashable for BlockId {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(self.0);
     }
 }
 

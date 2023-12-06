@@ -71,9 +71,9 @@ impl std::fmt::Debug for VoteInfo {
 
 impl Hashable for VoteInfo {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.id.0.as_bytes());
+        self.id.hash(state);
         state.update(self.round.as_bytes());
-        state.update(self.parent_id.0.as_bytes());
+        self.parent_id.hash(state);
         state.update(self.parent_round.as_bytes());
         state.update(self.seq_num.as_bytes());
     }

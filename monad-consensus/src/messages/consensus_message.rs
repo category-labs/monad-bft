@@ -16,12 +16,22 @@ use crate::{
     validation::signing::Verified,
 };
 
+/// Consensus protocol messages
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusMessage<SCT: SignatureCollection> {
+    /// Consensus protocol proposal message
     Proposal(ProposalMessage<SCT>),
+
+    /// Consensus protocol vote message
     Vote(VoteMessage<SCT>),
+
+    /// Consensus protocol timeout message
     Timeout(TimeoutMessage<SCT>),
+
+    /// Request a missing block given BlockId
     RequestBlockSync(RequestBlockSyncMessage),
+
+    /// Block sync response
     BlockSync(BlockSyncResponseMessage<SCT>),
 }
 
@@ -37,6 +47,7 @@ impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {
     }
 }
 
+/// Integrity hash
 impl<SCT> Hashable for ConsensusMessage<SCT>
 where
     SCT: SignatureCollection,
@@ -49,7 +60,6 @@ where
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct
             //      protocol sig: signatures outlined in the protocol
-            // TimeoutMsg doesn't have a protocol sig
             ConsensusMessage::Vote(m) => m.hash(state),
             ConsensusMessage::Timeout(m) => m.hash(state),
             ConsensusMessage::RequestBlockSync(m) => m.hash(state),

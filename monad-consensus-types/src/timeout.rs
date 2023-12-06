@@ -34,7 +34,7 @@ pub struct TimeoutInfo<SCT> {
 impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(self.round);
-        state.update(self.high_qc.info.vote.id.0.as_bytes());
+        self.high_qc.info.vote.id.hash(state);
         state.update(self.high_qc.get_hash());
     }
 }

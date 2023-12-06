@@ -7,20 +7,19 @@ use monad_consensus_types::{
 };
 use monad_crypto::hasher::{Hashable, Hasher};
 use monad_types::BlockId;
-use zerocopy::AsBytes;
 
-#[derive(PartialEq, Eq)]
+/// Consensus protocol vote message
+///
+/// The signature is a protocol signature, can be collected into the
+/// corresponding SignatureCollection type, used to create QC from the votes
+#[derive(PartialEq, Eq, Clone)]
 pub struct VoteMessage<SCT: SignatureCollection> {
     pub vote: Vote,
     pub sig: SCT::SignatureType,
 }
 
-impl<SCT: SignatureCollection> Clone for VoteMessage<SCT> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
+/// Explicitly implementing Copy because derive macro can't resolve that
+/// SCT::SignatureType is actually Copy
 impl<SCT: SignatureCollection> Copy for VoteMessage<SCT> {}
 
 impl<SCT: SignatureCollection> std::fmt::Debug for VoteMessage<SCT> {
@@ -32,6 +31,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for VoteMessage<SCT> {
     }
 }
 
+/// An integrity hash over all the fields
 impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         self.vote.hash(state);
@@ -49,6 +49,10 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
     }
 }
 
+/// Consensus protocol timeout message
+///
+/// The signature is a protocol signature,can be collected into the
+/// corresponding SignatureCollection type, used to create TC from the timeouts
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutMessage<SCT: SignatureCollection> {
     pub timeout: Timeout<SCT>,
@@ -67,6 +71,7 @@ impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
     }
 }
 
+/// An integrity hash over all the fields
 impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         self.timeout.hash(state);
@@ -74,18 +79,25 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
     }
 }
 
+/// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalMessage<T> {
     pub block: Block<T>,
     pub last_round_tc: Option<TimeoutCertificate<T>>,
 }
 
+/// The last_round_tc can be independently verified. The message hash is over
+/// the block only
 impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
     }
 }
 
+/// Request block sync message
+///
+/// The node sends the block sync request to repair path from a block to the
+/// root in the block tree
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestBlockSyncMessage {
     pub block_id: BlockId,
@@ -93,7 +105,7 @@ pub struct RequestBlockSyncMessage {
 
 impl Hashable for RequestBlockSyncMessage {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.block_id.0.as_bytes());
+        self.block_id.hash(state);
     }
 }
 
@@ -112,13 +124,15 @@ impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
     }
 }
 
+/// FIXME-2, possible hash malleability for variants, similar for
+/// [crate::messages::consensus_message::ConsensusMessage]
 impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
         match self {
             BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
                 unverified_full_block.hash(state)
             }
-            BlockSyncResponseMessage::NotAvailable(bid) => state.update(bid.0.as_bytes()),
+            BlockSyncResponseMessage::NotAvailable(bid) => bid.hash(state),
         }
     }
 }
