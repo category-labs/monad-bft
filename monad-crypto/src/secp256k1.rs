@@ -4,12 +4,16 @@ use zeroize::Zeroize;
 
 use crate::hasher::{Hashable, Hasher, HasherType};
 
+/// secp256k1 public key
 #[derive(Copy, Clone)]
 pub struct PubKey(secp256k1::PublicKey);
+/// secp256k1 keypair
 pub struct KeyPair(secp256k1::KeyPair);
+/// secp256k1 ecsda recoverable signature
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecpSignature(secp256k1::ecdsa::RecoverableSignature);
 
+/// wrapped secp256k1 library errors
 #[derive(Debug, Clone)]
 pub struct Error(secp256k1::Error);
 
@@ -33,6 +37,7 @@ impl std::fmt::Debug for PubKey {
     }
 }
 
+/// The comparison is faster but might not be stable across library versions
 impl std::cmp::PartialEq for PubKey {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq_fast_unstable(&other.0)
@@ -53,6 +58,8 @@ impl std::cmp::PartialOrd for PubKey {
     }
 }
 
+/// Faster to use the transmuted memory values, but might not be stable across
+/// library versions
 impl std::hash::Hash for PubKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let slice = unsafe { std::mem::transmute::<Self, [u8; 64]>(*self) };
@@ -69,6 +76,8 @@ fn msg_hash(msg: &[u8]) -> secp256k1::Message {
 }
 
 impl KeyPair {
+    /// Create a keypair from a secret key slice. The secret is zero-ized after
+    /// use
     pub fn from_bytes(secret: &mut [u8]) -> Result<Self, Error> {
         let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
             .map(Self)
@@ -77,6 +86,7 @@ impl KeyPair {
         keypair
     }
 
+    /// Create a keypair from an ASN.1 DER formatted secret key
     pub fn from_der(mut der: impl AsMut<[u8]>) -> Result<Self, Error> {
         let der_obj = der.as_mut();
 
@@ -96,6 +106,7 @@ impl KeyPair {
         )))
     }
 
+    /// Create a SecpSignature over Hash(msg)
     pub fn sign(&self, msg: &[u8]) -> SecpSignature {
         SecpSignature(Secp256k1::sign_ecdsa_recoverable(
             secp256k1::SECP256K1,
@@ -104,18 +115,21 @@ impl KeyPair {
         ))
     }
 
+    /// Get the pubkey
     pub fn pubkey(&self) -> PubKey {
         PubKey(self.0.public_key())
     }
 }
 
 impl PubKey {
+    /// Deserialize public key from bytes
     pub fn from_slice(pubkey: &[u8]) -> Result<Self, Error> {
         secp256k1::PublicKey::from_slice(pubkey)
             .map(Self)
             .map_err(Error)
     }
 
+    /// Serialize public key
     pub fn bytes(&self) -> Vec<u8> {
         self.0.serialize_uncompressed().to_vec()
     }
@@ -124,6 +138,7 @@ impl PubKey {
         self.0.serialize().to_vec()
     }
 
+    /// Verify that the message is correctly signed
     pub fn verify(&self, msg: &[u8], signature: &SecpSignature) -> Result<(), Error> {
         Secp256k1::verify_ecdsa(
             secp256k1::SECP256K1,
@@ -136,12 +151,15 @@ impl PubKey {
 }
 
 impl SecpSignature {
+    /// Recover the pubkey from signature given the message
     pub fn recover_pubkey(&self, msg: &[u8]) -> Result<PubKey, Error> {
         Secp256k1::recover_ecdsa(secp256k1::SECP256K1, &msg_hash(msg), &self.0)
             .map(PubKey)
             .map_err(Error)
     }
 
+    /// Serialize the signature. The signature itself is 64 bytes. An extra byte
+    /// is used to store the RecoveryId to recover the pubkey
     pub fn serialize(&self) -> [u8; 65] {
         // recid is 0..3, fit in a single byte (see secp256k1 https://docs.rs/secp256k1/0.27.0/src/secp256k1/ecdsa/recovery.rs.html#39)
         let (recid, sig) = self.0.serialize_compact();
@@ -151,6 +169,7 @@ impl SecpSignature {
         sig_vec.try_into().unwrap()
     }
 
+    /// Deserialize the signature
     pub fn deserialize(data: &[u8]) -> Result<Self, Error> {
         if data.len() != 64 + 1 {
             return Err(Error(secp256k1::Error::InvalidSignature));
@@ -163,6 +182,8 @@ impl SecpSignature {
     }
 }
 
+/// Faster to use the transmuted memory values, but might not be stable across
+/// library versions
 impl Hashable for SecpSignature {
     fn hash(&self, state: &mut impl Hasher) {
         let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };

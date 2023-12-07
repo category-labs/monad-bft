@@ -3,6 +3,7 @@ use std::ops::Deref;
 use sha2::Digest;
 use zerocopy::AsBytes;
 
+/// A 32-byte/256-bit hash
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Hash(pub [u8; 32]);
 
@@ -36,6 +37,7 @@ pub trait Hasher: Sized {
     }
 }
 
+/// The global hasher type
 pub type HasherType = Blake3Hash;
 
 pub struct Sha256Hash(sha2::Sha256);
