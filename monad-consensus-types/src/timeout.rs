@@ -40,7 +40,7 @@ pub struct TimeoutInfo<SCT> {
 impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(self.round);
-        self.high_qc.info.vote.id.hash(state);
+        state.update(self.high_qc.get_block_id().0.as_bytes());
         state.update(self.high_qc.get_hash());
     }
 }
@@ -49,7 +49,7 @@ impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
     pub fn timeout_digest(&self) -> Hash {
         let mut hasher = HasherType::new();
         hasher.update(self.round.as_bytes());
-        hasher.update(self.high_qc.info.vote.round.as_bytes());
+        hasher.update(self.high_qc.get_round().as_bytes());
         hasher.hash()
     }
 }
@@ -94,7 +94,7 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
         let mut sigs = HashMap::new();
         for (node_id, tmo_info, sig) in high_qc_round_sig_tuple {
             let high_qc_round = HighQcRound {
-                qc_round: tmo_info.high_qc.info.vote.round,
+                qc_round: tmo_info.high_qc.get_round(),
             };
             let tminfo_digest = tmo_info.timeout_digest();
             let entry = sigs

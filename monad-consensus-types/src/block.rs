@@ -94,7 +94,7 @@ impl<T: SignatureCollection> Block<T> {
                 state.update(author.0.bytes());
                 state.update(round.as_bytes());
                 payload.hash(&mut state);
-                qc.info.vote.id.hash(&mut state);
+                state.update(qc.get_block_id().0.as_bytes());
                 state.update(qc.get_hash().as_bytes());
 
                 BlockId(state.hash())
@@ -117,11 +117,11 @@ impl<T: SignatureCollection> BlockType for Block<T> {
     }
 
     fn get_parent_id(&self) -> BlockId {
-        self.qc.info.vote.id
+        self.qc.get_block_id()
     }
 
     fn get_parent_round(&self) -> Round {
-        self.qc.info.vote.round
+        self.qc.get_round()
     }
 
     fn get_seq_num(&self) -> SeqNum {

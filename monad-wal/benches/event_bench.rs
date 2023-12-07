@@ -11,7 +11,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     certificate_signature::CertificateSignature,
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -118,14 +118,10 @@ fn bench_vote(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo {
-        commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32]),
-    };
 
     let v = Vote {
         vote_info: vi,
-        ledger_commit_info: lci,
+        ledger_commit_info: CommitResult::NoCommit,
     };
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
@@ -164,14 +160,15 @@ fn bench_timeout(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo::new(None, &vi);
 
     let qcinfo = QcInfo {
-        vote: vi,
-        ledger_commit: lci,
+        vote: Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::NoCommit,
+        },
     };
 
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
 
     let mut sigs = Vec::new();
     for (key, cert_key) in keypairs.iter().zip(cert_keys.iter()) {

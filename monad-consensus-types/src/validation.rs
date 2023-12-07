@@ -14,4 +14,6 @@ pub enum Error {
     InsufficientStake,
     /// Seq num in block proposal must be 1 higher than in the QC
     InvalidSeqNum,
+    /// VoteMessage does not contain a valid commit condition
+    InvalidVoteMessage,
 }

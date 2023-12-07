@@ -12,7 +12,7 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::UnverifiedFullBlock,
     certificate_signature::CertificateSignature,
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, FullTransactionList, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -130,19 +130,15 @@ test_all_combination!(test_vote_message, |num_keys| {
         create_keys_w_validators::<SCT>(num_keys);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
-        round: Round(1),
+        round: Round(2),
         parent_id: BlockId(Hash([43_u8; 32])),
-        parent_round: Round(2),
+        parent_round: Round(1),
         seq_num: SeqNum(0),
-    };
-    let lci = LedgerCommitInfo {
-        commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32]),
     };
 
     let vote = Vote {
         vote_info: vi,
-        ledger_commit_info: lci,
+        ledger_commit_info: CommitResult::Commit,
     };
 
     let votemsg = ConsensusMessage::Vote(VoteMessage::<SCT>::new(vote, &certkeys[0]));
@@ -190,14 +186,15 @@ test_all_combination!(test_timeout_message, |num_keys| {
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo::new(None, &vi);
 
     let qcinfo = QcInfo {
-        vote: vi,
-        ledger_commit: lci,
+        vote: Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::NoCommit,
+        },
     };
 
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
 
     let mut sigs = Vec::new();
 

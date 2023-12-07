@@ -16,7 +16,7 @@ pub mod test_tool {
     use monad_consensus_types::{
         block::Block,
         certificate_signature::CertificateSignature,
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
         quorum_certificate::{QcInfo, QuorumCertificate},
@@ -54,14 +54,16 @@ pub mod test_tool {
     pub fn fake_qc() -> QuorumCertificate<SC> {
         QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MultiSig { sigs: vec![] },
         )
@@ -98,7 +100,7 @@ pub mod test_tool {
         let internal_msg = VoteMessage {
             vote: Vote {
                 vote_info,
-                ledger_commit_info: LedgerCommitInfo::new(None, &vote_info),
+                ledger_commit_info: CommitResult::NoCommit,
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };

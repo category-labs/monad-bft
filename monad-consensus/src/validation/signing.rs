@@ -3,6 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use monad_consensus_types::{
     block::BlockType,
     convert::signing::message_signature_to_proto,
+    ledger::CommitResult,
     message_signature::MessageSignature,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -30,7 +31,7 @@ use crate::{
             VoteMessage,
         },
     },
-    validation::message::well_formed,
+    validation::{message::well_formed, safety::consecutive},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,13 +249,13 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
         self.valid_seq_num()?;
         well_formed(
             self.obj.block.round,
-            self.obj.block.qc.info.vote.round,
+            self.obj.block.qc.get_round(),
             &self.obj.last_round_tc,
         )
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + SeqNum(1) {
+        if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
             return Err(Error::InvalidSeqNum);
         }
         Ok(())
@@ -262,8 +263,19 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
 }
 
 impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
+    /// VoteMessage is valid if (consecutive iff commit)
     pub fn validate(self) -> Result<Validated<VoteMessage<SCT>>, Error> {
-        Ok(Validated { message: self })
+        let consecutive = consecutive(
+            self.obj.vote.vote_info.round,
+            self.obj.vote.vote_info.parent_round,
+        );
+        let commit = self.obj.vote.ledger_commit_info == CommitResult::Commit;
+
+        if consecutive == commit {
+            Ok(Validated { message: self })
+        } else {
+            Err(Error::InvalidVoteMessage)
+        }
     }
 }
 
@@ -288,7 +300,7 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
     fn well_formed_timeout(&self) -> Result<(), Error> {
         well_formed(
             self.obj.timeout.tminfo.round,
-            self.obj.timeout.tminfo.high_qc.info.vote.round,
+            self.obj.timeout.tminfo.high_qc.get_round(),
             &self.obj.timeout.last_round_tc,
         )
     }
@@ -383,19 +395,14 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
-    if qc.info.vote.round == Round(0) {
+    if qc.get_round() == Round(0) {
         if qc == &QuorumCertificate::genesis_prime_qc() {
             return Ok(());
         } else {
             return Err(Error::InvalidSignature);
         }
     }
-    if HasherType::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
-        // TODO-3: collect author for evidence?
-        return Err(Error::InvalidSignature);
-    }
-
-    let qc_msg = HasherType::hash_object(&qc.info.ledger_commit);
+    let qc_msg = HasherType::hash_object(&qc.info.vote);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
@@ -497,7 +504,7 @@ impl ValidatorPubKey for PubKey {
 mod test {
     use monad_consensus_types::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -580,8 +587,6 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
-
         let keypair = get_key(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
         let stake_list = vec![(NodeId(keypair.pubkey()), Stake(1))];
@@ -590,12 +595,12 @@ mod test {
         let vset = ValidatorSet::new(stake_list).unwrap();
         let val_mapping = ValidatorMapping::new(voting_identity);
 
-        let msg = HasherType::hash_object(&lci);
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::NoCommit,
+        };
+        let msg = HasherType::hash_object(&vote);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keypair);
-
-        let sigs = vec![(NodeId(keypair.pubkey()), s)];
-
-        let sigs = MultiSig::new(sigs, &val_mapping, msg.as_ref()).unwrap();
 
         let vi2 = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
@@ -604,11 +609,15 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
+        let sigs = vec![(NodeId(keypair.pubkey()), s)];
+        let sigs = MultiSig::new(sigs, &val_mapping, msg.as_ref()).unwrap();
 
         let qc = QuorumCertificate::new(
             QcInfo {
-                vote: vi2,
-                ledger_commit: lci,
+                vote: Vote {
+                    vote_info: vi2,
+                    ledger_commit_info: CommitResult::NoCommit,
+                },
             },
             sigs,
         );
@@ -625,8 +634,10 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
-
-        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::NoCommit,
+        };
 
         let keypairs = create_keys(2);
         let vlist = vec![
@@ -645,20 +656,14 @@ mod test {
 
         let vmap = ValidatorMapping::new(voting_identity);
 
-        let msg = HasherType::hash_object(&lci);
+        let msg = HasherType::hash_object(&vote);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keys[0]);
 
         let sigs = vec![(NodeId(keypairs[0].pubkey()), s)];
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new(
-            QcInfo {
-                vote: vi,
-                ledger_commit: lci,
-            },
-            sig_col,
-        );
+        let qc = QuorumCertificate::new(QcInfo { vote }, sig_col);
 
         assert!(matches!(
             verify_qc(&vset, &vmap, &qc),
@@ -725,10 +730,12 @@ mod test {
             parent_round: Round(2),
             seq_num: SeqNum(0),
         };
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::Commit,
+        };
 
-        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
-
-        let msg = HasherType::hash_object(&lci);
+        let msg = HasherType::hash_object(&vote);
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
@@ -738,13 +745,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new(
-            QcInfo {
-                vote: vi,
-                ledger_commit: lci,
-            },
-            sig_col,
-        );
+        let qc = QuorumCertificate::new(QcInfo { vote }, sig_col);
 
         let tmo_info = TimeoutInfo::<SignatureCollectionType> {
             round: Round(4),
@@ -781,10 +782,12 @@ mod test {
             parent_round: Round(2),
             seq_num: SeqNum(0),
         };
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: CommitResult::Commit,
+        };
 
-        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
-
-        let msg = HasherType::hash_object(&lci);
+        let msg = HasherType::hash_object(&vote);
         let mut sigs = Vec::new();
 
         for (key, certkey) in keypairs.iter().zip(certkeys.iter()) {
@@ -794,13 +797,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new(
-            QcInfo {
-                vote: vi,
-                ledger_commit: lci,
-            },
-            sig_col,
-        );
+        let qc = QuorumCertificate::new(QcInfo { vote }, sig_col);
 
         let tmo_info = TimeoutInfo::<SignatureCollectionType> {
             round: tmo_round,
@@ -829,11 +826,9 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
-        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
-
         let v = Vote {
             vote_info: vi,
-            ledger_commit_info: lci,
+            ledger_commit_info: CommitResult::NoCommit,
         };
 
         let mut privkey: [u8; 32] = [127; 32];
@@ -842,19 +837,18 @@ mod test {
 
         let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkeypair);
 
-        let expected_vote_info_hash = vm.vote.ledger_commit_info.vote_info_hash;
+        let expected_vote_hash = HasherType::hash_object(&v);
 
         let svm = Verified::<SignatureType, _>::new(vm, &keypair);
-        let (author, signature, orig_vm) = svm.destructure();
+        let (author, signature, _) = svm.destructure();
         let msg = HasherType::hash_object(&vm);
         assert_eq!(
             signature.recover_pubkey(msg.as_ref()).unwrap(),
             keypair.pubkey()
         );
         assert_eq!(author, NodeId(keypair.pubkey()));
-        assert_eq!(
-            expected_vote_info_hash,
-            orig_vm.vote.ledger_commit_info.vote_info_hash
-        );
+
+        let vote_hash = HasherType::hash_object(&vm.vote);
+        assert_eq!(expected_vote_hash, vote_hash);
     }
 }

@@ -94,7 +94,7 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
 mod test {
     use monad_consensus_types::{
         block::{Block, FullBlock as MonadFullBlock},
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
@@ -102,7 +102,7 @@ mod test {
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
@@ -134,16 +134,15 @@ mod test {
                 },
                 &QuorumCertificate::new(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
-                        },
-                        ledger_commit: LedgerCommitInfo {
-                            commit_state_hash: None,
-                            vote_info_hash: Hash::default(),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: CommitResult::NoCommit,
                         },
                     },
                     MultiSig::default(),

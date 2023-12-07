@@ -131,7 +131,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             .map(|timeout_info| {
                 well_formed(
                     timeout_info.round,
-                    timeout_info.high_qc.info.vote.round,
+                    timeout_info.high_qc.get_round(),
                     &self.last_round_tc,
                 )
                 .expect("invalid timeout");
@@ -265,11 +265,11 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Option<PacemakerCommand<SCT>> {
-        if qc.info.vote.round < self.current_round {
+        if qc.get_round() < self.current_round {
             return None;
         }
         self.last_round_tc = None;
-        Some(self.enter_round(qc.info.vote.round + Round(1)))
+        Some(self.enter_round(qc.get_round() + Round(1)))
     }
 }
 
@@ -279,7 +279,7 @@ mod test {
 
     use monad_consensus_types::{
         certificate_signature::CertificateSignature,
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         multi_sig::MultiSig,
         quorum_certificate::QcInfo,
         timeout::TimeoutInfo,
@@ -315,22 +315,14 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let ledger_commit_info = LedgerCommitInfo::new(None, &vote_info);
-
-        let qc_info = QcInfo {
-            vote: vote_info,
-            ledger_commit: ledger_commit_info,
-        };
-
         let vote = Vote {
             vote_info,
-            ledger_commit_info,
+            ledger_commit_info: CommitResult::NoCommit,
         };
-
+        let qc_info = QcInfo { vote };
         let vote_hash = HasherType::hash_object(&vote);
 
         let mut sigs = Vec::new();
-
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
             let node_id = NodeId(key.pubkey());
             let sig =

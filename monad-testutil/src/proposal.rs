@@ -7,13 +7,13 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::{Block, BlockType},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
-    voting::{ValidatorMapping, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
     hasher::{Hasher, HasherType},
@@ -88,7 +88,7 @@ where
             &Payload {
                 txns,
                 header: execution_header,
-                seq_num: qc.info.vote.seq_num + SeqNum(1),
+                seq_num: qc.get_seq_num() + SeqNum(1),
                 beneficiary: EthAddress::default(),
                 randao_reveal: RandaoReveal::new::<SCT::SignatureType>(self.round, leader_certkey),
             },
@@ -127,7 +127,7 @@ where
         }
 
         let high_qc_round = HighQcRound {
-            qc_round: self.high_qc.info.vote.round,
+            qc_round: self.high_qc.get_round(),
         };
 
         let tminfo = TimeoutInfo {
@@ -182,18 +182,18 @@ where
         let vi = VoteInfo {
             id: block.get_id(),
             round: block.round,
-            parent_id: block.qc.info.vote.id,
-            parent_round: block.qc.info.vote.round,
+            parent_id: block.qc.get_block_id(),
+            parent_round: block.qc.get_round(),
             seq_num: block.payload.seq_num,
         };
-        let commit = Some(block.get_id().0); // FIXME-1: is this hash correct?
-        let lci = LedgerCommitInfo::new(commit, &vi);
         let qcinfo = QcInfo {
-            vote: vi,
-            ledger_commit: lci,
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: CommitResult::Commit,
+            },
         };
 
-        let msg = HasherType::hash_object(&lci);
+        let msg = HasherType::hash_object(&qcinfo.vote);
 
         let mut sigs = Vec::new();
         for ck in certkeys {

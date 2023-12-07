@@ -2,13 +2,12 @@ use std::cmp;
 
 use monad_consensus_types::{
     block::{Block, BlockType},
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
 };
-use monad_crypto::hasher::{Hasher, HasherType};
 use monad_types::*;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -75,7 +74,7 @@ impl Safety {
         high_qc: QuorumCertificate<SCT>,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<TimeoutInfo<SCT>> {
-        let qc_round = high_qc.info.vote.round;
+        let qc_round = high_qc.get_round();
         if self.safe_to_timeout(round, qc_round, last_tc) {
             self.update_highest_vote_round(round);
             Some(TimeoutInfo { round, high_qc })
@@ -89,7 +88,7 @@ impl Safety {
         block: &Block<SCT>,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<Vote> {
-        let qc_round = block.qc.info.vote.round;
+        let qc_round = block.qc.get_round();
         if self.safe_to_vote(block.round, qc_round, last_tc) {
             self.update_highest_qc_round(qc_round);
             self.update_highest_vote_round(block.round);
@@ -97,22 +96,20 @@ impl Safety {
             let vote_info = VoteInfo {
                 id: block.get_id(),
                 round: block.round,
-                parent_id: block.qc.info.vote.id,
-                parent_round: block.qc.info.vote.round,
+                parent_id: block.qc.get_block_id(),
+                parent_round: block.qc.get_round(),
                 seq_num: block.get_seq_num(),
             };
 
-            let commit_hash = if commit_condition(block.round, block.qc.info) {
-                Some(HasherType::hash_object(block))
+            let commit_result = if commit_condition(block.round, block.qc.info) {
+                CommitResult::Commit
             } else {
-                None
+                CommitResult::NoCommit
             };
-
-            let ledger_commit_info = LedgerCommitInfo::new(commit_hash, &vote_info);
 
             return Some(Vote {
                 vote_info,
-                ledger_commit_info,
+                ledger_commit_info: commit_result,
             });
         }
 
@@ -120,7 +117,7 @@ impl Safety {
     }
 }
 
-fn consecutive(block_round: Round, round: Round) -> bool {
+pub(crate) fn consecutive(block_round: Round, round: Round) -> bool {
     block_round == round + Round(1)
 }
 
@@ -135,6 +132,6 @@ fn safe_to_extend<SCT>(
     }
 }
 
-fn commit_condition(block_round: Round, qc: QcInfo) -> bool {
-    consecutive(block_round, qc.vote.round)
+fn commit_condition(block_round: Round, qc_info: QcInfo) -> bool {
+    consecutive(block_round, qc_info.get_round())
 }

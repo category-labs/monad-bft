@@ -2,9 +2,5 @@ syntax = "proto3";
 
 package monad_proto.ledger;
 
-import "basic.proto";
-
-message ProtoLedgerCommitInfo {
-  monad_proto.basic.ProtoHash commit_state_hash = 1;
-  monad_proto.basic.ProtoHash vote_info_hash = 2;
-}
+message ProtoNoCommit {}
+message ProtoCommit {}

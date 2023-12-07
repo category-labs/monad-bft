@@ -85,11 +85,6 @@ where
             return (None, ret_commands);
         }
 
-        if HasherType::hash_object(&vote.vote_info) != vote.ledger_commit_info.vote_info_hash {
-            // TODO: collect author for evidence?
-            return (None, ret_commands);
-        }
-
         let vote_idx = HasherType::hash_object(&vote);
 
         // pending votes for a given round + vote hash
@@ -114,13 +109,7 @@ where
                 vote_idx.as_ref(),
             ) {
                 Ok(sigcol) => {
-                    let qc = QuorumCertificate::<SCT>::new(
-                        QcInfo {
-                            vote: vote.vote_info,
-                            ledger_commit: vote.ledger_commit_info,
-                        },
-                        sigcol,
-                    );
+                    let qc = QuorumCertificate::<SCT>::new(QcInfo { vote }, sigcol);
                     // we update self.earliest round so that we no longer will build a QC for
                     // current round
                     self.earliest_round = round + Round(1);
@@ -171,7 +160,7 @@ mod test {
 
     use monad_consensus_types::{
         certificate_signature::CertificateSignature,
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         multi_sig::MultiSig,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -180,17 +169,13 @@ mod test {
         hasher::{Hash, Hasher, HasherType},
         secp256k1::SecpSignature,
     };
-    use monad_testutil::{
-        signing::{get_key, *},
-        validators::create_keys_w_validators,
-    };
+    use monad_testutil::{signing::*, validators::create_keys_w_validators};
     use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
 
     use super::VoteState;
-    use crate::{messages::message::VoteMessage, validation::signing::Verified};
+    use crate::messages::message::VoteMessage;
 
-    type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
 
     fn create_vote_message<SCT: SignatureCollection>(
@@ -206,11 +191,9 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new(Some(Default::default()), &vi);
-
         let v = Vote {
             vote_info: vi,
-            ledger_commit_info: lci,
+            ledger_commit_info: CommitResult::Commit,
         };
 
         let mut vm = VoteMessage::new(v, certkeypair);
@@ -294,71 +277,6 @@ mod test {
         votestate.start_new_round(Round(5));
 
         assert_eq!(votestate.pending_votes.len(), 4);
-    }
-
-    #[test]
-    fn vote_idx_doesnt_match() {
-        let mut vote_state = VoteState::<SignatureCollectionType>::default();
-        let keypair = get_key(6);
-        let cert_key = get_certificate_key::<SignatureCollectionType>(6);
-        let node_id = NodeId(keypair.pubkey());
-
-        let vset = ValidatorSet::new(vec![(node_id, Stake(1))]).unwrap();
-        let vmap = ValidatorMapping::new(vec![(node_id, cert_key.pubkey())]);
-
-        let mut vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-        };
-
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi),
-        };
-
-        let vm = VoteMessage::new(v, &cert_key);
-
-        let svm = Verified::<SignatureType, _>::new(vm, &keypair);
-
-        // add a valid vote message
-        let _ = vote_state.process_vote(svm.author(), &*svm, &vset, &vmap);
-        assert_eq!(vote_state.pending_votes.len(), 1);
-
-        assert_eq!(vote_state.earliest_round, Round(1));
-        // pretend a qc was not created so we can add more votes without reseting the vote state
-        vote_state.earliest_round = Round(0);
-
-        // add an invalid vote message (the vote_info doesn't match what created the ledger_commit_info)
-        vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(5),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(4),
-            seq_num: SeqNum(0),
-        };
-
-        let vi2 = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(1),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-        };
-
-        let invalid_vote = Vote {
-            vote_info: vi,
-            ledger_commit_info: LedgerCommitInfo::new(Some(Hash([0xae_u8; 32])), &vi2),
-        };
-        let invalid_vm = VoteMessage::new(invalid_vote, &cert_key);
-
-        let invalid_svm = Verified::<SignatureType, _>::new(invalid_vm, &keypair);
-        let _ = vote_state.process_vote(invalid_svm.author(), &*invalid_svm, &vset, &vmap);
-
-        // confirms the invalid vote message was not added to pending votes
-        assert_eq!(vote_state.pending_votes.len(), 1);
     }
 
     #[test]

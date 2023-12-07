@@ -138,6 +138,9 @@ where
             validation::Error::InvalidSeqNum => {
                 inc_count!(invalid_seq_num)
             }
+            validation::Error::InvalidVoteMessage => {
+                inc_count!(invalid_vote_message)
+            }
         };
     }
 }

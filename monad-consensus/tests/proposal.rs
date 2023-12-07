@@ -4,11 +4,11 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::Block,
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::Error,
-    voting::{ValidatorMapping, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{hasher::Hash, secp256k1::PubKey};
 use monad_eth_types::EthAddress;
@@ -37,8 +37,10 @@ fn setup_block(
     };
     let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
-            vote: vi,
-            ledger_commit: LedgerCommitInfo::new(Some(Default::default()), &vi),
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: CommitResult::Commit,
+            },
         },
         MockSignatures::with_pubkeys(signers),
     );

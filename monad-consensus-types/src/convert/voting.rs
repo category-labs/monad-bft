@@ -1,6 +1,15 @@
-use monad_proto::{error::ProtoError, proto::voting::*};
+use monad_proto::{
+    error::ProtoError,
+    proto::{
+        ledger::{ProtoCommit, ProtoNoCommit},
+        voting::*,
+    },
+};
 
-use crate::voting::{Vote, VoteInfo};
+use crate::{
+    ledger::CommitResult,
+    voting::{Vote, VoteInfo},
+};
 
 impl From<&VoteInfo> for ProtoVoteInfo {
     fn from(vi: &VoteInfo) -> Self {
@@ -53,7 +62,12 @@ impl From<&Vote> for ProtoVote {
     fn from(value: &Vote) -> Self {
         ProtoVote {
             vote_info: Some((&value.vote_info).into()),
-            ledger_commit_info: Some((&value.ledger_commit_info).into()),
+            ledger_commit_info: match value.ledger_commit_info {
+                CommitResult::NoCommit => {
+                    Some(proto_vote::LedgerCommitInfo::NoCommit(ProtoNoCommit {}))
+                }
+                CommitResult::Commit => Some(proto_vote::LedgerCommitInfo::Commit(ProtoCommit {})),
+            },
         }
     }
 }
@@ -62,6 +76,16 @@ impl TryFrom<ProtoVote> for Vote {
     type Error = ProtoError;
 
     fn try_from(value: ProtoVote) -> Result<Self, Self::Error> {
+        let lci = match value.ledger_commit_info {
+            None => Err(Self::Error::DeserializeError(
+                "Vote.ledger_commit_info".to_owned(),
+            )),
+            Some(x) => match x {
+                proto_vote::LedgerCommitInfo::Commit(_) => Ok(CommitResult::Commit),
+                proto_vote::LedgerCommitInfo::NoCommit(_) => Ok(CommitResult::NoCommit),
+            },
+        }?;
+
         Ok(Self {
             vote_info: value
                 .vote_info
@@ -69,12 +93,7 @@ impl TryFrom<ProtoVote> for Vote {
                     "Vote.vote_info".to_owned(),
                 ))?
                 .try_into()?,
-            ledger_commit_info: value
-                .ledger_commit_info
-                .ok_or(Self::Error::MissingRequiredField(
-                    "Vote.ledger_commit_info".to_owned(),
-                ))?
-                .try_into()?,
+            ledger_commit_info: lci,
         })
     }
 }

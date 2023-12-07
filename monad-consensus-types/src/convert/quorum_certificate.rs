@@ -10,7 +10,6 @@ impl From<&QcInfo> for ProtoQcInfo {
     fn from(qcinfo: &QcInfo) -> Self {
         ProtoQcInfo {
             vote: Some((&qcinfo.vote).into()),
-            ledger_commit: Some((&qcinfo.ledger_commit).into()),
         }
     }
 }
@@ -22,12 +21,6 @@ impl TryFrom<ProtoQcInfo> for QcInfo {
             vote: proto_qci
                 .vote
                 .ok_or(Self::Error::MissingRequiredField("QcInfo.vote".to_owned()))?
-                .try_into()?,
-            ledger_commit: proto_qci
-                .ledger_commit
-                .ok_or(Self::Error::MissingRequiredField(
-                    "QcInfo.ledger_commit".to_owned(),
-                ))?
                 .try_into()?,
         })
     }

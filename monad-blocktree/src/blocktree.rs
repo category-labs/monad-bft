@@ -51,8 +51,8 @@ impl<T: SignatureCollection> BlockTree<T> {
     pub fn new(root: QuorumCertificate<T>) -> Self {
         Self {
             root: Root {
-                round: root.info.vote.round,
-                block_id: root.info.vote.id,
+                round: root.info.get_round(),
+                block_id: root.get_block_id(),
             },
             tree: HashMap::new(),
         }
@@ -139,17 +139,17 @@ impl<T: SignatureCollection> BlockTree<T> {
     /// Find the missing block along the path from `qc` to the tree root.
     /// Returns the QC certifying that block
     pub fn get_missing_ancestor(&self, qc: &QuorumCertificate<T>) -> Option<QuorumCertificate<T>> {
-        if self.root.round >= qc.info.vote.round {
+        if self.root.round >= qc.get_round() {
             return None;
         }
 
         let mut maybe_unknown_block_qc = qc;
-        let mut maybe_unknown_bid = maybe_unknown_block_qc.info.vote.id;
+        let mut maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
         while let Some(known_block) = self.tree.get(&maybe_unknown_bid) {
             maybe_unknown_block_qc = &known_block.get_block().qc;
-            maybe_unknown_bid = maybe_unknown_block_qc.info.vote.id;
+            maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
             // If the unknown block's round == self.root, that means we've already committed it
-            if maybe_unknown_block_qc.info.vote.round == self.root.round {
+            if maybe_unknown_block_qc.get_round() == self.root.round {
                 return None;
             }
         }
@@ -212,13 +212,13 @@ impl<T: SignatureCollection> BlockTree<T> {
 mod test {
     use monad_consensus_types::{
         block::{Block as ConsensusBlock, BlockType, FullBlock},
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         payload::{
             ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair};
     use monad_eth_types::EthAddress;
@@ -267,8 +267,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -293,8 +295,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -319,8 +323,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v3,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v3,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -345,8 +351,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v4,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -371,8 +379,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v5,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v5,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -397,8 +407,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v6,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v6,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -423,8 +435,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v7,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v7,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -507,8 +521,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v8,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v8,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -553,8 +569,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -579,8 +597,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -657,8 +677,10 @@ mod test {
                 },
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -681,8 +703,10 @@ mod test {
                 },
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -713,8 +737,10 @@ mod test {
                 },
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -794,8 +820,10 @@ mod test {
                 },
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -845,8 +873,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -871,8 +901,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -889,8 +921,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -907,8 +941,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -984,8 +1020,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1010,8 +1048,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1028,8 +1068,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1046,8 +1088,10 @@ mod test {
                 &payload,
                 &QC::new(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: CommitResult::NoCommit,
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),

@@ -4,7 +4,7 @@ use monad_crypto::hasher::{Hashable, Hasher};
 use monad_types::*;
 use zerocopy::AsBytes;
 
-use crate::{certificate_signature::CertificateKeyPair, ledger::LedgerCommitInfo};
+use crate::{certificate_signature::CertificateKeyPair, ledger::CommitResult};
 
 /// Map validator NodeId to its Certificate PubKey
 pub struct ValidatorMapping<VKT: CertificateKeyPair> {
@@ -34,7 +34,7 @@ pub struct Vote {
     /// contents of the vote over which the QC is eventually formed
     pub vote_info: VoteInfo,
     /// commit decision
-    pub ledger_commit_info: LedgerCommitInfo,
+    pub ledger_commit_info: CommitResult,
 }
 
 impl std::fmt::Debug for Vote {
@@ -48,6 +48,7 @@ impl std::fmt::Debug for Vote {
 
 impl Hashable for Vote {
     fn hash(&self, state: &mut impl Hasher) {
+        self.vote_info.hash(state);
         self.ledger_commit_info.hash(state)
     }
 }
@@ -90,13 +91,13 @@ impl Hashable for VoteInfo {
 
 #[cfg(test)]
 mod test {
-    use monad_crypto::hasher::{Hash, Hasher, HasherType};
+    use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
     use monad_types::{BlockId, Round, SeqNum};
     use test_case::test_case;
     use zerocopy::AsBytes;
 
     use super::VoteInfo;
-    use crate::{ledger::LedgerCommitInfo, voting::Vote};
+    use crate::{ledger::CommitResult, voting::Vote};
 
     #[test]
     fn voteinfo_hash() {
@@ -121,9 +122,9 @@ mod test {
         assert_eq!(h1, h2);
     }
 
-    #[test_case(None ; "None commit_state")]
-    #[test_case(Some(Default::default()) ; "Some commit_state")]
-    fn vote_hash(cs: Option<Hash>) {
+    #[test_case(CommitResult::NoCommit ; "NoCommit")]
+    #[test_case(CommitResult::Commit ; "Commit")]
+    fn vote_hash(cr: CommitResult) {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
@@ -132,23 +133,14 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let vi_hash = HasherType::hash_object(&vi);
-
-        let lci = LedgerCommitInfo {
-            commit_state_hash: cs,
-            vote_info_hash: vi_hash,
-        };
-
         let v = Vote {
             vote_info: vi,
-            ledger_commit_info: lci,
+            ledger_commit_info: cr,
         };
 
         let mut hasher = HasherType::new();
-        hasher.update(vi_hash);
-        if let Some(cs) = cs {
-            hasher.update(cs);
-        }
+        vi.hash(&mut hasher);
+        cr.hash(&mut hasher);
 
         let h1 = hasher.hash();
         let h2 = HasherType::hash_object(&v);

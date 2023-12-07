@@ -126,7 +126,7 @@ where
     fn create_request_command(&self, sync: &InFlightRequest<SCT>) -> ConsensusCommand<SCT> {
         ConsensusCommand::RequestSync {
             peer: sync.req_target,
-            block_id: sync.qc.info.vote.id,
+            block_id: sync.qc.get_block_id(),
         }
     }
 
@@ -149,7 +149,7 @@ where
         validator_set: &VT,
         req_cnt: usize,
     ) -> Vec<ConsensusCommand<SCT>> {
-        let id = qc.info.vote.id;
+        let id = qc.get_block_id();
 
         if self.requests.contains_key(&id) {
             return vec![];
@@ -251,14 +251,14 @@ mod test {
 
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedFullBlock},
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         payload::{
             ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
         transaction_validator::MockValidator,
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
     use monad_crypto::hasher::Hash;
     use monad_eth_types::EthAddress;
@@ -299,14 +299,16 @@ mod test {
 
         let qc = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x01_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -320,7 +322,7 @@ mod test {
         };
 
         assert!(peer == valset.get_list()[0]);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         // repeated request would yield no result
         for _ in 0..1000 {
@@ -330,14 +332,16 @@ mod test {
 
         let qc = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x02_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x02_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -350,7 +354,7 @@ mod test {
         };
 
         assert!(peer == valset.get_list()[0]);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
     }
 
     #[test]
@@ -374,14 +378,16 @@ mod test {
             &payload,
             &QC::new(
                 QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                    vote: Vote {
+                        vote_info: VoteInfo {
+                            id: BlockId(Hash([0x01_u8; 32])),
+                            round: Round(0),
+                            parent_id: BlockId(Hash([0x02_u8; 32])),
+                            parent_round: Round(0),
+                            seq_num: SeqNum(0),
+                        },
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    ledger_commit: LedgerCommitInfo::default(),
                 },
                 MockSignatures::with_pubkeys(&[]),
             ),
@@ -393,14 +399,16 @@ mod test {
             &payload,
             &QC::new(
                 QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                    vote: Vote {
+                        vote_info: VoteInfo {
+                            id: BlockId(Hash([0x01_u8; 32])),
+                            round: Round(0),
+                            parent_id: BlockId(Hash([0x02_u8; 32])),
+                            parent_round: Round(0),
+                            seq_num: SeqNum(0),
+                        },
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    ledger_commit: LedgerCommitInfo::default(),
                 },
                 MockSignatures::with_pubkeys(&[]),
             ),
@@ -412,14 +420,16 @@ mod test {
             &payload,
             &QC::new(
                 QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                    vote: Vote {
+                        vote_info: VoteInfo {
+                            id: BlockId(Hash([0x01_u8; 32])),
+                            round: Round(0),
+                            parent_id: BlockId(Hash([0x02_u8; 32])),
+                            parent_round: Round(0),
+                            seq_num: SeqNum(0),
+                        },
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    ledger_commit: LedgerCommitInfo::default(),
                 },
                 MockSignatures::with_pubkeys(&[]),
             ),
@@ -428,14 +438,16 @@ mod test {
         // first qc
         let qc_1 = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: block_1.get_id(),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: block_1.get_id(),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -449,19 +461,21 @@ mod test {
         };
 
         assert!(peer_1 == valset.get_list()[0]);
-        assert!(bid == qc_1.info.vote.id);
+        assert!(bid == qc_1.get_block_id());
 
         // second qc
         let qc_2 = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: block_2.get_id(),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: block_2.get_id(),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -475,19 +489,21 @@ mod test {
         };
 
         assert!(peer_2 == valset.get_list()[0]);
-        assert!(bid == qc_2.info.vote.id);
+        assert!(bid == qc_2.get_block_id());
 
         // third request
         let qc_3 = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: block_3.get_id(),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: block_3.get_id(),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -501,7 +517,7 @@ mod test {
         };
 
         assert!(peer_3 == valset.get_list()[0]);
-        assert!(bid == qc_3.info.vote.id);
+        assert!(bid == qc_3.get_block_id());
 
         let msg_no_block_1 = BlockSyncResponseMessage::<SC>::NotAvailable(block_1.get_id());
 
@@ -623,14 +639,16 @@ mod test {
 
         let qc = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x01_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -644,7 +662,7 @@ mod test {
         };
         // should have skipped self
         assert!(peer == valset.get_list()[1]);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
         let transaction_validator = TV::default();
         let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
         for _ in 0..10 {
@@ -670,10 +688,10 @@ mod test {
 
                 if i % valset.len() == 0 {
                     assert_eq!(peer, valset.get_list()[1]);
-                    assert_eq!(bid, qc.info.vote.id);
+                    assert_eq!(bid, qc.get_block_id());
                 } else {
                     assert_eq!(peer, valset.get_list()[i % valset.len()]);
-                    assert_eq!(bid, qc.info.vote.id);
+                    assert_eq!(bid, qc.get_block_id());
                 }
             }
         }
@@ -698,14 +716,16 @@ mod test {
 
             let qc = &QC::new(
                 QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
+                    vote: Vote {
+                        vote_info: VoteInfo {
+                            id: BlockId(Hash([0x01_u8; 32])),
+                            round: Round(0),
+                            parent_id: BlockId(Hash([0x02_u8; 32])),
+                            parent_round: Round(0),
+                            seq_num: SeqNum(0),
+                        },
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    ledger_commit: LedgerCommitInfo::default(),
                 },
                 MockSignatures::with_pubkeys(&[]),
             );
@@ -715,14 +735,16 @@ mod test {
 
         let qc = &QC::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: block.get_id(),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x02_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: block.get_id(),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         );
@@ -736,7 +758,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
         assert!(peer == valset.get_list()[1]);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match cmds[1] {
             ConsensusCommand::Schedule {
@@ -748,7 +770,7 @@ mod test {
             panic!("timeout event is not block sync")
         };
         assert!(duration == Duration::MAX);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         // similarly, failure of message should have also triggered a timeout
         let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
@@ -768,7 +790,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
         assert!(peer == valset.get_list()[2]);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match retry_command[1] {
             ConsensusCommand::Schedule {
@@ -780,7 +802,7 @@ mod test {
             panic!("timeout event is not block sync")
         };
         assert!(duration == Duration::MAX);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         // lastly, natural timeout should trigger it too.
 
@@ -793,14 +815,14 @@ mod test {
             panic!("timeout didn't emit reset first")
         };
 
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         let (peer, bid) = match retry_command[1] {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
         assert!(peer == valset.get_list()[3]);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match retry_command[2] {
             ConsensusCommand::Schedule {
@@ -812,7 +834,7 @@ mod test {
             panic!("timeout event is not block sync")
         };
         assert!(duration == Duration::MAX);
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
 
         // if somehow we sync up on the block, timeout should be ignored
 
@@ -839,6 +861,6 @@ mod test {
             panic!("timeout didn't emit reset first")
         };
 
-        assert!(bid == qc.info.vote.id);
+        assert!(bid == qc.get_block_id());
     }
 }

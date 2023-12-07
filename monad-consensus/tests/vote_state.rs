@@ -1,6 +1,6 @@
 use monad_consensus::{messages::message::VoteMessage, vote_state::VoteState};
 use monad_consensus_types::{
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     multi_sig::MultiSig,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -30,11 +30,9 @@ fn create_vote_message(
         seq_num: SeqNum(0),
     };
 
-    let lci = LedgerCommitInfo::new(Some(Default::default()), &vi);
-
     let v = Vote {
         vote_info: vi,
-        ledger_commit_info: lci,
+        ledger_commit_info: CommitResult::Commit,
     };
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, certkey);

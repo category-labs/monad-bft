@@ -626,12 +626,14 @@ where
 
         self.high_qc = qc.clone();
         let mut cmds = Vec::new();
-        if qc.info.ledger_commit.commit_state_hash.is_some()
+        if qc.info.vote.ledger_commit_info.is_commitable()
             && self
                 .pending_block_tree
-                .has_path_to_root(&qc.info.vote.parent_id)
+                .has_path_to_root(&qc.info.vote.vote_info.parent_id)
         {
-            let blocks_to_commit = self.pending_block_tree.prune(&qc.info.vote.parent_id);
+            let blocks_to_commit = self
+                .pending_block_tree
+                .prune(&qc.info.vote.vote_info.parent_id);
 
             if let Some(b) = blocks_to_commit.last() {
                 self.state_root_validator.remove_old_roots(b.get_seq_num());
@@ -691,8 +693,8 @@ where
         let round = self.pacemaker.get_current_round();
         let high_qc = self.high_qc.clone();
 
-        let parent_bid = high_qc.info.vote.id;
-        let seq_num_qc = high_qc.info.vote.seq_num;
+        let parent_bid = high_qc.get_block_id();
+        let seq_num_qc = high_qc.get_seq_num();
         let proposed_seq_num = seq_num_qc + SeqNum(1);
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
             ConsensusAction::Propose(h, pending_blocktree_txs) => {
@@ -802,7 +804,7 @@ mod test {
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedFullBlock},
         certificate_signature::CertificateKeyPair,
-        ledger::LedgerCommitInfo,
+        ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, NopStateRoot, StateRoot,
@@ -891,7 +893,7 @@ mod test {
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
-        assert_eq!(state.high_qc.info.vote.round, Round(0));
+        assert_eq!(state.high_qc.get_round(), Round(0));
 
         let expected_qc_high_round = Round(5);
 
@@ -904,7 +906,7 @@ mod test {
         };
         let v = Vote {
             vote_info: vi,
-            ledger_commit_info: LedgerCommitInfo::new(None, &vi),
+            ledger_commit_info: CommitResult::NoCommit,
         };
 
         let vm1 = VoteMessage::<SignatureCollectionType>::new(v, &certkeys[1]);
@@ -919,10 +921,10 @@ mod test {
         state.handle_vote_message(*v2.author(), *v2, &valset, &valmap, &election);
 
         // less than 2f+1, so expect not locked
-        assert_eq!(state.high_qc.info.vote.round, Round(0));
+        assert_eq!(state.high_qc.get_round(), Round(0));
 
         state.handle_vote_message(*v3.author(), *v3, &valset, &valmap, &election);
-        assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
+        assert_eq!(state.high_qc.get_round(), expected_qc_high_round);
 
         logs_assert(|lines: &[&str]| {
             match lines
@@ -1383,11 +1385,7 @@ mod test {
             .collect::<Vec<_>>();
 
         assert!(p1_votes.len() == 1);
-        assert!(p1_votes[0]
-            .vote
-            .ledger_commit_info
-            .commit_state_hash
-            .is_some());
+        assert!(p1_votes[0].vote.ledger_commit_info.is_commitable());
 
         // round 2 proposal
         let p2 = propgen.next_proposal(
@@ -1427,11 +1425,7 @@ mod test {
 
         assert!(p2_votes.len() == 1);
         // csh is some: the proposal and qc have consecutive rounds
-        assert!(p2_votes[0]
-            .vote
-            .ledger_commit_info
-            .commit_state_hash
-            .is_some());
+        assert!(p2_votes[0].vote.ledger_commit_info.is_commitable());
 
         let p3 = propgen.next_proposal(
             &keys,
@@ -1518,11 +1512,7 @@ mod test {
             .collect::<Vec<_>>();
 
         assert!(p2_votes.len() == 1);
-        assert!(p2_votes[0]
-            .vote
-            .ledger_commit_info
-            .commit_state_hash
-            .is_some());
+        assert!(p2_votes[0].vote.ledger_commit_info.is_commitable());
 
         // round 2 timeout
         let pacemaker_cmds = state
@@ -1553,7 +1543,7 @@ mod test {
             TransactionHashList::empty(),
             ExecutionArtifacts::zero(),
         );
-        assert_eq!(p3.block.qc.info.vote.round, Round(1));
+        assert_eq!(p3.block.qc.get_round(), Round(1));
         assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
         let p3_cmds = state.handle_proposal_message_full(
@@ -1578,11 +1568,7 @@ mod test {
 
         assert!(p3_votes.len() == 1);
         // proposal and qc have non-consecutive rounds
-        assert!(p3_votes[0]
-            .vote
-            .ledger_commit_info
-            .commit_state_hash
-            .is_none());
+        assert!(!p3_votes[0].vote.ledger_commit_info.is_commitable());
     }
 
     // this test checks that a malicious proposal sent only to the next leader is
@@ -1743,7 +1729,7 @@ mod test {
         }
         assert_ne!(routing_target, NodeId(get_key(100).pubkey()));
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
-        assert_eq!(second_state.high_qc.info.vote, votes[0].vote.vote_info);
+        assert_eq!(second_state.high_qc.info.vote, votes[0].vote);
 
         // use the correct proposal gen to make next proposal and send it to second_state
         // this should cause it to emit the RequestBlockSync Message because the the QC parent

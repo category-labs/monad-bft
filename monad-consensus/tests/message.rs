@@ -1,7 +1,7 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
     block::Block,
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -10,7 +10,7 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
-    hasher::{Hash, Hasher, HasherType},
+    hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, SecpSignature},
 };
 use monad_eth_types::EthAddress;
@@ -27,14 +27,16 @@ fn timeout_digest() {
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: Default::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -42,7 +44,7 @@ fn timeout_digest() {
 
     let mut hasher = HasherType::new();
     hasher.update(ti.round);
-    hasher.update(ti.high_qc.info.vote.round);
+    hasher.update(ti.high_qc.get_round());
     let h1 = hasher.hash();
 
     let h2 = ti.timeout_digest();
@@ -56,14 +58,16 @@ fn timeout_info_hash() {
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: Default::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -71,7 +75,7 @@ fn timeout_info_hash() {
 
     let mut hasher = HasherType::new();
     hasher.update(ti.round.0.as_bytes());
-    hasher.update(ti.high_qc.info.vote.id.0.as_bytes());
+    hasher.update(ti.high_qc.get_block_id().0.as_bytes());
     hasher.update(ti.high_qc.get_hash());
     let h1 = hasher.hash();
 
@@ -86,14 +90,16 @@ fn timeout_hash() {
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: Default::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -106,7 +112,7 @@ fn timeout_hash() {
 
     let mut hasher = HasherType::new();
     hasher.update(tmo.tminfo.round.0.as_bytes());
-    hasher.update(tmo.tminfo.high_qc.info.vote.id.0.as_bytes());
+    hasher.update(tmo.tminfo.high_qc.get_block_id().0.as_bytes());
     hasher.update(tmo.tminfo.high_qc.get_hash());
     let h1 = hasher.hash();
 
@@ -121,14 +127,16 @@ fn timeout_msg_hash() {
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
                 },
-                ledger_commit: Default::default(),
             },
             MockSignatures::with_pubkeys(&[]),
         ),
@@ -145,7 +153,18 @@ fn timeout_msg_hash() {
 
     let mut hasher = HasherType::new();
     hasher.update(tmo_msg.timeout.tminfo.round.0.as_bytes());
-    hasher.update(tmo_msg.timeout.tminfo.high_qc.info.vote.id.0.as_bytes());
+    hasher.update(
+        tmo_msg
+            .timeout
+            .tminfo
+            .high_qc
+            .info
+            .vote
+            .vote_info
+            .id
+            .0
+            .as_bytes(),
+    );
     hasher.update(tmo_msg.timeout.tminfo.high_qc.get_hash());
     unsafe {
         let sig_bytes = std::mem::transmute::<
@@ -176,14 +195,16 @@ fn proposal_msg_hash() {
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
-            vote: VoteInfo {
-                id: BlockId(Hash([0x00_u8; 32])),
-                round: Round(0),
-                parent_id: BlockId(Hash([0x00_u8; 32])),
-                parent_round: Round(0),
-                seq_num: SeqNum(0),
+            vote: Vote {
+                vote_info: VoteInfo {
+                    id: BlockId(Hash([0x00_u8; 32])),
+                    round: Round(0),
+                    parent_id: BlockId(Hash([0x00_u8; 32])),
+                    parent_round: Round(0),
+                    seq_num: SeqNum(0),
+                },
+                ledger_commit_info: CommitResult::NoCommit,
             },
-            ledger_commit: LedgerCommitInfo::default(),
         },
         MockSignatures::with_pubkeys(&[]),
     );
@@ -238,9 +259,9 @@ fn max_high_qc() {
     assert_eq!(tc.max_round(), Round(3));
 }
 
-#[test_case(None ; "None commit_state")]
-#[test_case(Some(Default::default()) ; "Some commit_state")]
-fn vote_msg_hash(cs: Option<Hash>) {
+#[test_case(CommitResult::NoCommit ; "None commit_state")]
+#[test_case(CommitResult::Commit ; "Some commit_state")]
+fn vote_msg_hash(cs: CommitResult) {
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: Round(0),
@@ -248,26 +269,17 @@ fn vote_msg_hash(cs: Option<Hash>) {
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let vi_hash = HasherType::hash_object(&vi);
-
-    let lci = LedgerCommitInfo {
-        commit_state_hash: cs,
-        vote_info_hash: vi_hash,
-    };
 
     let v = Vote {
         vote_info: vi,
-        ledger_commit_info: lci,
+        ledger_commit_info: cs,
     };
 
     let certkey = get_certificate_key::<SignatureCollectionType>(7);
     let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
 
     let mut hasher = HasherType::new();
-    hasher.update(vi_hash);
-    if let Some(cs) = cs {
-        hasher.update(cs);
-    }
+    v.hash(&mut hasher);
     unsafe {
         let sig_bytes = std::mem::transmute::<
             <SignatureCollectionType as SignatureCollection>::SignatureType,

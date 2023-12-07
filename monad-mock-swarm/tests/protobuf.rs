@@ -4,7 +4,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     bls::BlsSignatureCollection,
-    ledger::LedgerCommitInfo,
+    ledger::CommitResult,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, TransactionHashList},
     voting::{Vote, VoteInfo},
@@ -52,13 +52,9 @@ fn test_consensus_message_event_vote_multisig() {
         parent_round: Round(2),
         seq_num: SeqNum(0),
     };
-    let lci: LedgerCommitInfo = LedgerCommitInfo {
-        commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32]),
-    };
     let vote = Vote {
         vote_info: vi,
-        ledger_commit_info: lci,
+        ledger_commit_info: CommitResult::Commit,
     };
 
     let votemsg: ConsensusMessage<SignatureCollectionType> =

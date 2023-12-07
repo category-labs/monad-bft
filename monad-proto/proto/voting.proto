@@ -15,5 +15,8 @@ message ProtoVoteInfo {
 
 message ProtoVote {
   ProtoVoteInfo vote_info = 1;
-  monad_proto.ledger.ProtoLedgerCommitInfo ledger_commit_info = 2;
+  oneof ledger_commit_info {
+    monad_proto.ledger.ProtoNoCommit no_commit = 2;
+    monad_proto.ledger.ProtoCommit commit = 3;
+  }
 }
