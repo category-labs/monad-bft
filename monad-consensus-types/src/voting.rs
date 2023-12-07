@@ -44,6 +44,7 @@ impl std::fmt::Debug for Vote {
 
 impl Hashable for Vote {
     fn hash(&self, state: &mut impl Hasher) {
+        self.vote_info.hash(state);
         self.ledger_commit_info.hash(state)
     }
 }
@@ -83,11 +84,9 @@ impl Hashable for VoteInfo {
 mod test {
     use monad_crypto::hasher::{Hash, Hasher, HasherType};
     use monad_types::{BlockId, Round, SeqNum};
-    use test_case::test_case;
     use zerocopy::AsBytes;
 
     use super::VoteInfo;
-    use crate::{ledger::LedgerCommitInfo, voting::Vote};
 
     #[test]
     fn voteinfo_hash() {
@@ -108,41 +107,6 @@ mod test {
 
         let h1 = hasher.hash();
         let h2 = HasherType::hash_object(&vi);
-
-        assert_eq!(h1, h2);
-    }
-
-    #[test_case(None ; "None commit_state")]
-    #[test_case(Some(Default::default()) ; "Some commit_state")]
-    fn vote_hash(cs: Option<Hash>) {
-        let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(0),
-            parent_id: BlockId(Hash([0x00_u8; 32])),
-            parent_round: Round(0),
-            seq_num: SeqNum(0),
-        };
-
-        let vi_hash = HasherType::hash_object(&vi);
-
-        let lci = LedgerCommitInfo {
-            commit_state_hash: cs,
-            vote_info_hash: vi_hash,
-        };
-
-        let v = Vote {
-            vote_info: vi,
-            ledger_commit_info: lci,
-        };
-
-        let mut hasher = HasherType::new();
-        hasher.update(vi_hash);
-        if let Some(cs) = cs {
-            hasher.update(cs);
-        }
-
-        let h1 = hasher.hash();
-        let h2 = HasherType::hash_object(&v);
 
         assert_eq!(h1, h2);
     }

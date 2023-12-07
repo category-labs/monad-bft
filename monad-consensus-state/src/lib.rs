@@ -620,14 +620,14 @@ where
 
         self.high_qc = qc.clone();
         let mut cmds = Vec::new();
-        if qc.info.ledger_commit.commit_state_hash.is_some()
+        if qc.info.vote.ledger_commit_info.commit_state_hash.is_some()
             && self
                 .pending_block_tree
-                .path_to_root(&qc.info.vote.parent_id)
+                .path_to_root(&qc.info.vote.vote_info.parent_id)
         {
             let blocks_to_commit = self
                 .pending_block_tree
-                .prune(&qc.info.vote.parent_id)
+                .prune(&qc.info.vote.vote_info.parent_id)
                 .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
 
             if let Some(b) = blocks_to_commit.last() {
@@ -684,8 +684,8 @@ where
         let round = self.pacemaker.get_current_round();
         let high_qc = self.high_qc.clone();
 
-        let parent_bid = high_qc.info.vote.id;
-        let seq_num_qc = high_qc.info.vote.seq_num;
+        let parent_bid = high_qc.info.vote.vote_info.id;
+        let seq_num_qc = high_qc.info.vote.vote_info.seq_num;
         let proposed_seq_num = seq_num_qc + SeqNum(1);
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
             ConsensusAction::Propose(h, pending_blocktree_txs) => {
@@ -904,7 +904,7 @@ mod test {
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
-        assert_eq!(state.high_qc.info.vote.round, Round(0));
+        assert_eq!(state.high_qc.info.vote.vote_info.round, Round(0));
 
         let expected_qc_high_round = Round(5);
 
@@ -944,7 +944,7 @@ mod test {
         );
 
         // less than 2f+1, so expect not locked
-        assert_eq!(state.high_qc.info.vote.round, Round(0));
+        assert_eq!(state.high_qc.info.vote.vote_info.round, Round(0));
 
         state.handle_vote_message::<HasherType, _, _>(
             *v3.author(),
@@ -953,7 +953,10 @@ mod test {
             &valmap,
             &election,
         );
-        assert_eq!(state.high_qc.info.vote.round, expected_qc_high_round);
+        assert_eq!(
+            state.high_qc.info.vote.vote_info.round,
+            expected_qc_high_round
+        );
 
         logs_assert(|lines: &[&str]| {
             match lines
@@ -1584,7 +1587,7 @@ mod test {
             Default::default(),
             ExecutionArtifacts::zero(),
         );
-        assert_eq!(p3.block.qc.info.vote.round, Round(1));
+        assert_eq!(p3.block.qc.info.vote.vote_info.round, Round(1));
         assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
         let p3_cmds = state.handle_proposal_message_full::<HasherType, _, _>(
@@ -1781,7 +1784,7 @@ mod test {
         }
         assert_ne!(routing_target, NodeId(get_key(100).pubkey()));
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
-        assert_eq!(second_state.high_qc.info.vote, votes[0].vote.vote_info);
+        assert_eq!(second_state.high_qc.info.vote, votes[0].vote);
 
         // use the correct proposal gen to make next proposal and send it to second_state
         // this should cause it to emit the RequestBlockSync Message because the the QC parent

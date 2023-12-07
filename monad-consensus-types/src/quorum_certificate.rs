@@ -31,16 +31,12 @@ impl<T: std::fmt::Debug> std::fmt::Debug for QuorumCertificate<T> {
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct QcInfo {
-    pub vote: VoteInfo,
-    pub ledger_commit: LedgerCommitInfo,
+    pub vote: Vote,
 }
 
 impl std::fmt::Debug for QcInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QcInfo")
-            .field("v", &self.vote)
-            .field("lc", &self.ledger_commit)
-            .finish()
+        f.debug_struct("QcInfo").field("v", &self.vote).finish()
     }
 }
 
@@ -49,7 +45,7 @@ pub struct Rank(pub QcInfo);
 
 impl PartialEq for Rank {
     fn eq(&self, other: &Self) -> bool {
-        self.0.vote.round == other.0.vote.round
+        self.0.vote.vote_info.round == other.0.vote.vote_info.round
     }
 }
 
@@ -63,7 +59,12 @@ impl PartialOrd for Rank {
 
 impl Ord for Rank {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.vote.round.0.cmp(&other.0.vote.round.0)
+        self.0
+            .vote
+            .vote_info
+            .round
+            .0
+            .cmp(&other.0.vote.vote_info.round.0)
     }
 }
 
@@ -104,8 +105,10 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
 
         QuorumCertificate {
             info: QcInfo {
-                vote: vote_info,
-                ledger_commit: lci,
+                vote: Vote {
+                    vote_info,
+                    ledger_commit_info: lci,
+                },
             },
             signatures: sigs,
             signature_hash: sig_hash,
@@ -123,8 +126,10 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
 
         QuorumCertificate {
             info: QcInfo {
-                vote: vote_info,
-                ledger_commit: lci,
+                vote: Vote {
+                    vote_info,
+                    ledger_commit_info: lci,
+                },
             },
             signatures: genesis_signatures,
             signature_hash: sig_hash,
@@ -140,7 +145,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     ) -> HashSet<NodeId> {
         // TODO-3, consider caching this qc_msg hash in qc for performance in future
-        let qc_msg = H::hash_object(&self.info.ledger_commit);
+        let qc_msg = H::hash_object(&self.info.vote);
         self.signatures
             .get_participants(validator_mapping, qc_msg.as_ref())
     }

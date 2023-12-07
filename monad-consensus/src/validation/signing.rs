@@ -225,13 +225,14 @@ where
         self.valid_seq_num()?;
         well_formed(
             self.obj.block.round,
-            self.obj.block.qc.info.vote.round,
+            self.obj.block.qc.info.vote.vote_info.round,
             &self.obj.last_round_tc,
         )
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.seq_num + SeqNum(1) {
+        if self.obj.block.get_seq_num() != self.obj.block.qc.info.vote.vote_info.seq_num + SeqNum(1)
+        {
             return Err(Error::InvalidSeqNum);
         }
         Ok(())
@@ -295,7 +296,7 @@ where
     fn well_formed_timeout(&self) -> Result<(), Error> {
         well_formed(
             self.obj.timeout.tminfo.round,
-            self.obj.timeout.tminfo.high_qc.info.vote.round,
+            self.obj.timeout.tminfo.high_qc.info.vote.vote_info.round,
             &self.obj.timeout.last_round_tc,
         )
     }
@@ -425,12 +426,14 @@ where
     H: Hasher,
     VT: ValidatorSetType,
 {
-    if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
-        // TODO-3: collect author for evidence?
-        return Err(Error::InvalidSignature);
+    if let Some(commit_state_hash) = qc.info.vote.ledger_commit_info.commit_state_hash {
+        if qc.info.vote.vote_info.id.0 != commit_state_hash {
+            // TODO-3: collect author for evidence?
+            return Err(Error::InvalidSignature);
+        }
     }
 
-    let qc_msg = H::hash_object(&qc.info.ledger_commit);
+    let qc_msg = H::hash_object(&qc.info.vote);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
@@ -620,8 +623,10 @@ mod test {
 
         let qc = QuorumCertificate::new::<HasherType>(
             QcInfo {
-                vote: vi2,
-                ledger_commit: lci,
+                vote: Vote {
+                    vote_info: vi2,
+                    ledger_commit_info: lci,
+                },
             },
             sigs,
         );
@@ -640,8 +645,11 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
-
         let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let vote = Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        };
 
         let keypairs = create_keys(2);
         let vlist = vec![
@@ -660,20 +668,14 @@ mod test {
 
         let vmap = ValidatorMapping::new(voting_identity);
 
-        let msg = HasherType::hash_object(&lci);
+        let msg = HasherType::hash_object(&vote);
         let s =< <SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg.as_ref(), &cert_keys[0]);
 
         let sigs = vec![(NodeId(keypairs[0].pubkey()), s)];
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
-            QcInfo {
-                vote: vi,
-                ledger_commit: lci,
-            },
-            sig_col,
-        );
+        let qc = QuorumCertificate::new::<HasherType>(QcInfo { vote }, sig_col);
 
         assert!(matches!(
             verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &vmap, &qc),
@@ -755,8 +757,10 @@ mod test {
 
         let qc = QuorumCertificate::new::<HasherType>(
             QcInfo {
-                vote: vi,
-                ledger_commit: lci,
+                vote: Vote {
+                    vote_info: vi,
+                    ledger_commit_info: lci,
+                },
             },
             sig_col,
         );
@@ -812,8 +816,10 @@ mod test {
 
         let qc = QuorumCertificate::new::<HasherType>(
             QcInfo {
-                vote: vi,
-                ledger_commit: lci,
+                vote: Vote {
+                    vote_info: vi,
+                    ledger_commit_info: lci,
+                },
             },
             sig_col,
         );
@@ -861,19 +867,18 @@ mod test {
 
         let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeypair);
 
-        let expected_vote_info_hash = vm.vote.ledger_commit_info.vote_info_hash;
+        let expected_vote_hash = HasherType::hash_object(&v);
 
         let svm = Verified::<SignatureType, _>::new::<HasherType>(vm, &keypair);
-        let (author, signature, orig_vm) = svm.destructure();
+        let (author, signature, _) = svm.destructure();
         let msg = HasherType::hash_object(&vm);
         assert_eq!(
             signature.recover_pubkey(msg.as_ref()).unwrap(),
             keypair.pubkey()
         );
         assert_eq!(author, NodeId(keypair.pubkey()));
-        assert_eq!(
-            expected_vote_info_hash,
-            orig_vm.vote.ledger_commit_info.vote_info_hash
-        );
+
+        let vote_hash = HasherType::hash_object(&vm.vote);
+        assert_eq!(expected_vote_hash, vote_hash);
     }
 }

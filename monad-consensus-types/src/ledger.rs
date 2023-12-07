@@ -2,10 +2,14 @@ use monad_crypto::hasher::{Hash, Hashable, Hasher};
 
 use crate::voting::VoteInfo;
 
+/// Data related to blocks which satisfy the commit condition
+/// Used in votes to be voted on by Nodes
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct LedgerCommitInfo {
+    /// Hash related to a block which passes the commit condition
+    /// In our case, will be the BlockId of a block which passes the commit condition
+    /// Is None if no commit is expected to happen when creating a QC from this vote
     pub commit_state_hash: Option<Hash>,
-    pub vote_info_hash: Hash,
 }
 
 impl std::fmt::Debug for LedgerCommitInfo {
@@ -19,30 +23,24 @@ impl std::fmt::Debug for LedgerCommitInfo {
             None => write!(f, "commit: []"),
         }?;
 
-        write!(
-            f,
-            "vote: {:02x}{:02x}..{:02x}{:02x}",
-            self.vote_info_hash[0],
-            self.vote_info_hash[1],
-            self.vote_info_hash[30],
-            self.vote_info_hash[31]
-        )?;
         Ok(())
     }
 }
 
 impl LedgerCommitInfo {
     pub fn new<H: Hasher>(commit_state_hash: Option<Hash>, vote_info: &VoteInfo) -> Self {
+        LedgerCommitInfo { commit_state_hash }
+    }
+
+    pub fn empty() -> Self {
         LedgerCommitInfo {
-            commit_state_hash,
-            vote_info_hash: H::hash_object(vote_info),
+            commit_state_hash: None,
         }
     }
 }
 
 impl Hashable for LedgerCommitInfo {
     fn hash(&self, state: &mut impl Hasher) {
-        state.update(self.vote_info_hash);
         if let Some(x) = self.commit_state_hash.as_ref() {
             state.update(x);
         }

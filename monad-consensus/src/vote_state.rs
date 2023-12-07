@@ -85,9 +85,11 @@ where
             return (None, ret_commands);
         }
 
-        if H::hash_object(&vote.vote_info) != vote.ledger_commit_info.vote_info_hash {
-            // TODO: collect author for evidence?
-            return (None, ret_commands);
+        if let Some(commit_state_hash) = vote.ledger_commit_info.commit_state_hash {
+            if vote.vote_info.id.0 != commit_state_hash {
+                // TODO: collect author for evidence?
+                return (None, ret_commands);
+            }
         }
 
         let vote_idx = H::hash_object(&vote);
@@ -114,13 +116,7 @@ where
                 vote_idx.as_ref(),
             ) {
                 Ok(sigcol) => {
-                    let qc = QuorumCertificate::<SCT>::new::<H>(
-                        QcInfo {
-                            vote: vote.vote_info,
-                            ledger_commit: vote.ledger_commit_info,
-                        },
-                        sigcol,
-                    );
+                    let qc = QuorumCertificate::<SCT>::new::<H>(QcInfo { vote }, sigcol);
                     // we update self.earliest round so that we no longer will build a QC for
                     // current round
                     self.earliest_round = round + Round(1);
@@ -335,7 +331,7 @@ mod test {
         let vmap = ValidatorMapping::new(vec![(node_id, cert_key.pubkey())]);
 
         let mut vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
+            id: BlockId(Hash([0xad_u8; 32])),
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
