@@ -5,7 +5,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    voting::{ValidatorMapping, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::hasher::{Hash, Hasher, HasherType};
 use monad_eth_types::EthAddress;
@@ -75,10 +75,12 @@ pub fn setup_block<SCT: SignatureCollection>(
     let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 
     let qcinfo = QcInfo {
-        vote: vi,
-        ledger_commit: lci,
+        vote: Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        },
     };
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
 
     let mut sigs = Vec::new();
     for certkey in certkeys.iter() {

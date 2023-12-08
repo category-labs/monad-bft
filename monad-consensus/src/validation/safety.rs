@@ -75,7 +75,7 @@ impl Safety {
         high_qc: QuorumCertificate<SCT>,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<TimeoutInfo<SCT>> {
-        let qc_round = high_qc.info.vote.round;
+        let qc_round = high_qc.info.vote.vote_info.round;
         if self.safe_to_timeout(round, qc_round, last_tc) {
             self.update_highest_vote_round(round);
             Some(TimeoutInfo { round, high_qc })
@@ -89,7 +89,7 @@ impl Safety {
         block: &Block<SCT>,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<Vote> {
-        let qc_round = block.qc.info.vote.round;
+        let qc_round = block.qc.info.vote.vote_info.round;
         if self.safe_to_vote(block.round, qc_round, last_tc) {
             self.update_highest_qc_round(qc_round);
             self.update_highest_vote_round(block.round);
@@ -97,13 +97,13 @@ impl Safety {
             let vote_info = VoteInfo {
                 id: block.get_id(),
                 round: block.round,
-                parent_id: block.qc.info.vote.id,
-                parent_round: block.qc.info.vote.round,
+                parent_id: block.qc.info.vote.vote_info.id,
+                parent_round: block.qc.info.vote.vote_info.round,
                 seq_num: block.get_seq_num(),
             };
 
             let commit_hash = if commit_condition(block.round, block.qc.info) {
-                Some(H::hash_object(block))
+                Some(block.get_id().0)
             } else {
                 None
             };
@@ -136,5 +136,5 @@ fn safe_to_extend<SCT>(
 }
 
 fn commit_condition(block_round: Round, qc: QcInfo) -> bool {
-    consecutive(block_round, qc.vote.round)
+    consecutive(block_round, qc.vote.vote_info.round)
 }

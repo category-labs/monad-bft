@@ -639,7 +639,7 @@ mod test {
     #[test]
     fn test_qc_verify_insufficient_stake() {
         let vi = VoteInfo {
-            id: BlockId(Hash([0x00_u8; 32])),
+            id: BlockId(Hash([0xad_u8; 32])),
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),

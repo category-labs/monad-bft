@@ -5,7 +5,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::Error,
-    voting::{ValidatorMapping, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
     hasher::{Hash, HasherType},
@@ -37,8 +37,13 @@ fn setup_block(
     };
     let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
         QcInfo {
-            vote: vi,
-            ledger_commit: LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi),
+            vote: Vote {
+                vote_info: vi,
+                ledger_commit_info: LedgerCommitInfo::new::<HasherType>(
+                    Some(Default::default()),
+                    &vi,
+                ),
+            },
         },
         MockSignatures::with_pubkeys(signers),
     );

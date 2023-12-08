@@ -273,19 +273,19 @@ impl<T: SignatureCollection> BlockTree<T> {
                     .expect("Rooted blocktree doesn't have the corresponding root block")
                     .get_block()
                     .get_round()
-                    >= qc.info.vote.round
+                    >= qc.info.vote.vote_info.round
                 {
                     return None;
                 }
             }
             RootKind::Unrooted(r) => {
-                if r >= qc.info.vote.round {
+                if r >= qc.info.vote.vote_info.round {
                     return None;
                 }
             }
         };
 
-        let mut bid = &qc.info.vote.id;
+        let mut bid = &qc.info.vote.vote_info.id;
         let mut current_qc = qc;
         loop {
             let Some(i) = self.tree.get(bid) else {
@@ -403,7 +403,7 @@ mod test {
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         transaction_validator::MockValidator,
-        voting::VoteInfo,
+        voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
         hasher::{Hash, HasherType},
@@ -440,14 +440,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -472,8 +474,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -498,8 +502,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -524,8 +530,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v3,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v3,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -550,8 +558,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v4,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -576,8 +586,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v5,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v5,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -602,8 +614,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v6,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v6,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -628,8 +642,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v7,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v7,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -726,8 +742,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v8,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v8,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -757,14 +775,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -789,8 +809,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -815,8 +837,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -864,14 +888,16 @@ mod test {
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -902,8 +928,10 @@ mod test {
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -926,8 +954,10 @@ mod test {
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -958,8 +988,10 @@ mod test {
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1009,14 +1041,16 @@ mod test {
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1047,8 +1081,10 @@ mod test {
                 },
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1089,14 +1125,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1121,8 +1159,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1147,8 +1187,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1165,8 +1207,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1183,8 +1227,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1249,14 +1295,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1281,8 +1329,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v4,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1307,8 +1357,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v5,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v5,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1333,8 +1385,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v6,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v6,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1383,14 +1437,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1415,8 +1471,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1441,8 +1499,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v3,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v3,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1467,8 +1527,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v4,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1493,8 +1555,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v5,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v5,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1519,8 +1583,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v6,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v6,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1577,14 +1643,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1609,8 +1677,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1635,8 +1705,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v4,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1676,14 +1748,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1708,8 +1782,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v4,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v4,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1734,8 +1810,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v5,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v5,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1776,14 +1854,16 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
+                        vote: Vote {
+                            vote_info: VoteInfo {
+                                id: BlockId(Hash([0x00_u8; 32])),
+                                round: Round(0),
+                                parent_id: BlockId(Hash([0x00_u8; 32])),
+                                parent_round: Round(0),
+                                seq_num: SeqNum(0),
+                            },
+                            ledger_commit_info: LedgerCommitInfo::empty(),
                         },
-                        ledger_commit: LedgerCommitInfo::default(),
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1808,8 +1888,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v1,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v1,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1834,8 +1916,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1852,8 +1936,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),
@@ -1870,8 +1956,10 @@ mod test {
                 &payload,
                 &QC::new::<HasherType>(
                     QcInfo {
-                        vote: v2,
-                        ledger_commit: LedgerCommitInfo::default(),
+                        vote: Vote {
+                            vote_info: v2,
+                            ledger_commit_info: LedgerCommitInfo::empty(),
+                        },
                     },
                     MockSignatures::with_pubkeys(&[]),
                 ),

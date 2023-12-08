@@ -4,7 +4,7 @@ use crate::voting::VoteInfo;
 
 /// Data related to blocks which satisfy the commit condition
 /// Used in votes to be voted on by Nodes
-#[derive(Copy, Clone, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct LedgerCommitInfo {
     /// Hash related to a block which passes the commit condition
     /// In our case, will be the BlockId of a block which passes the commit condition

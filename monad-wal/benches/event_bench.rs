@@ -116,7 +116,6 @@ fn bench_vote(c: &mut Criterion) {
     };
     let lci = LedgerCommitInfo {
         commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32]),
     };
 
     let v = Vote {
@@ -163,11 +162,13 @@ fn bench_timeout(c: &mut Criterion) {
     let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 
     let qcinfo = QcInfo {
-        vote: vi,
-        ledger_commit: lci,
+        vote: Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        },
     };
 
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
 
     let mut sigs = Vec::new();
     for (key, cert_key) in keypairs.iter().zip(cert_keys.iter()) {

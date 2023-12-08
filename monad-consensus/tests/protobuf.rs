@@ -130,8 +130,7 @@ test_all_combination!(test_vote_message, |num_keys| {
         seq_num: SeqNum(0),
     };
     let lci = LedgerCommitInfo {
-        commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32]),
+        commit_state_hash: Some(Hash([42_u8; 32])),
     };
 
     let vote = Vote {
@@ -172,11 +171,13 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
 
     let qcinfo = QcInfo {
-        vote: vi,
-        ledger_commit: lci,
+        vote: Vote {
+            vote_info: vi,
+            ledger_commit_info: lci,
+        },
     };
 
-    let qcinfo_hash = HasherType::hash_object(&qcinfo.ledger_commit);
+    let qcinfo_hash = HasherType::hash_object(&qcinfo.vote);
 
     let mut sigs = Vec::new();
 

@@ -56,8 +56,7 @@ fn test_consensus_message_event_vote_multisig() {
         seq_num: SeqNum(0),
     };
     let lci: LedgerCommitInfo = LedgerCommitInfo {
-        commit_state_hash: None,
-        vote_info_hash: Hash([42_u8; 32]),
+        commit_state_hash: Some(Hash([42_u8; 32])),
     };
     let vote = Vote {
         vote_info: vi,

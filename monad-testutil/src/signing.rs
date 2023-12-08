@@ -13,7 +13,7 @@ use monad_consensus_types::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     transaction_validator::TransactionValidator,
-    voting::ValidatorMapping,
+    voting::{ValidatorMapping, Vote},
 };
 use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
@@ -108,7 +108,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         hasher.update(b.payload.header.logs_bloom);
         hasher.update(b.payload.header.gas_used);
         hasher.update(b.payload.seq_num.as_bytes());
-        hasher.update(b.qc.info.vote.id.0);
+        hasher.update(b.qc.info.vote.vote_info.id.0);
         hasher.update(b.payload.beneficiary.0.as_bytes());
         hasher.update(b.payload.randao_reveal.0.as_bytes());
         hasher.update(b.qc.signatures.get_hash::<HasherType>());
@@ -181,8 +181,10 @@ where
         &genesis_prime_qc,
     );
 
-    let genesis_lci = LedgerCommitInfo::new::<H>(None, &genesis_vote_info(genesis_block.get_id()));
-    let msg = H::hash_object(&genesis_lci);
+    let msg = H::hash_object(&Vote {
+        vote_info: genesis_vote_info(genesis_block.get_id()),
+        ledger_commit_info: LedgerCommitInfo::empty(),
+    });
 
     let mut sigs = Vec::new();
     for (node_id, k) in keys {

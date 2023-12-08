@@ -56,14 +56,16 @@ pub mod test_tool {
     pub fn fake_qc() -> QuorumCertificate<SC> {
         QC::new::<H>(
             QcInfo {
-                vote: VoteInfo {
-                    id: BlockId(Hash([0x00_u8; 32])),
-                    round: Round(0),
-                    parent_id: BlockId(Hash([0x00_u8; 32])),
-                    parent_round: Round(0),
-                    seq_num: SeqNum(0),
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x00_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x00_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit_info: LedgerCommitInfo::empty(),
                 },
-                ledger_commit: LedgerCommitInfo::default(),
             },
             MultiSig { sigs: vec![] },
         )

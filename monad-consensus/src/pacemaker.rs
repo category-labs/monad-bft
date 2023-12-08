@@ -134,7 +134,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             .map(|timeout_info| {
                 well_formed(
                     timeout_info.round,
-                    timeout_info.high_qc.info.vote.round,
+                    timeout_info.high_qc.info.vote.vote_info.round,
                     &self.last_round_tc,
                 )
                 .expect("invalid timeout");
@@ -268,11 +268,11 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         qc: &QuorumCertificate<SCT>,
     ) -> Option<PacemakerCommand<SCT>> {
-        if qc.info.vote.round < self.current_round {
+        if qc.info.vote.vote_info.round < self.current_round {
             return None;
         }
         self.last_round_tc = None;
-        Some(self.enter_round(qc.info.vote.round + Round(1)))
+        Some(self.enter_round(qc.info.vote.vote_info.round + Round(1)))
     }
 }
 
@@ -321,8 +321,10 @@ mod test {
         let ledger_commit_info = LedgerCommitInfo::new::<HasherType>(None, &vote_info);
 
         let qc_info = QcInfo {
-            vote: vote_info,
-            ledger_commit: ledger_commit_info,
+            vote: Vote {
+                vote_info,
+                ledger_commit_info,
+            },
         };
 
         let vote = Vote {
