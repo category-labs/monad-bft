@@ -51,7 +51,6 @@ fn two_nodes_quic() {
             all_peers: all_peers.iter().cloned().collect(),
             me,
 
-            tls_key_der: Vec::new(),
             master_seed: 7,
 
             gossip: MockGossipConfig { all_peers }.build(),
@@ -86,7 +85,6 @@ fn two_nodes_quic_bw() {
             all_peers: all_peers.iter().cloned().collect(),
             me,
 
-            tls_key_der: Vec::new(),
             master_seed: 7,
 
             gossip: MockGossipConfig { all_peers }.build(),

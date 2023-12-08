@@ -4310,10 +4310,12 @@ dependencies = [
  "hex",
  "monad-proto",
  "rcgen 0.11.3",
+ "ring 0.17.6",
  "rustls 0.21.9",
  "secp256k1 0.26.0",
  "sha2 0.10.8",
  "tiny-keccak",
+ "x509-parser 0.15.1",
  "zerocopy 0.6.5",
  "zeroize",
 ]
@@ -4563,7 +4565,6 @@ dependencies = [
  "rand 0.8.5",
  "tokio",
  "tracing",
- "x509-parser 0.15.1",
 ]
 
 [[package]]

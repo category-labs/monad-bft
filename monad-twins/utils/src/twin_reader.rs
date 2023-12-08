@@ -85,9 +85,11 @@ where
             state_config: MonadConfig {
                 transaction_validator: self.state_config.transaction_validator.clone(),
                 validators: self.state_config.validators.clone(),
-                key: KeyPair::from_bytes(self.key_secret).unwrap(),
-                certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(self.certkey_secret)
-                    .unwrap(),
+                key: KeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
+                certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(
+                    &mut self.certkey_secret.clone(),
+                )
+                .unwrap(),
                 beneficiary: self.state_config.beneficiary,
                 delta: self.state_config.delta,
                 consensus_config: self.state_config.consensus_config.clone(),
@@ -199,13 +201,13 @@ where
     let keys = key_secrets
         .iter()
         .copied()
-        .map(KeyPair::from_bytes)
+        .map(|mut keypair| KeyPair::from_bytes(&mut keypair))
         .collect::<Result<Vec<_>, _>>()
         .expect("secp secret invalid");
     let certkeys: Vec<_> = certkey_secrets
         .iter()
         .copied()
-        .map(CertificateKeyPair::from_bytes)
+        .map(|mut certkey| CertificateKeyPair::from_bytes(&mut certkey))
         .collect::<Result<Vec<_>, _>>()
         .expect("secret is invalid when convert to cert-key");
 

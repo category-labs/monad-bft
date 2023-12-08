@@ -69,8 +69,7 @@ fn msg_hash(msg: &[u8]) -> secp256k1::Message {
 }
 
 impl KeyPair {
-    pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, Error> {
-        let secret = secret.as_mut();
+    pub fn from_bytes(secret: &mut [u8]) -> Result<Self, Error> {
         let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
             .map(Self)
             .map_err(Error);

@@ -12,8 +12,8 @@ use std::{
 
 use futures::{future::BoxFuture, stream::SelectAll, FutureExt, Stream, StreamExt};
 use monad_crypto::{
-    rustls::{self, UnsafeTlsVerifier},
-    secp256k1::PubKey,
+    rustls::{self, TlsVerifier},
+    secp256k1::KeyPair,
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
@@ -55,7 +55,7 @@ pub trait QuinnConfig {
     fn client(&self) -> Arc<dyn quinn_proto::crypto::ClientConfig>;
     fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig>;
 
-    fn remote_peer_id(connection: &quinn::Connection) -> Result<NodeId, Box<dyn Error>>;
+    fn remote_peer_id(connection: &quinn::Connection) -> NodeId;
 }
 
 pub struct ServiceConfig<QC> {
@@ -249,7 +249,7 @@ where
                                                 )?
                                                 .await?;
 
-                                            if QC::remote_peer_id(&connection)? != to {
+                                            if QC::remote_peer_id(&connection) != to {
                                                 todo!("unexpected peer_id, return and retry?");
                                             }
 
@@ -296,7 +296,7 @@ impl InboundConnection {
     fn pending<QC: QuinnConfig>(connecting: Connecting) -> Self {
         let fut = async move {
             let connection = connecting.await?;
-            let peer_id = QC::remote_peer_id(&connection)?;
+            let peer_id = QC::remote_peer_id(&connection);
 
             let stream = connection.accept_uni().await?;
             Ok((peer_id, stream))
@@ -363,15 +363,15 @@ where
 
 type OutboundConnectionError = Box<dyn Error>;
 
-pub struct UnsafeNoAuthQuinnConfig {
-    me: NodeId,
+pub struct SafeQuinnConfig {
     transport: Arc<TransportConfig>,
     client: Arc<dyn quinn_proto::crypto::ClientConfig>,
+    server: Arc<dyn quinn_proto::crypto::ServerConfig>,
 }
 
-impl UnsafeNoAuthQuinnConfig {
+impl SafeQuinnConfig {
     /// bandwidth_Mbps is in Megabit/s
-    pub fn new(me: NodeId, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
+    pub fn new(identity: &KeyPair, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
         let mut transport_config = TransportConfig::default();
         let bandwidth_Bps = bandwidth_Mbps as u64 * 125_000;
         let rwnd = bandwidth_Bps * max_rtt.as_millis() as u64 / 1000;
@@ -386,14 +386,14 @@ impl UnsafeNoAuthQuinnConfig {
                 cubic_config
             }));
         Self {
-            me,
-            client: Arc::new(UnsafeTlsVerifier::make_client_config(me.0.bytes(), &[])),
             transport: Arc::new(transport_config),
+            client: Arc::new(TlsVerifier::make_client_config(identity)),
+            server: Arc::new(TlsVerifier::make_server_config(identity)),
         }
     }
 }
 
-impl QuinnConfig for UnsafeNoAuthQuinnConfig {
+impl QuinnConfig for SafeQuinnConfig {
     fn transport(&self) -> Arc<TransportConfig> {
         self.transport.clone()
     }
@@ -403,13 +403,10 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
     }
 
     fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig> {
-        Arc::new(UnsafeTlsVerifier::make_server_config(
-            self.me.0.bytes(),
-            &[],
-        ))
+        self.server.clone()
     }
 
-    fn remote_peer_id(connection: &quinn::Connection) -> Result<NodeId, Box<dyn Error>> {
+    fn remote_peer_id(connection: &quinn::Connection) -> NodeId {
         let identity = connection
             .peer_identity()
             .expect("all quic sessions have TLS identity");
@@ -417,19 +414,10 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
             .downcast()
             .expect("always is rustls cert for default quinn");
 
-        let raw_cert = certificates
-            .first()
-            .ok_or("no attached certificates".to_owned())?;
-
-        use x509_parser::prelude::*;
-        let (_, cert) = X509Certificate::from_der(&raw_cert.0)?;
-
-        let extension = cert
-            .extensions()
-            .first()
-            .ok_or("no extensions".to_owned())?;
-
-        let peer_id = NodeId(PubKey::from_slice(extension.value)?);
-        Ok(peer_id)
+        let raw_cert = certificates.first().expect("TLS verifier should have cert");
+        let cert = TlsVerifier::parse_cert(raw_cert).expect("cert must be x509 at this point");
+        let pubkey =
+            TlsVerifier::recover_node_pubkey(&cert).expect("must have valid pubkey at this point");
+        NodeId(pubkey)
     }
 }

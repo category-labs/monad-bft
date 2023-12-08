@@ -45,7 +45,6 @@ fn setup() -> (
         zero_instant,
         all_peers: all_peers.iter().cloned().collect(),
         me,
-        tls_key_der: Vec::new(),
         master_seed: 7,
         gossip: MockGossipConfig { all_peers }.build(),
     };

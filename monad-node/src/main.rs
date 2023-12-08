@@ -10,12 +10,12 @@ use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
 };
-use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
-use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
 use monad_types::{NodeId, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
@@ -77,7 +77,7 @@ fn main() {
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router(
         node_state.config.network,
-        NodeId(node_state.identity.pubkey()),
+        &node_state.identity,
         &node_state.config.bootstrap.peers,
     )
     .await;
@@ -194,22 +194,22 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
 async fn build_router<M, OM>(
     network_config: NodeNetworkConfig,
-    me: NodeId,
+    identity: &KeyPair,
     peers: &[NodeBootstrapPeerConfig],
-) -> monad_quic::service::Service<UnsafeNoAuthQuinnConfig, MockGossip, M, OM>
+) -> monad_quic::service::Service<SafeQuinnConfig, MockGossip, M, OM>
 where
     M: Message,
 {
     monad_quic::service::Service::new(
         ServiceConfig {
             zero_instant: Instant::now(),
-            me,
+            me: NodeId(identity.pubkey()),
             server_address: generate_bind_address(
                 network_config.bind_address_host,
                 network_config.bind_address_port,
             ),
-            quinn_config: UnsafeNoAuthQuinnConfig::new(
-                me,
+            quinn_config: SafeQuinnConfig::new(
+                identity,
                 Duration::from_millis(network_config.max_rtt_ms),
                 network_config.max_mbps,
             ),

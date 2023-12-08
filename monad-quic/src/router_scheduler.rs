@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monad_crypto::rustls::UnsafeTlsVerifier;
+use monad_crypto::{rustls::TlsVerifier, secp256k1::KeyPair};
 use monad_gossip::{Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -24,7 +24,6 @@ pub struct QuicRouterSchedulerConfig<G> {
     pub all_peers: BTreeSet<NodeId>,
     pub me: NodeId,
 
-    pub tls_key_der: Vec<u8>,
     pub master_seed: u64,
 
     pub gossip: G,
@@ -72,6 +71,15 @@ where
             // TODO-1 reasonable initial window sizes
             Arc::new(config)
         };
+
+        // We can generate a random keypair here, because we  don't need to verify the sources of
+        // messages using the TLS baked into quic
+        let scratch_keypair = {
+            let mut seed = [0; 32];
+            rng.fill_bytes(&mut seed);
+            KeyPair::from_bytes(&mut seed).expect("valid keypair")
+        };
+
         let mut seed = [0; 32];
         rng.fill_bytes(&mut seed);
         let mut endpoint = quinn_proto::Endpoint::new(
@@ -79,10 +87,7 @@ where
             Some(Arc::new(
                 {
                     let mut server_config = quinn_proto::ServerConfig::with_crypto(Arc::new(
-                        UnsafeTlsVerifier::make_server_config(
-                            Vec::new(),
-                            config.tls_key_der.as_ref(),
-                        ),
+                        TlsVerifier::make_server_config(&scratch_keypair),
                     ));
                     server_config.transport_config(transport_config.clone());
                     server_config
@@ -105,9 +110,8 @@ where
                 SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000 + idx as u16));
             peer_ids.insert(*peer, sock_addr);
 
-            let mut client_config = ClientConfig::new(Arc::new(
-                UnsafeTlsVerifier::make_client_config(Vec::new(), config.tls_key_der.as_ref()),
-            ));
+            let mut client_config =
+                ClientConfig::new(Arc::new(TlsVerifier::make_client_config(&scratch_keypair)));
             client_config.transport_config(transport_config.clone());
 
             let (connection_handle, connection) = endpoint

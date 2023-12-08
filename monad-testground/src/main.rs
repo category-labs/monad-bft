@@ -28,7 +28,7 @@ use monad_crypto::{
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
-use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -327,8 +327,8 @@ where
                                 zero_instant: Instant::now(),
                                 me,
                                 server_address: address.parse().unwrap(),
-                                quinn_config: UnsafeNoAuthQuinnConfig::new(
-                                    me,
+                                quinn_config: SafeQuinnConfig::new(
+                                    &keypair,
                                     Duration::from_millis(*max_rtt_ms),
                                     *bandwidth_Mbps,
                                 ),

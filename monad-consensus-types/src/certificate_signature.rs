@@ -11,7 +11,7 @@ pub trait CertificateKeyPair: Send + Sized + Sync + 'static {
     type PubKeyType: std::cmp::Eq + std::fmt::Debug + std::hash::Hash + Copy + Send;
     type Error: std::error::Error + Send + Sync;
 
-    fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error>;
+    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error>;
     fn pubkey(&self) -> Self::PubKeyType;
 }
 
@@ -46,7 +46,7 @@ impl CertificateKeyPair for SecpKeyPair {
     type PubKeyType = SecpPubKey;
     type Error = SecpError;
 
-    fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error> {
+    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error> {
         Self::from_bytes(secret)
     }
 
@@ -133,7 +133,7 @@ impl CertificateKeyPair for BlsKeyPair {
     type PubKeyType = BlsPubKey;
     type Error = BlsError;
 
-    fn from_bytes(secret: impl AsMut<[u8]>) -> Result<Self, Self::Error> {
+    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error> {
         Self::from_bytes(secret)
     }
 

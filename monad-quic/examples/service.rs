@@ -12,7 +12,7 @@ use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
 use monad_executor_glue::{Identifiable, Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
-use monad_quic::service::{Service, ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_quic::service::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 
 #[derive(Parser, Debug)]
@@ -42,12 +42,16 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     );
     assert!(message_len >= 1);
     let num_peers = addresses.len() as u8;
-    let peers: Vec<NodeId> = (0..num_peers)
+    let keys: Vec<KeyPair> = (0..num_peers)
         .map(|idx| {
             let mut privkey: [u8; 32] = [1 + idx; 32];
-            let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-            NodeId(keypair.pubkey())
+            KeyPair::from_bytes(&mut privkey).unwrap()
         })
+        .collect();
+
+    let peers: Vec<NodeId> = keys
+        .iter()
+        .map(|keypair| NodeId(keypair.pubkey()))
         .collect();
 
     let known_addresses: HashMap<NodeId, SocketAddr> = peers
@@ -60,10 +64,10 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     const MAX_RTT: Duration = Duration::from_millis(110);
     const BANDWIDTH_Mbps: u16 = 1_000;
 
-    let mut services = peers
+    let mut services = keys
         .iter()
-        .copied()
-        .map(|me| {
+        .map(|key| {
+            let me = NodeId(key.pubkey());
             let server_address = *known_addresses.get(&me).unwrap();
             Service::new(
                 ServiceConfig {
@@ -71,7 +75,7 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                     me,
                     known_addresses: known_addresses.clone(),
                     server_address,
-                    quinn_config: UnsafeNoAuthQuinnConfig::new(me, MAX_RTT, BANDWIDTH_Mbps),
+                    quinn_config: SafeQuinnConfig::new(key, MAX_RTT, BANDWIDTH_Mbps),
                 },
                 MockGossipConfig {
                     all_peers: peers.clone(),

@@ -876,10 +876,10 @@ mod test {
             .iter()
             .enumerate()
             .map(|(i, k)| {
-                let default_key = KeyPair::from_bytes([127; 32]).unwrap();
+                let default_key = KeyPair::from_bytes(&mut [127; 32]).unwrap();
                 let default_cert_key =
                     <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(
-                        [127; 32],
+                        &mut [127; 32],
                     )
                     .unwrap();
                 ConsensusState::<SCT, _, SVT>::new(

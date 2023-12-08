@@ -18,7 +18,7 @@ use monad_executor_glue::{
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
 use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
-use monad_quic::service::UnsafeNoAuthQuinnConfig;
+use monad_quic::service::SafeQuinnConfig;
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::Stake;
 use monad_updaters::{
@@ -46,7 +46,7 @@ where
         >,
     ),
     MonadP2P {
-        config: monad_quic::service::ServiceConfig<UnsafeNoAuthQuinnConfig>,
+        config: monad_quic::service::ServiceConfig<SafeQuinnConfig>,
         gossip_config: MonadP2PGossipConfig,
     },
 }

@@ -19,8 +19,10 @@ sha2 = { workspace = true }
 zerocopy = { workspace = true }
 zeroize = { workspace = true }
 
+ring = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["dangerous_configuration"] }
+x509-parser = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -28,7 +30,7 @@ hex = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
-rustls = ["dep:rcgen", "dep:rustls"]
+rustls = ["dep:ring", "dep:rcgen", "dep:rustls", "dep:x509-parser"]
 
 [[bench]]
 name = "hasher_bench"
