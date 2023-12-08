@@ -8,7 +8,7 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempoolRandFail, MockMempoolRandFailConfig},
+    mock::{MockMempoolMessage, MockMempoolRandFail, MockMempoolRandFailConfig},
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
 };
@@ -47,14 +47,24 @@ impl SwarmRelation for RandFailSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = MockMempoolMessage;
+
     type MempoolConfig = MockMempoolRandFailConfig;
     type MempoolExecutor = MockMempoolRandFail<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolRouterScheduler =
+        NoSerRouterScheduler<Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 #[test]
 fn random_mempool_failures() {
-    create_and_run_nodes::<RandFailSwarm, _, _>(
+    create_and_run_nodes::<RandFailSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

@@ -16,7 +16,7 @@ monad-mempool-proto = { path = "../monad-mempool-proto" }
 monad-mempool-txpool = { path = "../monad-mempool-txpool" }
 monad-mempool-types = { path = "../monad-mempool-types" }
 
-futures = { workspace = true }
+futures-util = { workspace = true }
 reth-primitives = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

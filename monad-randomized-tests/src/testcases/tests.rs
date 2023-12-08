@@ -17,8 +17,11 @@ use monad_wal::mock::MockWALoggerConfig;
 use crate::RandomizedTest;
 
 fn random_latency_test(seed: u64) {
-    create_and_run_nodes::<NoSerSwarm, _, _>(
+    create_and_run_nodes::<NoSerSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },
@@ -60,9 +63,12 @@ fn delayed_message_test(seed: u64) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until::<NoSerSwarm, _, _>(
+    run_nodes_until::<NoSerSwarm, _, _, _>(
         pubkeys,
         state_configs,
+        |all_peers: Vec<_>, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers: Vec<_>, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

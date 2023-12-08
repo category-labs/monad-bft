@@ -7,7 +7,7 @@ use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::MockGossip;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
+    mock::{MockMempool, MockMempoolConfig, MockMempoolMessage},
     swarm_relation::SwarmRelation,
 };
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
@@ -46,6 +46,13 @@ impl SwarmRelation for QuicSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = Vec<u8>;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
+    type MempoolRouterScheduler =
+        QuicRouterScheduler<MockGossip, Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }

@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use futures::{FutureExt, Stream, StreamExt};
+use futures_util::{FutureExt, Stream, StreamExt};
 use monad_eth_types::{EthFullTransactionList, EthTransactionList};
 use monad_mempool_ipc::{generate_uds_path, MempoolTxIpcReceiver};
 use monad_mempool_messenger::{Messenger, MessengerConfig, MessengerError};
@@ -330,7 +330,7 @@ impl Stream for Controller {
 mod test {
     use std::{path::PathBuf, time::Duration};
 
-    use futures::SinkExt;
+    use futures_util::SinkExt;
     use monad_mempool_ipc::MempoolTxIpcSender;
     use monad_mempool_testutil::create_signed_eth_txs;
     use tempfile::NamedTempFile;

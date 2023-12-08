@@ -8,7 +8,7 @@ use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
+    mock::{MockMempool, MockMempoolConfig, MockMempoolMessage},
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
 };
@@ -47,16 +47,26 @@ impl SwarmRelation for BLSSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = MockMempoolMessage;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolRouterScheduler =
+        NoSerRouterScheduler<Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 #[test]
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
-    create_and_run_nodes::<BLSSwarm, _, _>(
+    create_and_run_nodes::<BLSSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

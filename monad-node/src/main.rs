@@ -11,11 +11,13 @@ use monad_consensus_types::{
     multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::SecpSignature;
-use monad_executor::{Executor, State};
-use monad_executor_glue::Message;
+use monad_executor::{Executor, MempoolSupervisor, State};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
-use monad_quic::service::{ServiceConfig, UnsafeNoAuthQuinnConfig};
+use monad_quic::{
+    mempool::NetworkServiceMempoolExecutor,
+    service::{MessageService, ServiceConfig, UnsafeNoAuthQuinnConfig},
+};
 use monad_types::{NodeId, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
@@ -73,10 +75,9 @@ fn main() {
         log::error!("monad consensus node crashed: {:?}", e);
     }
 }
-
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router(
-        node_state.config.network,
+        &node_state.config.network,
         NodeId(node_state.identity.pubkey()),
         &node_state.config.bootstrap.peers,
     )
@@ -94,9 +95,21 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     }
 
     let mut executor = ParentExecutor {
-        router,
+        router: MessageService::from(router),
         timer: TokioTimer::default(),
-        mempool: MonadMempool::new(mempool_controller_config),
+        mempool: NetworkServiceMempoolExecutor::<
+            _,
+            _,
+            MonadMempool<SignatureType, SignatureCollectionType>,
+        >::new(
+            build_router(
+                &node_state.config.network,
+                NodeId(node_state.identity.pubkey()),
+                &node_state.config.bootstrap.peers,
+            )
+            .await,
+            mempool_controller_config,
+        ),
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
@@ -193,13 +206,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 }
 
 async fn build_router<M, OM>(
-    network_config: NodeNetworkConfig,
+    network_config: &NodeNetworkConfig,
     me: NodeId,
     peers: &[NodeBootstrapPeerConfig],
-) -> monad_quic::service::Service<UnsafeNoAuthQuinnConfig, MockGossip, M, OM>
-where
-    M: Message,
-{
+) -> monad_quic::service::Service<UnsafeNoAuthQuinnConfig, MockGossip, M, OM> {
     monad_quic::service::Service::new(
         ServiceConfig {
             zero_instant: Instant::now(),

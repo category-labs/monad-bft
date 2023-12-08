@@ -34,8 +34,9 @@ mod test {
         };
         let get_mempool_cfg = |id: &ID, _: &Vec<ID>| MockMempoolConfig(*id.get_identifier() as u64);
 
-        run_twins_test::<MonadMessageNoSerSwarm, _, _, _>(
+        run_twins_test::<MonadMessageNoSerSwarm, _, _, _, _>(
             get_lgr_cfg,
+            get_router_cfg,
             get_router_cfg,
             get_mempool_cfg,
             TWIN_DEFAULT_SEED,
@@ -63,8 +64,9 @@ mod test {
         };
         let get_mempool_cfg = |id: &ID, _: &Vec<ID>| MockMempoolConfig(*id.get_identifier() as u64);
 
-        run_twins_test::<MonadMessageNoSerSwarm, _, _, _>(
+        run_twins_test::<MonadMessageNoSerSwarm, _, _, _, _>(
             get_lgr_cfg,
+            get_router_cfg,
             get_router_cfg,
             get_mempool_cfg,
             TWIN_DEFAULT_SEED,

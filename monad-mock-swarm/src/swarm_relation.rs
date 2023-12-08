@@ -8,11 +8,12 @@ use monad_consensus_types::{
     transaction_validator::{MockValidator, TransactionValidator},
 };
 use monad_crypto::NopSignature;
-use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor::{timed_event::TimedEvent, Mempool, State};
 use monad_executor_glue::{Message, MonadEvent};
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
+use monad_types::{Deserializable, Serializable};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
@@ -20,7 +21,7 @@ use monad_wal::{
 };
 
 use crate::{
-    mock::{MockMempool, MockMempoolConfig, MockableExecutor},
+    mock::{MockMempool, MockMempoolConfig, MockMempoolMessage, MockableExecutor},
     transformer::MonadMessageTransformerPipeline,
 };
 
@@ -59,12 +60,25 @@ pub trait SwarmRelation {
         Event = TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
     >;
 
+    type MempoolInboundMessage: Deserializable<Self::MempoolTransportMessage> + Unpin;
+    type MempoolOutboundMessage: Serializable<Self::MempoolTransportMessage> + Unpin;
+    type MempoolTransportMessage: PartialEq + Eq + Send + Unpin;
+
     type MempoolConfig: Copy;
-    type MempoolExecutor: MockableExecutor<
-        Config = Self::MempoolConfig,
-        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-        SignatureCollection = Self::SignatureCollectionType,
-    >;
+    type MempoolExecutor: Mempool<
+            Config = Self::MempoolConfig,
+            Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+            SignatureCollection = Self::SignatureCollectionType,
+            InboundMessage = Self::MempoolInboundMessage,
+            OutboundMessage = Self::MempoolOutboundMessage,
+        > + MockableExecutor;
+    type MempoolRouterSchedulerConfig;
+    type MempoolRouterScheduler: RouterScheduler<
+            Config = Self::MempoolRouterSchedulerConfig,
+            InboundMessage = Self::MempoolInboundMessage,
+            OutboundMessage = Self::MempoolOutboundMessage,
+            TransportMessage = Self::MempoolTransportMessage,
+        > + Unpin;
 }
 
 // default swarm relation impl
@@ -96,8 +110,15 @@ impl SwarmRelation for NoSerSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = MockMempoolMessage;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolRouterScheduler =
+        NoSerRouterScheduler<Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -128,6 +149,13 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = MockMempoolMessage;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolRouterScheduler =
+        NoSerRouterScheduler<Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }

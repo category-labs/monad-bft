@@ -71,6 +71,7 @@ struct TestgroundArgs {
     proposal_size: usize,     // default 5000
 
     router: RouterArgs,
+    mempool_router: RouterArgs,
     mempool: MempoolArgs,
     execution_ledger: ExecutionLedgerArgs,
 }
@@ -155,6 +156,11 @@ async fn main() {
         proposal_size: 5_000,
 
         router: RouterArgs::MonadP2P {
+            max_rtt_ms: 150,
+            bandwidth_Mbps: 1_000,
+            gossip: GossipArgs::Gossipsub { fanout: 7 },
+        },
+        mempool_router: RouterArgs::MonadP2P {
             max_rtt_ms: 150,
             bandwidth_Mbps: 1_000,
             gossip: GossipArgs::Gossipsub { fanout: 7 },
@@ -315,6 +321,49 @@ where
                 simulation_length: Duration::from_secs(args.simulation_length_s),
                 executor_config: ExecutorConfig {
                     router_config: match &args.router {
+                        RouterArgs::Local { .. } => RouterConfig::Local(
+                            maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
+                        ),
+                        RouterArgs::MonadP2P {
+                            max_rtt_ms,
+                            bandwidth_Mbps,
+                            gossip,
+                        } => RouterConfig::MonadP2P {
+                            config: ServiceConfig {
+                                zero_instant: Instant::now(),
+                                me,
+                                server_address: address.parse().unwrap(),
+                                quinn_config: UnsafeNoAuthQuinnConfig::new(
+                                    me,
+                                    Duration::from_millis(*max_rtt_ms),
+                                    *bandwidth_Mbps,
+                                ),
+                                known_addresses: known_addresses.clone(),
+                            },
+                            gossip_config: match gossip {
+                                GossipArgs::Simple => {
+                                    MonadP2PGossipConfig::Simple(MockGossipConfig {
+                                        all_peers: genesis_peers
+                                            .iter()
+                                            .map(|(pubkey, _)| NodeId(*pubkey))
+                                            .collect(),
+                                    })
+                                }
+                                GossipArgs::Gossipsub { fanout } => {
+                                    MonadP2PGossipConfig::Gossipsub(UnsafeGossipsubConfig {
+                                        seed: rand::random(),
+                                        me,
+                                        all_peers: genesis_peers
+                                            .iter()
+                                            .map(|(pubkey, _)| NodeId(*pubkey))
+                                            .collect(),
+                                        fanout: *fanout,
+                                    })
+                                }
+                            },
+                        },
+                    },
+                    mempool_router_config: match &args.mempool_router {
                         RouterArgs::Local { .. } => RouterConfig::Local(
                             maybe_local_routers.as_mut().unwrap().remove(&me).unwrap(),
                         ),

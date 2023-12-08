@@ -29,7 +29,6 @@ const SERVER_NAME: &str = "MONAD";
 pub struct Service<QC, G, M, OM>
 where
     G: Gossip,
-    M: Message,
 {
     zero_instant: Instant,
     me: NodeId,
@@ -72,7 +71,6 @@ impl<QC, G, M, OM> Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message,
 {
     pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
@@ -114,7 +112,7 @@ impl<QC, G, M, OM> Executor for Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
+    M: Deserializable<[u8]> + Send + Sync + 'static,
     <M as Deserializable<[u8]>>::ReadError: 'static,
     OM: Serializable<Vec<u8>> + Send + Sync + 'static,
 
@@ -144,7 +142,7 @@ impl<QC, G, M, OM> Stream for Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
+    M: Deserializable<[u8]> + Send + Sync + 'static,
     <M as Deserializable<[u8]>>::ReadError: 'static,
     OM: Serializable<Vec<u8>> + Send + Sync + 'static,
 
@@ -152,7 +150,7 @@ where
 
     Self: Unpin,
 {
-    type Item = M::Event;
+    type Item = (NodeId, M);
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -272,7 +270,7 @@ where
                                 Ok(m) => m,
                                 Err(e) => todo!("err deserializing message: {:?}", e),
                             };
-                            return Poll::Ready(Some(message.event(from)));
+                            return Poll::Ready(Some((from, message)));
                         }
                         None => {}
                     }
@@ -431,5 +429,54 @@ impl QuinnConfig for UnsafeNoAuthQuinnConfig {
 
         let peer_id = NodeId(PubKey::from_slice(extension.value)?);
         Ok(peer_id)
+    }
+}
+
+pub struct MessageService<QC, G, M, OM>
+where
+    G: Gossip,
+{
+    service: Service<QC, G, M, OM>,
+}
+
+impl<QC, G, M, OM> Executor for MessageService<QC, G, M, OM>
+where
+    G: Gossip,
+    Service<QC, G, M, OM>: Executor,
+{
+    type Command = <Service<QC, G, M, OM> as Executor>::Command;
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        self.service.exec(commands)
+    }
+}
+
+impl<QC, G, M, OM> Stream for MessageService<QC, G, M, OM>
+where
+    G: Gossip,
+    M: Message,
+
+    Service<QC, G, M, OM>: Unpin + Stream<Item = (NodeId, M)>,
+{
+    type Item = M::Event;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if let Poll::Ready(data) = self.service.poll_next_unpin(cx) {
+            return Poll::Ready(data.map(|(from, msg)| msg.event(from)));
+        }
+
+        Poll::Pending
+    }
+}
+
+impl<QC, G, M, OM> From<Service<QC, G, M, OM>> for MessageService<QC, G, M, OM>
+where
+    G: Gossip,
+{
+    fn from(service: Service<QC, G, M, OM>) -> Self {
+        Self { service }
     }
 }

@@ -124,6 +124,9 @@ where
                             }
                             continue;
                         }
+                        Some(MockExecutorEvent::MempoolSend(to, serialized)) => {
+                            todo!()
+                        }
                     }
                 }
                 SwarmEventType::ScheduledMessage => {
@@ -338,6 +341,7 @@ where
             <S::State as State>::Config,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
+            S::MempoolRouterSchedulerConfig,
             S::MempoolConfig,
             S::Pipeline,
             u64,
@@ -480,6 +484,7 @@ where
             <S::State as State>::Config,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
+            S::MempoolRouterSchedulerConfig,
             S::MempoolConfig,
             S::Pipeline,
             u64,
@@ -490,6 +495,7 @@ where
             state_config,
             logger_config,
             router_scheduler_config,
+            mempool_router_scheduler_config,
             mock_mempool_config,
             pipeline,
             seed,
@@ -502,6 +508,7 @@ where
 
         let mut executor: MockExecutor<S> = MockExecutor::new(
             <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
+            <S::MempoolRouterScheduler as RouterScheduler>::new(mempool_router_scheduler_config),
             mock_mempool_config,
             self.tick,
         );

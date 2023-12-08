@@ -8,7 +8,7 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
+    mock::{MockMempool, MockMempoolConfig, MockMempoolMessage},
     mock_swarm::{Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
 };
@@ -49,8 +49,15 @@ impl SwarmRelation for LogSwarm {
     type Logger =
         WALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = MockMempoolMessage;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolRouterScheduler =
+        NoSerRouterScheduler<Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 pub fn generate_log(
@@ -88,6 +95,9 @@ pub fn generate_log(
                 ID::new(NodeId(a)),
                 b,
                 c,
+                NoSerRouterConfig {
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
+                },
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },

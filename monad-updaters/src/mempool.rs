@@ -13,10 +13,11 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_eth_types::EthTransactionList;
-use monad_executor::Executor;
+use monad_executor::{Executor, InnerMempoolCommand, InnerMempoolEvent, Mempool};
 use monad_executor_glue::{MempoolCommand, MonadEvent};
 use monad_mempool_controller::{Controller, ControllerConfig};
 use monad_mempool_messenger::MessengerError;
+use monad_mempool_types::MonadMempoolMessage;
 use thiserror::Error;
 use tokio::{
     sync::mpsc,
@@ -40,12 +41,14 @@ enum ControllerTaskError {
 
 #[derive(Debug)]
 enum ControllerTaskCommand {
+    Rx(MonadMempoolMessage),
     FetchTxs(usize, Vec<TransactionHashList>),
     FetchFullTxs(TransactionHashList),
     DrainTxs(Vec<TransactionHashList>),
 }
 
 enum ControllerTaskResult {
+    Tx(MonadMempoolMessage),
     FetchTxs(TransactionHashList),
     FetchFullTxs(Option<FullTransactionList>),
 }
@@ -63,20 +66,29 @@ pub struct MonadMempool<ST, SCT> {
 
 impl<ST, SCT> Default for MonadMempool<ST, SCT>
 where
-    ST: 'static,
-    SCT: 'static,
+    Self: Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
     fn default() -> Self {
         Self::new(ControllerConfig::default())
     }
 }
 
-impl<ST, SCT> MonadMempool<ST, SCT>
+impl<ST, SCT> Mempool for MonadMempool<ST, SCT>
 where
-    ST: 'static,
-    SCT: 'static,
+    Self: Unpin,
+    ST: MessageSignature,
+    SCT: SignatureCollection,
 {
-    pub fn new(controller_config: ControllerConfig) -> Self {
+    type Config = ControllerConfig;
+    type Event = MonadEvent<ST, SCT>;
+    type SignatureCollection = SCT;
+
+    type InboundMessage = MonadMempoolMessage;
+    type OutboundMessage = MonadMempoolMessage;
+
+    fn new(controller_config: Self::Config) -> Self {
         let (controller_task_tx, rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
         let (tx, controller_task_rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
 
@@ -92,7 +104,13 @@ where
             phantom: PhantomData,
         }
     }
+}
 
+impl<ST, SCT> MonadMempool<ST, SCT>
+where
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+{
     async fn controller_task(
         tx: mpsc::Sender<ControllerTaskResult>,
         mut rx: mpsc::Receiver<ControllerTaskCommand>,
@@ -108,6 +126,7 @@ where
                     };
 
                     match task {
+                        ControllerTaskCommand::Rx(msg) => todo!(),
                         ControllerTaskCommand::FetchTxs(num_max_txs, pending_blocktree_txs) => {
                             let Ok(pending_blocktree_txs) = pending_blocktree_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.as_bytes().to_vec())).collect::<Result<Vec<_>, _>>() else {
                                 error!("Invalid pending_blocktree_txs!");
@@ -161,7 +180,7 @@ where
 }
 
 impl<ST, SCT> Executor for MonadMempool<ST, SCT> {
-    type Command = MempoolCommand<SCT>;
+    type Command = InnerMempoolCommand<SCT, MonadMempoolMessage>;
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut fetch_txs_command = None;
@@ -170,28 +189,31 @@ impl<ST, SCT> Executor for MonadMempool<ST, SCT> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(num_max_txs, pending_blocktree_txs, s) => {
-                    self.fetch_txs_state = Some(s);
-                    fetch_txs_command = Some(ControllerTaskCommand::FetchTxs(
-                        num_max_txs,
-                        pending_blocktree_txs,
-                    ));
-                }
-                MempoolCommand::FetchReset => {
-                    self.fetch_txs_state = None;
-                    fetch_txs_command = None;
-                }
-                MempoolCommand::FetchFullTxs(txs, s) => {
-                    self.fetch_full_txs_state = Some(s);
-                    fetch_full_txs_command = Some(ControllerTaskCommand::FetchFullTxs(txs));
-                }
-                MempoolCommand::FetchFullReset => {
-                    self.fetch_full_txs_state = None;
-                    fetch_full_txs_command = None;
-                }
-                MempoolCommand::DrainTxs(drain_txs) => {
-                    drain_txs_command = Some(ControllerTaskCommand::DrainTxs(drain_txs));
-                }
+                InnerMempoolCommand::Rx(vec) => todo!(),
+                InnerMempoolCommand::Command(command) => match command {
+                    MempoolCommand::FetchTxs(num_max_txs, pending_blocktree_txs, s) => {
+                        self.fetch_txs_state = Some(s);
+                        fetch_txs_command = Some(ControllerTaskCommand::FetchTxs(
+                            num_max_txs,
+                            pending_blocktree_txs,
+                        ));
+                    }
+                    MempoolCommand::FetchReset => {
+                        self.fetch_txs_state = None;
+                        fetch_txs_command = None;
+                    }
+                    MempoolCommand::FetchFullTxs(txs, s) => {
+                        self.fetch_full_txs_state = Some(s);
+                        fetch_full_txs_command = Some(ControllerTaskCommand::FetchFullTxs(txs));
+                    }
+                    MempoolCommand::FetchFullReset => {
+                        self.fetch_full_txs_state = None;
+                        fetch_full_txs_command = None;
+                    }
+                    MempoolCommand::DrainTxs(drain_txs) => {
+                        drain_txs_command = Some(ControllerTaskCommand::DrainTxs(drain_txs));
+                    }
+                },
             }
         }
 
@@ -211,7 +233,8 @@ where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
-    type Item = MonadEvent<ST, SCT>;
+    type Item = InnerMempoolEvent<MonadEvent<ST, SCT>, MonadMempoolMessage>;
+
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
@@ -223,17 +246,22 @@ where
             };
 
             match result {
+                ControllerTaskResult::Tx(_) => todo!(),
                 ControllerTaskResult::FetchTxs(txs) => {
                     if let Some(s) = this.fetch_txs_state.take() {
-                        return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                            monad_executor_glue::ConsensusEvent::FetchedTxs(s, txs),
+                        return Poll::Ready(Some(InnerMempoolEvent::StateEvent(
+                            MonadEvent::ConsensusEvent(
+                                monad_executor_glue::ConsensusEvent::FetchedTxs(s, txs),
+                            ),
                         )));
                     }
                 }
                 ControllerTaskResult::FetchFullTxs(full_txs) => {
                     if let Some(s) = this.fetch_full_txs_state.take() {
-                        return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                            monad_executor_glue::ConsensusEvent::FetchedFullTxs(s, full_txs),
+                        return Poll::Ready(Some(InnerMempoolEvent::StateEvent(
+                            MonadEvent::ConsensusEvent(
+                                monad_executor_glue::ConsensusEvent::FetchedFullTxs(s, full_txs),
+                            ),
                         )));
                     }
                 }

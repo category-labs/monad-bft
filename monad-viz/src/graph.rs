@@ -71,6 +71,7 @@ where
         <S::State as State>::Config,
         S::LoggerConfig,
         S::RouterSchedulerConfig,
+        S::MempoolRouterSchedulerConfig,
         S::MempoolConfig,
         S::Pipeline,
         u64,

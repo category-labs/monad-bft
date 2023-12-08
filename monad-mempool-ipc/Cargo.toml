@@ -9,7 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
-futures = { workspace = true }
+futures-util = { workspace = true }
 rand = { workspace = true }
 reth-primitives = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

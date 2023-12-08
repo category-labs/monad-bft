@@ -22,8 +22,11 @@ criterion_group! {
 criterion_main!(benches);
 
 fn two_nodes() {
-    create_and_run_nodes::<NoSerSwarm, _, _>(
+    create_and_run_nodes::<NoSerSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

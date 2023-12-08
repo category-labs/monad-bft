@@ -138,9 +138,10 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
     }
 }
 
-pub fn create_and_run_nodes<S, R, T>(
+pub fn create_and_run_nodes<S, R, MR, T>(
     tvt: S::TransactionValidator,
     router_scheduler_config: R,
+    mempool_router_scheduler_config: MR,
     logger_config: S::LoggerConfig,
     mock_mempool_config: S::MempoolConfig,
     pipeline: S::Pipeline,
@@ -153,6 +154,7 @@ where
     MockExecutor<S>: Unpin,
     Node<S>: Send,
     R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
+    MR: Fn(Vec<NodeId>, NodeId) -> S::MempoolRouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let (peers, state_configs) =
@@ -163,10 +165,12 @@ where
             swarm_config.state_root_delay,
             swarm_config.proposal_size,
         );
-    run_nodes_until::<S, _, _>(
+
+    run_nodes_until::<S, _, _, _>(
         peers,
         state_configs,
         router_scheduler_config,
+        mempool_router_scheduler_config,
         logger_config,
         mock_mempool_config,
         pipeline,
@@ -177,10 +181,11 @@ where
     )
 }
 
-pub fn run_nodes_until<S, R, T>(
+pub fn run_nodes_until<S, R, MR, T>(
     pubkeys: Vec<PubKey>,
     state_configs: Vec<MonadConfig<S::SignatureCollectionType, S::TransactionValidator>>,
     router_scheduler_config: R,
+    mempool_router_scheduler_config: MR,
     logger_config: S::LoggerConfig,
     mock_mempool_config: S::MempoolConfig,
     pipeline: S::Pipeline,
@@ -196,6 +201,7 @@ where
     MockExecutor<S>: Unpin,
     Node<S>: Send,
     R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
+    MR: Fn(Vec<NodeId>, NodeId) -> S::MempoolRouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let mut nodes = Nodes::<S>::new(
@@ -209,6 +215,10 @@ where
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
+                        pubkeys.iter().copied().map(NodeId).collect(),
+                        NodeId(pubkey),
+                    ),
+                    mempool_router_scheduler_config(
                         pubkeys.iter().copied().map(NodeId).collect(),
                         NodeId(pubkey),
                     ),

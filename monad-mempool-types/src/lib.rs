@@ -17,3 +17,8 @@ impl EthTxBatch {
         }
     }
 }
+
+// #[derive(RefCast)]
+#[repr(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonadMempoolMessage();

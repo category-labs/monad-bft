@@ -31,8 +31,11 @@ fn many_nodes_metrics() {
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
-    create_and_run_nodes::<NoSerSwarm, _, _>(
+    create_and_run_nodes::<NoSerSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

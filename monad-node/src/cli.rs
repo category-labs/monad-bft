@@ -13,7 +13,7 @@ pub struct Cli {
     #[arg(long)]
     pub config: PathBuf,
 
-    // Set the path where the execution ledger will be stored
+    /// Set the execution ledger storage path
     #[arg(long)]
     pub execution_ledger_path: PathBuf,
 
@@ -25,7 +25,7 @@ pub struct Cli {
     #[arg(long)]
     pub identity: PathBuf,
 
-    /// Set a custom monad mempool ipc path
+    /// Set the monad mempool ipc path
     #[arg(long)]
     pub mempool_ipc_path: Option<PathBuf>,
 

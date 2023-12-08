@@ -3,7 +3,7 @@ use std::{
     task::Poll,
 };
 
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use rand::distributions::{Alphanumeric, DistString};
 use reth_primitives::TransactionSigned;
 use tokio::net::{UnixListener, UnixStream};

@@ -17,8 +17,11 @@ use tracing_test::traced_test;
 
 #[test]
 fn two_nodes() {
-    create_and_run_nodes::<NoSerSwarm, _, _>(
+    create_and_run_nodes::<NoSerSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },
@@ -44,18 +47,21 @@ fn two_nodes() {
 fn two_nodes_quic() {
     let zero_instant = Instant::now();
 
-    create_and_run_nodes::<QuicSwarm, _, _>(
+    let router_scheduler_config = |all_peers: Vec<_>, me| QuicRouterSchedulerConfig {
+        zero_instant,
+        all_peers: all_peers.iter().cloned().collect(),
+        me,
+
+        tls_key_der: Vec::new(),
+        master_seed: 7,
+
+        gossip: MockGossipConfig { all_peers }.build(),
+    };
+
+    create_and_run_nodes::<QuicSwarm, _, _, _>(
         MockValidator,
-        |all_peers, me| QuicRouterSchedulerConfig {
-            zero_instant,
-            all_peers: all_peers.iter().cloned().collect(),
-            me,
-
-            tls_key_der: Vec::new(),
-            master_seed: 7,
-
-            gossip: MockGossipConfig { all_peers }.build(),
-        },
+        router_scheduler_config,
+        router_scheduler_config,
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         vec![BytesTransformer::Latency(LatencyTransformer(
@@ -79,18 +85,21 @@ fn two_nodes_quic() {
 fn two_nodes_quic_bw() {
     let zero_instant = Instant::now();
 
-    create_and_run_nodes::<QuicSwarm, _, _>(
+    let router_scheduler_config = |all_peers: Vec<_>, me| QuicRouterSchedulerConfig {
+        zero_instant,
+        all_peers: all_peers.iter().cloned().collect(),
+        me,
+
+        tls_key_der: Vec::new(),
+        master_seed: 7,
+
+        gossip: MockGossipConfig { all_peers }.build(),
+    };
+
+    create_and_run_nodes::<QuicSwarm, _, _, _>(
         MockValidator,
-        |all_peers, me| QuicRouterSchedulerConfig {
-            zero_instant,
-            all_peers: all_peers.iter().cloned().collect(),
-            me,
-
-            tls_key_der: Vec::new(),
-            master_seed: 7,
-
-            gossip: MockGossipConfig { all_peers }.build(),
-        },
+        router_scheduler_config,
+        router_scheduler_config,
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         vec![

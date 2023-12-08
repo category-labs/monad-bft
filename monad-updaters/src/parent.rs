@@ -26,10 +26,10 @@ where
     RE: Executor<Command = RouterCommand<OM>>,
     TE: Executor<Command = TimerCommand<E>>,
 
-    CE: Executor<Command = CheckpointCommand<C>>,
+    ME: Executor<Command = MempoolCommand<S>>,
     LE: Executor<Command = LedgerCommand<B, E>>,
     EL: Executor<Command = ExecutionLedgerCommand<S>>,
-    ME: Executor<Command = MempoolCommand<S>>,
+    CE: Executor<Command = CheckpointCommand<C>>,
 {
     type Command = Command<E, OM, B, C, S>;
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
@@ -54,13 +54,15 @@ where
 
 impl<E, R, T, M, L, EL, C> Stream for ParentExecutor<R, T, M, L, EL, C>
 where
+    Self: Unpin,
+
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     M: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
-    Self: Unpin,
 {
     type Item = E;
+
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 

@@ -14,8 +14,11 @@ use monad_wal::mock::MockWALoggerConfig;
 fn two_nodes() {
     tracing_subscriber::fmt::init();
 
-    create_and_run_nodes::<NoSerSwarm, _, _>(
+    create_and_run_nodes::<NoSerSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

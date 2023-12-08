@@ -62,9 +62,12 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     println!("delayed node ID: {:?}", first_node);
 
-    run_nodes_until::<NoSerSwarm, _, _>(
+    run_nodes_until::<NoSerSwarm, _, _, _>(
         pubkeys,
         state_configs,
+        |all_peers: Vec<_>, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers: Vec<_>, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },

@@ -15,8 +15,11 @@ use monad_wal::mock::MockWALoggerConfig;
 
 #[test]
 fn many_nodes_noser() {
-    create_and_run_nodes::<NoSerSwarm, _, _>(
+    create_and_run_nodes::<NoSerSwarm, _, _, _>(
         MockValidator,
+        |all_peers, _| NoSerRouterConfig {
+            all_peers: all_peers.into_iter().collect(),
+        },
         |all_peers, _| NoSerRouterConfig {
             all_peers: all_peers.into_iter().collect(),
         },
@@ -42,18 +45,21 @@ fn many_nodes_noser() {
 fn many_nodes_quic() {
     let zero_instant = Instant::now();
 
-    create_and_run_nodes::<QuicSwarm, _, _>(
+    let router_scheduler_config = |all_peers: Vec<_>, me| QuicRouterSchedulerConfig {
+        zero_instant,
+        all_peers: all_peers.iter().cloned().collect(),
+        me,
+
+        tls_key_der: Vec::new(),
+        master_seed: 7,
+
+        gossip: MockGossipConfig { all_peers }.build(),
+    };
+
+    create_and_run_nodes::<QuicSwarm, _, _, _>(
         MockValidator,
-        |all_peers, me| QuicRouterSchedulerConfig {
-            zero_instant,
-            all_peers: all_peers.iter().cloned().collect(),
-            me,
-
-            tls_key_der: Vec::new(),
-            master_seed: 7,
-
-            gossip: MockGossipConfig { all_peers }.build(),
-        },
+        router_scheduler_config,
+        router_scheduler_config,
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         vec![BytesTransformer::Latency(LatencyTransformer(
@@ -91,18 +97,21 @@ fn many_nodes_quic_bw() {
         BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(5))),
     ];
 
-    create_and_run_nodes::<QuicSwarm, _, _>(
+    let router_scheduler_config = |all_peers: Vec<_>, me| QuicRouterSchedulerConfig {
+        zero_instant,
+        all_peers: all_peers.iter().cloned().collect(),
+        me,
+
+        tls_key_der: Vec::new(),
+        master_seed: 7,
+
+        gossip: MockGossipConfig { all_peers }.build(),
+    };
+
+    create_and_run_nodes::<QuicSwarm, _, _, _>(
         MockValidator,
-        |all_peers, me| QuicRouterSchedulerConfig {
-            zero_instant,
-            all_peers: all_peers.iter().cloned().collect(),
-            me,
-
-            tls_key_der: Vec::new(),
-            master_seed: 7,
-
-            gossip: MockGossipConfig { all_peers }.build(),
-        },
+        router_scheduler_config,
+        router_scheduler_config,
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         xfmrs,

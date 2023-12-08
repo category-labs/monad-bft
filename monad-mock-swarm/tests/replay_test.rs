@@ -9,7 +9,7 @@ use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockMempool, MockMempoolConfig},
+    mock::{MockExecutor, MockMempool, MockMempoolConfig, MockMempoolMessage},
     mock_swarm::{Node, Nodes, UntilTerminator},
     swarm_relation::SwarmRelation,
 };
@@ -58,8 +58,15 @@ impl SwarmRelation for ReplaySwarm {
     type Logger =
         MockMemLogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = MockMempoolMessage;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = NoSerRouterConfig;
+    type MempoolRouterScheduler =
+        NoSerRouterScheduler<Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 fn run_nodes_until<S, CT, ST, SCT, VT, LT>(
@@ -155,6 +162,10 @@ fn replay_one_honest(failure_idx: &[usize]) {
                         pubkeys.iter().copied().map(NodeId).collect(),
                         NodeId(pubkey),
                     ),
+                    router_scheduler_config(
+                        pubkeys.iter().copied().map(NodeId).collect(),
+                        NodeId(pubkey),
+                    ),
                     MockMempoolConfig::default(),
                     pipeline.clone(),
                     default_seed,
@@ -224,6 +235,10 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(NodeId).collect(),
             NodeId(pubkeys[f0]),
         ),
+        router_scheduler_config(
+            pubkeys.iter().copied().map(NodeId).collect(),
+            NodeId(pubkeys[f0]),
+        ),
         MockMempoolConfig::default(),
         pipeline.clone(),
         default_seed,
@@ -233,6 +248,10 @@ fn replay_one_honest(failure_idx: &[usize]) {
         ID::new(NodeId(pubkeys[f1])),
         state_configs_duplicate.remove(f1 - 1),
         node1_logger_config,
+        router_scheduler_config(
+            pubkeys.iter().copied().map(NodeId).collect(),
+            NodeId(pubkeys[f1]),
+        ),
         router_scheduler_config(
             pubkeys.iter().copied().map(NodeId).collect(),
             NodeId(pubkeys[f1]),

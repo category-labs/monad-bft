@@ -17,6 +17,7 @@ monad-crypto = { path = "../monad-crypto" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
+monad-mempool-types = { path = "../monad-mempool-types" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-quic = { path = "../monad-quic" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }

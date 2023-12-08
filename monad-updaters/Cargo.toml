@@ -19,6 +19,7 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 monad-ledger = { path = "../monad-ledger" }
 monad-mempool-controller = { path = "../monad-mempool-controller" }
 monad-mempool-messenger = { path = "../monad-mempool-messenger" }
+monad-mempool-types = { path = "../monad-mempool-types" }
 monad-types = { path = "../monad-types" }
 monad-wal = { path = "../monad-wal" }
 

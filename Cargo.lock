@@ -4331,6 +4331,7 @@ dependencies = [
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
@@ -4383,7 +4384,7 @@ dependencies = [
 name = "monad-mempool-controller"
 version = "0.1.0"
 dependencies = [
- "futures",
+ "futures-util",
  "monad-eth-types",
  "monad-mempool-ipc",
  "monad-mempool-messenger",
@@ -4402,7 +4403,7 @@ dependencies = [
 name = "monad-mempool-ipc"
 version = "0.1.0"
 dependencies = [
- "futures",
+ "futures-util",
  "rand 0.8.5",
  "reth-primitives",
  "tokio",
@@ -4514,7 +4515,6 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-executor",
- "monad-executor-glue",
  "monad-gossip",
  "monad-mempool-controller",
  "monad-quic",
@@ -4551,7 +4551,6 @@ dependencies = [
  "clap 4.4.10",
  "env_logger",
  "futures",
- "futures-util",
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
@@ -4657,6 +4656,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-mempool-types",
  "monad-mock-swarm",
  "monad-router-scheduler",
  "monad-state",
@@ -4751,6 +4751,7 @@ dependencies = [
  "monad-ledger",
  "monad-mempool-controller",
  "monad-mempool-messenger",
+ "monad-mempool-types",
  "monad-testutil",
  "monad-types",
  "monad-wal",
@@ -4784,6 +4785,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
+ "monad-mempool-types",
  "monad-mock-swarm",
  "monad-quic",
  "monad-router-scheduler",

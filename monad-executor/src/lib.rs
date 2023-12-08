@@ -3,11 +3,13 @@ pub mod timed_event;
 
 use std::{ops::DerefMut, pin::Pin};
 
+use futures_util::Stream;
 use monad_consensus_types::block::BlockType;
-use monad_executor_glue::{Command, Message};
+use monad_executor_glue::{Command, MempoolCommand, Message};
 
 pub trait Executor {
     type Command;
+
     fn exec(&mut self, commands: Vec<Self::Command>);
 
     fn boxed<'a>(self) -> BoxExecutor<'a, Self::Command>
@@ -76,4 +78,45 @@ pub trait State: Sized {
             Self::SignatureCollection,
         >,
     >;
+}
+
+pub enum InnerMempoolCommand<SCT, MempoolInboundMessage> {
+    Command(MempoolCommand<SCT>),
+    Rx(MempoolInboundMessage),
+}
+
+pub enum InnerMempoolEvent<E, MempoolOutboundMessage> {
+    StateEvent(E),
+    Tx(MempoolOutboundMessage),
+}
+
+pub trait MempoolSupervisor:
+    Executor<Command = MempoolCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
+{
+    /// Used to initialize the network component
+    type Config;
+    /// Event that is produced on stream (state event, passed from inner mempool)
+    type Event;
+    /// Inner mempool type
+    type Mempool: Mempool<Event = Self::Event, SignatureCollection = Self::SignatureCollection>;
+    type SignatureCollection;
+
+    fn new(config: Self::Config, mempool_config: <Self::Mempool as Mempool>::Config) -> Self;
+}
+
+pub trait Mempool:
+    Executor<Command = InnerMempoolCommand<Self::SignatureCollection, Self::InboundMessage>>
+    + Stream<Item = InnerMempoolEvent<Self::Event, Self::OutboundMessage>>
+    + Unpin
+{
+    /// Used to create the mempool
+    type Config;
+    /// Event that is produced on stream (state event)
+    type Event;
+    type SignatureCollection;
+
+    type InboundMessage: Unpin;
+    type OutboundMessage: Unpin;
+
+    fn new(config: Self::Config) -> Self;
 }

@@ -12,19 +12,18 @@ use monad_consensus_types::{
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
-use monad_executor::{BoxExecutor, Executor, State};
+use monad_executor::{BoxExecutor, Executor, MempoolSupervisor, State};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MempoolCommand, MonadEvent, RouterCommand,
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
-use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
-use monad_quic::service::UnsafeNoAuthQuinnConfig;
+use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool, MockMempoolConfig};
+use monad_quic::{mempool::NetworkServiceMempoolExecutor, service::UnsafeNoAuthQuinnConfig};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::Stake;
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer, BoxUpdater, Updater,
+    local_router::LocalPeerRouter, parent::ParentExecutor, timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
@@ -67,6 +66,7 @@ where
     SignatureCollectionType: SignatureCollection,
 {
     pub router_config: RouterConfig<MessageSignatureType, SignatureCollectionType>,
+    pub mempool_router_config: RouterConfig<MessageSignatureType, SignatureCollectionType>,
     pub mempool_config: MempoolConfig,
     pub execution_ledger_config: ExecutionLedgerConfig,
 }
@@ -102,21 +102,45 @@ where
             RouterConfig::MonadP2P {
                 config,
                 gossip_config,
-            } => Updater::boxed(monad_quic::service::Service::new(
-                config,
-                match gossip_config {
-                    MonadP2PGossipConfig::Simple(mock_config) => Gossip::boxed(mock_config.build()),
-                    MonadP2PGossipConfig::Gossipsub(gossipsub_config) => {
-                        Gossip::boxed(gossipsub_config.build())
-                    }
-                },
+            } => Updater::boxed(monad_quic::service::MessageService::from(
+                monad_quic::service::Service::new(
+                    config,
+                    match gossip_config {
+                        MonadP2PGossipConfig::Simple(mock_config) => {
+                            Gossip::boxed(mock_config.build())
+                        }
+                        MonadP2PGossipConfig::Gossipsub(gossipsub_config) => {
+                            Gossip::boxed(gossipsub_config.build())
+                        }
+                    },
+                ),
             )),
             RouterConfig::Local(router) => Updater::boxed(router),
         },
         timer: TokioTimer::default(),
-        mempool: match config.mempool_config {
-            MempoolConfig::Mock => Updater::boxed(MockMempool::default()),
-            MempoolConfig::LibP2P => Updater::boxed(MonadMempool::default()),
+        mempool: match config.mempool_router_config {
+            RouterConfig::MonadP2P {
+                config,
+                gossip_config,
+            } => Updater::boxed(NetworkServiceMempoolExecutor::<
+                _,
+                _,
+                MockMempool<MessageSignatureType, SignatureCollectionType>,
+            >::new(
+                monad_quic::service::Service::new(
+                    config,
+                    match gossip_config {
+                        MonadP2PGossipConfig::Simple(mock_config) => {
+                            Gossip::boxed(mock_config.build())
+                        }
+                        MonadP2PGossipConfig::Gossipsub(gossipsub_config) => {
+                            Gossip::boxed(gossipsub_config.build())
+                        }
+                    },
+                ),
+                MockMempoolConfig::default(),
+            )),
+            RouterConfig::Local(router) => todo!(),
         },
         ledger: MockLedger::default(),
         execution_ledger: match config.execution_ledger_config {

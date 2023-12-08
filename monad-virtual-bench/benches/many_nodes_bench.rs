@@ -10,7 +10,7 @@ use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
+    mock::{MockMempool, MockMempoolConfig, MockMempoolMessage},
     mock_swarm::UntilTerminator,
     swarm_relation::SwarmRelation,
 };
@@ -26,7 +26,7 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 fn setup() -> (
     SwarmTestConfig,
-    impl Fn(Vec<NodeId>, NodeId) -> QuicRouterSchedulerConfig<MockGossip>,
+    impl Fn(Vec<NodeId>, NodeId) -> QuicRouterSchedulerConfig<MockGossip> + Clone,
     Vec<BytesTransformer>,
     UntilTerminator,
 ) {
@@ -88,8 +88,15 @@ impl SwarmRelation for NopSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = Vec<u8>;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
+    type MempoolRouterScheduler =
+        QuicRouterScheduler<MockGossip, Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 struct BlsSwarm;
@@ -122,15 +129,23 @@ impl SwarmRelation for BlsSwarm {
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
+    type MempoolInboundMessage = MockMempoolMessage;
+    type MempoolOutboundMessage = MockMempoolMessage;
+    type MempoolTransportMessage = Vec<u8>;
+
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+    type MempoolRouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
+    type MempoolRouterScheduler =
+        QuicRouterScheduler<MockGossip, Self::MempoolInboundMessage, Self::MempoolOutboundMessage>;
 }
 
 fn many_nodes_nop_timeout() -> u128 {
     let (stc, rsc, xfmrs, terminator) = setup();
 
-    let duration = create_and_run_nodes::<NopSwarm, _, _>(
+    let duration = create_and_run_nodes::<NopSwarm, _, _, _>(
         MockValidator,
+        rsc.clone(),
         rsc,
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -145,8 +160,9 @@ fn many_nodes_nop_timeout() -> u128 {
 fn many_nodes_bls_timeout() -> u128 {
     let (stc, rsc, xfmrs, terminator) = setup();
 
-    let duration = create_and_run_nodes::<BlsSwarm, _, _>(
+    let duration = create_and_run_nodes::<BlsSwarm, _, _, _>(
         MockValidator,
+        rsc.clone(),
         rsc,
         MockWALoggerConfig,
         MockMempoolConfig::default(),
