@@ -11,7 +11,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::{
-    hasher::{Hash, Hashable, Hasher},
+    hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, PubKey},
 };
 use monad_proto::proto::message::{
@@ -48,8 +48,8 @@ impl<S: MessageSignature, M> Verified<S, M> {
 }
 
 impl<S: MessageSignature, M: Hashable> Verified<S, M> {
-    pub fn new<H: Hasher>(msg: M, keypair: &KeyPair) -> Self {
-        let hash = H::hash_object(&msg);
+    pub fn new(msg: M, keypair: &KeyPair) -> Self {
+        let hash = HasherType::hash_object(&msg);
         let signature = S::sign(hash.as_ref(), keypair);
         Self {
             author: NodeId(keypair.pubkey()),
@@ -108,7 +108,7 @@ where
 {
     // A verified proposal is one which is well-formed and has valid
     // signatures for the present TC or QC
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<VT: ValidatorSetType>(
         self,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -118,7 +118,7 @@ where
         //       signatures can't be reused across variant members
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
+                let verified = Unverified::new(m, self.author_signature).verify(
                     validators,
                     validator_mapping,
                     sender,
@@ -133,7 +133,7 @@ where
             }
             ConsensusMessage::Vote(m) => {
                 let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validators.get_members(), sender)?;
+                    .verify(validators.get_members(), sender)?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -143,7 +143,7 @@ where
                 }
             }
             ConsensusMessage::Timeout(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
+                let verified = Unverified::new(m, self.author_signature).verify(
                     validators,
                     validator_mapping,
                     sender,
@@ -158,7 +158,7 @@ where
             }
             ConsensusMessage::RequestBlockSync(m) => {
                 let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validators.get_members(), sender)?;
+                    .verify(validators.get_members(), sender)?;
                 Verified {
                     author: verified.author,
                     message: Unverified::new(
@@ -168,7 +168,7 @@ where
                 }
             }
             ConsensusMessage::BlockSync(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
+                let verified = Unverified::new(m, self.author_signature).verify(
                     validators,
                     validator_mapping,
                     sender,
@@ -192,21 +192,21 @@ where
 {
     // A verified proposal is one which is well-formed and has valid
     // signatures for the present TC or QC
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<VT: ValidatorSetType>(
         self,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
     ) -> Result<Verified<S, ProposalMessage<SCT>>, Error> {
         self.well_formed_proposal()?;
-        let msg = H::hash_object(&self.obj);
+        let msg = HasherType::hash_object(&self.obj);
         let author = verify_author(
             validators.get_members(),
             sender,
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<H, _, _>(
+        verify_certificates(
             validators,
             validator_mapping,
             &self.obj.last_round_tc,
@@ -241,12 +241,12 @@ where
 impl<S: MessageSignature, SCT: SignatureCollection> Unverified<S, VoteMessage<SCT>> {
     // A verified vote message has a valid signature
     // Return type must keep the signature with the message as it is used later by the protocol
-    pub fn verify<H: Hasher>(
+    pub fn verify(
         self,
         validators: &HashMap<NodeId, Stake>,
         sender: &PubKey,
     ) -> Result<Verified<S, VoteMessage<SCT>>, Error> {
-        let msg = H::hash_object(&self.obj);
+        let msg = HasherType::hash_object(&self.obj);
 
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
 
@@ -264,21 +264,21 @@ where
     S: MessageSignature,
     SCT: SignatureCollection,
 {
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<VT: ValidatorSetType>(
         self,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
     ) -> Result<Verified<S, TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
-        let msg = H::hash_object(&self.obj);
+        let msg = HasherType::hash_object(&self.obj);
         let author = verify_author(
             validators.get_members(),
             sender,
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<H, _, _>(
+        verify_certificates(
             validators,
             validator_mapping,
             &self.obj.timeout.last_round_tc,
@@ -302,12 +302,12 @@ where
 }
 
 impl<S: MessageSignature> Unverified<S, RequestBlockSyncMessage> {
-    pub fn verify<H: Hasher>(
+    pub fn verify(
         self,
         validators: &HashMap<NodeId, Stake>,
         sender: &PubKey,
     ) -> Result<Verified<S, RequestBlockSyncMessage>, Error> {
-        let msg = H::hash_object(&self.obj);
+        let msg = HasherType::hash_object(&self.obj);
 
         let author = verify_author(validators, sender, &msg, &self.author_signature)?;
 
@@ -325,13 +325,13 @@ where
     S: MessageSignature,
     SCT: SignatureCollection,
 {
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+    pub fn verify<VT: ValidatorSetType>(
         self,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
     ) -> Result<Verified<S, BlockSyncResponseMessage<SCT>>, Error> {
-        let msg = H::hash_object(&self.obj);
+        let msg = HasherType::hash_object(&self.obj);
 
         let author = verify_author(
             validators.get_members(),
@@ -341,7 +341,7 @@ where
         )?;
 
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &b.block.qc)?;
+            verify_certificates(validators, validator_mapping, &(None), &b.block.qc)?;
         }
 
         let result = Verified {
@@ -353,22 +353,21 @@ where
     }
 }
 
-fn verify_certificates<H, SCT, VT>(
+fn verify_certificates<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     tc: &Option<TimeoutCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
-    H: Hasher,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
     if let Some(tc) = tc {
-        verify_tc::<SCT, H, _>(validators, validator_mapping, tc)?;
+        verify_tc(validators, validator_mapping, tc)?;
     }
 
-    verify_qc::<SCT, H, _>(validators, validator_mapping, qc)?;
+    verify_qc(validators, validator_mapping, qc)?;
 
     Ok(())
 }
@@ -378,14 +377,13 @@ where
 /// The signature collections are created over `Hash(tc.round, high_qc.round)`
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
-fn verify_tc<SCT, H, VT>(
+fn verify_tc<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     tc: &TimeoutCertificate<SCT>,
 ) -> Result<(), Error>
 where
     SCT: SignatureCollection,
-    H: Hasher,
     VT: ValidatorSetType,
 {
     let mut node_ids = Vec::new();
@@ -394,7 +392,7 @@ where
             return Err(Error::InvalidTcRound);
         }
 
-        let mut h = H::new();
+        let mut h = HasherType::new();
         h.update(tc.round);
         h.update(t.high_qc_round.qc_round);
         let msg = h.hash();
@@ -415,22 +413,21 @@ where
     Ok(())
 }
 
-fn verify_qc<SCT, H, VT>(
+fn verify_qc<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
     SCT: SignatureCollection,
-    H: Hasher,
     VT: ValidatorSetType,
 {
-    if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
+    if HasherType::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
         // TODO-3: collect author for evidence?
         return Err(Error::InvalidSignature);
     }
 
-    let qc_msg = H::hash_object(&qc.info.ledger_commit);
+    let qc_msg = HasherType::hash_object(&qc.info.ledger_commit);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
@@ -580,7 +577,7 @@ mod test {
             high_qc_rounds,
         };
 
-        verify_tc::<_, HasherType, _>(&vset, &vmap, &tc)
+        verify_tc(&vset, &vmap, &tc)
     }
 
     #[test]
@@ -593,7 +590,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypair = get_key(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
@@ -618,7 +615,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi2,
                 ledger_commit: lci,
@@ -626,9 +623,7 @@ mod test {
             sigs,
         );
 
-        assert!(
-            verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &val_mapping, &qc).is_err()
-        );
+        assert!(verify_qc(&vset, &val_mapping, &qc).is_err());
     }
 
     #[test]
@@ -641,7 +636,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypairs = create_keys(2);
         let vlist = vec![
@@ -667,7 +662,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -676,7 +671,7 @@ mod test {
         );
 
         assert!(matches!(
-            verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &vmap, &qc),
+            verify_qc(&vset, &vmap, &qc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -718,7 +713,7 @@ mod test {
         };
 
         assert!(matches!(
-            verify_tc::<_, HasherType, _>(&vset, &vmap, &tc),
+            verify_tc(&vset, &vmap, &tc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -741,7 +736,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let msg = HasherType::hash_object(&lci);
         let mut sigs = Vec::new();
@@ -753,7 +748,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -771,13 +766,12 @@ mod test {
             last_round_tc: Some(tc),
         };
 
-        let tmo_msg =
-            TimeoutMessage::<SignatureCollectionType>::new::<HasherType>(tmo, &certkeys[0]);
-        let signed_tmo_msg = Verified::<SignatureType, _>::new::<HasherType>(tmo_msg, &keypairs[0]);
+        let tmo_msg = TimeoutMessage::<SignatureCollectionType>::new(tmo, &certkeys[0]);
+        let signed_tmo_msg = Verified::<SignatureType, _>::new(tmo_msg, &keypairs[0]);
         let (author, signature, tm) = signed_tmo_msg.destructure();
 
         let unverified_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
+        let err = unverified_tmo_msg.verify(&vset, &vmap, &author.0);
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -798,7 +792,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let msg = HasherType::hash_object(&lci);
         let mut sigs = Vec::new();
@@ -810,7 +804,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -828,14 +822,13 @@ mod test {
             last_round_tc: None,
         };
 
-        let byzantine_tmo_msg =
-            TimeoutMessage::<SignatureCollectionType>::new::<HasherType>(tmo, &certkeys[0]);
+        let byzantine_tmo_msg = TimeoutMessage::<SignatureCollectionType>::new(tmo, &certkeys[0]);
         let signed_byzantine_tmo_msg =
-            Verified::<SignatureType, _>::new::<HasherType>(byzantine_tmo_msg, &keypairs[0]);
+            Verified::<SignatureType, _>::new(byzantine_tmo_msg, &keypairs[0]);
         let (author, signature, tm) = signed_byzantine_tmo_msg.destructure();
 
         let unverified_byzantine_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_byzantine_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
+        let err = unverified_byzantine_tmo_msg.verify(&vset, &vmap, &author.0);
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 
@@ -848,7 +841,7 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let v = Vote {
             vote_info: vi,
@@ -859,11 +852,11 @@ mod test {
         let keypair = KeyPair::from_bytes(&mut privkey.clone()).unwrap();
         let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
 
-        let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeypair);
+        let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkeypair);
 
         let expected_vote_info_hash = vm.vote.ledger_commit_info.vote_info_hash;
 
-        let svm = Verified::<SignatureType, _>::new::<HasherType>(vm, &keypair);
+        let svm = Verified::<SignatureType, _>::new(vm, &keypair);
         let (author, signature, orig_vm) = svm.destructure();
         let msg = HasherType::hash_object(&vm);
         assert_eq!(

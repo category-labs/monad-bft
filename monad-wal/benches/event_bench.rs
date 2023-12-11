@@ -125,7 +125,7 @@ fn bench_vote(c: &mut Criterion) {
         ledger_commit_info: lci,
     };
 
-    let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkey);
+    let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
 
     let vote = ConsensusMessage::Vote(vm);
 
@@ -161,7 +161,7 @@ fn bench_timeout(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
+    let lci = LedgerCommitInfo::new(None, &vi);
 
     let qcinfo = QcInfo {
         vote: vi,
@@ -179,7 +179,7 @@ fn bench_timeout(c: &mut Criterion) {
     let aggsig =
         SignatureCollectionType::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new::<HasherType>(qcinfo, aggsig);
+    let qc = QuorumCertificate::new(qcinfo, aggsig);
 
     let tmo_info = TimeoutInfo {
         round: Round(3),
@@ -218,7 +218,7 @@ fn bench_timeout(c: &mut Criterion) {
         last_round_tc: Some(tc),
     };
 
-    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new::<HasherType>(timeout, author_certkey));
+    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new(timeout, author_certkey));
 
     let tmo_hash = HasherType::hash_object(&tmo);
     let unverified_message = Unverified::new(tmo, author_keypair.sign(tmo_hash.as_ref()));

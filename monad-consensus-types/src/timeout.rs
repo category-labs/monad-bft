@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
 use monad_types::*;
 use zerocopy::AsBytes;
 
@@ -40,8 +40,8 @@ impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
 }
 
 impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
-    pub fn timeout_digest<H: Hasher>(&self) -> Hash {
-        let mut hasher = H::new();
+    pub fn timeout_digest(&self) -> Hash {
+        let mut hasher = HasherType::new();
         hasher.update(self.round.as_bytes());
         hasher.update(self.high_qc.info.vote.round.as_bytes());
         hasher.hash()
@@ -72,7 +72,7 @@ pub struct TimeoutCertificate<SCT> {
 }
 
 impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
-    pub fn new<H: Hasher>(
+    pub fn new(
         round: Round,
         high_qc_round_sig_tuple: &[(NodeId, TimeoutInfo<SCT>, SCT::SignatureType)],
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -82,7 +82,7 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
             let high_qc_round = HighQcRound {
                 qc_round: tmo_info.high_qc.info.vote.round,
             };
-            let tminfo_digest = tmo_info.timeout_digest::<H>();
+            let tminfo_digest = tmo_info.timeout_digest();
             let entry = sigs
                 .entry(high_qc_round)
                 .or_insert((tminfo_digest, Vec::new()));

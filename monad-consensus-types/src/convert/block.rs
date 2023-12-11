@@ -1,4 +1,3 @@
-use monad_crypto::hasher::HasherType;
 use monad_eth_types::EthAddress;
 use monad_proto::{
     error::ProtoError,
@@ -47,7 +46,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlock) -> Result<Self, Self::Error> {
-        Ok(Self::new::<HasherType>(
+        Ok(Self::new(
             value
                 .author
                 .ok_or(Self::Error::MissingRequiredField(

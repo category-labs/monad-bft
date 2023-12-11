@@ -24,10 +24,7 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::{
-    hasher::HasherType,
-    secp256k1::{KeyPair, PubKey},
-};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
@@ -269,10 +266,8 @@ where
         let val_mapping = ValidatorMapping::new(voting_identities);
         let election = LT::new();
 
-        let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
-            config.genesis_vote_info,
-            config.genesis_signatures,
-        );
+        let genesis_qc =
+            QuorumCertificate::genesis_qc(config.genesis_vote_info, config.genesis_signatures);
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             validator_set: val_set,
@@ -322,7 +317,7 @@ where
                     ConsensusEvent::Timeout(tmo_event) => match tmo_event {
                         TimeoutVariant::Pacemaker => self
                             .consensus
-                            .handle_timeout_expiry::<HasherType>()
+                            .handle_timeout_expiry()
                             .into_iter()
                             .map(|cmd| {
                                 ConsensusCommand::from_pacemaker_command(
@@ -345,7 +340,7 @@ where
                         if fetched.round == self.consensus.get_current_round() {
                             let mut header = ExecutionArtifacts::zero();
                             header.state_root = fetched.state_root_hash;
-                            let b = Block::new::<HasherType>(
+                            let b = Block::new(
                                 fetched.node_id,
                                 fetched.round,
                                 &Payload {
@@ -382,17 +377,14 @@ where
                                 block: fetched_txs.p_block,
                                 last_round_tc: fetched_txs.p_last_round_tc,
                             };
-                            cmds.extend(
-                                self.consensus
-                                    .handle_proposal_message_full::<HasherType, _, _>(
-                                        fetched_txs.author,
-                                        proposal_msg,
-                                        txns,
-                                        &self.validator_set,
-                                        &self.validator_mapping,
-                                        &self.leader_election,
-                                    ),
-                            );
+                            cmds.extend(self.consensus.handle_proposal_message_full(
+                                fetched_txs.author,
+                                proposal_msg,
+                                txns,
+                                &self.validator_set,
+                                &self.validator_mapping,
+                                &self.leader_election,
+                            ));
                         }
 
                         cmds
@@ -420,7 +412,7 @@ where
                         sender,
                         unverified_message,
                     } => {
-                        let verified_message = match unverified_message.verify::<HasherType, _>(
+                        let verified_message = match unverified_message.verify(
                             &self.validator_set,
                             &self.validator_mapping,
                             &sender,
@@ -430,20 +422,18 @@ where
                         };
                         let (author, _, verified_message) = verified_message.destructure();
                         match verified_message {
-                            ConsensusMessage::Proposal(msg) => self
-                                .consensus
-                                .handle_proposal_message::<HasherType>(author, msg),
-                            ConsensusMessage::Vote(msg) => {
-                                self.consensus.handle_vote_message::<HasherType, _, _>(
-                                    author,
-                                    msg,
-                                    &self.validator_set,
-                                    &self.validator_mapping,
-                                    &self.leader_election,
-                                )
+                            ConsensusMessage::Proposal(msg) => {
+                                self.consensus.handle_proposal_message(author, msg)
                             }
+                            ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
+                                author,
+                                msg,
+                                &self.validator_set,
+                                &self.validator_mapping,
+                                &self.leader_election,
+                            ),
                             ConsensusMessage::Timeout(msg) => {
-                                self.consensus.handle_timeout_message::<HasherType, _, _>(
+                                self.consensus.handle_timeout_message(
                                     author,
                                     msg,
                                     &self.validator_set,
@@ -492,9 +482,8 @@ where
 
                 let prepare_router_message =
                     |target: RouterTarget, message: ConsensusMessage<SCT>| {
-                        let message = VerifiedMonadMessage(
-                            message.sign::<HasherType, ST>(self.consensus.get_keypair()),
-                        );
+                        let message =
+                            VerifiedMonadMessage(message.sign(self.consensus.get_keypair()));
                         Command::RouterCommand(RouterCommand::Publish { target, message })
                     };
 

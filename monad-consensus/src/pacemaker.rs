@@ -8,7 +8,6 @@ use monad_consensus_types::{
     timeout::{Timeout, TimeoutCertificate},
     voting::ValidatorMapping,
 };
-use monad_crypto::hasher::Hasher;
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -165,7 +164,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     /// has not done so before
     /// if 2f+1 timeout messages are received, create the Timeout Certificate
     #[must_use]
-    pub fn process_remote_timeout<H: Hasher, VST: ValidatorSetType>(
+    pub fn process_remote_timeout<VST: ValidatorSetType>(
         &mut self,
         validators: &VST,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -200,7 +199,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         // try to create a TimeoutCertificate from the pending timeouts, filtering out
         // invalid timeout messages if there are signature errors
         while self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
-            match TimeoutCertificate::new::<H>(
+            match TimeoutCertificate::new(
                 tm_info.round,
                 self.pending_timeouts
                     .iter()
@@ -287,7 +286,7 @@ mod test {
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
-        hasher::{Hash, HasherType},
+        hasher::{Hash, Hasher, HasherType},
         secp256k1::{KeyPair, SecpSignature},
     };
     use monad_testutil::{
@@ -316,7 +315,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let ledger_commit_info = LedgerCommitInfo::new::<HasherType>(None, &vote_info);
+        let ledger_commit_info = LedgerCommitInfo::new(None, &vote_info);
 
         let qc_info = QcInfo {
             vote: vote_info,
@@ -341,7 +340,7 @@ mod test {
 
         let sigcol = SCT::new(sigs, valmap, vote_hash.as_ref()).expect("success");
 
-        QuorumCertificate::<SCT>::new::<HasherType>(qc_info, sigcol)
+        QuorumCertificate::<SCT>::new(qc_info, sigcol)
     }
 
     fn create_timeout_message<SCT: SignatureCollection>(
@@ -360,7 +359,7 @@ mod test {
 
         let invalid_msg = b"invalid";
 
-        let mut tmo_msg = TimeoutMessage::<SCT>::new::<HasherType>(timeout, certkeypair);
+        let mut tmo_msg = TimeoutMessage::<SCT>::new(timeout, certkeypair);
         if !valid {
             tmo_msg.sig =
                 <SCT::SignatureType as CertificateSignature>::sign(invalid_msg, certkeypair);
@@ -383,7 +382,7 @@ mod test {
         let tm2 = create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), true);
         let tm3 = create_timeout_message(&certkeys[3], timeout_round, high_qc.clone(), true);
 
-        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -395,7 +394,7 @@ mod test {
         assert!(cmds.is_empty());
 
         // enter PhaseHonest::One, timeout itself
-        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -411,7 +410,7 @@ mod test {
         assert!(matches!(cmds[2], PacemakerCommand::Schedule { .. }));
 
         // enter PhaseHonest::SuperMajority, qc is created
-        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -424,7 +423,7 @@ mod test {
         assert!(cmds.is_empty());
 
         // in PhaseHonest::SuperMajority, pacemaker doesn't create TC with new timeouts
-        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -451,7 +450,7 @@ mod test {
         let tm2_invalid =
             create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), false);
 
-        let _ = pacemaker.process_remote_timeout::<HasherType, _>(
+        let _ = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -460,7 +459,7 @@ mod test {
             tm0_valid,
         );
 
-        let _ = pacemaker.process_remote_timeout::<HasherType, _>(
+        let _ = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -469,7 +468,7 @@ mod test {
             tm1_valid,
         );
 
-        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -523,7 +522,7 @@ mod test {
         let tm1_valid = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
         let tm2_valid = create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), true);
 
-        let _ = pacemaker.process_remote_timeout::<HasherType, _>(
+        let _ = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -532,7 +531,7 @@ mod test {
             tm1_valid,
         );
 
-        let (tc, _cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, _cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,
@@ -545,7 +544,7 @@ mod test {
 
         // invalid timeout is removed
         // the remaining two timeouts has 5/7 stake, so TC is created
-        let (tc, cmds) = pacemaker.process_remote_timeout::<HasherType, _>(
+        let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
             &mut safety,

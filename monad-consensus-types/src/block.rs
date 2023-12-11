@@ -1,4 +1,4 @@
-use monad_crypto::hasher::{Hashable, Hasher};
+use monad_crypto::hasher::{Hashable, Hasher, HasherType};
 use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
@@ -79,12 +79,7 @@ impl<T: SignatureCollection> Hashable for Block<T> {
 }
 
 impl<T: SignatureCollection> Block<T> {
-    pub fn new<H: Hasher>(
-        author: NodeId,
-        round: Round,
-        payload: &Payload,
-        qc: &QuorumCertificate<T>,
-    ) -> Self {
+    pub fn new(author: NodeId, round: Round, payload: &Payload, qc: &QuorumCertificate<T>) -> Self {
         Self {
             author,
             round,
@@ -92,7 +87,7 @@ impl<T: SignatureCollection> Block<T> {
             qc: qc.clone(),
             id: {
                 let mut _block_hash_span = tracing::info_span!("block_hash_span").entered();
-                let mut state = H::new();
+                let mut state = HasherType::new();
                 state.update(author.0.bytes());
                 state.update(round.as_bytes());
                 payload.hash(&mut state);

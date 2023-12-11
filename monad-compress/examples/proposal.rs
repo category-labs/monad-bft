@@ -8,7 +8,7 @@ use monad_consensus_types::{
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     transaction_validator::MockValidator,
 };
-use monad_crypto::{hasher::HasherType, secp256k1::SecpSignature};
+use monad_crypto::secp256k1::SecpSignature;
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{
     proposal::ProposalGen, signing::get_genesis_config, validators::create_keys_w_validators,
@@ -37,15 +37,10 @@ fn main() {
         .map(|k| NodeId(k.pubkey()))
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<
-        HasherType,
-        BlsSignatureCollection,
-        MockValidator,
-    >(voting_keys.iter(), &valmap, &MockValidator {});
-    let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
-        genesis_vote_info(genesis_block.get_id()),
-        genesis_sigs,
-    );
+    let (genesis_block, genesis_sigs) =
+        get_genesis_config(voting_keys.iter(), &valmap, &MockValidator {});
+    let genesis_qc =
+        QuorumCertificate::genesis_qc(genesis_vote_info(genesis_block.get_id()), genesis_sigs);
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
         ProposalGen::new(genesis_qc);
@@ -75,7 +70,7 @@ fn main() {
 
     let proposal: VerifiedMonadMessage<SecpSignature, BlsSignatureCollection> =
         ConsensusMessage::<BlsSignatureCollection>::Proposal(proposal)
-            .sign::<HasherType, SecpSignature>(leader_key)
+            .sign(leader_key)
             .into();
 
     let proposal_bytes: Bytes = proposal.serialize();

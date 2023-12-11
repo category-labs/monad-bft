@@ -98,11 +98,7 @@ mod test {
         transaction_validator::MockValidator,
         voting::VoteInfo,
     };
-    use monad_crypto::{
-        hasher::{Hash, HasherType},
-        secp256k1::KeyPair,
-        NopSignature,
-    };
+    use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
@@ -113,7 +109,7 @@ mod test {
         let pubkey = KeyPair::from_bytes(&mut [127; 32]).unwrap().pubkey();
 
         let full_block = MonadFullBlock::<MultiSig<NopSignature>>::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 NodeId(pubkey),
                 Round(0),
                 &Payload {
@@ -130,7 +126,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QuorumCertificate::new::<HasherType>(
+                &QuorumCertificate::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),

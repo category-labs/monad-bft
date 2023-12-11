@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_crypto::hasher::{Hash, Hashable};
 use monad_types::NodeId;
 
 use crate::{
@@ -62,7 +62,7 @@ pub trait SignatureCollection:
     ) -> Result<Self, SignatureCollectionError<Self::SignatureType>>;
 
     // hash of all the signatures
-    fn get_hash<H: Hasher>(&self) -> Hash;
+    fn get_hash(&self) -> Hash;
 
     fn verify(
         &self,

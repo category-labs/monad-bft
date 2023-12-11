@@ -9,10 +9,7 @@ use monad_consensus_types::{
     transaction_validator::TransactionValidator,
     voting::ValidatorMapping,
 };
-use monad_crypto::{
-    hasher::HasherType,
-    secp256k1::{KeyPair, PubKey},
-};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{
     mock::MockExecutor,
@@ -78,7 +75,7 @@ pub fn complete_config<
         .collect::<Vec<_>>();
 
     let (genesis_block, genesis_sigs) =
-        get_genesis_config::<HasherType, SCT, TVT>(voting_keys.iter(), &validator_mapping, &tvt);
+        get_genesis_config::<SCT, TVT>(voting_keys.iter(), &validator_mapping, &tvt);
 
     let state_configs = keys
         .into_iter()

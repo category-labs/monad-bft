@@ -71,7 +71,7 @@ where
             .find(|(k, _)| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
             .expect("key not in valset");
 
-        let block = Block::new::<HasherType>(
+        let block = Block::new(
             NodeId(leader_key.pubkey()),
             self.round,
             &Payload {
@@ -93,7 +93,7 @@ where
         };
         self.last_tc = None;
 
-        Verified::new::<HasherType>(proposal, leader_key)
+        Verified::new(proposal, leader_key)
     }
 
     // next_tc uses the keys to generate a timeout certificate
@@ -124,7 +124,7 @@ where
             high_qc: self.high_qc.clone(),
         };
 
-        let tmo_digest = tminfo.timeout_digest::<HasherType>();
+        let tmo_digest = tminfo.timeout_digest();
         // aggregate all tmo signatures into one collection because all nodes share a global state
         // in reality we don't have this configuration because timeout messages
         // can't all contain TC carrying signatures from all validators. It's fine
@@ -152,8 +152,8 @@ where
 
         let mut tmo_msgs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
-            let tmo_msg = TimeoutMessage::new::<HasherType>(timeout.clone(), certkey);
-            tmo_msgs.push(Verified::<ST, _>::new::<HasherType>(tmo_msg, key));
+            let tmo_msg = TimeoutMessage::new(timeout.clone(), certkey);
+            tmo_msgs.push(Verified::<ST, _>::new(tmo_msg, key));
         }
 
         // entering new round through tc
@@ -176,7 +176,7 @@ where
             seq_num: block.payload.seq_num,
         };
         let commit = Some(block.get_id().0); // FIXME-1: is this hash correct?
-        let lci = LedgerCommitInfo::new::<HasherType>(commit, &vi);
+        let lci = LedgerCommitInfo::new(commit, &vi);
         let qcinfo = QcInfo {
             vote: vi,
             ledger_commit: lci,
@@ -197,6 +197,6 @@ where
 
         let sigcol = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
 
-        QuorumCertificate::new::<HasherType>(qcinfo, sigcol)
+        QuorumCertificate::new(qcinfo, sigcol)
     }
 }

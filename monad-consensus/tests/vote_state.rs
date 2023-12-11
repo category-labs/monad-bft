@@ -11,7 +11,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    hasher::{Hash, HasherType},
+    hasher::Hash,
     secp256k1::{KeyPair, SecpSignature},
 };
 use monad_testutil::{signing::*, validators::create_keys_w_validators};
@@ -34,16 +34,16 @@ fn create_signed_vote_message(
         seq_num: SeqNum(0),
     };
 
-    let lci = LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi);
+    let lci = LedgerCommitInfo::new(Some(Default::default()), &vi);
 
     let v = Vote {
         vote_info: vi,
         ledger_commit_info: lci,
     };
 
-    let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, certkey);
+    let vm = VoteMessage::<SignatureCollectionType>::new(v, certkey);
 
-    TestSigner::sign_object::<HasherType, _>(vm, key)
+    TestSigner::sign_object(vm, key)
 }
 
 fn setup_ctx(
@@ -64,7 +64,7 @@ fn setup_ctx(
             let svm =
                 create_signed_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(j));
             let vm = svm
-                .verify::<HasherType>(valset.get_members(), &keys[i as usize].pubkey())
+                .verify(valset.get_members(), &keys[i as usize].pubkey())
                 .unwrap();
 
             votes.push(vm);
@@ -102,7 +102,7 @@ fn test_votes(num_nodes: u32) {
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
         let v = &votes[i as usize];
-        let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
+        let (qc, cmds) = voteset.process_vote(v.author(), v, &valset, &vmap);
         assert!(cmds.is_empty());
         qcs.push(qc);
     }
@@ -128,7 +128,7 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
     for k in 0..num_rounds {
         for i in 0..num_nodes {
             let v = &votes[(k * num_nodes + i) as usize];
-            let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
+            let (qc, cmds) = voteset.process_vote(v.author(), v, &valset, &vmap);
             assert!(cmds.is_empty());
             qcs.push(qc);
         }
@@ -156,7 +156,7 @@ fn test_minority(num_nodes: u32) {
 
     for i in 0..majority - 1 {
         let v = &votes[i as usize];
-        let (qc, cmds) = voteset.process_vote::<HasherType, _>(v.author(), v, &valset, &vmap);
+        let (qc, cmds) = voteset.process_vote(v.author(), v, &valset, &vmap);
         assert!(cmds.is_empty());
         qcs.push(qc);
     }

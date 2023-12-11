@@ -72,10 +72,10 @@ impl<SCT> ConsensusMessage<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn sign<H: Hasher, ST: MessageSignature>(
+    pub fn sign<ST: MessageSignature>(
         self,
         keypair: &KeyPair,
     ) -> Verified<ST, ConsensusMessage<SCT>> {
-        Verified::new::<H>(self, keypair)
+        Verified::new(self, keypair)
     }
 }

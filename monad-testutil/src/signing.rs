@@ -62,7 +62,7 @@ impl SignatureCollection for MockSignatures {
         Ok(Self { pubkey: Vec::new() })
     }
 
-    fn get_hash<H: Hasher>(&self) -> Hash {
+    fn get_hash(&self) -> Hash {
         Default::default()
     }
 
@@ -111,7 +111,7 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
         hasher.update(b.qc.info.vote.id.0);
         hasher.update(b.payload.beneficiary.0.as_bytes());
         hasher.update(b.payload.randao_reveal.0.as_bytes());
-        hasher.update(b.qc.signatures.get_hash::<HasherType>());
+        hasher.update(b.qc.signatures.get_hash());
 
         hasher.hash()
     };
@@ -155,19 +155,18 @@ pub fn create_seed_for_certificate_keys<SCT: SignatureCollection>(num_keys: u32)
     (0..num_keys).map(|i| i as u64 + u32::MAX as u64).collect()
 }
 
-pub fn get_genesis_config<'k, H, SCT, TVT>(
+pub fn get_genesis_config<'k, SCT, TVT>(
     keys: impl Iterator<Item = &'k (NodeId, &'k SignatureCollectionKeyPairType<SCT>)>,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     tvt: &TVT,
 ) -> (FullBlock<SCT>, SCT)
 where
-    H: Hasher,
     SCT: SignatureCollection,
     TVT: TransactionValidator,
 {
     let genesis_txn = TransactionHashList::empty();
-    let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc::<H>();
-    let genesis_block = Block::<SCT>::new::<H>(
+    let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc();
+    let genesis_block = Block::<SCT>::new(
         // FIXME-4 init from genesis config, don't use random key
         NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
         Round(0),
@@ -181,8 +180,8 @@ where
         &genesis_prime_qc,
     );
 
-    let genesis_lci = LedgerCommitInfo::new::<H>(None, &genesis_vote_info(genesis_block.get_id()));
-    let msg = H::hash_object(&genesis_lci);
+    let genesis_lci = LedgerCommitInfo::new(None, &genesis_vote_info(genesis_block.get_id()));
+    let msg = HasherType::hash_object(&genesis_lci);
 
     let mut sigs = Vec::new();
     for (node_id, k) in keys {
@@ -202,11 +201,8 @@ pub struct TestSigner<S> {
 }
 
 impl TestSigner<SecpSignature> {
-    pub fn sign_object<H: Hasher, T: Hashable>(
-        o: T,
-        key: &KeyPair,
-    ) -> Unverified<SecpSignature, T> {
-        let msg = H::hash_object(&o);
+    pub fn sign_object<T: Hashable>(o: T, key: &KeyPair) -> Unverified<SecpSignature, T> {
+        let msg = HasherType::hash_object(&o);
         let sig = key.sign(msg.as_ref());
 
         Unverified::new(o, sig)

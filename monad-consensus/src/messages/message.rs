@@ -5,7 +5,7 @@ use monad_consensus_types::{
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
-use monad_crypto::hasher::{Hashable, Hasher};
+use monad_crypto::hasher::{Hashable, Hasher, HasherType};
 use monad_types::BlockId;
 
 /// Consensus protocol vote message
@@ -40,8 +40,8 @@ impl<SCT: SignatureCollection> Hashable for VoteMessage<SCT> {
 }
 
 impl<SCT: SignatureCollection> VoteMessage<SCT> {
-    pub fn new<H: Hasher>(vote: Vote, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
-        let vote_hash = H::hash_object(&vote);
+    pub fn new(vote: Vote, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+        let vote_hash = HasherType::hash_object(&vote);
 
         let sig = <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), key);
 
@@ -60,11 +60,8 @@ pub struct TimeoutMessage<SCT: SignatureCollection> {
 }
 
 impl<SCT: SignatureCollection> TimeoutMessage<SCT> {
-    pub fn new<H: Hasher>(
-        timeout: Timeout<SCT>,
-        key: &SignatureCollectionKeyPairType<SCT>,
-    ) -> Self {
-        let tmo_hash = timeout.tminfo.timeout_digest::<H>();
+    pub fn new(timeout: Timeout<SCT>, key: &SignatureCollectionKeyPairType<SCT>) -> Self {
+        let tmo_hash = timeout.tminfo.timeout_digest();
         let sig = <SCT::SignatureType as CertificateSignature>::sign(tmo_hash.as_ref(), key);
 
         Self { timeout, sig }

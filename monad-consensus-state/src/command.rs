@@ -11,7 +11,6 @@ use monad_consensus_types::{
     payload::TransactionHashList,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
-use monad_crypto::hasher::HasherType;
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
 
 /// Command type that the consensus state-machine outputs
@@ -81,10 +80,7 @@ impl<SCT: SignatureCollection> ConsensusCommand<SCT> {
         match cmd {
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
-                message: ConsensusMessage::Timeout(TimeoutMessage::new::<HasherType>(
-                    tmo,
-                    cert_keypair,
-                )),
+                message: ConsensusMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
             },
             PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
                 duration,

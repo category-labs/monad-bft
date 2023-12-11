@@ -7,9 +7,10 @@ use iced::{
 use iced_lazy::Component;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
+    block::BlockType, multi_sig::MultiSig, quorum_certificate::genesis_vote_info,
+    transaction_validator::MockValidator,
 };
-use monad_crypto::{hasher::Sha256Hash, secp256k1::KeyPair};
+use monad_crypto::secp256k1::KeyPair;
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
@@ -73,11 +74,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<
-            Sha256Hash,
-            <VizSwarm as SwarmRelation>::SignatureCollectionType,
-            _,
-        >(
+        let (genesis_block, genesis_sigs) = get_genesis_config::<MultiSig<_>, _>(
             voting_keys.iter(),
             &validator_mapping,
             &MockValidator::default(),

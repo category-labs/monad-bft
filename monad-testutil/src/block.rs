@@ -72,7 +72,7 @@ pub fn setup_block<SCT: SignatureCollection>(
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
+    let lci = LedgerCommitInfo::new(None, &vi);
 
     let qcinfo = QcInfo {
         vote: vi,
@@ -93,9 +93,9 @@ pub fn setup_block<SCT: SignatureCollection>(
 
     let sig_col = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::<SCT>::new::<HasherType>(qcinfo, sig_col);
+    let qc = QuorumCertificate::<SCT>::new(qcinfo, sig_col);
 
-    Block::<SCT>::new::<HasherType>(
+    Block::<SCT>::new(
         author,
         block_round,
         &Payload {

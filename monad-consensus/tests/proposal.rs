@@ -7,10 +7,7 @@ use monad_consensus_types::{
     validation::Error,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::{
-    hasher::{Hash, HasherType},
-    secp256k1::PubKey,
-};
+use monad_crypto::{hasher::Hash, secp256k1::PubKey};
 use monad_eth_types::EthAddress;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
@@ -35,15 +32,15 @@ fn setup_block(
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
+    let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
             vote: vi,
-            ledger_commit: LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi),
+            ledger_commit: LedgerCommitInfo::new(Some(Default::default()), &vi),
         },
         MockSignatures::with_pubkeys(signers),
     );
 
-    Block::<MockSignatures>::new::<HasherType>(
+    Block::<MockSignatures>::new(
         author,
         block_round,
         &Payload {
@@ -76,11 +73,9 @@ fn test_proposal_hash() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
+    let sp = TestSigner::sign_object(proposal, &keypairs[0]);
 
-    assert!(sp
-        .verify::<HasherType, _>(&vset, &vmap, &keypairs[0].pubkey())
-        .is_ok());
+    assert!(sp.verify(&vset, &vmap, &keypairs[0].pubkey()).is_ok());
 }
 
 #[test]
@@ -102,11 +97,10 @@ fn test_proposal_missing_tc() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
+    let sp = TestSigner::sign_object(proposal, &keypairs[0]);
 
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &keypairs[0].pubkey())
-            .unwrap_err(),
+        sp.verify(&vset, &vmap, &keypairs[0].pubkey()).unwrap_err(),
         Error::NotWellFormed
     );
 }
@@ -133,9 +127,9 @@ fn test_proposal_author_not_sender() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, author_keypair);
+    let sp = TestSigner::sign_object(proposal, author_keypair);
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &sender_keypair.pubkey())
+        sp.verify(&vset, &vmap, &sender_keypair.pubkey())
             .unwrap_err(),
         Error::AuthorNotSender
     );
@@ -160,7 +154,7 @@ fn test_proposal_invalid_author() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_valdiator_keypair);
+    let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![(
@@ -168,8 +162,7 @@ fn test_proposal_invalid_author() {
         author_keypair.pubkey(),
     )]);
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &author.0)
-            .unwrap_err(),
+        sp.verify(&vset, &vmap, &author.0).unwrap_err(),
         Error::InvalidAuthor
     );
 }
@@ -194,7 +187,7 @@ fn test_proposal_invalid_qc() {
         last_round_tc: None,
     };
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_staked_keypair);
+    let sp = TestSigner::sign_object(proposal, &non_staked_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
@@ -205,7 +198,7 @@ fn test_proposal_invalid_qc() {
         ),
     ]);
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &non_staked_keypair.pubkey())
+        sp.verify(&vset, &vmap, &non_staked_keypair.pubkey())
             .unwrap_err(),
         Error::InsufficientStake
     );

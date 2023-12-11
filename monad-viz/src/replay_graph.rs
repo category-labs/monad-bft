@@ -4,10 +4,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
 };
-use monad_crypto::{
-    hasher::Sha256Hash,
-    secp256k1::{KeyPair, PubKey},
-};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
 use monad_mock_swarm::swarm_relation::SwarmRelation;
@@ -41,15 +38,12 @@ impl ReplayConfig<MS> for RepConfig {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter())
             .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<
-            Sha256Hash,
-            <VizSwarm as SwarmRelation>::SignatureCollectionType,
-            <VizSwarm as SwarmRelation>::TransactionValidator,
-        >(
-            voting_keys.iter(),
-            &validator_mapping,
-            &MockValidator::default(),
-        );
+        let (genesis_block, genesis_sigs) =
+            get_genesis_config::<<VizSwarm as SwarmRelation>::SignatureCollectionType, _>(
+                voting_keys.iter(),
+                &validator_mapping,
+                &MockValidator,
+            );
 
         let state_configs = keys
             .into_iter()

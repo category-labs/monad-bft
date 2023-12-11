@@ -661,10 +661,7 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
     use monad_consensus_types::{multi_sig::MultiSig, quorum_certificate::QuorumCertificate};
-    use monad_crypto::{
-        hasher::{Hash, HasherType},
-        NopSignature,
-    };
+    use monad_crypto::{hasher::Hash, NopSignature};
     use monad_executor::Executor;
     use monad_executor_glue::{ConsensusEvent, TimerCommand};
     use monad_testutil::signing::node_id;
@@ -678,7 +675,7 @@ mod tests {
             round: Round(0),
             seq_num: SeqNum(0),
             state_root_hash: Default::default(),
-            high_qc: QuorumCertificate::genesis_prime_qc::<HasherType>(),
+            high_qc: QuorumCertificate::genesis_prime_qc(),
             last_round_tc: None,
         }
     }

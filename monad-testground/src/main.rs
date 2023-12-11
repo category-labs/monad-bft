@@ -241,10 +241,10 @@ where
         .collect::<Vec<_>>();
     let genesis_block = {
         let genesis_txn = TransactionHashList::empty();
-        let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
+        let genesis_prime_qc = QuorumCertificate::genesis_prime_qc();
         let genesis_execution_header = ExecutionArtifacts::zero();
         FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
                 Round(0),
                 &Payload {
@@ -263,7 +263,7 @@ where
     };
     let gen_vote_info = genesis_vote_info(genesis_block.get_id());
     let genesis_signatures = {
-        let genesis_lci = LedgerCommitInfo::new::<HasherType>(None, &gen_vote_info);
+        let genesis_lci = LedgerCommitInfo::new(None, &gen_vote_info);
         let msg = HasherType::hash_object(&genesis_lci);
 
         let mut sigs = Vec::new();

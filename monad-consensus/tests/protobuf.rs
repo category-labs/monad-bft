@@ -139,17 +139,17 @@ test_all_combination!(test_vote_message, |num_keys| {
         ledger_commit_info: lci,
     };
 
-    let votemsg = ConsensusMessage::Vote(VoteMessage::<SCT>::new::<HasherType>(vote, &certkeys[0]));
+    let votemsg = ConsensusMessage::Vote(VoteMessage::<SCT>::new(vote, &certkeys[0]));
 
     let author_keypair = &keypairs[0];
 
-    let verified_votemsg = Verified::<NopSignature, _>::new::<HasherType>(votemsg, author_keypair);
+    let verified_votemsg = Verified::<NopSignature, _>::new(votemsg, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
     let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
     let verified_rx_vote = rx_msg
-        .verify::<HasherType, _>(&validators, &validator_mapping, &author_keypair.pubkey())
+        .verify(&validators, &validator_mapping, &author_keypair.pubkey())
         .unwrap();
 
     assert_eq!(verified_votemsg, verified_rx_vote);
@@ -169,7 +169,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
+    let lci = LedgerCommitInfo::new(None, &vi);
 
     let qcinfo = QcInfo {
         vote: vi,
@@ -189,7 +189,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     let sigcol = SCT::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new::<HasherType>(qcinfo, sigcol);
+    let qc = QuorumCertificate::new(qcinfo, sigcol);
 
     // timeout certificate for Round(2)
     // timeout message for Round(3)
@@ -211,17 +211,15 @@ test_all_combination!(test_timeout_message, |num_keys| {
         last_round_tc: Some(tc),
     };
 
-    let tmo_message =
-        ConsensusMessage::Timeout(TimeoutMessage::new::<HasherType>(tmo, author_cert_key));
+    let tmo_message = ConsensusMessage::Timeout(TimeoutMessage::new(tmo, author_cert_key));
 
-    let verified_tmo_message =
-        Verified::<NopSignature, _>::new::<HasherType>(tmo_message, author_keypair);
+    let verified_tmo_message = Verified::<NopSignature, _>::new(tmo_message, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
     let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
     let verified_rx_tmo_messaage =
-        rx_msg.verify::<HasherType, _>(&validators, &validator_mapping, &author_keypair.pubkey());
+        rx_msg.verify(&validators, &validator_mapping, &author_keypair.pubkey());
 
     assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
 });
@@ -244,13 +242,12 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         block: blk,
         last_round_tc: None,
     });
-    let verified_msg = Verified::<NopSignature, _>::new::<HasherType>(proposal, author_keypair);
+    let verified_msg = Verified::<NopSignature, _>::new(proposal, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
     let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
-    let verified_rx_msg =
-        rx_msg.verify::<HasherType, _>(&validators, &validator_map, &author_keypair.pubkey());
+    let verified_rx_msg = rx_msg.verify(&validators, &validator_map, &author_keypair.pubkey());
 
     assert_eq!(verified_msg, verified_rx_msg.unwrap());
 });
@@ -287,13 +284,12 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         block: blk,
         last_round_tc: Some(tc),
     });
-    let verified_msg = Verified::<NopSignature, _>::new::<HasherType>(msg, author_keypair);
+    let verified_msg = Verified::<NopSignature, _>::new(msg, author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
     let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
 
-    let verified_rx_msg =
-        rx_msg.verify::<HasherType, _>(&validators, &validator_map, &author_keypair.pubkey());
+    let verified_rx_msg = rx_msg.verify(&validators, &validator_map, &author_keypair.pubkey());
 
     assert_eq!(verified_msg, verified_rx_msg.unwrap());
 });

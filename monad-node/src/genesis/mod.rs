@@ -60,11 +60,11 @@ fn build_genesis_block(
     let (genesis_txs, genesis_full_txs) =
         (TransactionHashList::empty(), FullTransactionList::empty());
 
-    let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
+    let genesis_prime_qc = QuorumCertificate::genesis_prime_qc();
     let genesis_execution_header = ExecutionArtifacts::zero();
 
     FullBlock::from_block(
-        Block::new::<HasherType>(
+        Block::new(
             NodeId(author),
             Round(0),
             &Payload {
@@ -90,8 +90,7 @@ fn build_genesis_signatures(
     signatures: Vec<GenesisSignatureConfig>,
     val_mapping: &ValidatorMapping<KeyPair>,
 ) -> Result<SignatureCollectionType, NodeSetupError> {
-    let genesis_lci =
-        LedgerCommitInfo::new::<HasherType>(None, &genesis_vote_info(genesis_block.get_id()));
+    let genesis_lci = LedgerCommitInfo::new(None, &genesis_vote_info(genesis_block.get_id()));
 
     let msg = HasherType::hash_object(&genesis_lci);
 

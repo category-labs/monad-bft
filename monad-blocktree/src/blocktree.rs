@@ -405,10 +405,7 @@ mod test {
         transaction_validator::MockValidator,
         voting::VoteInfo,
     };
-    use monad_crypto::{
-        hasher::{Hash, HasherType},
-        secp256k1::KeyPair,
-    };
+    use monad_crypto::{hasher::Hash, secp256k1::KeyPair};
     use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, NodeId, Round, SeqNum};
@@ -434,11 +431,11 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -466,11 +463,11 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -492,11 +489,11 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(2),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -518,11 +515,11 @@ mod test {
         };
 
         let b3 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(3),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v3,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -544,11 +541,11 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v4,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -570,11 +567,11 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(5),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v5,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -596,11 +593,11 @@ mod test {
         };
 
         let b6 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(6),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v6,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -622,11 +619,11 @@ mod test {
         };
 
         let b7 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(7),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v7,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -720,11 +717,11 @@ mod test {
         };
 
         let b8 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(8),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v8,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -751,11 +748,11 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -783,11 +780,11 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -809,11 +806,11 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(2),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -852,7 +849,7 @@ mod test {
     #[test]
     fn equal_level_branching() {
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &Payload {
@@ -862,7 +859,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -890,7 +887,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &Payload {
@@ -900,7 +897,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -914,7 +911,7 @@ mod test {
         .unwrap();
 
         let b2 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &Payload {
@@ -924,7 +921,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -946,7 +943,7 @@ mod test {
         };
 
         let b3 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(2),
                 &Payload {
@@ -956,7 +953,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -997,7 +994,7 @@ mod test {
     #[test]
     fn duplicate_blocks() {
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &Payload {
@@ -1007,7 +1004,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1035,7 +1032,7 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &Payload {
@@ -1045,7 +1042,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1083,11 +1080,11 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1115,11 +1112,11 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1141,11 +1138,11 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(2),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1159,11 +1156,11 @@ mod test {
         .unwrap();
 
         let b3 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(3),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1177,11 +1174,11 @@ mod test {
         .unwrap();
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1243,11 +1240,11 @@ mod test {
         };
 
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1275,11 +1272,11 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v4,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1301,11 +1298,11 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(5),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v5,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1327,11 +1324,11 @@ mod test {
         };
 
         let b6 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(6),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v6,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1377,11 +1374,11 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1409,11 +1406,11 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1435,11 +1432,11 @@ mod test {
         };
 
         let b3 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v3,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1461,11 +1458,11 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v4,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1487,11 +1484,11 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(5),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v5,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1513,11 +1510,11 @@ mod test {
         };
 
         let b6 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(6),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v6,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1571,11 +1568,11 @@ mod test {
         };
 
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1603,11 +1600,11 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1629,11 +1626,11 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v4,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1670,11 +1667,11 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1702,11 +1699,11 @@ mod test {
         };
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v4,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1728,11 +1725,11 @@ mod test {
         };
 
         let b5 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(5),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v5,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1770,11 +1767,11 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(0),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -1802,11 +1799,11 @@ mod test {
         };
 
         let b1 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(1),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v1,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1828,11 +1825,11 @@ mod test {
         };
 
         let b2 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(2),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1846,11 +1843,11 @@ mod test {
         .unwrap();
 
         let b3 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(3),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
@@ -1864,11 +1861,11 @@ mod test {
         .unwrap();
 
         let b4 = FullBlock::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 node_id(),
                 Round(4),
                 &payload,
-                &QC::new::<HasherType>(
+                &QC::new(
                     QcInfo {
                         vote: v2,
                         ledger_commit: LedgerCommitInfo::default(),
