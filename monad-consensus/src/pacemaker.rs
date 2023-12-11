@@ -66,10 +66,8 @@ enum PhaseHonest {
 #[derive(Debug)]
 pub enum PacemakerCommand<SCT: SignatureCollection> {
     /// create the Timeout which can be signed to create a TimeoutMessage
+    /// this should be broadcast to all other nodes
     PrepareTimeout(Timeout<SCT>),
-
-    /// broadcast this node's TimeoutMessage to all other nodes
-    Broadcast(TimeoutMessage<SCT>),
 
     /// schedule a local round timeout event after duration
     Schedule { duration: Duration },

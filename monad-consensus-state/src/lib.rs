@@ -240,13 +240,6 @@ where
         self.pacemaker
             .handle_event(&mut self.safety, &self.high_qc)
             .into_iter()
-            .map(|cmd| match cmd {
-                PacemakerCommand::PrepareTimeout(tmo) => {
-                    let tmo_msg = TimeoutMessage::new::<H>(tmo, &self.cert_keypair);
-                    PacemakerCommand::Broadcast(tmo_msg)
-                }
-                _ => cmd,
-            })
             .collect()
     }
 
@@ -329,7 +322,7 @@ where
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
-                .map(Into::into)
+                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
                 .into_iter();
             cmds.extend(advance_round_cmds);
         }
@@ -477,7 +470,7 @@ where
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
-                .map(Into::into)
+                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
                 .into_iter();
             cmds.extend(advance_round_cmds);
         }
@@ -491,15 +484,11 @@ where
             tmo_msg,
         );
 
-        // map PrepareTimeout to TimeoutMesasge
-        let remote_timeout_cmds = remote_timeout_cmds.into_iter().map(|cmd| match cmd {
-            PacemakerCommand::PrepareTimeout(tmo) => {
-                let tmo_msg = TimeoutMessage::new::<H>(tmo, &self.cert_keypair);
-                PacemakerCommand::Broadcast(tmo_msg)
-            }
-            _ => cmd,
-        });
-        cmds.extend(remote_timeout_cmds.map(Into::into));
+        cmds.extend(
+            remote_timeout_cmds
+                .into_iter()
+                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd)),
+        );
         if let Some(tc) = tc {
             debug!("Created TC: {:?}", tc);
             inc_count!(created_tc);
@@ -507,7 +496,7 @@ where
                 .pacemaker
                 .advance_round_tc(&tc)
                 .into_iter()
-                .map(Into::into);
+                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd));
             cmds.extend(advance_round_cmds);
 
             if self.nodeid
@@ -679,7 +668,11 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc));
 
-        cmds.extend(self.pacemaker.advance_round_qc(qc).map(Into::into));
+        cmds.extend(
+            self.pacemaker
+                .advance_round_qc(qc)
+                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd)),
+        );
 
         cmds.extend(self.request_block_if_missing_ancestor(qc, validators));
         cmds
@@ -2612,10 +2605,7 @@ mod test {
         let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {
-                PacemakerCommand::Broadcast(TimeoutMessage {
-                    timeout: tmo,
-                    sig: _,
-                }) => Some(tmo),
+                PacemakerCommand::PrepareTimeout(tmo) => Some(tmo),
                 _ => None,
             })
             .collect();

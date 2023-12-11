@@ -334,7 +334,12 @@ where
                             .consensus
                             .handle_timeout_expiry::<HasherType>()
                             .into_iter()
-                            .map(Into::into)
+                            .map(|cmd| {
+                                ConsensusCommand::from_pacemaker_command(
+                                    self.consensus.get_cert_keypair(),
+                                    cmd,
+                                )
+                            })
                             .collect(),
                         TimeoutVariant::BlockSync(bid) => self
                             .consensus
