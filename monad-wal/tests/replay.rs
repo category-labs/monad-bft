@@ -4,7 +4,7 @@ mod test {
 
     use bytes::Bytes;
     use monad_executor::State;
-    use monad_executor_glue::{Identifiable, Message};
+    use monad_executor_glue::Message;
     use monad_testutil::block::MockBlock;
     use monad_types::{Deserializable, NodeId, Serializable};
     use monad_wal::{
@@ -52,25 +52,11 @@ mod test {
     #[derive(Clone)]
     struct MockMessage;
 
-    impl Identifiable for MockMessage {
-        type Id = i32;
-
-        fn id(&self) -> Self::Id {
-            0
-        }
-    }
-
     impl Message for MockMessage {
         type Event = TestEvent;
 
         fn event(self, _from: NodeId) -> Self::Event {
             TestEvent { data: 0 }
-        }
-    }
-
-    impl AsRef<MockMessage> for MockMessage {
-        fn as_ref(&self) -> &MockMessage {
-            self
         }
     }
 

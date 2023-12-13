@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::TimeoutMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncResponseMessage, TimeoutMessage},
+    },
     pacemaker::PacemakerCommand,
     vote_state::VoteStateCommand,
 };
@@ -13,6 +16,16 @@ use monad_consensus_types::{
 };
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
 
+/// The message that consensus state machine is publishing. This is converted to
+/// a VerifiedMonadMessage in monad-state
+pub enum PublishMessage<SCT: SignatureCollection> {
+    /// Consensus protocol message emitted from consensus state machine
+    ConsensusMessage(ConsensusMessage<SCT>),
+
+    /// Response to a BlockSyncRequest, with the requested block or not found
+    BlockSyncResponse(BlockSyncResponseMessage<SCT>),
+}
+
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
 pub enum ConsensusCommand<SCT: SignatureCollection> {
@@ -20,7 +33,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
     Publish {
         target: RouterTarget,
-        message: ConsensusMessage<SCT>,
+        message: PublishMessage<SCT>,
     },
     /// Schedule a timeout event to be emitted in `duration`
     Schedule {
@@ -73,7 +86,9 @@ impl<SCT: SignatureCollection> ConsensusCommand<SCT> {
         match cmd {
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
-                message: ConsensusMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
+                message: PublishMessage::ConsensusMessage(ConsensusMessage::Timeout(
+                    TimeoutMessage::new(tmo, cert_keypair),
+                )),
             },
             PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
                 duration,

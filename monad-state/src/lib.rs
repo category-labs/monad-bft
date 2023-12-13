@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, time::Duration};
 
 use bytes::Bytes;
 use monad_blocktree::blocktree::BlockTree;
@@ -10,7 +10,7 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand},
+    command::{Checkpoint, ConsensusCommand, PublishMessage},
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -28,14 +28,12 @@ use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
-    TimerCommand,
+    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
+    MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
-use ref_cast::RefCast;
 
 use crate::blocksync::BlockSyncResponder;
 
@@ -145,30 +143,37 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
-    Verified<ST, Validated<ConsensusMessage<SCT>>>,
-);
+pub enum VerifiedMonadMessage<ST, SCT: SignatureCollection> {
+    Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
+    BlockSyncRequest(Validated<RequestBlockSyncMessage>),
+    BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
+}
 
 impl<ST, SCT: SignatureCollection> From<Verified<ST, Validated<ConsensusMessage<SCT>>>>
     for VerifiedMonadMessage<ST, SCT>
 {
     fn from(value: Verified<ST, Validated<ConsensusMessage<SCT>>>) -> Self {
-        Self(value)
+        Self::Consensus(value)
     }
 }
 
-#[derive(RefCast)]
-#[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadMessage<ST, SCT: SignatureCollection>(
-    Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
-);
+pub enum MonadMessage<ST, SCT: SignatureCollection> {
+    /// Consensus protocol message
+    Consensus(Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>),
+
+    /// Request a missing block given BlockId
+    BlockSyncRequest(Unvalidated<RequestBlockSyncMessage>),
+
+    /// Block sync response
+    BlockSyncResponse(Unvalidated<BlockSyncResponseMessage<SCT>>),
+}
 
 impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Bytes>
     for VerifiedMonadMessage<MS, SCT>
 {
     fn serialize(&self) -> Bytes {
-        monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
+        crate::convert::interface::serialize_verified_monad_message(self)
     }
 }
 
@@ -176,7 +181,15 @@ impl<MS: MessageSignature, SCT: SignatureCollection>
     monad_types::Serializable<MonadMessage<MS, SCT>> for VerifiedMonadMessage<MS, SCT>
 {
     fn serialize(&self) -> MonadMessage<MS, SCT> {
-        MonadMessage(self.0.clone().into())
+        match self.clone() {
+            VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
+            VerifiedMonadMessage::BlockSyncRequest(msg) => {
+                MonadMessage::BlockSyncRequest(msg.into())
+            }
+            VerifiedMonadMessage::BlockSyncResponse(msg) => {
+                MonadMessage::BlockSyncResponse(msg.into())
+            }
+        }
     }
 }
 
@@ -186,36 +199,21 @@ impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable
     type ReadError = monad_proto::error::ProtoError;
 
     fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
-        Ok(MonadMessage(
-            monad_consensus::convert::interface::deserialize_unverified_consensus_message(
-                message.clone(),
-            )?,
-        ))
+        crate::convert::interface::deserialize_monad_message(message.clone())
     }
 }
 
 impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
-        MonadMessage(value.0.into())
-    }
-}
-
-impl<ST, SCT: SignatureCollection> Deref for VerifiedMonadMessage<ST, SCT> {
-    type Target = ConsensusMessage<SCT>;
-    fn deref(&self) -> &ConsensusMessage<SCT> {
-        self.0.deref()
-    }
-}
-
-impl<ST, SCT> Identifiable for MonadMessage<ST, SCT>
-where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-{
-    type Id = ST;
-
-    fn id(&self) -> Self::Id {
-        *self.0.author_signature()
+        match value {
+            VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
+            VerifiedMonadMessage::BlockSyncRequest(msg) => {
+                MonadMessage::BlockSyncRequest(msg.into())
+            }
+            VerifiedMonadMessage::BlockSyncResponse(msg) => {
+                MonadMessage::BlockSyncResponse(msg.into())
+            }
+        }
     }
 }
 
@@ -230,11 +228,24 @@ where
         // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
-
-        Self::Event::ConsensusEvent(ConsensusEvent::Message {
-            sender: from.0,
-            unverified_message: self.0,
-        })
+        match self {
+            MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
+                sender: from.0,
+                unverified_message: msg,
+            }),
+            MonadMessage::BlockSyncRequest(msg) => {
+                MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncRequest {
+                    sender: from.0,
+                    unvalidated_request: msg,
+                })
+            }
+            MonadMessage::BlockSyncResponse(msg) => {
+                MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncResponse {
+                    sender: from.0,
+                    unvalidated_response: msg,
+                })
+            }
+        }
     }
 }
 
@@ -388,7 +399,9 @@ where
 
                             cmds.push(ConsensusCommand::Publish {
                                 target: RouterTarget::Broadcast,
-                                message: ConsensusMessage::Proposal(p),
+                                message: PublishMessage::ConsensusMessage(
+                                    ConsensusMessage::Proposal(p),
+                                ),
                             });
                         }
 
@@ -422,7 +435,7 @@ where
                             ),
                             ConsensusCommand::Publish {
                                 target: RouterTarget::PointToPoint(NodeId(fetched_b.requester.0)),
-                                message: ConsensusMessage::BlockSync(
+                                message: PublishMessage::BlockSyncResponse(
                                     match fetched_b.unverified_full_block {
                                         Some(b) => BlockSyncResponseMessage::BlockFound(b),
                                         None => BlockSyncResponseMessage::NotAvailable(
@@ -483,29 +496,6 @@ where
                                     &self.leader_election,
                                 )
                             }
-                            ConsensusMessage::RequestBlockSync(msg) => {
-                                if let Some(block) =
-                                    self.consensus.fetch_uncommitted_block(&msg.block_id)
-                                {
-                                    // retrieve if currently cached in pending block tree
-                                    vec![ConsensusCommand::Publish {
-                                        target: RouterTarget::PointToPoint(author),
-                                        message: ConsensusMessage::BlockSync(
-                                            BlockSyncResponseMessage::BlockFound(
-                                                block.clone().into(),
-                                            ),
-                                        ),
-                                    }]
-                                } else {
-                                    // else ask ledger
-                                    self.block_sync_respond
-                                        .handle_request_block_sync_message(author, msg)
-                                }
-                            }
-                            ConsensusMessage::BlockSync(msg) => {
-                                self.consensus
-                                    .handle_block_sync(author, msg, &self.validator_set)
-                            }
                         }
                     }
                     ConsensusEvent::LoadEpoch(epoch, current_val_set, next_val_set) => {
@@ -520,12 +510,66 @@ where
                         self.consensus.handle_state_root_update(seq_num, root_hash);
                         Vec::new()
                     }
+                    ConsensusEvent::BlockSyncRequest {
+                        sender,
+                        unvalidated_request,
+                    } => {
+                        let validated_request = match unvalidated_request.validate() {
+                            Ok(req) => req,
+                            Err(e) => todo!("{e:?}"),
+                        }
+                        .into_inner();
+                        if let Some(block) = self
+                            .consensus
+                            .fetch_uncommitted_block(&validated_request.block_id)
+                        {
+                            // retrieve if currently cached in pending block tree
+                            vec![ConsensusCommand::Publish {
+                                target: RouterTarget::PointToPoint(NodeId(sender)),
+                                message: PublishMessage::BlockSyncResponse(
+                                    BlockSyncResponseMessage::BlockFound(block.clone().into()),
+                                ),
+                            }]
+                        } else {
+                            // else ask ledger
+                            self.block_sync_respond.handle_request_block_sync_message(
+                                NodeId(sender),
+                                validated_request,
+                            )
+                        }
+                    }
+                    ConsensusEvent::BlockSyncResponse {
+                        sender,
+                        unvalidated_response,
+                    } => {
+                        let validated_response = match unvalidated_response
+                            .validate(&self.validator_set, &self.validator_mapping)
+                        {
+                            Ok(req) => req,
+                            Err(e) => todo!("{e:?}"),
+                        }
+                        .into_inner();
+
+                        self.consensus.handle_block_sync(
+                            NodeId(sender),
+                            validated_response,
+                            &self.validator_set,
+                        )
+                    }
                 };
 
                 let prepare_router_message =
-                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
-                        let message =
-                            VerifiedMonadMessage(message.sign(self.consensus.get_keypair()));
+                    |target: RouterTarget, message: PublishMessage<SCT>| {
+                        let message = match message {
+                            PublishMessage::ConsensusMessage(msg) => {
+                                VerifiedMonadMessage::Consensus(
+                                    msg.sign::<ST>(self.consensus.get_keypair()),
+                                )
+                            }
+                            PublishMessage::BlockSyncResponse(msg) => {
+                                VerifiedMonadMessage::BlockSyncResponse(Validated::new(msg))
+                            }
+                        };
                         Command::RouterCommand(RouterCommand::Publish { target, message })
                     };
 
@@ -568,12 +612,12 @@ where
                         }
 
                         ConsensusCommand::RequestSync { peer, block_id } => {
-                            cmds.push(prepare_router_message(
-                                RouterTarget::PointToPoint(peer),
-                                ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
-                                    block_id,
-                                }),
-                            ));
+                            cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                                target: RouterTarget::PointToPoint(peer),
+                                message: VerifiedMonadMessage::BlockSyncRequest(Validated::new(
+                                    RequestBlockSyncMessage { block_id },
+                                )),
+                            }));
                         }
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(

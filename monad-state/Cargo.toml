@@ -23,8 +23,8 @@ monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
 bytes = { workspace = true }
-ref-cast = { workspace = true }
 tracing = { workspace = true }
+prost = { workspace = true }
 
 [dev-dependencies]
 monad-tracing-counter = { path = "../monad-tracing-counter" }
@@ -37,3 +37,4 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
+test-case = "3.3.1"

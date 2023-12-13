@@ -32,7 +32,7 @@ use tracing::{debug, trace, warn};
 
 use crate::{
     blocksync::{BlockSyncRequester, BlockSyncResult},
-    command::ConsensusCommand,
+    command::{ConsensusCommand, PublishMessage},
 };
 
 pub mod blocksync;
@@ -406,7 +406,7 @@ where
             let next_leader = election.get_leader(round + Round(1), validators.get_list());
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(NodeId(next_leader.0)),
-                message: ConsensusMessage::Vote(vote_msg),
+                message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote_msg)),
             };
             debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
             inc_count!(created_vote);
@@ -830,7 +830,8 @@ mod test {
     use tracing_test::traced_test;
 
     use crate::{
-        ConsensusCommand, ConsensusConfig, ConsensusMessage, ConsensusProcess, ConsensusState,
+        command::PublishMessage, ConsensusCommand, ConsensusConfig, ConsensusMessage,
+        ConsensusProcess, ConsensusState,
     };
 
     type SignatureType = NopSignature;
@@ -975,7 +976,7 @@ mod test {
                 c,
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(_)),
                 }
             )
         });
@@ -1014,7 +1015,7 @@ mod test {
                 c,
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(_)),
                 }
             )
         });
@@ -1045,7 +1046,7 @@ mod test {
                 c,
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(_)),
                 }
             )
         });
@@ -1117,7 +1118,7 @@ mod test {
                 c,
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(_)),
                 }
             )
         });
@@ -1176,7 +1177,7 @@ mod test {
                 c,
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(_)),
                 }
             )
         });
@@ -1208,7 +1209,7 @@ mod test {
                 c,
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(_)),
                 }
             )
         });
@@ -1277,7 +1278,9 @@ mod test {
                         m,
                         ConsensusCommand::Publish {
                             target: RouterTarget::PointToPoint(_),
-                            message: ConsensusMessage::Proposal(_),
+                            message: PublishMessage::ConsensusMessage(ConsensusMessage::Proposal(
+                                _
+                            )),
                         }
                     )
                 })
@@ -1293,7 +1296,7 @@ mod test {
             match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_self_id),
-                    message: ConsensusMessage::Proposal(m),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Proposal(m)),
                 } => {
                     proposals.extend(state.handle_proposal_message_full(
                         m.block.author,
@@ -1373,7 +1376,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1416,7 +1419,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1508,7 +1511,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1567,7 +1570,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1638,7 +1641,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1657,7 +1660,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1676,7 +1679,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -1696,7 +1699,7 @@ mod test {
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
+                    message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                 } => Some(vote),
                 _ => None,
             })
@@ -2464,7 +2467,7 @@ mod test {
                     .filter_map(|c| match c {
                         ConsensusCommand::Publish {
                             target: RouterTarget::PointToPoint(peer),
-                            message: ConsensusMessage::Vote(vote),
+                            message: PublishMessage::ConsensusMessage(ConsensusMessage::Vote(vote)),
                         } => {
                             if peer == next_leader {
                                 Some(vote)

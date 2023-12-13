@@ -1,10 +1,13 @@
 pub mod convert;
 
-use std::{fmt::Debug, hash::Hash};
+use std::fmt::Debug;
 
 use bytes::Bytes;
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage,
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
+    },
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
@@ -24,17 +27,11 @@ pub enum RouterCommand<OM> {
     Publish { target: RouterTarget, message: OM },
 }
 
-pub trait Message: Identifiable + Clone {
+pub trait Message: Clone {
     type Event;
 
     // TODO-3 NodeId -> &NodeId
     fn event(self, from: NodeId) -> Self::Event;
-}
-
-pub trait Identifiable {
-    type Id: Eq + Hash + Clone;
-
-    fn id(&self) -> Self::Id;
 }
 
 pub enum TimerCommand<E> {
@@ -154,6 +151,14 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     LoadEpoch(Epoch, ValidatorData<SCT>, ValidatorData<SCT>),
     AdvanceEpoch(Option<ValidatorData<SCT>>),
     StateUpdate((SeqNum, ConsensusHash)),
+    BlockSyncRequest {
+        sender: PubKey,
+        unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
+    },
+    BlockSyncResponse {
+        sender: PubKey,
+        unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
+    },
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -187,6 +192,22 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
             ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
             ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
+            ConsensusEvent::BlockSyncRequest {
+                sender,
+                unvalidated_request,
+            } => f
+                .debug_struct("BlockSyncRequest")
+                .field("sender", &sender)
+                .field("request", &unvalidated_request)
+                .finish(),
+            ConsensusEvent::BlockSyncResponse {
+                sender,
+                unvalidated_response,
+            } => f
+                .debug_struct("BlockSyncResponse")
+                .field("sender", &sender)
+                .field("response", &unvalidated_response)
+                .finish(),
         }
     }
 }

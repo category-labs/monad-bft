@@ -11,7 +11,7 @@ use clap::Parser;
 use futures_util::StreamExt;
 use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
-use monad_executor_glue::{Identifiable, Message, RouterCommand};
+use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_quic::service::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -181,20 +181,6 @@ struct MockMessage {
 impl MockMessage {
     fn new(id: u8, message_len: usize) -> Self {
         Self { id, message_len }
-    }
-}
-
-impl AsRef<Self> for MockMessage {
-    fn as_ref(&self) -> &Self {
-        self
-    }
-}
-
-impl Identifiable for MockMessage {
-    type Id = u8;
-
-    fn id(&self) -> Self::Id {
-        self.id
     }
 }
 

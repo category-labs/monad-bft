@@ -15,7 +15,8 @@ use monad_crypto::{
     secp256k1::{KeyPair, PubKey},
 };
 use monad_proto::proto::message::{
-    proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
+    proto_block_sync_message, proto_unverified_consensus_message, ProtoBlockSyncMessage,
+    ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
@@ -218,20 +219,6 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
                 let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
                 Validated {
                     message: Unvalidated::new(ConsensusMessage::Timeout(validated.into_inner())),
-                }
-            }
-            ConsensusMessage::RequestBlockSync(m) => {
-                let validated = Unvalidated::new(m).validate()?;
-                Validated {
-                    message: Unvalidated::new(ConsensusMessage::RequestBlockSync(
-                        validated.into_inner(),
-                    )),
-                }
-            }
-            ConsensusMessage::BlockSync(m) => {
-                let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
-                Validated {
-                    message: Unvalidated::new(ConsensusMessage::BlockSync(validated.into_inner())),
                 }
             }
         })
@@ -454,16 +441,35 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMe
             ConsensusMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
             }
-            ConsensusMessage::RequestBlockSync(msg) => {
-                proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg.into())
-            }
-            ConsensusMessage::BlockSync(msg) => {
-                proto_unverified_consensus_message::OneofMessage::BlockSync(msg.into())
-            }
         };
         Self {
             author_signature: Some(message_signature_to_proto(value.author_signature())),
             oneof_message: Some(oneof_message),
+        }
+    }
+}
+
+impl From<&Unvalidated<RequestBlockSyncMessage>> for ProtoRequestBlockSyncMessage {
+    fn from(value: &Unvalidated<RequestBlockSyncMessage>) -> Self {
+        ProtoRequestBlockSyncMessage {
+            block_id: Some((&value.obj.block_id).into()),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> From<&Unvalidated<BlockSyncResponseMessage<SCT>>>
+    for ProtoBlockSyncMessage
+{
+    fn from(value: &Unvalidated<BlockSyncResponseMessage<SCT>>) -> Self {
+        Self {
+            oneof_message: Some(match &value.obj {
+                BlockSyncResponseMessage::BlockFound(blk) => {
+                    proto_block_sync_message::OneofMessage::BlockFound(blk.into())
+                }
+                BlockSyncResponseMessage::NotAvailable(bid) => {
+                    proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
+                }
+            }),
         }
     }
 }

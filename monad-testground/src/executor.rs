@@ -105,7 +105,7 @@ where
                 _,
                 _,
                 MonadMessage<MessageSignatureType, SignatureCollectionType>,
-                VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
+                _,
             >::new(
                 config,
                 match gossip_config {

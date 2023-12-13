@@ -1,30 +1,35 @@
+use bytes::Bytes;
 use monad_consensus::{
-    convert::interface::{
-        deserialize_unverified_consensus_message, serialize_verified_consensus_message,
-    },
     messages::{
         consensus_message::ConsensusMessage,
-        message::{ProposalMessage, TimeoutMessage, VoteMessage},
+        message::{
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
+        },
     },
     validation::signing::{Validated, Verified},
 };
 use monad_consensus_types::{
+    block::UnverifiedFullBlock,
     certificate_signature::CertificateSignature,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList, TransactionHashList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    hasher::{Hash, Hashable, Hasher, HasherType},
+    hasher::{Hash, Hasher, HasherType},
     secp256k1::KeyPair,
+};
+use monad_state::{
+    convert::interface::{deserialize_monad_message, serialize_verified_monad_message},
+    MonadMessage, VerifiedMonadMessage,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
 use monad_types::{BlockId, NodeId, Round, SeqNum};
-use zerocopy::AsBytes;
 
 fn make_tc<SCT: SignatureCollection>(
     tc_round: Round,
@@ -34,8 +39,9 @@ fn make_tc<SCT: SignatureCollection>(
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
 ) -> TimeoutCertificate<SCT> {
     let mut hasher = HasherType::new();
-    hasher.update(tc_round.0.as_bytes());
-    high_qc_round.hash(&mut hasher);
+    hasher.update(tc_round);
+    hasher.update(high_qc_round.qc_round);
+
     let tmo_digest = hasher.hash();
 
     let mut tc_sigs = Vec::new();
@@ -146,20 +152,28 @@ test_all_combination!(test_vote_message, |num_keys| {
     let verified_votemsg =
         Verified::<NopSignature, _>::new(Validated::new(votemsg.clone()), author_keypair);
 
-    let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
-    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
+    let verified_monad_message = VerifiedMonadMessage::Consensus(verified_votemsg);
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
 
-    let verified_rx_vote = rx_msg
-        .verify(&validators, &author_keypair.pubkey())
-        .unwrap()
-        .destructure()
-        .2;
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
 
-    let validated_rx_vote = verified_rx_vote
-        .validate(&validators, &validator_mapping)
-        .unwrap();
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::Consensus(_)));
 
-    assert_eq!(votemsg, validated_rx_vote.into_inner());
+    if let MonadMessage::Consensus(rx_vote) = rx_msg {
+        let rx_vote = rx_vote
+            .verify(&validators, &author_keypair.pubkey())
+            .unwrap()
+            .destructure()
+            .2
+            .validate(&validators, &validator_mapping)
+            .unwrap()
+            .into_inner();
+        assert_eq!(rx_vote, votemsg);
+    } else {
+        unreachable!()
+    }
 });
 
 test_all_combination!(test_timeout_message, |num_keys| {
@@ -223,20 +237,28 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let verified_tmo_message =
         Verified::<NopSignature, _>::new(Validated::new(tmo_message.clone()), author_keypair);
 
-    let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
-    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
+    let verified_monad_message = VerifiedMonadMessage::Consensus(verified_tmo_message);
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
 
-    let verified_rx_tmo_messaage = rx_msg
-        .verify(&validators, &author_keypair.pubkey())
-        .unwrap()
-        .destructure()
-        .2;
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
 
-    let validated_rx_tmo_message = verified_rx_tmo_messaage
-        .validate(&validators, &validator_mapping)
-        .unwrap();
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::Consensus(_)));
 
-    assert_eq!(tmo_message, validated_rx_tmo_message.into_inner());
+    if let MonadMessage::Consensus(rx_tmo) = rx_msg {
+        let rx_tmo = rx_tmo
+            .verify(&validators, &author_keypair.pubkey())
+            .unwrap()
+            .destructure()
+            .2
+            .validate(&validators, &validator_mapping)
+            .unwrap()
+            .into_inner();
+        assert_eq!(tmo_message, rx_tmo);
+    } else {
+        unreachable!()
+    }
 });
 
 test_all_combination!(test_proposal_qc, |num_keys| {
@@ -259,25 +281,32 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     });
     let verified_msg =
         Verified::<NopSignature, _>::new(Validated::new(proposal.clone()), author_keypair);
+    let verified_monad_message = VerifiedMonadMessage::Consensus(verified_msg);
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
 
-    let rx_buf = serialize_verified_consensus_message(&verified_msg);
-    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
 
-    let verified_rx_msg = rx_msg
-        .verify(&validators, &author_keypair.pubkey())
-        .unwrap()
-        .destructure()
-        .2;
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::Consensus(_)));
 
-    let validated_rx_msg = verified_rx_msg
-        .validate(&validators, &validator_mapping)
-        .unwrap();
-
-    assert_eq!(proposal, validated_rx_msg.into_inner());
+    if let MonadMessage::Consensus(rx_prop) = rx_msg {
+        let rx_prop = rx_prop
+            .verify(&validators, &author_keypair.pubkey())
+            .unwrap()
+            .destructure()
+            .2
+            .validate(&validators, &validator_mapping)
+            .unwrap()
+            .into_inner();
+        assert_eq!(proposal, rx_prop);
+    } else {
+        unreachable!()
+    }
 });
 
 test_all_combination!(test_proposal_tc, |num_keys| {
-    let (keypairs, cert_keys, validators, validator_map) =
+    let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
 
     let author_keypair = &keypairs[0];
@@ -288,7 +317,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         TransactionHashList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_map,
+        &validator_mapping,
     );
 
     let tc_round = Round(232);
@@ -301,7 +330,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         high_qc_round,
         keypairs.as_slice(),
         cert_keys.as_slice(),
-        &validator_map,
+        &validator_mapping,
     );
 
     let proposal_msg = ConsensusMessage::Proposal(ProposalMessage {
@@ -311,18 +340,123 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let verified_msg =
         Verified::<NopSignature, _>::new(Validated::new(proposal_msg.clone()), author_keypair);
 
-    let rx_buf = serialize_verified_consensus_message(&verified_msg);
-    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
+    let verified_monad_message = VerifiedMonadMessage::Consensus(verified_msg);
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
 
-    let verified_rx_msg = rx_msg
-        .verify(&validators, &author_keypair.pubkey())
-        .unwrap()
-        .destructure()
-        .2;
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
 
-    let validated_rx_msg = verified_rx_msg
-        .validate(&validators, &validator_map)
-        .unwrap();
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::Consensus(_)));
 
-    assert_eq!(proposal_msg, validated_rx_msg.into_inner());
+    if let MonadMessage::Consensus(rx_prop) = rx_msg {
+        let rx_prop = rx_prop
+            .verify(&validators, &author_keypair.pubkey())
+            .unwrap()
+            .destructure()
+            .2
+            .validate(&validators, &validator_mapping)
+            .unwrap()
+            .into_inner();
+        assert_eq!(proposal_msg, rx_prop);
+    } else {
+        unreachable!()
+    }
+});
+
+test_all_combination!(test_block_sync_request, |_| {
+    let bid = BlockId(Hash([0x01_u8; 32]));
+    let block_sync_msg = RequestBlockSyncMessage { block_id: bid };
+
+    let verified_monad_message = VerifiedMonadMessage::<NopSignature, SCT>::BlockSyncRequest(
+        Validated::new(block_sync_msg.clone()),
+    );
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
+
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
+
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::BlockSyncRequest(_)));
+
+    if let MonadMessage::BlockSyncRequest(request) = rx_msg {
+        assert_eq!(request.validate().unwrap().into_inner(), block_sync_msg);
+    } else {
+        unreachable!()
+    }
+});
+
+test_all_combination!(test_block_sync_response_not_available, |num_keys| {
+    let (_keypairs, _cert_keys, validators, validator_mapping) =
+        create_keys_w_validators::<SCT>(num_keys);
+
+    let bid = BlockId(Hash([0x01_u8; 32]));
+    let block_sync_msg = BlockSyncResponseMessage::NotAvailable(bid);
+
+    let verified_monad_message = VerifiedMonadMessage::<NopSignature, SCT>::BlockSyncResponse(
+        Validated::new(block_sync_msg.clone()),
+    );
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
+
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
+
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::BlockSyncResponse(_)));
+
+    if let MonadMessage::BlockSyncResponse(resp) = rx_msg {
+        let validated = resp
+            .validate(&validators, &validator_mapping)
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(block_sync_msg, validated);
+    } else {
+        unreachable!()
+    }
+});
+
+test_all_combination!(test_block_sync_response_found, |num_keys| {
+    let (keypairs, cert_keys, validators, validator_mapping) =
+        create_keys_w_validators::<SCT>(num_keys);
+
+    let author_keypair = &keypairs[0];
+    let blk = setup_block::<SCT>(
+        NodeId(author_keypair.pubkey()),
+        Round(233),
+        Round(232),
+        TransactionHashList::new(Bytes::from_static(&[1, 2, 3, 4])),
+        ExecutionArtifacts::zero(),
+        cert_keys.as_slice(),
+        &validator_mapping,
+    );
+
+    let full_blk = UnverifiedFullBlock::new(
+        blk,
+        FullTransactionList::new(Bytes::from_static(&[1, 2, 3, 4])),
+    );
+
+    let block_sync_msg = BlockSyncResponseMessage::BlockFound(full_blk);
+
+    let verified_monad_message = VerifiedMonadMessage::<NopSignature, SCT>::BlockSyncResponse(
+        Validated::new(block_sync_msg.clone()),
+    );
+    let monad_message: MonadMessage<_, _> = verified_monad_message.clone().into();
+
+    let rx_buf = serialize_verified_monad_message(&verified_monad_message);
+    let rx_msg = deserialize_monad_message(rx_buf).unwrap();
+
+    assert_eq!(rx_msg, monad_message);
+    assert!(matches!(rx_msg, MonadMessage::BlockSyncResponse(_)));
+
+    if let MonadMessage::BlockSyncResponse(rx_blk) = rx_msg {
+        let validated = rx_blk
+            .validate(&validators, &validator_mapping)
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(block_sync_msg, validated);
+    } else {
+        unreachable!()
+    }
 });

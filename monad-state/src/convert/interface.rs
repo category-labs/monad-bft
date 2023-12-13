@@ -2,15 +2,15 @@ use bytes::{Bytes, BytesMut};
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
-use monad_proto::{error::ProtoError, proto::message::ProtoUnverifiedConsensusMessage};
+use monad_proto::{error::ProtoError, proto::message::ProtoMonadMessage};
 use prost::Message;
 
-use super::message::{UnverifiedConsensusMessage, VerifiedConsensusMessage};
+use crate::{MonadMessage, VerifiedMonadMessage};
 
-pub fn serialize_verified_consensus_message(
-    msg: &VerifiedConsensusMessage<impl MessageSignature, impl SignatureCollection>,
+pub fn serialize_verified_monad_message<MS: MessageSignature, SCT: SignatureCollection>(
+    msg: &VerifiedMonadMessage<MS, SCT>,
 ) -> Bytes {
-    let proto_msg: ProtoUnverifiedConsensusMessage = {
+    let proto_msg: ProtoMonadMessage = {
         let mut _convert_span = tracing::info_span!("convert_span").entered();
         msg.into()
     };
@@ -23,13 +23,13 @@ pub fn serialize_verified_consensus_message(
     buf.into()
 }
 
-pub fn deserialize_unverified_consensus_message<MS: MessageSignature, SCT: SignatureCollection>(
+pub fn deserialize_monad_message<MS: MessageSignature, SCT: SignatureCollection>(
     data: Bytes,
-) -> Result<UnverifiedConsensusMessage<MS, SCT>, ProtoError> {
+) -> Result<MonadMessage<MS, SCT>, ProtoError> {
     let message_len = data.len();
     let msg = {
         let mut _decode_span = tracing::info_span!("decode_span", ?message_len).entered();
-        ProtoUnverifiedConsensusMessage::decode(data)?
+        ProtoMonadMessage::decode(data)?
     };
     let mut _convert_span = tracing::info_span!("convert_span", ?message_len).entered();
     msg.try_into()
