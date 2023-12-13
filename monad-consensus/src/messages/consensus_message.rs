@@ -7,6 +7,7 @@ use monad_crypto::{
     hasher::{Hashable, Hasher},
     secp256k1::KeyPair,
 };
+use monad_types::EnumDiscriminant;
 
 use crate::{
     messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -42,15 +43,25 @@ where
     SCT: SignatureCollection,
 {
     fn hash(&self, state: &mut impl Hasher) {
+        state.update(std::any::type_name::<Self>().as_bytes());
         match self {
-            ConsensusMessage::Proposal(m) => m.hash(state),
+            ConsensusMessage::Proposal(m) => {
+                EnumDiscriminant(1).hash(state);
+                m.hash(state);
+            }
             // FIXME-2:
             // it can be confusing as we are hashing only part of the message
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct
             //      protocol sig: signatures outlined in the protocol
-            ConsensusMessage::Vote(m) => m.hash(state),
-            ConsensusMessage::Timeout(m) => m.hash(state),
+            ConsensusMessage::Vote(m) => {
+                EnumDiscriminant(2).hash(state);
+                m.hash(state);
+            }
+            ConsensusMessage::Timeout(m) => {
+                EnumDiscriminant(3).hash(state);
+                m.hash(state);
+            }
         }
     }
 }

@@ -609,12 +609,11 @@ mod test {
         }
 
         // throwing it block sync message should get rejected
-
         for msg in vec![
-            fake_request_block_sync(&keys[1]),
-            fake_block_sync(&keys[1]),
-            fake_request_block_sync(&keys[0]),
-            fake_block_sync(&keys[0]),
+            fake_request_block_sync(),
+            fake_block_sync(),
+            fake_request_block_sync(),
+            fake_block_sync(),
         ] {
             let TransformerStream::Complete(c) = t.transform(LinkMessage {
                 from: default_id,
@@ -630,10 +629,10 @@ mod test {
         // however if we enable block_sync then it should be broadcasted
         t = TwinsTransformer::new(pid_to_dups, filter, vec![], false);
         for msg in vec![
-            fake_request_block_sync(&keys[1]),
-            fake_block_sync(&keys[1]),
-            fake_request_block_sync(&keys[0]),
-            fake_block_sync(&keys[0]),
+            fake_request_block_sync(),
+            fake_block_sync(),
+            fake_request_block_sync(),
+            fake_block_sync(),
         ] {
             let TransformerStream::Continue(c) = t.transform(LinkMessage {
                 from: default_id,

@@ -1,4 +1,7 @@
-use monad_consensus::{messages::message::ProposalMessage, validation::signing::Unvalidated};
+use monad_consensus::{
+    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
+    validation::signing::Unvalidated,
+};
 use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
@@ -59,7 +62,7 @@ fn test_proposal_hash() {
     let (keypairs, _certkeys, vset, _vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let author = NodeId(keypairs[0].pubkey());
 
-    let proposal = ProposalMessage {
+    let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -71,7 +74,7 @@ fn test_proposal_hash() {
                 .as_slice(),
         ),
         last_round_tc: None,
-    };
+    });
 
     let sp = TestSigner::sign_object(proposal, &keypairs[0]);
 
@@ -111,7 +114,7 @@ fn test_proposal_author_not_sender() {
     let sender_keypair = &keypairs[1];
     let author = NodeId(author_keypair.pubkey());
 
-    let proposal = ProposalMessage {
+    let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -123,7 +126,7 @@ fn test_proposal_author_not_sender() {
                 .as_ref(),
         ),
         last_round_tc: None,
-    };
+    });
 
     let sp = TestSigner::sign_object(proposal, author_keypair);
     assert_eq!(
@@ -141,7 +144,7 @@ fn test_proposal_invalid_author() {
     vlist.push((NodeId(author_keypair.pubkey()), Stake(0)));
 
     let author = NodeId(author_keypair.pubkey());
-    let proposal = ProposalMessage {
+    let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -149,7 +152,7 @@ fn test_proposal_invalid_author() {
             &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
         ),
         last_round_tc: None,
-    };
+    });
 
     let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 

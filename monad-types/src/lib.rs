@@ -236,3 +236,12 @@ pub enum TimeoutVariant {
     Pacemaker,
     BlockSync(BlockId),
 }
+
+#[repr(transparent)]
+pub struct EnumDiscriminant(pub i32);
+
+impl Hashable for EnumDiscriminant {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(self.0.to_le_bytes());
+    }
+}

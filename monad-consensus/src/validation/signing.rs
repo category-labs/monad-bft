@@ -226,6 +226,8 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
 }
 
 impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
+    // A verified proposal is one which is well-formed and has valid
+    // signatures for the present TC or QC
     pub fn validate<VT: ValidatorSetType>(
         self,
         validators: &VT,

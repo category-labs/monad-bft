@@ -120,14 +120,14 @@ pub mod test_tool {
         ConsensusMessage::Timeout(internal_msg).sign(kp).into()
     }
 
-    pub fn fake_request_block_sync(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
+    pub fn fake_request_block_sync() -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = RequestBlockSyncMessage {
             block_id: BlockId(Hash([0x00_u8; 32])),
         };
         VerifiedMonadMessage::BlockSyncRequest(Validated::new(internal_msg))
     }
 
-    pub fn fake_block_sync(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
+    pub fn fake_block_sync() -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = BlockSyncResponseMessage::NotAvailable(BlockId(Hash([0x00_u8; 32])));
         VerifiedMonadMessage::BlockSyncResponse(Validated::new(internal_msg))
     }

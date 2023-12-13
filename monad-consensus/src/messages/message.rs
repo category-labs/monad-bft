@@ -6,7 +6,7 @@ use monad_consensus_types::{
     voting::Vote,
 };
 use monad_crypto::hasher::{Hashable, Hasher, HasherType};
-use monad_types::BlockId;
+use monad_types::{BlockId, EnumDiscriminant};
 
 /// Consensus protocol vote message
 ///
@@ -121,15 +121,18 @@ impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
     }
 }
 
-/// FIXME-2, possible hash malleability for variants, similar for
-/// [crate::messages::consensus_message::ConsensusMessage]
 impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
+        state.update(std::any::type_name::<Self>().as_bytes());
         match self {
             BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
-                unverified_full_block.hash(state)
+                EnumDiscriminant(1).hash(state);
+                unverified_full_block.hash(state);
             }
-            BlockSyncResponseMessage::NotAvailable(bid) => bid.hash(state),
+            BlockSyncResponseMessage::NotAvailable(bid) => {
+                EnumDiscriminant(2).hash(state);
+                bid.hash(state)
+            }
         }
     }
 }
