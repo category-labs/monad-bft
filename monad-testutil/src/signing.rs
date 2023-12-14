@@ -1,6 +1,6 @@
 use std::{collections::HashSet, marker::PhantomData};
 
-use monad_consensus::validation::signing::Unverified;
+use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
     block::Block,
     certificate_signature::CertificateKeyPair,
@@ -153,11 +153,14 @@ pub struct TestSigner<S> {
 }
 
 impl TestSigner<SecpSignature> {
-    pub fn sign_object<T: Hashable>(o: T, key: &KeyPair) -> Unverified<SecpSignature, T> {
+    pub fn sign_object<T: Hashable>(
+        o: T,
+        key: &KeyPair,
+    ) -> Unverified<SecpSignature, Unvalidated<T>> {
         let msg = HasherType::hash_object(&o);
         let sig = key.sign(msg.as_ref());
 
-        Unverified::new(o, sig)
+        Unverified::new(Unvalidated::new(o), sig)
     }
 }
 

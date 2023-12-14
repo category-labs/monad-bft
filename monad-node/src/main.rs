@@ -16,6 +16,7 @@ use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
 use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
+use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
@@ -75,7 +76,10 @@ fn main() {
 }
 
 async fn run(node_state: NodeState) -> Result<(), ()> {
-    let router = build_router(
+    let router = build_router::<
+        MonadMessage<SignatureType, SignatureCollectionType>,
+        VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+    >(
         node_state.config.network,
         &node_state.secp256k1_identity,
         &node_state.config.bootstrap.peers,

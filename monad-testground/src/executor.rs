@@ -101,7 +101,12 @@ where
             RouterConfig::MonadP2P {
                 config,
                 gossip_config,
-            } => Updater::boxed(monad_quic::service::Service::new(
+            } => Updater::boxed(monad_quic::service::Service::<
+                _,
+                _,
+                MonadMessage<MessageSignatureType, SignatureCollectionType>,
+                VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
+            >::new(
                 config,
                 match gossip_config {
                     MonadP2PGossipConfig::Simple(mock_config) => Gossip::boxed(mock_config.build()),

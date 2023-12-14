@@ -6,7 +6,7 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    validation::signing::Verified,
+    validation::signing::{Validated, Verified},
 };
 use monad_consensus_types::{
     certificate_signature::CertificateSignature,
@@ -143,16 +143,23 @@ test_all_combination!(test_vote_message, |num_keys| {
 
     let author_keypair = &keypairs[0];
 
-    let verified_votemsg = Verified::<NopSignature, _>::new(votemsg, author_keypair);
+    let verified_votemsg =
+        Verified::<NopSignature, _>::new(Validated::new(votemsg.clone()), author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_votemsg);
-    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
 
     let verified_rx_vote = rx_msg
-        .verify(&validators, &validator_mapping, &author_keypair.pubkey())
+        .verify(&validators, &author_keypair.pubkey())
+        .unwrap()
+        .destructure()
+        .2;
+
+    let validated_rx_vote = verified_rx_vote
+        .validate(&validators, &validator_mapping)
         .unwrap();
 
-    assert_eq!(verified_votemsg, verified_rx_vote);
+    assert_eq!(votemsg, validated_rx_vote.into_inner());
 });
 
 test_all_combination!(test_timeout_message, |num_keys| {
@@ -213,19 +220,27 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     let tmo_message = ConsensusMessage::Timeout(TimeoutMessage::new(tmo, author_cert_key));
 
-    let verified_tmo_message = Verified::<NopSignature, _>::new(tmo_message, author_keypair);
+    let verified_tmo_message =
+        Verified::<NopSignature, _>::new(Validated::new(tmo_message.clone()), author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_tmo_message);
-    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
 
-    let verified_rx_tmo_messaage =
-        rx_msg.verify(&validators, &validator_mapping, &author_keypair.pubkey());
+    let verified_rx_tmo_messaage = rx_msg
+        .verify(&validators, &author_keypair.pubkey())
+        .unwrap()
+        .destructure()
+        .2;
 
-    assert_eq!(verified_tmo_message, verified_rx_tmo_messaage.unwrap());
+    let validated_rx_tmo_message = verified_rx_tmo_messaage
+        .validate(&validators, &validator_mapping)
+        .unwrap();
+
+    assert_eq!(tmo_message, validated_rx_tmo_message.into_inner());
 });
 
 test_all_combination!(test_proposal_qc, |num_keys| {
-    let (keypairs, cert_keys, validators, validator_map) =
+    let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
 
     let author_keypair = &keypairs[0];
@@ -236,20 +251,29 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         TransactionHashList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_map,
+        &validator_mapping,
     );
     let proposal: ConsensusMessage<SCT> = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
         last_round_tc: None,
     });
-    let verified_msg = Verified::<NopSignature, _>::new(proposal, author_keypair);
+    let verified_msg =
+        Verified::<NopSignature, _>::new(Validated::new(proposal.clone()), author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
-    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
 
-    let verified_rx_msg = rx_msg.verify(&validators, &validator_map, &author_keypair.pubkey());
+    let verified_rx_msg = rx_msg
+        .verify(&validators, &author_keypair.pubkey())
+        .unwrap()
+        .destructure()
+        .2;
 
-    assert_eq!(verified_msg, verified_rx_msg.unwrap());
+    let validated_rx_msg = verified_rx_msg
+        .validate(&validators, &validator_mapping)
+        .unwrap();
+
+    assert_eq!(proposal, validated_rx_msg.into_inner());
 });
 
 test_all_combination!(test_proposal_tc, |num_keys| {
@@ -280,16 +304,25 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         &validator_map,
     );
 
-    let msg = ConsensusMessage::Proposal(ProposalMessage {
+    let proposal_msg = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
         last_round_tc: Some(tc),
     });
-    let verified_msg = Verified::<NopSignature, _>::new(msg, author_keypair);
+    let verified_msg =
+        Verified::<NopSignature, _>::new(Validated::new(proposal_msg.clone()), author_keypair);
 
     let rx_buf = serialize_verified_consensus_message(&verified_msg);
-    let rx_msg = deserialize_unverified_consensus_message(rx_buf).unwrap();
+    let rx_msg = deserialize_unverified_consensus_message::<NopSignature, _>(rx_buf).unwrap();
 
-    let verified_rx_msg = rx_msg.verify(&validators, &validator_map, &author_keypair.pubkey());
+    let verified_rx_msg = rx_msg
+        .verify(&validators, &author_keypair.pubkey())
+        .unwrap()
+        .destructure()
+        .2;
 
-    assert_eq!(verified_msg, verified_rx_msg.unwrap());
+    let validated_rx_msg = verified_rx_msg
+        .validate(&validators, &validator_map)
+        .unwrap();
+
+    assert_eq!(proposal_msg, validated_rx_msg.into_inner());
 });

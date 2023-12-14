@@ -98,7 +98,7 @@ impl<M, OM> LocalPeerRouter<M, OM> {
 impl<M, OM> Executor for LocalPeerRouter<M, OM>
 where
     M: Clone,
-    OM: Into<M> + AsRef<M>,
+    OM: Into<M>,
 {
     type Command = RouterCommand<OM>;
 

@@ -51,7 +51,7 @@ pub trait State: Sized {
     type Message: Message<Event = Self::Event>;
 
     type Event: Clone;
-    type OutboundMessage: Clone + Into<Self::Message> + AsRef<Self::Message>;
+    type OutboundMessage: Clone + Into<Self::Message>;
     type Block: BlockType;
     type Checkpoint;
     type SignatureCollection;

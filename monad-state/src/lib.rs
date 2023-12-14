@@ -7,7 +7,7 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage},
     },
-    validation::signing::{Unverified, Verified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{
     command::{Checkpoint, ConsensusCommand},
@@ -116,15 +116,43 @@ where
                 .expect("ValidatorData should not have duplicates or invalid entries"),
         );
     }
+
+    fn handle_validation_error(e: validation::Error) {
+        match e {
+            validation::Error::InvalidAuthor => {
+                inc_count!(invalid_author)
+            }
+            validation::Error::NotWellFormed => {
+                inc_count!(not_well_formed_sig)
+            }
+            validation::Error::InvalidSignature => {
+                inc_count!(invalid_signature)
+            }
+            validation::Error::AuthorNotSender => {
+                inc_count!(author_not_sender)
+            }
+            validation::Error::InvalidTcRound => {
+                inc_count!(invalid_tc_round)
+            }
+            validation::Error::InsufficientStake => {
+                inc_count!(insufficient_stake)
+            }
+            validation::Error::InvalidSeqNum => {
+                inc_count!(invalid_seq_num)
+            }
+        };
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(Verified<ST, ConsensusMessage<SCT>>);
+pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(
+    Verified<ST, Validated<ConsensusMessage<SCT>>>,
+);
 
-impl<ST, SCT: SignatureCollection> From<Verified<ST, ConsensusMessage<SCT>>>
+impl<ST, SCT: SignatureCollection> From<Verified<ST, Validated<ConsensusMessage<SCT>>>>
     for VerifiedMonadMessage<ST, SCT>
 {
-    fn from(value: Verified<ST, ConsensusMessage<SCT>>) -> Self {
+    fn from(value: Verified<ST, Validated<ConsensusMessage<SCT>>>) -> Self {
         Self(value)
     }
 }
@@ -132,7 +160,9 @@ impl<ST, SCT: SignatureCollection> From<Verified<ST, ConsensusMessage<SCT>>>
 #[derive(RefCast)]
 #[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<SCT>>);
+pub struct MonadMessage<ST, SCT: SignatureCollection>(
+    Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
+);
 
 impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Bytes>
     for VerifiedMonadMessage<MS, SCT>
@@ -167,12 +197,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable
 impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         MonadMessage(value.0.into())
-    }
-}
-
-impl<ST, SCT: SignatureCollection> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
-    fn as_ref(&self) -> &MonadMessage<ST, SCT> {
-        MonadMessage::ref_cast(self.0.as_ref())
     }
 }
 
@@ -413,43 +437,33 @@ where
                         sender,
                         unverified_message,
                     } => {
-                        let verified_message = match unverified_message.verify(
-                            &self.validator_set,
-                            &self.validator_mapping,
-                            &sender,
-                        ) {
-                            Ok(m) => m,
+                        // Verify the author signature on the message and sender is author
+                        let verified_message =
+                            match unverified_message.verify(&self.validator_set, &sender) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    Self::handle_validation_error(e);
+                                    // TODO-2: collect evidence
+                                    let evidence_cmds = vec![];
+                                    return evidence_cmds;
+                                }
+                            };
+
+                        let (author, _, verified_message) = verified_message.destructure();
+                        // Validated message according to consensus protocol spec
+                        let validated_mesage = match verified_message
+                            .validate(&self.validator_set, &self.validator_mapping)
+                        {
+                            Ok(m) => m.into_inner(),
                             Err(e) => {
+                                Self::handle_validation_error(e);
                                 // TODO-2: collect evidence
                                 let evidence_cmds = vec![];
-                                match e {
-                                    validation::Error::InvalidAuthor => {
-                                        inc_count!(invalid_author)
-                                    }
-                                    validation::Error::NotWellFormed => {
-                                        inc_count!(not_well_formed_sig)
-                                    }
-                                    validation::Error::InvalidSignature => {
-                                        inc_count!(invalid_signature)
-                                    }
-                                    validation::Error::AuthorNotSender => {
-                                        inc_count!(author_not_sender)
-                                    }
-                                    validation::Error::InvalidTcRound => {
-                                        inc_count!(invalid_tc_round)
-                                    }
-                                    validation::Error::InsufficientStake => {
-                                        inc_count!(insufficient_stake)
-                                    }
-                                    validation::Error::InvalidSeqNum => {
-                                        inc_count!(invalid_seq_num)
-                                    }
-                                };
                                 return evidence_cmds;
                             }
                         };
-                        let (author, _, verified_message) = verified_message.destructure();
-                        match verified_message {
+
+                        match validated_mesage {
                             ConsensusMessage::Proposal(msg) => {
                                 self.consensus.handle_proposal_message(author, msg)
                             }

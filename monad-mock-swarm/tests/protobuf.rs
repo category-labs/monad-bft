@@ -1,6 +1,6 @@
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::VoteMessage},
-    validation::signing::Unverified,
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
     bls::BlsSignatureCollection,
@@ -66,7 +66,7 @@ fn test_consensus_message_event_vote_multisig() {
     let votemsg_hash = HasherType::hash_object(&votemsg);
     let sig = keypair.sign(votemsg_hash.as_ref());
 
-    let unverified_votemsg = Unverified::new(votemsg, sig);
+    let unverified_votemsg = Unverified::new(Unvalidated::new(votemsg), sig);
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),
@@ -104,7 +104,10 @@ fn test_consensus_message_event_proposal_bls() {
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: proposal.author().0,
-        unverified_message: Unverified::new(consensus_proposal_msg, *proposal.author_signature()),
+        unverified_message: Unverified::new(
+            Unvalidated::new(consensus_proposal_msg),
+            *proposal.author_signature(),
+        ),
     });
 
     let buf = serialize_event(&event);

@@ -119,7 +119,7 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
-    OM: Into<M> + AsRef<M> + Clone,
+    OM: Into<M> + Clone,
 {
     type Command = RouterCommand<OM>;
 
@@ -154,7 +154,7 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
-    OM: Into<M> + AsRef<M> + Clone,
+    OM: Into<M> + Clone,
 
     Self: Unpin,
 {

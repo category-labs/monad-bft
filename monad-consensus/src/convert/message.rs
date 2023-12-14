@@ -18,11 +18,12 @@ use crate::{
             VoteMessage,
         },
     },
-    validation::signing::{Unverified, Verified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 
-pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, ConsensusMessage<SCT>>;
-pub(crate) type UnverifiedConsensusMessage<MS, SCT> = Unverified<MS, ConsensusMessage<SCT>>;
+pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, Validated<ConsensusMessage<SCT>>>;
+pub(crate) type UnverifiedConsensusMessage<MS, SCT> =
+    Unverified<MS, Unvalidated<ConsensusMessage<SCT>>>;
 
 impl<SCT: SignatureCollection> From<&VoteMessage<SCT>> for ProtoVoteMessage {
     fn from(value: &VoteMessage<SCT>) -> Self {
@@ -161,7 +162,7 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&VerifiedConsensusMess
     for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &VerifiedConsensusMessage<MS, SCT>) -> Self {
-        let oneof_message = match value.deref() {
+        let oneof_message = match value.deref().deref() {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
             }
@@ -214,6 +215,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoUnverifiedCons
         let signature = proto_to_message_signature(value.author_signature.ok_or(
             Self::Error::MissingRequiredField("Unverified<ConsensusMessage>.signature".to_owned()),
         )?)?;
-        Ok(Unverified::new(message, signature))
+        Ok(Unverified::new(Unvalidated::new(message), signature))
     }
 }

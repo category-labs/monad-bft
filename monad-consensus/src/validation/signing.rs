@@ -101,116 +101,29 @@ impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
     }
 }
 
-impl<S, SCT> Unverified<S, ConsensusMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    // A verified proposal is one which is well-formed and has valid
-    // signatures for the present TC or QC
-    pub fn verify<VT: ValidatorSetType>(
-        self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, ConsensusMessage<SCT>>, Error> {
-        // FIXME-2 this feels wrong... it feels like the enum variant should factor into the hash so
-        //       signatures can't be reused across variant members
-        Ok(match self.obj {
-            ConsensusMessage::Proposal(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify(
-                    validators,
-                    validator_mapping,
-                    sender,
-                )?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::Proposal(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::Vote(m) => {
-                let verified = Unverified::new(m, self.author_signature)
-                    .verify(validators.get_members(), sender)?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::Vote(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::Timeout(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify(
-                    validators,
-                    validator_mapping,
-                    sender,
-                )?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::Timeout(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::RequestBlockSync(m) => {
-                let verified = Unverified::new(m, self.author_signature)
-                    .verify(validators.get_members(), sender)?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::RequestBlockSync(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::BlockSync(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify(
-                    validators,
-                    validator_mapping,
-                    sender,
-                )?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::BlockSync(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-        })
+impl<S, M> From<Verified<S, Validated<M>>> for Unverified<S, Unvalidated<M>> {
+    fn from(value: Verified<S, Validated<M>>) -> Self {
+        let validated = value.message.obj;
+        Unverified {
+            obj: validated.into(),
+            author_signature: value.message.author_signature,
+        }
     }
 }
 
-impl<S, SCT> Unverified<S, ProposalMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    // A verified proposal is one which is well-formed and has valid
-    // signatures for the present TC or QC
+impl<S: MessageSignature, M: Hashable> Unverified<S, M> {
     pub fn verify<VT: ValidatorSetType>(
         self,
         validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         sender: &PubKey,
-    ) -> Result<Verified<S, ProposalMessage<SCT>>, Error> {
-        self.well_formed_proposal()?;
+    ) -> Result<Verified<S, M>, Error> {
         let msg = HasherType::hash_object(&self.obj);
+
         let author = verify_author(
             validators.get_members(),
             sender,
             &msg,
             &self.author_signature,
-        )?;
-        verify_certificates(
-            validators,
-            validator_mapping,
-            &self.obj.last_round_tc,
-            &self.obj.block.qc,
         )?;
 
         let result = Verified {
@@ -219,6 +132,127 @@ where
         };
 
         Ok(result)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Validated<M> {
+    message: Unvalidated<M>,
+}
+
+impl<M> Validated<M> {
+    pub fn new(msg: M) -> Self {
+        Self {
+            message: Unvalidated::new(msg),
+        }
+    }
+
+    pub fn into_inner(self) -> M {
+        self.message.obj
+    }
+}
+
+impl<M> Deref for Validated<M> {
+    type Target = M;
+
+    fn deref(&self) -> &Self::Target {
+        &self.message.obj
+    }
+}
+
+impl<M> AsRef<Unvalidated<M>> for Validated<M> {
+    fn as_ref(&self) -> &Unvalidated<M> {
+        &self.message
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for Validated<ConsensusMessage<SCT>> {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.as_ref().hash(state)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unvalidated<M> {
+    obj: M,
+}
+
+impl<M> Unvalidated<M> {
+    pub fn new(obj: M) -> Self {
+        Self { obj }
+    }
+}
+
+impl<M> From<Validated<M>> for Unvalidated<M> {
+    fn from(value: Validated<M>) -> Self {
+        value.message
+    }
+}
+
+impl<M: Hashable> Hashable for Unvalidated<M> {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.obj.hash(state)
+    }
+}
+
+impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
+        self,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    ) -> Result<Validated<ConsensusMessage<SCT>>, Error> {
+        Ok(match self.obj {
+            ConsensusMessage::Proposal(m) => {
+                let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::Proposal(validated.into_inner())),
+                }
+            }
+            ConsensusMessage::Vote(m) => {
+                let validated = Unvalidated::new(m).validate()?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::Vote(validated.into_inner())),
+                }
+            }
+            ConsensusMessage::Timeout(m) => {
+                let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::Timeout(validated.into_inner())),
+                }
+            }
+            ConsensusMessage::RequestBlockSync(m) => {
+                let validated = Unvalidated::new(m).validate()?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::RequestBlockSync(
+                        validated.into_inner(),
+                    )),
+                }
+            }
+            ConsensusMessage::BlockSync(m) => {
+                let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::BlockSync(validated.into_inner())),
+                }
+            }
+        })
+    }
+}
+
+impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
+        self,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    ) -> Result<Validated<ProposalMessage<SCT>>, Error> {
+        self.well_formed_proposal()?;
+        verify_certificates(
+            validators,
+            validator_mapping,
+            &self.obj.last_round_tc,
+            &self.obj.block.qc,
+        )?;
+
+        Ok(Validated { message: self })
     }
 
     fn well_formed_proposal(&self) -> Result<(), Error> {
@@ -238,46 +272,20 @@ where
     }
 }
 
-impl<S: MessageSignature, SCT: SignatureCollection> Unverified<S, VoteMessage<SCT>> {
-    // A verified vote message has a valid signature
-    // Return type must keep the signature with the message as it is used later by the protocol
-    pub fn verify(
-        self,
-        validators: &HashMap<NodeId, Stake>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, VoteMessage<SCT>>, Error> {
-        let msg = HasherType::hash_object(&self.obj);
-
-        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
-
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-
-        Ok(result)
+impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
+    pub fn validate(self) -> Result<Validated<VoteMessage<SCT>>, Error> {
+        Ok(Validated { message: self })
     }
 }
 
-impl<S, SCT> Unverified<S, TimeoutMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    pub fn verify<VT: ValidatorSetType>(
+impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
         self,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, TimeoutMessage<SCT>>, Error> {
+    ) -> Result<Validated<TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
-        let msg = HasherType::hash_object(&self.obj);
-        let author = verify_author(
-            validators.get_members(),
-            sender,
-            &msg,
-            &self.author_signature,
-        )?;
+
         verify_certificates(
             validators,
             validator_mapping,
@@ -285,11 +293,7 @@ where
             &self.obj.timeout.tminfo.high_qc,
         )?;
 
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-        Ok(result)
+        Ok(Validated { message: self })
     }
 
     fn well_formed_timeout(&self) -> Result<(), Error> {
@@ -301,55 +305,23 @@ where
     }
 }
 
-impl<S: MessageSignature> Unverified<S, RequestBlockSyncMessage> {
-    pub fn verify(
-        self,
-        validators: &HashMap<NodeId, Stake>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, RequestBlockSyncMessage>, Error> {
-        let msg = HasherType::hash_object(&self.obj);
-
-        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
-
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-
-        Ok(result)
+impl Unvalidated<RequestBlockSyncMessage> {
+    pub fn validate(self) -> Result<Validated<RequestBlockSyncMessage>, Error> {
+        Ok(Validated { message: self })
     }
 }
 
-impl<S, SCT> Unverified<S, BlockSyncResponseMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    pub fn verify<VT: ValidatorSetType>(
+impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
         self,
         validators: &VT,
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, BlockSyncResponseMessage<SCT>>, Error> {
-        let msg = HasherType::hash_object(&self.obj);
-
-        let author = verify_author(
-            validators.get_members(),
-            sender,
-            &msg,
-            &self.author_signature,
-        )?;
-
+    ) -> Result<Validated<BlockSyncResponseMessage<SCT>>, Error> {
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
             verify_certificates(validators, validator_mapping, &(None), &b.block.qc)?;
         }
 
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-
-        Ok(result)
+        Ok(Validated { message: self })
     }
 }
 
@@ -472,7 +444,7 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMe
     for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &UnverifiedConsensusMessage<MS, SCT>) -> Self {
-        let oneof_message = match &value.obj {
+        let oneof_message = match &value.obj.obj {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
             }
@@ -537,8 +509,11 @@ mod test {
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
     use test_case::test_case;
 
-    use super::{verify_qc, verify_tc, Unverified, Verified};
-    use crate::{messages::message::TimeoutMessage, validation::signing::VoteMessage};
+    use super::{verify_qc, verify_tc, Verified};
+    use crate::{
+        messages::message::TimeoutMessage,
+        validation::signing::{Unvalidated, VoteMessage},
+    };
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -773,12 +748,12 @@ mod test {
             last_round_tc: Some(tc),
         };
 
-        let tmo_msg = TimeoutMessage::<SignatureCollectionType>::new(tmo, &certkeys[0]);
-        let signed_tmo_msg = Verified::<SignatureType, _>::new(tmo_msg, &keypairs[0]);
-        let (author, signature, tm) = signed_tmo_msg.destructure();
+        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<SignatureCollectionType>::new(
+            tmo,
+            &certkeys[0],
+        ));
 
-        let unverified_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_tmo_msg.verify(&vset, &vmap, &author.0);
+        let err = unvalidated_tmo_msg.validate(&vset, &vmap);
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -829,13 +804,11 @@ mod test {
             last_round_tc: None,
         };
 
-        let byzantine_tmo_msg = TimeoutMessage::<SignatureCollectionType>::new(tmo, &certkeys[0]);
-        let signed_byzantine_tmo_msg =
-            Verified::<SignatureType, _>::new(byzantine_tmo_msg, &keypairs[0]);
-        let (author, signature, tm) = signed_byzantine_tmo_msg.destructure();
+        let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
+            SignatureCollectionType,
+        >::new(tmo, &certkeys[0]));
 
-        let unverified_byzantine_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_byzantine_tmo_msg.verify(&vset, &vmap, &author.0);
+        let err = unvalidated_byzantine_tmo_msg.validate(&vset, &vmap);
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 

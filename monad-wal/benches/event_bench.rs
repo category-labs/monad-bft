@@ -7,7 +7,7 @@ use monad_consensus::{
         consensus_message::ConsensusMessage,
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    validation::signing::Unverified,
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
     certificate_signature::CertificateSignature,
@@ -93,7 +93,10 @@ fn bench_proposal(c: &mut Criterion) {
         last_round_tc: None,
     });
     let proposal_hash = HasherType::hash_object(&proposal);
-    let unverified_message = Unverified::new(proposal, author_keypair.sign(proposal_hash.as_ref()));
+    let unverified_message = Unverified::new(
+        Unvalidated::new(proposal),
+        author_keypair.sign(proposal_hash.as_ref()),
+    );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: author_keypair.pubkey(),
@@ -130,7 +133,7 @@ fn bench_vote(c: &mut Criterion) {
     let vote = ConsensusMessage::Vote(vm);
 
     let vote_hash = HasherType::hash_object(&vote);
-    let unverified_message = Unverified::new(vote, <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
+    let unverified_message = Unverified::new(Unvalidated::new(vote), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),
@@ -221,7 +224,10 @@ fn bench_timeout(c: &mut Criterion) {
     let tmo = ConsensusMessage::Timeout(TimeoutMessage::new(timeout, author_certkey));
 
     let tmo_hash = HasherType::hash_object(&tmo);
-    let unverified_message = Unverified::new(tmo, author_keypair.sign(tmo_hash.as_ref()));
+    let unverified_message = Unverified::new(
+        Unvalidated::new(tmo),
+        author_keypair.sign(tmo_hash.as_ref()),
+    );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: author_keypair.pubkey(),

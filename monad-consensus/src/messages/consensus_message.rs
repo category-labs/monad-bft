@@ -13,7 +13,7 @@ use crate::{
         BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
         VoteMessage,
     },
-    validation::signing::Verified,
+    validation::signing::{Validated, Verified},
 };
 
 /// Consensus protocol messages
@@ -75,7 +75,7 @@ where
     pub fn sign<ST: MessageSignature>(
         self,
         keypair: &KeyPair,
-    ) -> Verified<ST, ConsensusMessage<SCT>> {
-        Verified::new(self, keypair)
+    ) -> Verified<ST, Validated<ConsensusMessage<SCT>>> {
+        Verified::new(Validated::new(self), keypair)
     }
 }

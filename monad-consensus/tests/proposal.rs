@@ -1,4 +1,4 @@
-use monad_consensus::messages::message::ProposalMessage;
+use monad_consensus::{messages::message::ProposalMessage, validation::signing::Unvalidated};
 use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
@@ -56,10 +56,10 @@ fn setup_block(
 
 #[test]
 fn test_proposal_hash() {
-    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let (keypairs, _certkeys, vset, _vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let author = NodeId(keypairs[0].pubkey());
 
-    let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
+    let proposal = ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -75,7 +75,7 @@ fn test_proposal_hash() {
 
     let sp = TestSigner::sign_object(proposal, &keypairs[0]);
 
-    assert!(sp.verify(&vset, &vmap, &keypairs[0].pubkey()).is_ok());
+    assert!(sp.verify(&vset, &keypairs[0].pubkey()).is_ok());
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn test_proposal_missing_tc() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let author = NodeId(keypairs[0].pubkey());
 
-    let proposal = ProposalMessage {
+    let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -95,14 +95,12 @@ fn test_proposal_missing_tc() {
                 .as_slice(),
         ),
         last_round_tc: None,
-    };
+    });
 
-    let sp = TestSigner::sign_object(proposal, &keypairs[0]);
-
-    assert_eq!(
-        sp.verify(&vset, &vmap, &keypairs[0].pubkey()).unwrap_err(),
-        Error::NotWellFormed
-    );
+    assert!(matches!(
+        proposal.validate(&vset, &vmap),
+        Err(Error::NotWellFormed)
+    ));
 }
 
 #[test]
@@ -129,8 +127,7 @@ fn test_proposal_author_not_sender() {
 
     let sp = TestSigner::sign_object(proposal, author_keypair);
     assert_eq!(
-        sp.verify(&vset, &vmap, &sender_keypair.pubkey())
-            .unwrap_err(),
+        sp.verify(&vset, &sender_keypair.pubkey()).unwrap_err(),
         Error::AuthorNotSender
     );
 }
@@ -157,12 +154,8 @@ fn test_proposal_invalid_author() {
     let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
-    let vmap = ValidatorMapping::new(vec![(
-        NodeId(author_keypair.pubkey()),
-        author_keypair.pubkey(),
-    )]);
     assert_eq!(
-        sp.verify(&vset, &vmap, &author.0).unwrap_err(),
+        sp.verify(&vset, &author.0).unwrap_err(),
         Error::InvalidAuthor
     );
 }
@@ -177,7 +170,7 @@ fn test_proposal_invalid_qc() {
     vlist.push((NodeId(staked_keypair.pubkey()), Stake(1)));
 
     let author = NodeId(non_staked_keypair.pubkey());
-    let proposal = ProposalMessage {
+    let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -185,9 +178,7 @@ fn test_proposal_invalid_qc() {
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
-    };
-
-    let sp = TestSigner::sign_object(proposal, &non_staked_keypair);
+    });
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
@@ -197,9 +188,8 @@ fn test_proposal_invalid_qc() {
             non_staked_keypair.pubkey(),
         ),
     ]);
-    assert_eq!(
-        sp.verify(&vset, &vmap, &non_staked_keypair.pubkey())
-            .unwrap_err(),
-        Error::InsufficientStake
-    );
+
+    let validate_result = proposal.validate(&vset, &vmap);
+
+    assert!(matches!(validate_result, Err(Error::InsufficientStake)));
 }

@@ -4,7 +4,8 @@ use std::{fmt::Debug, hash::Hash};
 
 use bytes::Bytes;
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
+    messages::consensus_message::ConsensusMessage,
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
     block::FullBlock,
@@ -144,7 +145,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
 pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
         sender: PubKey,
-        unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
+        unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),

@@ -1,8 +1,4 @@
-use monad_consensus::{
-    messages::message::VoteMessage,
-    validation::signing::{Unverified, Verified},
-    vote_state::VoteState,
-};
+use monad_consensus::{messages::message::VoteMessage, vote_state::VoteState};
 use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
@@ -14,18 +10,18 @@ use monad_crypto::{
     hasher::Hash,
     secp256k1::{KeyPair, SecpSignature},
 };
-use monad_testutil::{signing::*, validators::create_keys_w_validators};
-use monad_types::{BlockId, Round, SeqNum};
-use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+use monad_testutil::validators::create_keys_w_validators;
+use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_validator::validator_set::ValidatorSet;
 use test_case::test_case;
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
 
-fn create_signed_vote_message(
+fn create_vote_message(
     key: &KeyPair,
     certkey: &SignatureCollectionKeyPairType<SignatureCollectionType>,
     vote_round: Round,
-) -> Unverified<SecpSignature, VoteMessage<SignatureCollectionType>> {
+) -> (NodeId, VoteMessage<SignatureCollectionType>) {
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: vote_round,
@@ -43,7 +39,7 @@ fn create_signed_vote_message(
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, certkey);
 
-    TestSigner::sign_object(vm, key)
+    (NodeId(key.pubkey()), vm)
 }
 
 fn setup_ctx(
@@ -53,7 +49,7 @@ fn setup_ctx(
     Vec<KeyPair>,
     ValidatorSet,
     ValidatorMapping<SignatureCollectionKeyPairType<SignatureCollectionType>>,
-    Vec<Verified<SecpSignature, VoteMessage<SignatureCollectionType>>>,
+    Vec<(NodeId, VoteMessage<SignatureCollectionType>)>,
 ) {
     let (keys, cert_keys, valset, vmap) =
         create_keys_w_validators::<SignatureCollectionType>(num_nodes);
@@ -61,13 +57,10 @@ fn setup_ctx(
     let mut votes = Vec::new();
     for j in 0..num_rounds {
         for i in 0..num_nodes {
-            let svm =
-                create_signed_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(j));
-            let vm = svm
-                .verify(valset.get_members(), &keys[i as usize].pubkey())
-                .unwrap();
+            let svm_with_author =
+                create_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(j));
 
-            votes.push(vm);
+            votes.push(svm_with_author);
         }
     }
 
@@ -101,8 +94,8 @@ fn test_votes(num_nodes: u32) {
     let mut voteset = VoteState::<SignatureCollectionType>::default();
     let mut qcs = Vec::new();
     for i in 0..num_nodes {
-        let v = &votes[i as usize];
-        let (qc, cmds) = voteset.process_vote(v.author(), v, &valset, &vmap);
+        let (author, v) = &votes[i as usize];
+        let (qc, cmds) = voteset.process_vote(author, v, &valset, &vmap);
         assert!(cmds.is_empty());
         qcs.push(qc);
     }
@@ -127,8 +120,8 @@ fn test_reset(num_nodes: u32, num_rounds: u32) {
 
     for k in 0..num_rounds {
         for i in 0..num_nodes {
-            let v = &votes[(k * num_nodes + i) as usize];
-            let (qc, cmds) = voteset.process_vote(v.author(), v, &valset, &vmap);
+            let (author, v) = &votes[(k * num_nodes + i) as usize];
+            let (qc, cmds) = voteset.process_vote(author, v, &valset, &vmap);
             assert!(cmds.is_empty());
             qcs.push(qc);
         }
@@ -155,8 +148,8 @@ fn test_minority(num_nodes: u32) {
     let majority = 2 * num_nodes / 3 + 1;
 
     for i in 0..majority - 1 {
-        let v = &votes[i as usize];
-        let (qc, cmds) = voteset.process_vote(v.author(), v, &valset, &vmap);
+        let (author, v) = &votes[i as usize];
+        let (qc, cmds) = voteset.process_vote(author, v, &valset, &vmap);
         assert!(cmds.is_empty());
         qcs.push(qc);
     }
