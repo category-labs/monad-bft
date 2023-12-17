@@ -21,6 +21,7 @@ use monad_consensus_types::{
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
+    validation,
     validator_data::ValidatorData,
     voting::{ValidatorMapping, VoteInfo},
 };
@@ -32,6 +33,7 @@ use monad_executor_glue::{
     LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
     TimerCommand,
 };
+use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use ref_cast::RefCast;
@@ -46,13 +48,21 @@ where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
+    /// Core consensus algorithm state machine
     consensus: CT,
-    epoch: Epoch,
-    leader_election: LT,
-    validator_set: VT,
-    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    upcoming_validator_set: Option<VT>,
+    /// Handle responses to block sync requests from other nodes
     block_sync_respond: BlockSyncResponder,
+
+    /// Algorithm for choosing leaders for the consensus algorithm
+    leader_election: LT,
+    /// Track the current epoch (time for which a validator set is valid)
+    epoch: Epoch,
+    /// The current epoch's validator set
+    validator_set: VT,
+    /// Maps the NodeId to the Certificate PubKey
+    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    /// Validator set for next epoch
+    upcoming_validator_set: Option<VT>,
 
     _pd: PhantomData<ST>,
 }
@@ -418,7 +428,34 @@ where
                             &sender,
                         ) {
                             Ok(m) => m,
-                            Err(e) => todo!("{e:?}"),
+                            Err(e) => {
+                                // TODO-2: collect evidence
+                                let evidence_cmds = vec![];
+                                match e {
+                                    validation::Error::InvalidAuthor => {
+                                        inc_count!(invalid_author)
+                                    }
+                                    validation::Error::NotWellFormed => {
+                                        inc_count!(not_well_formed_sig)
+                                    }
+                                    validation::Error::InvalidSignature => {
+                                        inc_count!(invalid_signature)
+                                    }
+                                    validation::Error::AuthorNotSender => {
+                                        inc_count!(author_not_sender)
+                                    }
+                                    validation::Error::InvalidTcRound => {
+                                        inc_count!(invalid_tc_round)
+                                    }
+                                    validation::Error::InsufficientStake => {
+                                        inc_count!(insufficient_stake)
+                                    }
+                                    validation::Error::InvalidSeqNum => {
+                                        inc_count!(invalid_seq_num)
+                                    }
+                                };
+                                return evidence_cmds;
+                            }
                         };
                         let (author, _, verified_message) = verified_message.destructure();
                         match verified_message {
