@@ -64,7 +64,7 @@ pub fn complete_config<
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     delta: Duration,
     state_root_delay: u64,
-    proposal_size: usize,
+    proposal_txn_limit: usize,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let voting_keys = keys
@@ -88,7 +88,8 @@ pub fn complete_config<
                 .collect::<Vec<_>>(),
             delta,
             consensus_config: ConsensusConfig {
-                proposal_size,
+                proposal_txn_limit,
+                proposal_gas_limit: 30_000_000,
                 state_root_delay: SeqNum(state_root_delay),
                 propose_with_missing_blocks: false,
             },

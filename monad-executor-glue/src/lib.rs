@@ -8,7 +8,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::FullBlock,
-    command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
+    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria, FetchedBlock},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
@@ -52,14 +52,7 @@ pub enum MempoolCommand<SCT> {
     /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
     // TODO-2 create test to demonstrate faulty behavior if written improperly
-    FetchTxs(
-        /// max number of txns to fetch
-        usize,
-        /// list of txns to avoid fetching (as they are already in pending blocks)
-        Vec<TransactionHashList>,
-        /// params of the proposal of this fetch
-        FetchTxParams<SCT>,
-    ),
+    FetchTxs(FetchTxsCriteria<SCT>),
     FetchReset,
     FetchFullTxs(
         /// Transaction hashes of the Full transaction to be fetched

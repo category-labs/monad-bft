@@ -12,6 +12,7 @@ use reth_primitives::TransactionSignedEcRecovered;
 const THREAD_COUNT: u16 = 2;
 const WARMUP_TXS: u16 = 10000;
 const TX_PER_THREAD: u16 = 10000;
+const BLOCK_GAS_LIMIT: u64 = 8_000_000;
 
 pub fn benchmark_pool(c: &mut Criterion) {
     c.bench_function("create_single_proposal_with_concurrent_write_read", |b| {
@@ -40,7 +41,7 @@ pub fn benchmark_pool(c: &mut Criterion) {
                 }
 
                 let mut pool = pool.lock().unwrap();
-                let proposal = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
+                let proposal = pool.create_proposal(TX_PER_THREAD.into(), BLOCK_GAS_LIMIT, vec![]);
                 pool.remove_tx_hashes(proposal);
             },
             criterion::BatchSize::SmallInput,
@@ -74,7 +75,8 @@ pub fn benchmark_pool(c: &mut Criterion) {
 
                 {
                     let mut pool: std::sync::MutexGuard<Pool> = pool.lock().unwrap();
-                    let proposal = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
+                    let proposal =
+                        pool.create_proposal(TX_PER_THREAD.into(), BLOCK_GAS_LIMIT, vec![]);
                     pool.remove_tx_hashes(proposal);
                 }
 
@@ -82,7 +84,8 @@ pub fn benchmark_pool(c: &mut Criterion) {
 
                 {
                     let mut pool: std::sync::MutexGuard<Pool> = pool.lock().unwrap();
-                    let proposal2 = pool.create_proposal(TX_PER_THREAD.into(), vec![]);
+                    let proposal2 =
+                        pool.create_proposal(TX_PER_THREAD.into(), BLOCK_GAS_LIMIT, vec![]);
                     pool.remove_tx_hashes(proposal2);
                 }
             },

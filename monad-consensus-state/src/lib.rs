@@ -12,7 +12,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
-    command::{FetchFullTxParams, FetchTxParams},
+    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionHashList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -97,8 +97,17 @@ impl<SCT, TVT, SVT> Eq for ConsensusState<SCT, TVT, SVT> where SCT: SignatureCol
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ConsensusConfig {
-    pub proposal_size: usize,
+    /// Maximum number of transactions allowed in a proposal
+    pub proposal_txn_limit: usize,
+    /// Maximum cumulative gas allowed for all transactions in a proposal
+    pub proposal_gas_limit: u64,
+    /// The gap between the current SeqNum and the SeqNum of the state-root-hash
+    /// included in a proposal
     pub state_root_delay: SeqNum,
+    /// If the current leader has the highest qc but is missing some blocks in the
+    /// pending blocktree (ie, there isn't a path to the root of the tree from the
+    /// highest qc), this bool controls whether we still try to propose a block with
+    /// transactions instead of proposing an empty block
     pub propose_with_missing_blocks: bool,
 }
 
@@ -690,10 +699,11 @@ where
                 inc_count!(creating_proposal);
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
-                vec![ConsensusCommand::FetchTxs(
-                    self.config.proposal_size,
-                    pending_blocktree_txs,
-                    FetchTxParams {
+                vec![ConsensusCommand::FetchTxs(FetchTxsCriteria {
+                    max_txs: self.config.proposal_txn_limit,
+                    block_gas_limit: self.config.proposal_gas_limit,
+                    ignore_txs: pending_blocktree_txs,
+                    proposal_params: FetchTxParams {
                         node_id,
                         round,
                         seq_num: proposed_seq_num,
@@ -701,7 +711,7 @@ where
                         high_qc,
                         last_round_tc,
                     },
-                )]
+                })]
             }
             ConsensusAction::Abstain => {
                 inc_count!(abstain_proposal);
@@ -714,10 +724,11 @@ where
                 inc_count!(creating_empty_block_proposal);
                 debug!("Creating Empty Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
-                vec![ConsensusCommand::FetchTxs(
-                    0,
-                    vec![],
-                    FetchTxParams {
+                vec![ConsensusCommand::FetchTxs(FetchTxsCriteria {
+                    max_txs: 0,
+                    block_gas_limit: 0,
+                    ignore_txs: vec![],
+                    proposal_params: FetchTxParams {
                         node_id,
                         round,
                         seq_num: proposed_seq_num,
@@ -725,7 +736,7 @@ where
                         high_qc,
                         last_round_tc,
                     },
-                )]
+                })]
             }
         }
     }
@@ -855,7 +866,8 @@ mod test {
                     k.pubkey(),
                     Duration::from_secs(1),
                     ConsensusConfig {
-                        proposal_size: 5000,
+                        proposal_txn_limit: 5000,
+                        proposal_gas_limit: 8_000_000,
                         state_root_delay: SeqNum(1),
                         propose_with_missing_blocks: false,
                     },

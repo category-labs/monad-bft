@@ -10,7 +10,7 @@ use std::{
 
 use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::{
-    command::{FetchFullTxParams, FetchTxParams},
+    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
@@ -435,9 +435,15 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(num_txs, _, cb) => {
+                MempoolCommand::FetchTxs(criteria) => {
+                    let FetchTxsCriteria {
+                        max_txs,
+                        block_gas_limit: _,
+                        ignore_txs: _,
+                        proposal_params: cb,
+                    } = criteria;
                     self.fetch_txs_state = Some(cb);
-                    self.num_fetch_txs = num_txs;
+                    self.num_fetch_txs = max_txs;
                     wake = true;
                 }
                 MempoolCommand::FetchReset => {
@@ -964,11 +970,12 @@ mod tests {
     #[test]
     fn test_fetch() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            0,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 0,
+            block_gas_limit: 0,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
@@ -976,27 +983,30 @@ mod tests {
     #[test]
     fn test_double_fetch() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            0,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            0,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 0,
+            block_gas_limit: 0,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 0,
+            block_gas_limit: 0,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
     }
     #[test]
     fn test_seeded_fetch() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            10,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 10,
+            block_gas_limit: 10,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
         let res = futures::executor::block_on(mempool.next());
         assert!(res.is_some());
         assert!(!mempool.ready());
@@ -1009,11 +1019,12 @@ mod tests {
 
         let mut mempool =
             MockMempool::<NopSignature, MultiSig<NopSignature>>::new(MockMempoolConfig(100));
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            10,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 10,
+            block_gas_limit: 10,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
         let res = futures::executor::block_on(mempool.next());
         assert!(res.is_some());
         assert!(!mempool.ready());
@@ -1030,11 +1041,12 @@ mod tests {
     #[test]
     fn test_reset() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            0,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 0,
+            block_gas_limit: 0,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
         mempool.exec(vec![MempoolCommand::FetchReset]);
         assert!(!mempool.ready());
     }
@@ -1043,8 +1055,18 @@ mod tests {
     fn test_inline_double_fetch() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
         mempool.exec(vec![
-            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
-            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
+            MempoolCommand::FetchTxs(FetchTxsCriteria {
+                max_txs: 0,
+                block_gas_limit: 0,
+                ignore_txs: vec![],
+                proposal_params: dont_care_fetched_tx_param(),
+            }),
+            MempoolCommand::FetchTxs(FetchTxsCriteria {
+                max_txs: 0,
+                block_gas_limit: 0,
+                ignore_txs: vec![],
+                proposal_params: dont_care_fetched_tx_param(),
+            }),
         ]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -1054,7 +1076,12 @@ mod tests {
     fn test_inline_reset() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
         mempool.exec(vec![
-            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
+            MempoolCommand::FetchTxs(FetchTxsCriteria {
+                max_txs: 0,
+                block_gas_limit: 0,
+                ignore_txs: vec![],
+                proposal_params: dont_care_fetched_tx_param(),
+            }),
             MempoolCommand::FetchReset,
         ]);
         assert!(!mempool.ready());
@@ -1065,7 +1092,12 @@ mod tests {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
         mempool.exec(vec![
             MempoolCommand::FetchReset,
-            MempoolCommand::FetchTxs(0, vec![], dont_care_fetched_tx_param()),
+            MempoolCommand::FetchTxs(FetchTxsCriteria {
+                max_txs: 0,
+                block_gas_limit: 0,
+                ignore_txs: vec![],
+                proposal_params: dont_care_fetched_tx_param(),
+            }),
         ]);
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());
@@ -1074,11 +1106,12 @@ mod tests {
     #[test]
     fn test_noop_exec() {
         let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(
-            0,
-            vec![],
-            dont_care_fetched_tx_param(),
-        )]);
+        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
+            max_txs: 0,
+            block_gas_limit: 0,
+            ignore_txs: vec![],
+            proposal_params: dont_care_fetched_tx_param(),
+        })]);
         mempool.exec(Vec::new());
         assert!(futures::executor::block_on(mempool.next()).is_some());
         assert!(!mempool.ready());

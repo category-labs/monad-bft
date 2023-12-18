@@ -534,12 +534,9 @@ where
                         ConsensusCommand::ScheduleReset(on_timeout) => cmds.push(
                             Command::TimerCommand(TimerCommand::ScheduleReset(on_timeout)),
                         ),
-                        ConsensusCommand::FetchTxs(max_txns, pending_txs, fetch_params) => cmds
-                            .push(Command::MempoolCommand(MempoolCommand::FetchTxs(
-                                max_txns,
-                                pending_txs,
-                                fetch_params,
-                            ))),
+                        ConsensusCommand::FetchTxs(fetch_criteria) => cmds.push(
+                            Command::MempoolCommand(MempoolCommand::FetchTxs(fetch_criteria)),
+                        ),
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }

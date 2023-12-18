@@ -83,7 +83,8 @@ impl SimulationConfig<VizSwarm> for SimConfig {
 
                 delta: self.delta,
                 consensus_config: ConsensusConfig {
-                    proposal_size: 5000,
+                    proposal_txn_limit: 5000,
+                    proposal_gas_limit: 8_000_000,
                     state_root_delay: SeqNum(0),
                     propose_with_missing_blocks: false,
                 },

@@ -276,12 +276,13 @@ impl Controller {
     pub async fn create_proposal(
         &self,
         tx_limit: usize,
+        size_limit: u64,
         pending_blocktree_txs: Vec<EthTransactionList>,
     ) -> EthTransactionList {
         self.pool
             .lock()
             .await
-            .create_proposal(tx_limit, pending_blocktree_txs)
+            .create_proposal(tx_limit, size_limit, pending_blocktree_txs)
     }
 
     pub async fn fetch_full_txs(&self, txs: EthTransactionList) -> Option<EthFullTransactionList> {
@@ -339,6 +340,7 @@ mod test {
 
     const NUM_CONTROLLER: u16 = 4;
     const NUM_TX: u16 = 10;
+    const BLOCK_GAS_LIMIT: u64 = 8000000;
 
     #[tokio::test(flavor = "multi_thread")]
     /// Starts NUM_CONTROLLER controllers, sends NUM_TX messages to one controller
@@ -379,11 +381,13 @@ mod test {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let sender_proposal = sender_controller
-            .create_proposal(NUM_TX.into(), vec![])
+            .create_proposal(NUM_TX.into(), BLOCK_GAS_LIMIT, vec![])
             .await;
 
         for (controller, _) in &controllers {
-            let proposal = controller.create_proposal(NUM_TX.into(), vec![]).await;
+            let proposal = controller
+                .create_proposal(NUM_TX.into(), BLOCK_GAS_LIMIT, vec![])
+                .await;
             assert_eq!(sender_proposal, proposal);
         }
     }

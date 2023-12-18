@@ -7,7 +7,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, FullBlock, UnverifiedFullBlock},
-    command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
+    command::{FetchFullTxParams, FetchTxsCriteria, FetchedBlock},
     payload::TransactionHashList,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
@@ -30,14 +30,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset(TimeoutVariant),
     /// Fetch transaction hashes for inclusion in proposal (as proposer)
-    FetchTxs(
-        /// max number of txns to fetch
-        usize,
-        /// list of txns to avoid fetching (as they are already in pending blocks)
-        Vec<TransactionHashList>,
-        /// params of the proposal of this fetch
-        FetchTxParams<SCT>,
-    ),
+    FetchTxs(FetchTxsCriteria<SCT>),
     /// Cancel any in-progress FetchTxs commands
     /// This is only necessary to not double-emit events on replay
     FetchTxsReset,
