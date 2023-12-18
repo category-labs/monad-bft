@@ -34,6 +34,15 @@ use crate::{
     validation::{message::well_formed, safety::consecutive},
 };
 
+/// A verified message carries a valid signature created by the author. It's
+/// created by
+/// 1. Successfully verifying the signature on a
+///    [crate::validation::signing::Unverified] message
+/// 2. Signing a message [crate::validation::signing::Verified::new]
+///
+/// For protocol level accountability and slashing, the message content is
+/// accessible in Verified, but not in Unverified. For similar reasons,
+/// [monad_types::Serializable] is only implemented for Verified.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verified<S, M> {
     author: NodeId,
@@ -41,9 +50,12 @@ pub struct Verified<S, M> {
 }
 
 impl<S: MessageSignature, M> Verified<S, M> {
+    /// Get the author NodeId
     pub fn author(&self) -> &NodeId {
         &self.author
     }
+
+    /// Get the author signature
     pub fn author_signature(&self) -> &S {
         self.message.author_signature()
     }
@@ -59,6 +71,8 @@ impl<S: MessageSignature, M: Hashable> Verified<S, M> {
         }
     }
 
+    /// Consumes the struct, destructuring it into a triplet `(author,
+    /// author_signature, message)`
     pub fn destructure(self) -> (NodeId, S, M) {
         (self.author, self.message.author_signature, self.message.obj)
     }
@@ -67,6 +81,7 @@ impl<S: MessageSignature, M: Hashable> Verified<S, M> {
 impl<S, M> Deref for Verified<S, M> {
     type Target = M;
 
+    /// Dereferencing returns a reference of the message
     fn deref(&self) -> &Self::Target {
         &self.message.obj
     }
@@ -78,6 +93,9 @@ impl<S, M> AsRef<Unverified<S, M>> for Verified<S, M> {
     }
 }
 
+/// An unverified message is a message with a signature, but the signature hasn't
+/// been verified. It does not allow access the message content. For safety, a
+/// message received on the wire is only deserializable to an unverified message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unverified<S, M> {
     obj: M,
@@ -92,6 +110,7 @@ impl<S: MessageSignature, M> Unverified<S, M> {
         }
     }
 
+    /// Get the author signature
     pub fn author_signature(&self) -> &S {
         &self.author_signature
     }
@@ -245,6 +264,10 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
         Ok(Validated { message: self })
     }
 
+    /// A well-formed proposal
+    /// 1. extends the sequence number in the QC by 1 and
+    /// 2. carries a QC/TC from r-1, proving that the block is proposed on a
+    ///    valid round
     fn well_formed_proposal(&self) -> Result<(), Error> {
         self.valid_seq_num()?;
         well_formed(
@@ -263,7 +286,11 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
 }
 
 impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
-    /// VoteMessage is valid if (consecutive iff commit)
+    /// VoteMessage is valid if (consecutive iff commit). Verifying
+    /// [crate::messages::message::VoteMessage::sig] is deferred until a
+    /// signature collection is optimistically aggregated because verifying a
+    /// BLS signature is expensive. Verifying every signature on VoteMessage is
+    /// infeasible with the block time constraint.
     pub fn validate(self) -> Result<Validated<VoteMessage<SCT>>, Error> {
         let consecutive = consecutive(
             self.obj.vote.vote_info.round,
@@ -280,6 +307,7 @@ impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
 }
 
 impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
+    /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VT: ValidatorSetType>(
         self,
         validators: &VT,
@@ -297,6 +325,8 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
         Ok(Validated { message: self })
     }
 
+    /// A well-formed timeout carries a QC/TC from r-1, proving that it's timing
+    /// out a valid round
     fn well_formed_timeout(&self) -> Result<(), Error> {
         well_formed(
             self.obj.timeout.tminfo.round,
@@ -313,6 +343,7 @@ impl Unvalidated<RequestBlockSyncMessage> {
 }
 
 impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
+    /// If the block sync response message carries a full block, the certificates on it need to be valid
     pub fn validate<VT: ValidatorSetType>(
         self,
         validators: &VT,
@@ -386,6 +417,9 @@ where
     Ok(())
 }
 
+/// Verify the quorum certificate
+///
+/// Verify the signature collection and super majority stake signed
 fn verify_qc<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -415,6 +449,8 @@ where
     Ok(())
 }
 
+/// Verify that the message is signed by the sender and that the sender is a
+/// staked validator
 fn verify_author(
     validators: &HashMap<NodeId, Stake>,
     sender: &PubKey,
@@ -431,11 +467,18 @@ fn verify_author(
     }
 }
 
-// Extract the PubKey from the Signature if possible
+/// Extract the PubKey from the secp recoverable signature
 fn get_pubkey(msg: &[u8], sig: &impl MessageSignature) -> Result<PubKey, Error> {
     sig.recover_pubkey(msg).map_err(|_| Error::InvalidSignature)
 }
 
+/// Protobuf conversion
+///
+/// The conversion is targeted to convert events with unverified messages
+/// received over the wire to its protobuf counterpart for persistence.
+///
+/// Network serialization should use the interface functions in
+/// [crate::convert::interface] to avoid serializing unverified messages
 impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMessage<MS, SCT>>
     for ProtoUnverifiedConsensusMessage
 {
@@ -484,13 +527,14 @@ impl<SCT: SignatureCollection> From<&Unvalidated<BlockSyncResponseMessage<SCT>>>
 }
 
 trait ValidatorPubKey {
-    // PubKey is valid if it is in the validator set
+    /// PubKey is valid if it is in the validator set
     fn valid_pubkey(self, validators: &HashMap<NodeId, Stake>) -> Result<Self, Error>
     where
         Self: Sized;
 }
 
 impl ValidatorPubKey for PubKey {
+    /// Validate that pubkey is in the validator set
     fn valid_pubkey(self, validators: &HashMap<NodeId, Stake>) -> Result<Self, Error> {
         if validators.contains_key(&NodeId(self)) {
             Ok(self)
@@ -537,7 +581,7 @@ mod test {
     //       the receiver uses the round number from TC, in this case `round` to recover the pubkey
     //       it's different from the message the keypair signs, which is always round 5
     //       so it will recover a pubkey different from the signer's
-    //       -> almost certainly not in the validator set
+    //       -> in the validator set with negligible probability
     #[test_case(4 => matches Err(_) ; "TC has an older round")]
     #[test_case(6 => matches Err(_); "TC has a newer round")]
     #[test_case(5 => matches Ok(()); "TC has the correct round")]
@@ -577,8 +621,10 @@ mod test {
         verify_tc(&vset, &vmap, &tc)
     }
 
+    /// The signature collection is created on a Vote different from the one in
+    /// QcInfo. Expect QC verification to fail
     #[test]
-    fn qc_verifcation_vote_doesnt_match() {
+    fn qc_verification_vote_doesnt_match() {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
             round: Round(0),
@@ -622,7 +668,10 @@ mod test {
             sigs,
         );
 
-        assert!(verify_qc(&vset, &val_mapping, &qc).is_err());
+        assert!(matches!(
+            verify_qc(&vset, &val_mapping, &qc),
+            Err(Error::InvalidSignature)
+        ));
     }
 
     #[test]
@@ -713,11 +762,15 @@ mod test {
         ));
     }
 
+    /// Creates a timeout message with a TC in r-1, but the TC doesn't carry any
+    /// signature. Expect TimeoutMsg verification to return in sufficient stake
+    /// error
     #[test]
     fn empty_tc() {
         let (keypairs, certkeys, vset, vmap) =
             create_keys_w_validators::<SignatureCollectionType>(2);
 
+        // TC doesn't have any signatures
         let tc = TimeoutCertificate {
             round: Round(3),
             high_qc_rounds: vec![],
@@ -767,6 +820,8 @@ mod test {
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
 
+    /// The timeout message (r=5) carries a high QC (r=3) with no TC. Expect
+    /// TimeoutMsg verification to yield "not wellformed" error
     #[test]
     fn old_high_qc_in_timeout_msg() {
         let (keypairs, certkeys, vset, vmap) =

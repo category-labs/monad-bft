@@ -401,7 +401,7 @@ mod test {
         assert!(matches!(cmds[1], PacemakerCommand::PrepareTimeout(_)));
         assert!(matches!(cmds[2], PacemakerCommand::Schedule { .. }));
 
-        // enter PhaseHonest::SuperMajority, qc is created
+        // enter PhaseHonest::SuperMajority, TC is created
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,

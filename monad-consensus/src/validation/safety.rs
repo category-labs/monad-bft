@@ -34,6 +34,9 @@ impl Safety {
         self.highest_qc_round = cmp::max(r, self.highest_qc_round);
     }
 
+    /// A block is safe to vote on if it's strictly higher than the highest
+    /// voted round, and it must be correctly extending a QC or TC from the
+    /// previous round
     fn safe_to_vote<SCT>(
         &self,
         block_round: Round,
@@ -47,6 +50,9 @@ impl Safety {
         consecutive(block_round, qc_round) || safe_to_extend(block_round, qc_round, tc)
     }
 
+    /// A round is safe to timeout if there's no QC formed for that round, and
+    /// we haven't voted for a higher round, which implies a QC/TC is formed for
+    /// the round.
     fn safe_to_timeout<SCT>(
         &self,
         round: Round,
@@ -68,6 +74,7 @@ impl Safety {
         consecutive(round, qc_round) || consecutive_tc
     }
 
+    /// Make a TimeoutInfo if it's safe to timeout the current round
     pub fn make_timeout<SCT: SignatureCollection>(
         &mut self,
         round: Round,
@@ -83,6 +90,9 @@ impl Safety {
         }
     }
 
+    /// Make a Vote if it's safe to vote in the round. Set the commit field if
+    /// QC formed on the voted block can cause a commit: `block.qc.round` is
+    /// consecutive with `block.round`
     pub fn make_vote<SCT: SignatureCollection>(
         &mut self,
         block: &Block<SCT>,

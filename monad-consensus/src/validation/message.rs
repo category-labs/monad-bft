@@ -3,6 +3,9 @@ use monad_types::*;
 
 // (DiemBFT v4, p.12)
 // https://developers.diem.com/papers/diem-consensus-state-machine-replication-in-the-diem-blockchain/2021-08-17.pdf
+/// A timeout or proposal message of round r is well-formed if
+/// 1. it contains a QC of round r-1
+/// 2. it contains a TC of round r-1 if the QC is not from round r-1
 pub fn well_formed<SCT>(
     round: Round,
     qc_round: Round,
