@@ -57,14 +57,8 @@ message ProtoFetchedBlock {
   optional monad_proto.block.ProtoUnverifiedFullBlock unverified_full_block = 3;
 }
 
-message ProtoAdvanceEpochEvent {
+message ProtoUpdateNextValSetEvent {
   monad_proto.validator_set.ProtoValidatorSetData validator_set = 1;
-}
-
-message ProtoLoadEpochEvent {
-  monad_proto.basic.ProtoEpoch epoch = 1;
-  monad_proto.validator_set.ProtoValidatorSetData validator_set = 2;
-  monad_proto.validator_set.ProtoValidatorSetData upcoming_validator_set = 3;
 }
 
 message ProtoStateUpdateEvent {
@@ -78,10 +72,9 @@ message ProtoConsensusEvent {
     ProtoScheduleTimeout timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
     ProtoFetchedFullTxs fetched_full_txs = 4;
-    ProtoAdvanceEpochEvent advance_epoch = 5;
-    ProtoLoadEpochEvent load_epoch = 6;
-    ProtoFetchedBlock fetched_block = 7;
-    ProtoStateUpdateEvent state_update = 8;
+    ProtoUpdateNextValSetEvent update_next_val_set = 5;
+    ProtoFetchedBlock fetched_block = 6;
+    ProtoStateUpdateEvent state_update = 7;
   }
 }
 

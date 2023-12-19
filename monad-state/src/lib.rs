@@ -34,8 +34,13 @@ use monad_executor_glue::{
     LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
     TimerCommand,
 };
-use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_types::{
+    epoch_manager::EpochManager, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant,
+};
+use monad_validator::{
+    leader_election::LeaderElection, validator_set::ValidatorSetType,
+    validators_epoch_map::ValidatorsEpochMapping,
+};
 use ref_cast::RefCast;
 
 use crate::blocksync::BlockSyncResponder;
@@ -47,13 +52,13 @@ pub struct MonadState<CT, ST, SCT, VT, LT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
+    VT: ValidatorSetType,
 {
     consensus: CT,
     epoch: Epoch,
+    epoch_manager: EpochManager,
+    val_epoch_map: ValidatorsEpochMapping<VT, SCT>,
     leader_election: LT,
-    validator_set: VT,
-    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    upcoming_validator_set: Option<VT>,
     block_sync_respond: BlockSyncResponder,
 
     _pd: PhantomData<ST>,
@@ -78,35 +83,13 @@ where
         self.consensus.blocktree()
     }
 
-    fn advance_epoch(&mut self, val_set: Option<ValidatorData<SCT>>) {
-        self.epoch = self.epoch + Epoch(1);
-
-        if let Some(vs) = self.upcoming_validator_set.take() {
-            self.validator_set = vs;
-        }
-
-        // FIXME-2 testnet_panic when that's implemented.
-        // TODO-3 decide error handling behaviour for prod
-        self.upcoming_validator_set = val_set.map(|v| {
-            VT::new(v.get_stakes())
-                .expect("ValidatorData should not have duplicates or invalid entries")
-        });
-    }
-
-    fn load_epoch(
-        &mut self,
-        epoch: Epoch,
-        val_set: ValidatorData<SCT>,
-        upcoming_val_set: ValidatorData<SCT>,
-    ) {
-        self.epoch = epoch;
-        // FIXME-2 testnet_panic when that's implemented.
-        // TODO-3 decide error handling behaviour for prod
-        self.validator_set = VT::new(val_set.get_stakes())
-            .expect("ValidatorData should not have duplicates or invalid entries");
-        self.upcoming_validator_set = Some(
-            VT::new(upcoming_val_set.get_stakes())
+    fn update_next_val_set(&mut self, val_data: ValidatorData<SCT>) {
+        let next_epoch = self.epoch_manager.current_epoch + Epoch(1);
+        self.val_epoch_map.insert(
+            next_epoch,
+            VT::new(val_data.get_stakes())
                 .expect("ValidatorData should not have duplicates or invalid entries"),
+            ValidatorMapping::new(val_data.get_cert_pubkeys()),
         );
     }
 }
@@ -276,8 +259,12 @@ where
             .collect::<Vec<_>>();
 
         // create the initial validator set
-        let val_set = VT::new(staking_list).expect("initial validator set init failed");
-        let val_mapping = ValidatorMapping::new(voting_identities);
+        let val_set_1 = VT::new(staking_list).expect("failed to create first validator set");
+        let val_cert_pubkeys_1 = ValidatorMapping::new(voting_identities);
+
+        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        val_epoch_map.insert(Epoch(1), val_set_1, val_cert_pubkeys_1);
+
         let election = LT::new();
 
         let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
@@ -286,11 +273,11 @@ where
         );
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
-            validator_set: val_set,
-            validator_mapping: val_mapping,
-            upcoming_validator_set: None,
+            // TODO: Make this configurable
+            epoch_manager: EpochManager::new(SeqNum(2000), Round(50)),
+            val_epoch_map,
             leader_election: election,
-            epoch: Epoch(0),
+            epoch: Epoch(1),
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
@@ -341,9 +328,13 @@ where
                                 )
                             })
                             .collect(),
-                        TimeoutVariant::BlockSync(bid) => self
-                            .consensus
-                            .handle_block_sync_tmo(bid, &self.validator_set),
+                        TimeoutVariant::BlockSync(bid) => {
+                            let val_set = self
+                                .val_epoch_map
+                                .get_val_set(&self.epoch)
+                                .expect("current validator set should be in the map");
+                            self.consensus.handle_block_sync_tmo(bid, val_set)
+                        }
                     },
 
                     ConsensusEvent::FetchedTxs(fetched, txns) => {
@@ -398,8 +389,8 @@ where
                                         fetched_txs.author,
                                         proposal_msg,
                                         txns,
-                                        &self.validator_set,
-                                        &self.validator_mapping,
+                                        &mut self.epoch_manager,
+                                        &self.val_epoch_map,
                                         &self.leader_election,
                                     ),
                             );
@@ -431,8 +422,9 @@ where
                         unverified_message,
                     } => {
                         let verified_message = match unverified_message.verify::<HasherType, _>(
-                            &self.validator_set,
-                            &self.validator_mapping,
+                            &self.val_epoch_map,
+                            &self.epoch_manager,
+                            self.consensus().get_current_round(),
                             &sender,
                         ) {
                             Ok(m) => m,
@@ -447,8 +439,8 @@ where
                                 self.consensus.handle_vote_message::<HasherType, _, _>(
                                     author,
                                     msg,
-                                    &self.validator_set,
-                                    &self.validator_mapping,
+                                    &mut self.epoch_manager,
+                                    &self.val_epoch_map,
                                     &self.leader_election,
                                 )
                             }
@@ -456,8 +448,8 @@ where
                                 self.consensus.handle_timeout_message::<HasherType, _, _>(
                                     author,
                                     msg,
-                                    &self.validator_set,
-                                    &self.validator_mapping,
+                                    &mut self.epoch_manager,
+                                    &self.val_epoch_map,
                                     &self.leader_election,
                                 )
                             }
@@ -481,17 +473,16 @@ where
                                 }
                             }
                             ConsensusMessage::BlockSync(msg) => {
-                                self.consensus
-                                    .handle_block_sync(author, msg, &self.validator_set)
+                                let val_set = self
+                                    .val_epoch_map
+                                    .get_val_set(&self.epoch)
+                                    .expect("current validator set should be in the map");
+                                self.consensus.handle_block_sync(author, msg, val_set)
                             }
                         }
                     }
-                    ConsensusEvent::LoadEpoch(epoch, current_val_set, next_val_set) => {
-                        self.load_epoch(epoch, current_val_set, next_val_set);
-                        Vec::new()
-                    }
-                    ConsensusEvent::AdvanceEpoch(valset) => {
-                        self.advance_epoch(valset);
+                    ConsensusEvent::UpdateNextValSet(val_data) => {
+                        self.update_next_val_set(val_data);
                         Vec::new()
                     }
                     ConsensusEvent::StateUpdate((seq_num, root_hash)) => {

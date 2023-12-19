@@ -1,9 +1,11 @@
 use std::{cmp::Ordering, fmt::Debug};
 
-use monad_types::{NodeId, Round, Stake};
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_types::{epoch_manager::EpochManager, NodeId, Round, Stake};
 use tracing::warn;
 
 use super::leader_election::LeaderElection;
+use crate::{validator_set::ValidatorSetType, validators_epoch_map::ValidatorsEpochMapping};
 
 #[derive(Eq, Clone, Copy, Debug)]
 struct Voter {
@@ -56,8 +58,28 @@ impl LeaderElection for WeightedRoundRobin {
         }
     }
 
-    fn get_leader(&self, round: Round, validator_list: &[NodeId]) -> NodeId {
-        validator_list[round.0 as usize % validator_list.len()]
+    fn get_leader<VT, SCT>(
+        &self,
+        round: Round,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+    ) -> NodeId
+    where
+        VT: ValidatorSetType,
+        SCT: SignatureCollection,
+    {
+        let round_epoch = epoch_manager.get_epoch(round);
+
+        if let Some(validator_set) = val_epoch_map.get_val_set(&round_epoch) {
+            let validator_list = validator_set.get_list();
+            validator_list[round.0 as usize % validator_list.len()]
+        } else {
+            // TODO: fix panic
+            panic!(
+                "validator set for epoch #{} not in validators epoch mapping",
+                round_epoch.0
+            )
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use monad_consensus_types::{
     payload::ExecutionArtifacts,
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     transaction_validator::MockValidator,
-    voting::{Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
@@ -25,8 +25,13 @@ use monad_testutil::{
     signing::{get_certificate_key, get_genesis_config, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, NodeId, Round, SeqNum};
-use monad_validator::{leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin};
+use monad_types::{epoch_manager::EpochManager, BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_validator::{
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetType},
+    validators_epoch_map::ValidatorsEpochMapping,
+};
 
 type SignatureCollectionType = MultiSig<SecpSignature>;
 
@@ -85,20 +90,30 @@ fn test_consensus_message_event_vote_multisig() {
 #[test]
 fn test_consensus_message_event_proposal_bls() {
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(
+        Epoch(1),
+        ValidatorSet::new(Vec::from_iter(valset.get_members().clone()))
+            .expect("ValidatorData should not have duplicates or invalid entries"),
+        ValidatorMapping::new(valmap),
+    );
     let voting_keys = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<
-        HasherType,
-        BlsSignatureCollection,
-        MockValidator,
-    >(voting_keys.iter(), &valmap, &MockValidator {});
+    let val_cert_pubkeys = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
+    let (genesis_block, genesis_sigs) =
+        get_genesis_config::<HasherType, BlsSignatureCollection, MockValidator>(
+            voting_keys.iter(),
+            val_cert_pubkeys,
+            &MockValidator {},
+        );
     let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
     );
+    let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
         ProposalGen::new(genesis_qc);
@@ -106,9 +121,9 @@ fn test_consensus_message_event_proposal_bls() {
     let proposal = propgen.next_proposal(
         &keys,
         cert_keys.as_slice(),
-        &valset,
+        &epoch_manager,
+        &val_epoch_map,
         &election,
-        &valmap,
         Default::default(),
         ExecutionArtifacts::zero(),
     );

@@ -14,6 +14,7 @@ use monad_consensus_types::{
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
+    validator_data::ValidatorData,
 };
 use monad_eth_types::EMPTY_RLP_TX_LIST;
 use monad_executor::{Executor, State};
@@ -24,8 +25,7 @@ use monad_executor_glue::{
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, epoch::MockEpoch, ledger::MockLedger,
-    state_root_hash::MockStateRootHash,
+    checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockStateRootHash,
 };
 use priority_queue::PriorityQueue;
 use rand::{Rng, RngCore};
@@ -53,7 +53,6 @@ where
     ledger: MockLedger<<S::State as State>::Block, <S::State as State>::Event>,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
-    epoch: MockEpoch<S::SignatureType, S::SignatureCollectionType>,
     state_root_hash:
         MockStateRootHash<<S::State as State>::Block, S::SignatureType, S::SignatureCollectionType>,
     tick: Duration,
@@ -129,7 +128,6 @@ impl<T> Ord for SequencedPeerEvent<T> {
 enum ExecutorEventType {
     Router,
     Ledger,
-    Epoch,
     Timer,
     Mempool,
     StateRootHash,
@@ -142,6 +140,7 @@ where
     pub fn new(
         router: S::RouterScheduler,
         mempool_config: <S::MempoolExecutor as MockableExecutor>::Config,
+        peers: ValidatorData<S::SignatureCollectionType>,
         tick: Duration,
     ) -> Self {
         Self {
@@ -149,8 +148,7 @@ where
             ledger: Default::default(),
             execution_ledger: Default::default(),
             mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
-            epoch: Default::default(),
-            state_root_hash: Default::default(),
+            state_root_hash: MockStateRootHash::new(peers),
 
             tick,
 
@@ -190,11 +188,6 @@ where
                 self.timer
                     .peek()
                     .map(|(_, tick)| (tick.0, ExecutorEventType::Timer)),
-            )
-            .chain(
-                self.epoch
-                    .ready()
-                    .then_some((self.tick, ExecutorEventType::Epoch)),
             )
             .chain(
                 self.ledger
@@ -301,10 +294,6 @@ where
                         }
                         Some(RouterEvent::Tx(to, ser)) => MockExecutorEvent::Send(to, ser),
                     }
-                }
-                ExecutorEventType::Epoch => {
-                    return futures::executor::block_on(self.epoch.next())
-                        .map(MockExecutorEvent::Event)
                 }
                 ExecutorEventType::Timer => {
                     MockExecutorEvent::Event(self.timer.pop().unwrap().0.callback.unwrap())

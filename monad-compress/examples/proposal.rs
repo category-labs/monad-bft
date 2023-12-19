@@ -6,16 +6,19 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, TransactionHashList},
     quorum_certificate::{genesis_vote_info, QuorumCertificate},
     transaction_validator::MockValidator,
+    voting::ValidatorMapping,
 };
 use monad_crypto::{hasher::HasherType, secp256k1::SecpSignature};
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{
     proposal::ProposalGen, signing::get_genesis_config, validators::create_keys_w_validators,
 };
-use monad_types::{NodeId, Serializable};
+use monad_types::{epoch_manager::EpochManager, Epoch, NodeId, Round, SeqNum, Serializable};
 use monad_validator::{
-    leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
-    validator_set::ValidatorSetType,
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetType},
+    validators_epoch_map::ValidatorsEpochMapping,
 };
 use peak_alloc::PeakAlloc;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
@@ -31,6 +34,20 @@ fn main() {
     rng.fill_bytes(&mut transaction_hashes);
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
+
+    let validator_stakes = Vec::from_iter(valset.get_members().clone());
+
+    let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(
+        Epoch(1),
+        ValidatorSet::new(validator_stakes)
+            .expect("ValidatorData should not have duplicates or invalid entries"),
+        ValidatorMapping::new(valmap),
+    );
+
+    let valmap = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
+
     let voting_keys = keys
         .iter()
         .map(|k| NodeId(k.pubkey()))
@@ -40,7 +57,7 @@ fn main() {
         HasherType,
         BlsSignatureCollection,
         MockValidator,
-    >(voting_keys.iter(), &valmap, &MockValidator {});
+    >(voting_keys.iter(), valmap, &MockValidator {});
     let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
@@ -53,9 +70,9 @@ fn main() {
         .next_proposal(
             &keys,
             cert_keys.as_slice(),
-            &valset,
+            &epoch_manager,
+            &val_epoch_map,
             &election,
-            &valmap,
             TransactionHashList::new(transaction_hashes.to_vec()),
             ExecutionArtifacts::zero(),
         )
@@ -67,7 +84,7 @@ fn main() {
         .find(|k| {
             k.pubkey()
                 == election
-                    .get_leader(proposal.block.round, valset.get_list())
+                    .get_leader(proposal.block.round, &epoch_manager, &val_epoch_map)
                     .0
         })
         .expect("key in valset");

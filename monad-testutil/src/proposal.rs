@@ -20,8 +20,11 @@ use monad_crypto::{
     secp256k1::KeyPair,
 };
 use monad_eth_types::EthAddress;
-use monad_types::{NodeId, Round, SeqNum};
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
+use monad_types::{epoch_manager::EpochManager, NodeId, Round, SeqNum};
+use monad_validator::{
+    leader_election::LeaderElection, validator_set::ValidatorSetType,
+    validators_epoch_map::ValidatorsEpochMapping,
+};
 
 pub struct ProposalGen<ST, SCT> {
     round: Round,
@@ -50,9 +53,9 @@ where
         &mut self,
         keys: &[KeyPair],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        valset: &VT,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
         txns: TransactionHashList,
         execution_header: ExecutionArtifacts,
     ) -> Verified<ST, ProposalMessage<SCT>> {
@@ -68,7 +71,12 @@ where
         let (leader_key, leader_certkey) = keys
             .iter()
             .zip(certkeys)
-            .find(|(k, _)| k.pubkey() == election.get_leader(self.round, valset.get_list()).0)
+            .find(|(k, _)| {
+                k.pubkey()
+                    == election
+                        .get_leader(self.round, epoch_manager, val_epoch_map)
+                        .0
+            })
             .expect("key not in valset");
 
         let block = Block::new::<HasherType>(
@@ -84,8 +92,11 @@ where
             qc,
         );
 
+        let validator_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&epoch_manager.get_epoch(self.round))
+            .expect("should have the current validator certificate pubkeys");
         self.high_qc = self.qc.clone();
-        self.qc = self.get_next_qc(certkeys, &block, validator_mapping);
+        self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
 
         let proposal = ProposalMessage {
             block,

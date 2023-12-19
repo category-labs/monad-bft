@@ -4769,6 +4769,7 @@ dependencies = [
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
+ "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
  "monad-types",
