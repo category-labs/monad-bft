@@ -17,10 +17,6 @@ pub struct Cli {
     #[arg(long)]
     pub execution_ledger_path: PathBuf,
 
-    /// Set the genesis config path
-    #[arg(long)]
-    pub genesis: PathBuf,
-
     /// Set the identity key path
     #[arg(long)]
     pub identity: PathBuf,

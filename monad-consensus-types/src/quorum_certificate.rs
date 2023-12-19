@@ -67,16 +67,6 @@ impl Ord for Rank {
     }
 }
 
-pub fn genesis_vote_info(genesis_block_id: BlockId) -> VoteInfo {
-    VoteInfo {
-        id: genesis_block_id,
-        round: Round(0),
-        parent_id: BlockId(GENESIS_PRIME_QC_HASH),
-        parent_round: Round(0),
-        seq_num: SeqNum(0),
-    }
-}
-
 impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     pub fn new(info: QcInfo, signatures: SCT) -> Self {
         let hash = signatures.get_hash();
@@ -88,6 +78,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     }
 
     // This is the QC that will be included in the genesis block
+    // Will be the initial qc_high for all nodes
     pub fn genesis_prime_qc() -> Self {
         let vote_info = VoteInfo {
             id: BlockId(GENESIS_PRIME_QC_HASH),
@@ -108,25 +99,6 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
                 ledger_commit: lci,
             },
             signatures: sigs,
-            signature_hash: sig_hash,
-        }
-    }
-
-    // This is the QC that will be used in the block of the first proposal
-    // and will be the initial qc_high for all nodes
-    // All initial genesis nodes will have to create signatures for the genesis lci
-    pub fn genesis_qc(genesis_vote_info: VoteInfo, genesis_signatures: SCT) -> Self {
-        let vote_info = genesis_vote_info;
-        let lci = LedgerCommitInfo::new(None, &vote_info);
-
-        let sig_hash = genesis_signatures.get_hash();
-
-        QuorumCertificate {
-            info: QcInfo {
-                vote: vote_info,
-                ledger_commit: lci,
-            },
-            signatures: genesis_signatures,
             signature_hash: sig_hash,
         }
     }

@@ -8,7 +8,6 @@ use monad_consensus_types::{
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
     transaction_validator::MockValidator,
-    voting::VoteInfo,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
@@ -146,9 +145,6 @@ pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
     )>,
     pub delta: Duration,
     pub consensus_config: ConsensusConfig,
-    pub genesis_block: FullBlock<SignatureCollectionType>,
-    pub genesis_vote_info: VoteInfo,
-    pub genesis_signatures: SignatureCollectionType,
 }
 
 pub fn make_monad_state<MessageSignatureType, SignatureCollectionType>(
@@ -181,8 +177,5 @@ where
         beneficiary: EthAddress::default(),
         delta: config.delta,
         consensus_config: config.consensus_config,
-        genesis_block: config.genesis_block,
-        genesis_vote_info: config.genesis_vote_info,
-        genesis_signatures: config.genesis_signatures,
     })
 }

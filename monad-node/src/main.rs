@@ -34,8 +34,6 @@ mod config;
 mod error;
 use error::NodeSetupError;
 
-mod genesis;
-
 mod state;
 use state::NodeState;
 
@@ -120,9 +118,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             state_root_delay: SeqNum(0),
             propose_with_missing_blocks: false,
         },
-        genesis_block: node_state.genesis.genesis_block,
-        genesis_vote_info: node_state.genesis.genesis_vote_info,
-        genesis_signatures: node_state.genesis.genesis_signatures,
     });
 
     executor.exec(init_commands);

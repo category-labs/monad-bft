@@ -4229,7 +4229,6 @@ dependencies = [
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
- "ptree",
  "tracing",
 ]
 
@@ -6142,15 +6141,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7ac8852baeb3cc6fb83b93646fb93c0ffe5d14bf138c945ceb4b9948ee0e3c1"
 dependencies = [
  "autotools",
-]
-
-[[package]]
-name = "ptree"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0de80796b316aec75344095a6d2ef68ec9b8f573b9e7adc821149ba3598e270"
-dependencies = [
- "serde",
 ]
 
 [[package]]

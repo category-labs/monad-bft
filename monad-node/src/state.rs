@@ -11,12 +11,10 @@ use crate::{
     cli::Cli,
     config::{NodeBootstrapConfig, NodeConfig},
     error::NodeSetupError,
-    genesis::GenesisState,
 };
 
 pub struct NodeState {
     pub config: NodeConfig,
-    pub genesis: GenesisState,
     pub val_mapping: ValidatorMapping<KeyPair>,
 
     pub identity: KeyPair,
@@ -35,8 +33,6 @@ impl NodeState {
 
         let val_mapping = build_validator_mapping(&config.bootstrap);
 
-        let genesis = GenesisState::setup(cli.genesis, &val_mapping)?;
-
         let identity = load_secp256k1_keypair_from_ec_pem(cli.identity)?;
         let certkey = load_secp256k1_keypair_from_ec_pem(cli.certkey)?;
 
@@ -48,7 +44,6 @@ impl NodeState {
 
         Ok(Self {
             config,
-            genesis,
             val_mapping,
 
             identity,

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use monad_blocktree::blocktree::{BlockTree, RootKind};
+use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
@@ -111,8 +111,6 @@ where
     fn new(
         transaction_validator: Self::TransactionValidatorType,
         my_pubkey: PubKey,
-        genesis_block: FullBlock<SCT>,
-        genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
         config: ConsensusConfig,
         keypair: KeyPair,
@@ -199,8 +197,6 @@ where
     fn new(
         transaction_validator: Self::TransactionValidatorType,
         my_pubkey: PubKey,
-        genesis_block: FullBlock<SCT>,
-        genesis_qc: QuorumCertificate<SCT>,
         delta: Duration,
         config: ConsensusConfig,
 
@@ -209,11 +205,13 @@ where
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
         beneficiary: EthAddress,
     ) -> Self {
+        let genesis_qc = QuorumCertificate::genesis_prime_qc();
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_block),
+            pending_block_tree: BlockTree::new(genesis_qc.clone()),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             state_root_validator: SVT::new(config.state_root_delay),
+            // high_qc round is 0, so pacemaker round should start at 1
             pacemaker: Pacemaker::new(delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
@@ -556,10 +554,7 @@ where
     }
 
     fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>> {
-        self.pending_block_tree
-            .tree()
-            .get(bid)
-            .map(|btree_block| btree_block.get_block())
+        self.pending_block_tree.tree().get(bid)
     }
 
     fn handle_block_sync_tmo<VT: ValidatorSetType>(
@@ -627,10 +622,7 @@ where
                 .pending_block_tree
                 .has_path_to_root(&qc.info.vote.parent_id)
         {
-            let blocks_to_commit = self
-                .pending_block_tree
-                .prune(&qc.info.vote.parent_id)
-                .unwrap_or_else(|_| panic!("\n{:?}", self.pending_block_tree));
+            let blocks_to_commit = self.pending_block_tree.prune(&qc.info.vote.parent_id);
 
             if let Some(b) = blocks_to_commit.last() {
                 self.state_root_validator.remove_old_roots(b.get_seq_num());
@@ -740,10 +732,7 @@ where
 
     #[must_use]
     fn proposal_policy(&self, parent_bid: &BlockId, proposed_seq_num: SeqNum) -> ConsensusAction {
-        // Never propose while syncing
-        if let RootKind::Unrooted(_) = self.pending_block_tree.root {
-            return ConsensusAction::Abstain;
-        }
+        // TODO when statesync ready - Never propose while syncing
 
         // Can't propose txs without state root hash
         let Some(h) = self
@@ -808,7 +797,6 @@ mod test {
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, NopStateRoot, StateRoot,
             StateRootValidator, TransactionHashList,
         },
-        quorum_certificate::{genesis_vote_info, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
         transaction_validator::{MockValidator, TransactionValidator},
@@ -818,7 +806,7 @@ mod test {
     use monad_eth_types::EthAddress;
     use monad_testutil::{
         proposal::ProposalGen,
-        signing::{create_certificate_keys, create_keys, get_genesis_config, get_key},
+        signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, NodeId, Round, RouterTarget, SeqNum};
@@ -850,17 +838,6 @@ mod test {
     ) {
         let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
 
-        let voting_keys = keys
-            .iter()
-            .map(|k| NodeId(k.pubkey()))
-            .zip(cert_keys.iter())
-            .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) =
-            get_genesis_config::<SCT, TVT>(voting_keys.iter(), &valmap, &TVT::default());
-
-        let genesis_qc =
-            QuorumCertificate::genesis_qc(genesis_vote_info(genesis_block.get_id()), genesis_sigs);
-
         let mut dupkeys = create_keys(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
         let consensus_states = keys
@@ -876,8 +853,6 @@ mod test {
                 ConsensusState::<SCT, _, SVT>::new(
                     MockValidator,
                     k.pubkey(),
-                    genesis_block.clone(),
-                    genesis_qc.clone(),
                     Duration::from_secs(1),
                     ConsensusConfig {
                         proposal_size: 5000,
@@ -955,7 +930,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
         let p1 = propgen.next_proposal(
             &keys,
             &certkeys,
@@ -1002,8 +977,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen =
-            ProposalGen::<SignatureType, SignatureCollectionType>::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
 
         let p1 = propgen.next_proposal(
             &keys,
@@ -1106,8 +1080,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen =
-            ProposalGen::<SignatureType, SignatureCollectionType>::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
 
         let p1 = propgen.next_proposal(
             &keys,
@@ -1165,7 +1138,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         // first proposal
         let p1 = propgen.next_proposal(
@@ -1264,8 +1237,8 @@ mod test {
             &election,
         );
 
-        // confirm the size of the pending_block_tree (genesis, p1, p2, p_fut)
-        assert_eq!(state.pending_block_tree.size(), 4);
+        // confirm the size of the pending_block_tree (p1, p2, p_fut)
+        assert_eq!(state.pending_block_tree.size(), 3);
 
         // missed proposals now arrive
         let mut cmds = Vec::new();
@@ -1346,7 +1319,7 @@ mod test {
             &election,
         );
 
-        assert_eq!(state.pending_block_tree.size(), 3);
+        assert_eq!(state.pending_block_tree.size(), 2);
         assert_eq!(
             state.pacemaker.get_current_round(),
             Round(perms.len() as u64 + 4),
@@ -1361,7 +1334,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         // round 1 proposal
         let p1 = propgen.next_proposal(
@@ -1476,7 +1449,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
-        let mut propgen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         // round 1 proposal
         let p1 = propgen.next_proposal(
@@ -1613,10 +1586,8 @@ mod test {
         // the next leader, all other nodes get B.
         // effect is that nodes send votes for B to the next leader who thinks that
         // the "correct" proposal is A.
-        let mut correct_proposal_gen =
-            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
-        let mut mal_proposal_gen =
-            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
+        let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
+        let mut mal_proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         let cp1 = correct_proposal_gen.next_proposal(
             &keys,
@@ -1840,14 +1811,14 @@ mod test {
 
         // second_state has the malicious block in the blocktree, so it will not be able to
         // commit anything
-        assert_eq!(second_state.pending_block_tree.size(), 4);
+        assert_eq!(second_state.pending_block_tree.size(), 3);
         let res = cmds2
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(res.is_none());
 
         // first_state has the correct blocks, so expect to see a commit
-        assert_eq!(first_state.pending_block_tree.size(), 3);
+        assert_eq!(first_state.pending_block_tree.size(), 2);
         let res = cmds1
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
@@ -1898,14 +1869,14 @@ mod test {
         );
 
         // second_state has the correct blocks, so expect to see a commit
-        assert_eq!(second_state.pending_block_tree.size(), 3);
+        assert_eq!(second_state.pending_block_tree.size(), 2);
         let res = cmds2
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(res.is_some());
 
         // first_state has the correct blocks, so expect to see a commit
-        assert_eq!(first_state.pending_block_tree.size(), 3);
+        assert_eq!(first_state.pending_block_tree.size(), 2);
         let res = cmds1
             .iter()
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
@@ -1923,7 +1894,7 @@ mod test {
             &election,
         );
 
-        assert_eq!(third_state.pending_block_tree.size(), 3);
+        assert_eq!(third_state.pending_block_tree.size(), 2);
         let res = cmds3.iter().clone().find(|c| {
             matches!(
                 c,
@@ -1941,7 +1912,7 @@ mod test {
         // BlockSyncMessage on blocks that were not requested should be ignored.
         let cmds3 = third_state.handle_block_sync(author_2, mal_sync, &valset);
 
-        assert_eq!(third_state.pending_block_tree.size(), 3);
+        assert_eq!(third_state.pending_block_tree.size(), 2);
         let res = cmds3.iter().clone().find(|c| {
             matches!(
                 c,
@@ -1957,7 +1928,7 @@ mod test {
 
         let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), &valset);
 
-        assert_eq!(third_state.pending_block_tree.size(), 4);
+        assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3.iter().clone().find(|c| {
             matches!(
                 c,
@@ -1977,7 +1948,7 @@ mod test {
         // repeated handling of the requested block should be ignored
         let cmds3 = third_state.handle_block_sync(*peer, sync, &valset);
 
-        assert_eq!(third_state.pending_block_tree.size(), 4);
+        assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3.iter().clone().find(|c| {
             matches!(
                 c,
@@ -1998,7 +1969,7 @@ mod test {
             &valmap,
             &election,
         );
-        assert_eq!(third_state.pending_block_tree.size(), 5);
+        assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds2.into_iter().find(|c| {
             matches!(
                 c,
@@ -2014,7 +1985,7 @@ mod test {
         // request sync which did not arrive in time should be ignored.
         let cmds3 = third_state.handle_block_sync(*peer_2, sync, &valset);
 
-        assert_eq!(third_state.pending_block_tree.size(), 5);
+        assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3.iter().clone().find(|c| {
             matches!(
                 c,
@@ -2035,7 +2006,7 @@ mod test {
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
-        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         let p1 = proposal_gen.next_proposal(
             &keys,
@@ -2075,7 +2046,7 @@ mod test {
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
-        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         let p0 = proposal_gen.next_proposal(
             &keys,
@@ -2125,7 +2096,7 @@ mod test {
 
         // delay gap in setup is 1
 
-        let mut proposal_gen = ProposalGen::<SignatureType, _>::new(state.high_qc.clone());
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
         let p0 = proposal_gen.next_proposal(
             &keys,
             &certkeys,
@@ -2287,10 +2258,8 @@ mod test {
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
 
-        let mut correct_proposal_gen =
-            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
-        let mut branch_off_proposal_gen =
-            ProposalGen::<SignatureType, _>::new(first_state.high_qc.clone());
+        let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
+        let mut branch_off_proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         let cp1 = correct_proposal_gen.next_proposal(
             &keys,
@@ -2352,6 +2321,7 @@ mod test {
         let full_block = first_state.fetch_uncommitted_block(&bid_branch).unwrap();
         assert_eq!(full_block.get_id(), bid_branch);
 
+        let mut ledger_blocks = Vec::new();
         // if a certain commit is triggered, then fetching block would fail
         for i in 0..3 {
             let cp = correct_proposal_gen.next_proposal(
@@ -2374,7 +2344,7 @@ mod test {
             assert_eq!(first_state.fetch_uncommitted_block(&bid), None);
             // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
 
-            first_state.handle_proposal_message_full(
+            let cmds = first_state.handle_proposal_message_full(
                 author,
                 verified_message,
                 FullTransactionList::empty(),
@@ -2382,17 +2352,21 @@ mod test {
                 &valmap,
                 &election,
             );
+
+            for cmd in cmds {
+                if let ConsensusCommand::LedgerCommit(blocks) = cmd {
+                    ledger_blocks.extend(blocks);
+                }
+            }
             let full_block = first_state.fetch_uncommitted_block(&bid).unwrap();
             assert_eq!(full_block.get_id(), bid);
-            // first prune remove the blocks that are branches
-            if i == 1 {
-                assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
-                assert!(first_state.fetch_uncommitted_block(&bid_correct).is_some());
-            } else if i == 2 {
-                assert_eq!(first_state.fetch_uncommitted_block(&bid_correct), None);
-                assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
-            }
         }
+        assert!(ledger_blocks
+            .iter()
+            .any(|x| x.get_block().get_id() == bid_correct));
+        assert!(ledger_blocks
+            .iter()
+            .all(|x| x.get_block().get_id() != bid_branch));
     }
 
     #[test_case(4; "4 participants")]
@@ -2408,8 +2382,7 @@ mod test {
             );
 
         let election = SimpleRoundRobin::new();
-        let mut correct_proposal_gen =
-            ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         for i in 0..8 {
             let cp = correct_proposal_gen.next_proposal(
@@ -2530,7 +2503,7 @@ mod test {
                 num_state as u32,
             );
         let election = SimpleRoundRobin::new();
-        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
             let cp = propgen.next_proposal(
@@ -2604,7 +2577,7 @@ mod test {
                 num_state as u32,
             );
         let election = SimpleRoundRobin::new();
-        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
             let cp = propgen.next_proposal(
@@ -2669,7 +2642,7 @@ mod test {
             );
 
         let election = SimpleRoundRobin::new();
-        let mut propgen = ProposalGen::<SignatureType, _>::new(states[0].high_qc.clone());
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         let verified_p1 = propgen.next_proposal(
             &keys,
@@ -2691,7 +2664,7 @@ mod test {
             &valmap,
             &election,
         );
-        assert_eq!(states[0].blocktree().tree().len(), 2);
+        assert_eq!(states[0].blocktree().size(), 1);
 
         let verified_p2 = propgen.next_proposal(
             &keys,
@@ -2729,7 +2702,7 @@ mod test {
         );
 
         // p2 is not added because author is not the round leader
-        assert_eq!(states[0].blocktree().tree().len(), 2);
+        assert_eq!(states[0].blocktree().size(), 1);
 
         logs_assert(|lines: &[&str]| {
             match lines

@@ -2,18 +2,13 @@ use bytes::Bytes;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::ConsensusMessage;
 use monad_consensus_types::{
-    block::BlockType,
     bls::BlsSignatureCollection,
     payload::{ExecutionArtifacts, TransactionHashList},
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_state::VerifiedMonadMessage;
-use monad_testutil::{
-    proposal::ProposalGen, signing::get_genesis_config, validators::create_keys_w_validators,
-};
-use monad_types::{NodeId, Serializable};
+use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
+use monad_types::Serializable;
 use monad_validator::{
     leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
     validator_set::ValidatorSetType,
@@ -32,18 +27,8 @@ fn main() {
     rng.fill_bytes(&mut transaction_hashes);
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
-    let voting_keys = keys
-        .iter()
-        .map(|k| NodeId(k.pubkey()))
-        .zip(cert_keys.iter())
-        .collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) =
-        get_genesis_config(voting_keys.iter(), &valmap, &MockValidator {});
-    let genesis_qc =
-        QuorumCertificate::genesis_qc(genesis_vote_info(genesis_block.get_id()), genesis_sigs);
     let election = SimpleRoundRobin::new();
-    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
-        ProposalGen::new(genesis_qc);
+    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
 
     let proposal = propgen
         .next_proposal(

@@ -17,13 +17,12 @@ use monad_consensus_types::{
     block::{Block, FullBlock},
     message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload, RandaoReveal},
-    quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
     validation,
     validator_data::ValidatorData,
-    voting::{ValidatorMapping, VoteInfo},
+    voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
@@ -224,9 +223,6 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
 
     pub delta: Duration,
     pub consensus_config: ConsensusConfig,
-    pub genesis_block: FullBlock<SCT>,
-    pub genesis_vote_info: VoteInfo,
-    pub genesis_signatures: SCT,
 }
 
 impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
@@ -276,9 +272,6 @@ where
         let val_mapping = ValidatorMapping::new(voting_identities);
         let election = LT::new();
 
-        let genesis_qc =
-            QuorumCertificate::genesis_qc(config.genesis_vote_info, config.genesis_signatures);
-
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             validator_set: val_set,
             validator_mapping: val_mapping,
@@ -288,8 +281,6 @@ where
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
-                config.genesis_block,
-                genesis_qc,
                 config.delta,
                 config.consensus_config,
                 config.key,

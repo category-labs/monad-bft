@@ -31,12 +31,23 @@ pub struct ProposalGen<ST, SCT> {
     phantom: PhantomData<ST>,
 }
 
+impl<ST, SCT> Default for ProposalGen<ST, SCT>
+where
+    ST: MessageSignature,
+    SCT: SignatureCollection,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<ST, SCT> ProposalGen<ST, SCT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
-    pub fn new(genesis_qc: QuorumCertificate<SCT>) -> Self {
+    pub fn new() -> Self {
+        let genesis_qc = QuorumCertificate::genesis_prime_qc();
         ProposalGen {
             round: Round(0),
             qc: genesis_qc.clone(),

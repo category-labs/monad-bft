@@ -17,7 +17,7 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{NodeId, SeqNum, Stake};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::{
@@ -422,6 +422,13 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
+    if qc.info.vote.round == Round(0) {
+        if qc == &QuorumCertificate::genesis_prime_qc() {
+            return Ok(());
+        } else {
+            return Err(Error::InvalidSignature);
+        }
+    }
     if HasherType::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
         // TODO-3: collect author for evidence?
         return Err(Error::InvalidSignature);
@@ -630,7 +637,7 @@ mod test {
     fn test_qc_verify_insufficient_stake() {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(0),
+            round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
             seq_num: SeqNum(0),

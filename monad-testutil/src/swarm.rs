@@ -4,7 +4,6 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType,
     message_signature::MessageSignature,
-    quorum_certificate::genesis_vote_info,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     transaction_validator::TransactionValidator,
     voting::ValidatorMapping,
@@ -20,7 +19,7 @@ use monad_state::MonadConfig;
 use monad_transformer::ID;
 use monad_types::{NodeId, SeqNum, Stake};
 
-use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
+use crate::validators::create_keys_w_validators;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SwarmTestConfig {
@@ -74,9 +73,6 @@ pub fn complete_config<
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
 
-    let (genesis_block, genesis_sigs) =
-        get_genesis_config::<SCT, TVT>(voting_keys.iter(), &validator_mapping, &tvt);
-
     let state_configs = keys
         .into_iter()
         .zip(cert_keys)
@@ -96,9 +92,6 @@ pub fn complete_config<
                 state_root_delay: SeqNum(state_root_delay),
                 propose_with_missing_blocks: false,
             },
-            genesis_block: genesis_block.clone(),
-            genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
-            genesis_signatures: genesis_sigs.clone(),
         })
         .collect::<Vec<_>>();
 

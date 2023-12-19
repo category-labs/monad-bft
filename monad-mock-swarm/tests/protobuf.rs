@@ -3,13 +3,10 @@ use monad_consensus::{
     validation::signing::Unverified,
 };
 use monad_consensus_types::{
-    block::BlockType,
     bls::BlsSignatureCollection,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, TransactionHashList},
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    transaction_validator::MockValidator,
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
@@ -22,7 +19,7 @@ use monad_executor_glue::{
 };
 use monad_testutil::{
     proposal::ProposalGen,
-    signing::{get_certificate_key, get_genesis_config, get_key},
+    signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
 use monad_types::{BlockId, NodeId, Round, SeqNum};
@@ -90,16 +87,8 @@ fn test_consensus_message_event_proposal_bls() {
         .map(|k| NodeId(k.pubkey()))
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<BlsSignatureCollection, MockValidator>(
-        voting_keys.iter(),
-        &valmap,
-        &MockValidator {},
-    );
-    let genesis_qc =
-        QuorumCertificate::genesis_qc(genesis_vote_info(genesis_block.get_id()), genesis_sigs);
     let election = SimpleRoundRobin::new();
-    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
-        ProposalGen::new(genesis_qc);
+    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
 
     let proposal = propgen.next_proposal(
         &keys,

@@ -2,25 +2,18 @@ use std::{collections::HashSet, marker::PhantomData};
 
 use monad_consensus::validation::signing::Unverified;
 use monad_consensus_types::{
-    block::{Block, BlockType, FullBlock},
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
-    ledger::LedgerCommitInfo,
-    payload::{
-        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
-    },
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
+    block::Block,
+    certificate_signature::CertificateKeyPair,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
-    transaction_validator::TransactionValidator,
     voting::ValidatorMapping,
 };
 use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, PubKey, SecpSignature},
 };
-use monad_eth_types::EthAddress;
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::NodeId;
 use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
@@ -153,47 +146,6 @@ pub fn create_certificate_keys<SCT: SignatureCollection>(
 
 pub fn create_seed_for_certificate_keys<SCT: SignatureCollection>(num_keys: u32) -> Vec<u64> {
     (0..num_keys).map(|i| i as u64 + u32::MAX as u64).collect()
-}
-
-pub fn get_genesis_config<'k, SCT, TVT>(
-    keys: impl Iterator<Item = &'k (NodeId, &'k SignatureCollectionKeyPairType<SCT>)>,
-    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    tvt: &TVT,
-) -> (FullBlock<SCT>, SCT)
-where
-    SCT: SignatureCollection,
-    TVT: TransactionValidator,
-{
-    let genesis_txn = TransactionHashList::empty();
-    let genesis_prime_qc = QuorumCertificate::<SCT>::genesis_prime_qc();
-    let genesis_block = Block::<SCT>::new(
-        // FIXME-4 init from genesis config, don't use random key
-        NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
-        Round(0),
-        &Payload {
-            txns: genesis_txn,
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        },
-        &genesis_prime_qc,
-    );
-
-    let genesis_lci = LedgerCommitInfo::new(None, &genesis_vote_info(genesis_block.get_id()));
-    let msg = HasherType::hash_object(&genesis_lci);
-
-    let mut sigs = Vec::new();
-    for (node_id, k) in keys {
-        let sig = SCT::SignatureType::sign(msg.as_ref(), k);
-        sigs.push((*node_id, sig))
-    }
-
-    let sigs = SCT::new(sigs, validator_mapping, msg.as_ref()).unwrap();
-    (
-        FullBlock::from_block(genesis_block, FullTransactionList::empty(), tvt).unwrap(),
-        sigs,
-    )
 }
 
 pub struct TestSigner<S> {

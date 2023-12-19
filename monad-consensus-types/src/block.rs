@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use monad_crypto::hasher::{Hashable, Hasher, HasherType};
 use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
@@ -79,6 +81,7 @@ impl<T: SignatureCollection> Hashable for Block<T> {
 }
 
 impl<T: SignatureCollection> Block<T> {
+    // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(author: NodeId, round: Round, payload: &Payload, qc: &QuorumCertificate<T>) -> Self {
         Self {
             author,
@@ -158,10 +161,19 @@ impl<T: SignatureCollection> Hashable for UnverifiedFullBlock<T> {
 
 /// A block alongside the list of RLP encoded full transactions
 /// The transaction are verified on creation
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FullBlock<T> {
     block: Block<T>,
     full_txs: FullTransactionList,
+}
+
+impl<T: Debug> Debug for FullBlock<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FullBlock")
+            .field("block", &self.block)
+            .field("full_txs_len", &self.full_txs.bytes().len())
+            .finish()
+    }
 }
 
 impl<T> FullBlock<T> {

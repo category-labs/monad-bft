@@ -8,28 +8,16 @@ use executor::MonadP2PGossipConfig;
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::{Block, BlockType, FullBlock},
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
-    ledger::LedgerCommitInfo,
+    certificate_signature::CertificateKeyPair,
     message_signature::MessageSignature,
     multi_sig::MultiSig,
-    payload::{
-        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
-    },
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    transaction_validator::MockValidator,
-    voting::ValidatorMapping,
 };
-use monad_crypto::{
-    hasher::{Hasher, HasherType},
-    secp256k1::{KeyPair, SecpSignature},
-};
-use monad_eth_types::EthAddress;
+use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
@@ -228,59 +216,10 @@ where
     .take(addresses.len())
     .collect::<Vec<_>>();
 
-    let validator_mapping = ValidatorMapping::new(
-        configs
-            .iter()
-            .map(|(keypair, cert_keypair)| (NodeId(keypair.pubkey()), cert_keypair.pubkey()))
-            .collect::<Vec<_>>(),
-    );
-
     let genesis_peers = configs
         .iter()
         .map(|(keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
         .collect::<Vec<_>>();
-    let genesis_block = {
-        let genesis_txn = TransactionHashList::empty();
-        let genesis_prime_qc = QuorumCertificate::genesis_prime_qc();
-        let genesis_execution_header = ExecutionArtifacts::zero();
-        FullBlock::from_block(
-            Block::new(
-                NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
-                Round(0),
-                &Payload {
-                    txns: genesis_txn,
-                    header: genesis_execution_header,
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &genesis_prime_qc,
-            ),
-            FullTransactionList::empty(),
-            &MockValidator,
-        )
-        .unwrap()
-    };
-    let gen_vote_info = genesis_vote_info(genesis_block.get_id());
-    let genesis_signatures = {
-        let genesis_lci = LedgerCommitInfo::new(None, &gen_vote_info);
-        let msg = HasherType::hash_object(&genesis_lci);
-
-        let mut sigs = Vec::new();
-        for (key, cert_key) in &configs {
-            let node_id = NodeId(key.pubkey());
-            let sig = <SignatureCollectionType as SignatureCollection>::SignatureType::sign(
-                msg.as_ref(),
-                cert_key,
-            );
-            sigs.push((node_id, sig));
-        }
-
-        let signatures =
-            SignatureCollectionType::new(sigs, &validator_mapping, msg.as_ref()).unwrap();
-
-        signatures
-    };
 
     let mut maybe_local_routers = match args.router {
         RouterArgs::Local {
@@ -377,9 +316,6 @@ where
                         state_root_delay: SeqNum(args.state_root_delay),
                         propose_with_missing_blocks: false,
                     },
-                    genesis_block: genesis_block.clone(),
-                    genesis_vote_info: gen_vote_info,
-                    genesis_signatures: genesis_signatures.clone(),
                 },
             }
         })
