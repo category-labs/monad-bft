@@ -1,11 +1,14 @@
 use std::path::PathBuf;
 
+use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
+use log::info;
 use monad_consensus_types::voting::ValidatorMapping;
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::{bls12_381::BlsKeyPair, secp256k1::KeyPair};
 use monad_types::NodeId;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
+use zeroize::Zeroize;
 
 use crate::{
     cli::Cli,
@@ -15,10 +18,10 @@ use crate::{
 
 pub struct NodeState {
     pub config: NodeConfig,
-    pub val_mapping: ValidatorMapping<KeyPair>,
+    pub val_mapping: ValidatorMapping<BlsKeyPair>,
 
-    pub identity: KeyPair,
-    pub certkey: KeyPair,
+    pub secp256k1_identity: KeyPair,
+    pub bls12_381_identity: BlsKeyPair,
 
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: Option<PathBuf>,
@@ -29,12 +32,21 @@ impl NodeState {
     pub fn setup(cmd: &mut clap::Command) -> Result<Self, NodeSetupError> {
         let cli = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
+        let secp_key = load_secp256k1_keypair(&cli.secp_identity)?;
+        info!(
+            "Loaded secp256k1 key from {:?}, pubkey=0x{}",
+            &cli.secp_identity,
+            hex::encode(secp_key.pubkey().bytes())
+        );
+        let bls_key = load_bls12_381_keypair(&cli.bls_identity)?;
+        info!(
+            "Loaded bls12_381 key from {:?}, pubkey=0x{}",
+            &cli.bls_identity,
+            hex::encode(bls_key.pubkey().serialize())
+        );
+
         let config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.config)?)?;
-
         let val_mapping = build_validator_mapping(&config.bootstrap);
-
-        let identity = load_secp256k1_keypair_from_ec_pem(cli.identity)?;
-        let certkey = load_secp256k1_keypair_from_ec_pem(cli.certkey)?;
 
         let otel_context = if let Some(otel_endpoint) = cli.otel_endpoint {
             Some(build_otel_context(otel_endpoint)?)
@@ -46,8 +58,8 @@ impl NodeState {
             config,
             val_mapping,
 
-            identity,
-            certkey,
+            secp256k1_identity: secp_key,
+            bls12_381_identity: bls_key,
 
             execution_ledger_path: cli.execution_ledger_path,
             mempool_ipc_path: cli.mempool_ipc_path,
@@ -56,37 +68,42 @@ impl NodeState {
     }
 }
 
-fn build_validator_mapping(bootstrap_config: &NodeBootstrapConfig) -> ValidatorMapping<KeyPair> {
+fn build_validator_mapping(bootstrap_config: &NodeBootstrapConfig) -> ValidatorMapping<BlsKeyPair> {
     let voting_identities = bootstrap_config
         .peers
         .iter()
-        .map(|peer| (NodeId(peer.pubkey), peer.certkey))
+        .map(|peer| (NodeId(peer.secp256k1_pubkey), peer.bls12_381_pubkey))
         .collect::<Vec<_>>();
 
     ValidatorMapping::new(voting_identities)
 }
 
-fn load_secp256k1_keypair_from_ec_pem(path: PathBuf) -> Result<KeyPair, NodeSetupError> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
-
-    let mut ec_private_keys = rustls_pemfile::ec_private_keys(&mut reader)?.into_iter();
-
-    let Some(private_key_bytes) = ec_private_keys.next() else {
-        return Err(NodeSetupError::Custom {
-            kind: ErrorKind::ValueValidation,
-            msg: "pem file does not contain \"EC PRIVATE KEY\" tag".to_owned(),
-        });
-    };
-
-    if ec_private_keys.next().is_some() {
-        return Err(NodeSetupError::Custom {
-            kind: ErrorKind::ValueValidation,
-            msg: "pem file contains more than one \"EC PRIVATE KEY\" tag".to_owned(),
-        });
+fn load_secp256k1_keypair(path: &PathBuf) -> Result<KeyPair, NodeSetupError> {
+    let mut b64 = std::fs::read_to_string(path)?;
+    let mut secret = Vec::with_capacity(32);
+    let result = base64::engine::general_purpose::STANDARD.decode_vec(b64.trim_end(), &mut secret);
+    b64.zeroize();
+    if result.is_ok() && secret.len() == 32 {
+        return Ok(KeyPair::from_bytes(&mut secret)?);
     }
+    Err(NodeSetupError::Custom {
+        kind: ErrorKind::ValueValidation,
+        msg: "secp secret must be base64-encoded 32 bytes".to_owned(),
+    })
+}
 
-    Ok(KeyPair::from_der(private_key_bytes)?)
+fn load_bls12_381_keypair(path: &PathBuf) -> Result<BlsKeyPair, NodeSetupError> {
+    let mut b64 = std::fs::read_to_string(path)?;
+    let mut secret = Vec::with_capacity(32);
+    let result = base64::engine::general_purpose::STANDARD.decode_vec(b64.trim_end(), &mut secret);
+    b64.zeroize();
+    if result.is_ok() && secret.len() == 32 {
+        return Ok(BlsKeyPair::from_bytes(&mut secret)?);
+    }
+    Err(NodeSetupError::Custom {
+        kind: ErrorKind::ValueValidation,
+        msg: "bls secret must be base64-encoded 32 bytes".to_owned(),
+    })
 }
 
 fn build_otel_context(otel_endpoint: String) -> Result<opentelemetry::Context, NodeSetupError> {

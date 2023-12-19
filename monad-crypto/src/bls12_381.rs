@@ -242,6 +242,8 @@ impl BlsSecretKey {
 }
 
 impl BlsKeyPair {
+    /// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature#section-2.3
+    /// secret MUST be at least 32 bytes
     pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
         let secret = secret.as_mut();
         let sk = BlsSecretKey::key_gen(secret, &[])?;

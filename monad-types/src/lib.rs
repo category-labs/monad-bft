@@ -10,6 +10,7 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher},
     secp256k1::PubKey,
 };
+use serde::Deserialize;
 use zerocopy::AsBytes;
 
 #[repr(transparent)]
@@ -142,7 +143,7 @@ impl Hashable for BlockId {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
 pub struct Stake(pub i64);
 
 impl Add for Stake {

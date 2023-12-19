@@ -12,4 +12,5 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 
+serde = { workspace = true }
 zerocopy = { workspace = true }

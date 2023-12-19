@@ -51,8 +51,8 @@ libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca60
 reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 
-asn1_der = "0.7"
 async-trait = "0.1"
+base64 = "0.21"
 bincode = "1.3"
 bitvec = "1.0"
 blake3 = "1.5"
@@ -98,7 +98,6 @@ rayon = "1.7"
 rcgen = "0.11"
 ref-cast = "1.0"
 ring = "0.17"
-rustls-pemfile = "1.0"
 rustls = "0.21"
 secp256k1 = "0.26"
 serde = "1.0"

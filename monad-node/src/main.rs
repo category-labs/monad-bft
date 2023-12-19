@@ -8,7 +8,7 @@ use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    multi_sig::MultiSig, payload::NopStateRoot, transaction_validator::MockValidator,
+    bls::BlsSignatureCollection, payload::NopStateRoot, transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
@@ -16,7 +16,7 @@ use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
 use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
-use monad_types::{NodeId, SeqNum, Stake};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -38,7 +38,8 @@ mod state;
 use state::NodeState;
 
 type SignatureType = SecpSignature;
-type SignatureCollectionType = MultiSig<SignatureType>;
+type SignatureCollectionType = BlsSignatureCollection;
+// FIXME real tx validator
 type TransactionValidatorType = MockValidator;
 type StateRootValidatorType = NopStateRoot;
 type MonadState = monad_state::MonadState<
@@ -46,6 +47,7 @@ type MonadState = monad_state::MonadState<
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
+    // FIXME weighted round robin
     SimpleRoundRobin,
 >;
 type MonadConfig = <MonadState as State>::Config;
@@ -75,14 +77,10 @@ fn main() {
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router(
         node_state.config.network,
-        &node_state.identity,
+        &node_state.secp256k1_identity,
         &node_state.config.bootstrap.peers,
     )
     .await;
-
-    // FIXME-1 hack so all tcp sockets are bound before they try and send mesages
-    // we can delete this once we support retry at the monad-p2p executor level
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let mut mempool_controller_config = ControllerConfig::default();
 
@@ -107,10 +105,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             .bootstrap
             .peers
             .into_iter()
-            .map(|peer| (peer.pubkey, Stake(1), peer.certkey))
+            .map(|peer| (peer.secp256k1_pubkey, peer.stake, peer.bls12_381_pubkey))
             .collect(),
-        key: node_state.identity,
-        certkey: node_state.certkey,
+        key: node_state.secp256k1_identity,
+        certkey: node_state.bls12_381_identity,
         beneficiary: node_state.config.beneficiary,
         delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
@@ -212,7 +210,7 @@ where
                 .iter()
                 .map(|peer| {
                     (
-                        NodeId(peer.pubkey.to_owned()),
+                        NodeId(peer.secp256k1_pubkey.to_owned()),
                         generate_bind_address(peer.ip, peer.port),
                     )
                 })
@@ -221,7 +219,7 @@ where
         MockGossipConfig {
             all_peers: peers
                 .iter()
-                .map(|peer| NodeId(peer.pubkey.to_owned()))
+                .map(|peer| NodeId(peer.secp256k1_pubkey.to_owned()))
                 .collect(),
             me: NodeId(identity.pubkey()),
         }

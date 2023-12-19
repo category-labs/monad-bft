@@ -518,12 +518,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "asn1_der"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "155a5a185e42c6b77ac7b88a15143d930a9e9727a5b7b77eed417404ab15c247"
-
-[[package]]
 name = "async-io"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4315,7 +4309,6 @@ dependencies = [
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
- "asn1_der",
  "blake3",
  "blst",
  "criterion",
@@ -4524,6 +4517,7 @@ dependencies = [
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.5",
  "clap 4.4.10",
  "env_logger",
  "futures-util",
@@ -4546,13 +4540,13 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_api",
- "rustls-pemfile",
  "serde",
  "thiserror",
  "tokio",
  "toml 0.7.8",
  "tracing",
  "tracing-opentelemetry",
+ "zeroize",
 ]
 
 [[package]]
@@ -4758,6 +4752,7 @@ version = "0.1.0"
 dependencies = [
  "monad-crypto",
  "monad-proto",
+ "serde",
  "zerocopy 0.6.5",
 ]
 
@@ -4776,7 +4771,6 @@ dependencies = [
  "monad-mempool-messenger",
  "monad-testutil",
  "monad-types",
- "monad-wal",
  "ntest",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

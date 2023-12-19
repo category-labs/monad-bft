@@ -20,7 +20,6 @@ monad-ledger = { path = "../monad-ledger" }
 monad-mempool-controller = { path = "../monad-mempool-controller" }
 monad-mempool-messenger = { path = "../monad-mempool-messenger" }
 monad-types = { path = "../monad-types" }
-monad-wal = { path = "../monad-wal" }
 
 futures = { workspace = true }
 rand = { workspace = true }

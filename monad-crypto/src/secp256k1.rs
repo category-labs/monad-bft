@@ -1,4 +1,3 @@
-use asn1_der::typed::DerDecodable;
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
 
@@ -77,33 +76,13 @@ fn msg_hash(msg: &[u8]) -> secp256k1::Message {
 
 impl KeyPair {
     /// Create a keypair from a secret key slice. The secret is zero-ized after
-    /// use
+    /// use. The secret must be 32 byytes.
     pub fn from_bytes(secret: &mut [u8]) -> Result<Self, Error> {
         let keypair = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, secret)
             .map(Self)
             .map_err(Error);
         secret.zeroize();
         keypair
-    }
-
-    /// Create a keypair from an ASN.1 DER formatted secret key
-    pub fn from_der(mut der: impl AsMut<[u8]>) -> Result<Self, Error> {
-        let der_obj = der.as_mut();
-
-        let mut secret_key_bytes = asn1_der::typed::Sequence::decode(der_obj)
-            .and_then(|seq| seq.get(1))
-            .and_then(Vec::load)
-            .map_err(|_| Error(secp256k1::Error::InvalidSecretKey))?;
-
-        let secret_key = secp256k1::SecretKey::from_slice(&secret_key_bytes).map_err(Error)?;
-
-        secret_key_bytes.zeroize();
-        der_obj.zeroize();
-
-        Ok(Self(secp256k1::KeyPair::from_secret_key(
-            secp256k1::SECP256K1,
-            &secret_key,
-        )))
     }
 
     /// Create a SecpSignature over Hash(msg)

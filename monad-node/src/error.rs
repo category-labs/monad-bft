@@ -22,6 +22,9 @@ pub enum NodeSetupError {
     Secp256k1(#[from] monad_crypto::secp256k1::Error),
 
     #[error(transparent)]
+    Bls12_381(#[from] monad_crypto::bls12_381::BlsError),
+
+    #[error(transparent)]
     SignatureCollectionError(
         #[from]
         monad_consensus_types::signature_collection::SignatureCollectionError<
@@ -45,6 +48,7 @@ impl NodeSetupError {
             NodeSetupError::FromHexError(_) => ErrorKind::ValueValidation,
             NodeSetupError::IoError(_) => ErrorKind::Io,
             NodeSetupError::Secp256k1(_) => ErrorKind::ValueValidation,
+            NodeSetupError::Bls12_381(_) => ErrorKind::ValueValidation,
             NodeSetupError::SignatureCollectionError(_) => ErrorKind::ValueValidation,
             NodeSetupError::TomlDeError(_) => ErrorKind::ValueValidation,
             NodeSetupError::TraceError(_) => ErrorKind::ValueValidation,
