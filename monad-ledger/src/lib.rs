@@ -8,11 +8,14 @@ use monad_eth_types::EthFullTransactionList;
 use reth_primitives::{keccak256, BlockBody, Bloom, Bytes, Header, H256, U256};
 use reth_rlp::Encodable;
 
+/// Create an RLP encoded Ethereum block from a Monad consensus block
 pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SCT>) -> Vec<u8> {
     let (monad_block, monad_full_txs) = full_block.split();
 
+    // use the full transactions to create the eth block body
     let block_body = generate_block_body(monad_full_txs);
 
+    // the payload inside the monad block will be used to generate the eth header
     let header = generate_header(monad_block, &block_body);
 
     let mut header_bytes = Vec::default();
@@ -29,6 +32,7 @@ pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SC
     buf
 }
 
+/// Produce the body of an Ethereum Block from a list of full transactions
 fn generate_block_body(monad_full_txs: FullTransactionList) -> BlockBody {
     let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.bytes().clone())
         .unwrap()
@@ -44,6 +48,8 @@ fn generate_block_body(monad_full_txs: FullTransactionList) -> BlockBody {
     }
 }
 
+// TODO-2: Review integration with execution team
+/// Use data from the MonadBlock to generate an Ethereum Header
 fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) -> Header {
     let ExecutionArtifacts {
         parent_hash,
@@ -69,8 +75,8 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
         logs_bloom: Bloom(logs_bloom.0),
         difficulty: U256::ZERO,
         number: monad_block.payload.seq_num.0,
-        // TODO-1
-        gas_limit: u64::MAX,
+        // TODO-1: need to get the actual sum gas limit from the list of transactions being used
+        gas_limit: 15_000_000,
         gas_used: gas_used.0,
         // TODO-1: Add to BFT proposal
         timestamp: 0,
@@ -152,8 +158,9 @@ mod test {
 
         // Check that encode_full_block starts with keccak header hash
         assert!(bytes.starts_with(&[
-            212, 77, 82, 205, 229, 94, 135, 122, 87, 21, 202, 7, 45, 115, 186, 120, 39, 59, 86,
-            171, 170, 230, 157, 75, 208, 15, 84, 70, 30, 39, 187, 94,
+            0xb0, 0xc0, 0xc2, 0xe1, 0x0f, 0xcb, 0xe1, 0x51, 0xb7, 0x49, 0x98, 0x80, 0xdd, 0xfd,
+            0x08, 0x2f, 0x65, 0x66, 0xa5, 0x07, 0xaf, 0x00, 0x15, 0xc1, 0xbd, 0xe7, 0x61, 0x00,
+            0xbc, 0x39, 0x04, 0xc8,
         ]));
     }
 }
