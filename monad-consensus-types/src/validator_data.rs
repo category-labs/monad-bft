@@ -9,6 +9,8 @@ use monad_types::{NodeId, Stake};
 
 use crate::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
+/// ValidatorData is used by updaters to send valdiator set updates
+/// to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatorData<SCT: SignatureCollection>(
     pub Vec<(NodeId, Stake, SignatureCollectionPubKeyType<SCT>)>,
