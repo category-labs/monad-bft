@@ -1,0 +1,11 @@
+#########################################################
+#                                                       #
+#        WARNING: THIS FILE SHOULD NEVER BE USED        #
+#              IN PRODUCTION ENVIRONMENTS!              #
+#                                                       #
+#########################################################
+
+[[validators]]
+secp256k1_pubkey = "0x02093852f554d6196025b0bebe21ea646f73e34f1fd6f154e6ae77c890363ea5be"
+bls12_381_pubkey = "0xab1011a17be0921c122fc7362f6e0401f80623c644bb9d9e9eedff0410a4de2259f0d3a36414d4dd9dd748ace56ffb5e"
+stake = 1

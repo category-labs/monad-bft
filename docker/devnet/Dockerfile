@@ -21,6 +21,7 @@ ENV RUST_LOG=info
 CMD monad-node \
     --secp-identity /monad/config/id-secp \
     --bls-identity /monad/config/id-bls \
-    --config /monad/config/config.toml \
+    --node-config /monad/config/node.toml \
+    --genesis-config /monad/config/genesis.toml \
     --mempool-ipc-path /monad/mempool.sock \
     --execution-ledger-path /monad/ledger

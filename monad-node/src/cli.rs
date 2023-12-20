@@ -15,7 +15,11 @@ pub struct Cli {
 
     /// Set the node config path
     #[arg(long)]
-    pub config: PathBuf,
+    pub node_config: PathBuf,
+
+    /// Set the genesis config path
+    #[arg(long)]
+    pub genesis_config: PathBuf,
 
     // Set the path where the execution ledger will be stored
     #[arg(long)]

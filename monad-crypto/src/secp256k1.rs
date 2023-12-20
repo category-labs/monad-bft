@@ -102,6 +102,7 @@ impl KeyPair {
 
 impl PubKey {
     /// Deserialize public key from bytes
+    /// Can be compressed OR uncompressed pubkey
     pub fn from_slice(pubkey: &[u8]) -> Result<Self, Error> {
         secp256k1::PublicKey::from_slice(pubkey)
             .map(Self)
@@ -113,7 +114,7 @@ impl PubKey {
         self.0.serialize_uncompressed().to_vec()
     }
 
-    fn bytes_compressed(&self) -> Vec<u8> {
+    pub fn bytes_compressed(&self) -> Vec<u8> {
         self.0.serialize().to_vec()
     }
 
@@ -185,6 +186,13 @@ mod tests {
         assert_eq!(
             pubkey_bytes,
             PubKey::from_slice(&pubkey_bytes).unwrap().bytes()
+        );
+        let pubkey_compressed_bytes = keypair.pubkey().bytes_compressed();
+        assert_eq!(
+            pubkey_bytes,
+            PubKey::from_slice(&pubkey_compressed_bytes)
+                .unwrap()
+                .bytes()
         );
     }
 

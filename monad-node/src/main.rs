@@ -80,9 +80,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
     >(
-        node_state.config.network,
+        node_state.node_config.network,
         &node_state.secp256k1_identity,
-        &node_state.config.bootstrap.peers,
+        &node_state.node_config.bootstrap.peers,
     )
     .await;
 
@@ -105,15 +105,14 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let (mut state, init_commands) = MonadState::init(MonadConfig {
         transaction_validator: MockValidator {},
         validators: node_state
-            .config
-            .bootstrap
-            .peers
+            .genesis_config
+            .validators
             .into_iter()
             .map(|peer| (peer.secp256k1_pubkey, peer.stake, peer.bls12_381_pubkey))
             .collect(),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        beneficiary: node_state.config.beneficiary,
+        beneficiary: node_state.node_config.beneficiary,
         delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 5000,
