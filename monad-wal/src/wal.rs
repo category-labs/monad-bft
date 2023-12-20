@@ -99,21 +99,6 @@ impl<M> WALogger<M>
 where
     M: Serializable<Bytes> + Deserializable<[u8]> + Debug,
 {
-    pub fn push_two_write(
-        &mut self,
-        message: &M,
-    ) -> Result<(), <Self as PersistenceLogger>::Error> {
-        let msg_buf = message.serialize();
-        let len_buf = (msg_buf.len() as EventHeaderType).to_le_bytes();
-
-        self.file_handle.write_all(&len_buf)?;
-        self.file_handle.write_all(&msg_buf)?;
-        if self.sync {
-            self.file_handle.sync_all()?;
-        }
-        Ok(())
-    }
-
     pub fn push(&mut self, message: &M) -> Result<(), <Self as PersistenceLogger>::Error> {
         let msg_buf = message.serialize();
         let buf = (msg_buf.len() as EventHeaderType).to_le_bytes().to_vec();

@@ -75,21 +75,12 @@ impl Bencher {
     fn append(&mut self) {
         self.logger.push(&self.data).unwrap()
     }
-    fn append_two_write(&mut self) {
-        self.logger.push_two_write(&self.data).unwrap()
-    }
 }
 
 fn bench_block(c: &mut Criterion) {
     let mut bencher = Bencher::new(BLOCK_SIZE);
 
     c.bench_function("block", |b| b.iter(|| bencher.append()));
-}
-
-fn bench_block_two_write(c: &mut Criterion) {
-    let mut bencher = Bencher::new(BLOCK_SIZE);
-
-    c.bench_function("block_two_write", |b| b.iter(|| bencher.append_two_write()));
 }
 
 fn bench_vote(c: &mut Criterion) {
@@ -104,25 +95,7 @@ fn bench_vote(c: &mut Criterion) {
     });
 }
 
-fn bench_vote_two_write(c: &mut Criterion) {
-    let mut bencher = Bencher::new(VOTE_SIZE);
-
-    c.bench_function("vote_two_write", |b| {
-        b.iter(|| {
-            for _ in 0..N_VALIDATORS {
-                bencher.append_two_write()
-            }
-        })
-    });
-}
-
-criterion_group!(
-    bench,
-    bench_block,
-    bench_block_two_write,
-    bench_vote,
-    bench_vote_two_write,
-);
+criterion_group!(bench, bench_block, bench_vote);
 
 #[cfg(target_os = "linux")]
 criterion::criterion_main!(bench);
