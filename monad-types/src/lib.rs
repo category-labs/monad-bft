@@ -13,6 +13,7 @@ use monad_crypto::{
 use serde::Deserialize;
 use zerocopy::AsBytes;
 
+/// Consensus round
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
 pub struct Round(pub u64);
@@ -51,6 +52,10 @@ impl std::fmt::Debug for Round {
     }
 }
 
+/// Consensus epoch
+///
+/// During an epoch, the validator set remain stable: no validator is allowed to
+/// stake or unstake until the next epoch
 #[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Epoch(pub u64);
@@ -69,6 +74,12 @@ impl std::fmt::Debug for Epoch {
     }
 }
 
+/// Block sequence number
+///
+/// Consecutive blocks in the same branch have consecutive sequence numbers,
+/// meaning a block must extend its parent block's sequence number by 1. Thus,
+/// the committed ledger has consecutive sequence numbers, with no holes in
+/// between.
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
 pub struct SeqNum(pub u64);
@@ -106,6 +117,8 @@ impl std::fmt::Debug for SeqNum {
         self.0.fmt(f)
     }
 }
+
+/// NodeId is the validator's pubkey identity in the consensus protocol
 #[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NodeId(pub PubKey);
@@ -116,12 +129,7 @@ impl std::fmt::Debug for NodeId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RouterTarget {
-    Broadcast,
-    PointToPoint(NodeId),
-}
-
+/// BlockId uniquely identifies a block
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BlockId(pub Hash);
@@ -142,6 +150,8 @@ impl Hashable for BlockId {
     }
 }
 
+/// Stake is the amount of tokens the validator deposited for validating
+/// privileges and earning transaction fees
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
 pub struct Stake(pub i64);
@@ -180,22 +190,26 @@ impl std::iter::Sum for Stake {
     }
 }
 
+/// Serialize into S, usually bytes
 pub trait Serializable<S> {
     fn serialize(&self) -> S;
 }
 
+/// All types can trivially serialize to itself
 impl<S: Clone> Serializable<S> for S {
     fn serialize(&self) -> S {
         self.clone()
     }
 }
 
+/// Deserialize from S, usually bytes
 pub trait Deserializable<S: ?Sized>: Sized {
     type ReadError: Error + Send + Sync;
 
     fn deserialize(message: &S) -> Result<Self, Self::ReadError>;
 }
 
+/// All types can trivially deserialize to itself
 impl<S: Clone> Deserializable<S> for S {
     type ReadError = io::Error;
 
@@ -204,6 +218,19 @@ impl<S: Clone> Deserializable<S> for S {
     }
 }
 
+// FIXME-4: move to monad-executor-glue after spaghetti fixed
+/// RouterTarget specifies the particular node(s) that the router should send
+/// the message toward
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RouterTarget {
+    Broadcast,
+    PointToPoint(NodeId),
+}
+
+// FIXME-4: move to monad-executor-glue after spaghetti fixed
+/// TimeoutVariant distinguishes the source of the timer scheduled
+/// - `Pacemaker`: consensus pacemaker round timeout
+/// - `BlockSync`: timeout for a specific blocksync request
 #[derive(Hash, Debug, Clone, PartialEq, Eq, Copy)]
 pub enum TimeoutVariant {
     Pacemaker,
