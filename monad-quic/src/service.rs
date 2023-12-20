@@ -220,105 +220,10 @@ where
                     tokio::time::Sleep::reset(this.gossip_timeout.as_mut(), deadline.into());
                 }
                 if this.gossip_timeout.poll_unpin(cx).is_ready() || timeout <= time {
-                    match this.gossip.poll(time) {
-                        Some(GossipEvent::Send(to, gossip_message)) => {
-                            if to == this.me {
-                                this.gossip
-                                    .handle_gossip_message(time, this.me, gossip_message);
-                            } else {
-                                let maybe_unsent_gossip_message = match this
-                                    .outbound_messages
-                                    .get_mut(&to)
-                                {
-                                    Some(sender) => {
-                                        let result = sender.try_send(gossip_message);
-
-                                        match result {
-                                            Ok(()) => None,
-                                            Err(TrySendError::Full(gossip_message)) => {
-                                                todo!("channel full, how should we handle this?")
-                                            }
-                                            Err(TrySendError::Closed(gossip_message)) => {
-                                                // this implies that the connection died
-                                                this.outbound_messages.remove(&to);
-                                                Some(gossip_message)
-                                            }
-                                        }
-                                    }
-                                    None => Some(gossip_message),
-                                };
-
-                                if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
-                                    const MAX_BUFFERED_MESSAGES: usize = 100;
-                                    let (sender, mut receiver) =
-                                        tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
-                                    sender
-                                        .try_send(unsent_gossip_message)
-                                        .expect("try_send should always succeed on new chan");
-                                    this.outbound_messages.insert(to, sender);
-
-                                    let known_address = match this.known_addresses.get(&to) {
-                                        Some(address) => *address,
-                                        None => todo!("what do we do for peer discovery?"),
-                                    };
-
-                                    let endpoint = this.endpoint.clone();
-                                    let client_config = {
-                                        let mut c = ClientConfig::new(this.quinn_config.client());
-                                        c.transport_config(this.quinn_config.transport());
-                                        c
-                                    };
-                                    tokio::spawn(async move {
-                                        let fut = async move {
-                                            let connection = endpoint
-                                                .connect_with(
-                                                    client_config,
-                                                    known_address,
-                                                    "MONAD", // server_name doesn't matter because we're verifying the peer_id that signed the certificate
-                                                )?
-                                                .await?;
-
-                                            if QC::remote_peer_id(&connection) != to {
-                                                todo!("unexpected peer_id, return and retry?");
-                                            }
-
-                                            let mut stream = connection.open_uni().await?;
-
-                                            while let Some(gossip_message) = receiver.recv().await {
-                                                stream.write_all(&gossip_message).await?;
-                                            }
-                                            Ok::<_, OutboundConnectionError>(())
-                                        };
-                                        if let Err(e) = fut.await {
-                                            todo!("handle outbound connection err: {:?}", e);
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                        Some(GossipEvent::Emit(from, app_message)) => {
-                            let message = {
-                                let mut _deser_span = tracing::info_span!(
-                                    "deserialize_span",
-                                    message_len = app_message.len()
-                                )
-                                .entered();
-                                match M::deserialize(&app_message) {
-                                    Ok(m) => m,
-                                    Err(e) => todo!("err deserializing message: {:?}", e),
-                                }
-                            };
-                            let event = {
-                                let mut _message_to_event_span = tracing::info_span!(
-                                    "message_to_event_span",
-                                    message_len = app_message.len()
-                                )
-                                .entered();
-                                message.event(from)
-                            };
+                    if let Some(gossip_event) = this.gossip.poll(time) {
+                        if let Some(event) = this.handle_gossip_event(time, gossip_event) {
                             return Poll::Ready(Some(event));
                         }
-                        None => {}
                     }
                     // loop if don't return value, because need to re-poll timeout
                     continue;
@@ -326,6 +231,118 @@ where
             }
 
             return Poll::Pending;
+        }
+    }
+}
+
+impl<QC, G, M, OM> Service<QC, G, M, OM>
+where
+    QC: QuinnConfig,
+    G: Gossip,
+    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
+
+    OM: Into<M> + Clone,
+{
+    fn handle_gossip_event(
+        &mut self,
+        time: Duration,
+        gossip_event: GossipEvent,
+    ) -> Option<M::Event> {
+        match gossip_event {
+            GossipEvent::Send(to, gossip_message) if to == self.me => {
+                self.gossip
+                    .handle_gossip_message(time, self.me, gossip_message);
+                None
+            }
+            GossipEvent::Send(to, gossip_message) => {
+                let maybe_unsent_gossip_message = match self.outbound_messages.get_mut(&to) {
+                    Some(sender) => {
+                        let result = sender.try_send(gossip_message);
+
+                        match result {
+                            Ok(()) => None,
+                            Err(TrySendError::Full(gossip_message)) => {
+                                todo!("channel full, how should we handle this?")
+                            }
+                            Err(TrySendError::Closed(gossip_message)) => {
+                                // this implies that the connection died
+                                self.outbound_messages.remove(&to);
+                                Some(gossip_message)
+                            }
+                        }
+                    }
+                    None => Some(gossip_message),
+                };
+
+                if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
+                    const MAX_BUFFERED_MESSAGES: usize = 100;
+                    let (sender, mut receiver) = tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
+                    sender
+                        .try_send(unsent_gossip_message)
+                        .expect("try_send should always succeed on new chan");
+                    self.outbound_messages.insert(to, sender);
+
+                    let known_address = match self.known_addresses.get(&to) {
+                        Some(address) => *address,
+                        None => todo!("what do we do for peer discovery?"),
+                    };
+
+                    let endpoint = self.endpoint.clone();
+                    let client_config = {
+                        let mut c = ClientConfig::new(self.quinn_config.client());
+                        c.transport_config(self.quinn_config.transport());
+                        c
+                    };
+                    tokio::spawn(async move {
+                        let fut = async move {
+                            let connection = endpoint
+                                .connect_with(
+                                    client_config,
+                                    known_address,
+                                    "MONAD", // server_name doesn't matter because we're verifying the peer_id that signed the certificate
+                                )?
+                                .await?;
+
+                            if QC::remote_peer_id(&connection) != to {
+                                todo!("unexpected peer_id, return and retry?");
+                            }
+
+                            let mut stream = connection.open_uni().await?;
+
+                            while let Some(gossip_message) = receiver.recv().await {
+                                stream.write_all(&gossip_message).await?;
+                            }
+                            Ok::<_, OutboundConnectionError>(())
+                        };
+                        if let Err(e) = fut.await {
+                            todo!("handle outbound connection err: {:?}", e);
+                        }
+                    });
+                }
+                None
+            }
+            GossipEvent::Emit(from, app_message) => {
+                let message = {
+                    let mut _deser_span =
+                        tracing::info_span!("deserialize_span", message_len = app_message.len())
+                            .entered();
+                    match M::deserialize(&app_message) {
+                        Ok(m) => m,
+                        Err(e) => todo!("err deserializing message: {:?}", e),
+                    }
+                };
+                let event = {
+                    let mut _message_to_event_span = tracing::info_span!(
+                        "message_to_event_span",
+                        message_len = app_message.len()
+                    )
+                    .entered();
+                    message.event(from)
+                };
+                Some(event)
+            }
         }
     }
 }
