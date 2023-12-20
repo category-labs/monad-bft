@@ -1,4 +1,5 @@
 pub mod block;
+pub mod block_validator;
 pub mod bls;
 pub mod certificate_signature;
 pub mod command;
@@ -12,7 +13,6 @@ pub mod signature_collection;
 #[cfg(test)]
 pub mod test_utils;
 pub mod timeout;
-pub mod transaction_validator;
 pub mod validation;
 pub mod validator_data;
 pub mod voting;

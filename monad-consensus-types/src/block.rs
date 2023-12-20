@@ -5,10 +5,10 @@ use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
+    block_validator::BlockValidator,
     payload::{FullTransactionList, Payload},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    transaction_validator::TransactionValidator,
 };
 
 /// This trait represents a consensus block
@@ -182,7 +182,7 @@ impl<T> FullBlock<T> {
     pub fn from_block(
         block: Block<T>,
         full_txs: FullTransactionList,
-        validator: &impl TransactionValidator,
+        validator: &impl BlockValidator,
     ) -> Option<Self> {
         validator
             .validate(&block.payload.txns, &full_txs)
@@ -193,7 +193,7 @@ impl<T> FullBlock<T> {
     /// with the TransactionValidator
     pub fn try_from_unverified(
         unverified: UnverifiedFullBlock<T>,
-        validator: &impl TransactionValidator,
+        validator: &impl BlockValidator,
     ) -> Option<Self> {
         validator
             .validate(&unverified.block.payload.txns, &unverified.full_txs)

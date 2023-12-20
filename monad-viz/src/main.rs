@@ -24,9 +24,9 @@ use iced::{
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
+    block_validator::MockValidator,
     multi_sig::MultiSig,
     payload::StateRoot,
-    transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};

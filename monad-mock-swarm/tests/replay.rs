@@ -2,8 +2,7 @@ use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::BlockType, multi_sig::MultiSig, payload::NopStateRoot,
-    transaction_validator::MockValidator,
+    block::BlockType, block_validator::MockValidator, multi_sig::MultiSig, payload::NopStateRoot,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::timed_event::TimedEvent;

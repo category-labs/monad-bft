@@ -13,8 +13,8 @@ use std::{collections::HashMap, time::Duration};
 
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::FullBlock, quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection, transaction_validator::TransactionValidator,
+    block::FullBlock, block_validator::BlockValidator, quorum_certificate::QuorumCertificate,
+    signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, TimeoutVariant};
@@ -169,7 +169,7 @@ where
     /// Handle the response to a BlockSync request
     /// If the request was not fulfilled, the request is tried again with
     /// a different node
-    pub fn handle_response<VT: ValidatorSetType, TV: TransactionValidator>(
+    pub fn handle_response<VT: ValidatorSetType, TV: BlockValidator>(
         &mut self,
         author: &NodeId,
         msg: BlockSyncResponseMessage<SCT>,
@@ -251,13 +251,13 @@ mod test {
 
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedFullBlock},
+        block_validator::MockValidator,
         ledger::CommitResult,
         payload::{
             ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
-        transaction_validator::MockValidator,
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::hasher::Hash;

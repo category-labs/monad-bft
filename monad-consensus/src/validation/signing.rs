@@ -396,7 +396,7 @@ where
     VT: ValidatorSetType,
 {
     if qc.get_round() == Round(0) {
-        if qc == &QuorumCertificate::genesis_prime_qc() {
+        if qc == &QuorumCertificate::genesis_qc() {
             return Ok(());
         } else {
             return Err(Error::InvalidSignature);

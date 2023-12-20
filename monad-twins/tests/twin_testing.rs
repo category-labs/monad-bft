@@ -2,7 +2,7 @@
 mod test {
     use std::collections::BTreeSet;
 
-    use monad_consensus_types::transaction_validator::MockValidator;
+    use monad_consensus_types::block_validator::MockValidator;
     use monad_mock_swarm::{mock::MockMempoolConfig, swarm_relation::MonadMessageNoSerSwarm};
     use monad_router_scheduler::NoSerRouterConfig;
     use monad_transformer::ID;

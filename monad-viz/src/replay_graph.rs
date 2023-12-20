@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
 
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::transaction_validator::MockValidator;
+use monad_consensus_types::block_validator::MockValidator;
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
@@ -44,12 +44,12 @@ impl ReplayConfig<MS> for RepConfig {
                     .iter()
                     .map(|(node_id, sctpubkey)| (node_id.0, Stake(1), *sctpubkey))
                     .collect::<Vec<_>>(),
-                delta: self.delta,
                 consensus_config: ConsensusConfig {
                     proposal_txn_limit: 5000,
                     proposal_gas_limit: 8_000_000,
                     state_root_delay: SeqNum(0),
                     propose_with_missing_blocks: false,
+                    delta: self.delta,
                 },
             })
             .collect::<Vec<_>>();

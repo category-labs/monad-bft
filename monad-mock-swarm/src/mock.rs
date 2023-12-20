@@ -681,7 +681,7 @@ mod tests {
             round: Round(0),
             seq_num: SeqNum(0),
             state_root_hash: Default::default(),
-            high_qc: QuorumCertificate::genesis_prime_qc(),
+            high_qc: QuorumCertificate::genesis_qc(),
             last_round_tc: None,
         }
     }

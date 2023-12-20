@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, time::Duration};
+use std::{fmt::Debug, marker::PhantomData};
 
 use bytes::Bytes;
 use monad_blocktree::blocktree::BlockTree;
@@ -259,7 +259,6 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub beneficiary: EthAddress,
 
-    pub delta: Duration,
     pub consensus_config: ConsensusConfig,
 }
 
@@ -271,7 +270,7 @@ where
     VT: ValidatorSetType,
     LT: LeaderElection,
 {
-    type Config = MonadConfig<SCT, CT::TransactionValidatorType>;
+    type Config = MonadConfig<SCT, CT::BlockValidatorType>;
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
@@ -319,11 +318,10 @@ where
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
-                config.delta,
                 config.consensus_config,
+                config.beneficiary,
                 config.key,
                 config.certkey,
-                config.beneficiary,
             ),
             block_sync_respond: BlockSyncResponder {},
 

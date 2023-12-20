@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
+    block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;

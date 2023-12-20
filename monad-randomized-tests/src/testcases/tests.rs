@@ -1,6 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
-use monad_consensus_types::{multi_sig::MultiSig, transaction_validator::MockValidator};
+use monad_consensus_types::{block_validator::MockValidator, multi_sig::MultiSig};
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{
     mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,

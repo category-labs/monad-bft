@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_consensus_types::transaction_validator::MockValidator;
+use monad_consensus_types::block_validator::MockValidator;
 use monad_mock_swarm::{
     mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };

@@ -3,9 +3,9 @@ use std::time::Duration;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType,
+    block_validator::BlockValidator,
     message_signature::MessageSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    transaction_validator::TransactionValidator,
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
@@ -33,16 +33,16 @@ pub struct SwarmTestConfig {
     pub proposal_size: usize,
 }
 
-pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
-    tvt: TVT,
+pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, BVT: BlockValidator>(
+    tvt: BVT,
     num_nodes: u16,
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT, BVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
-    complete_config::<ST, SCT, TVT>(
+    complete_config::<ST, SCT, BVT>(
         tvt,
         keys,
         cert_keys,
@@ -53,19 +53,15 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     )
 }
 
-pub fn complete_config<
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    TVT: TransactionValidator,
->(
-    tvt: TVT,
+pub fn complete_config<ST: MessageSignature, SCT: SignatureCollection, BVT: BlockValidator>(
+    tvt: BVT,
     keys: Vec<KeyPair>,
     cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
     validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     delta: Duration,
     state_root_delay: u64,
     proposal_txn_limit: usize,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
+) -> (Vec<PubKey>, Vec<MonadConfig<SCT, BVT>>) {
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let voting_keys = keys
         .iter()
@@ -86,12 +82,12 @@ pub fn complete_config<
                 .iter()
                 .map(|(node_id, sctpubkey)| (node_id.0, Stake(1), *sctpubkey))
                 .collect::<Vec<_>>(),
-            delta,
             consensus_config: ConsensusConfig {
                 proposal_txn_limit,
                 proposal_gas_limit: 30_000_000,
                 state_root_delay: SeqNum(state_root_delay),
                 propose_with_missing_blocks: false,
+                delta,
             },
         })
         .collect::<Vec<_>>();

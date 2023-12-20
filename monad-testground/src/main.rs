@@ -307,12 +307,12 @@ where
                     key: keypair,
                     cert_key: cert_keypair,
                     genesis_peers: genesis_peers.clone(),
-                    delta: Duration::from_millis(args.delta_ms),
                     consensus_config: ConsensusConfig {
                         proposal_txn_limit: args.proposal_size,
                         proposal_gas_limit: 8_000_000,
                         state_root_delay: SeqNum(args.state_root_delay),
                         propose_with_missing_blocks: false,
+                        delta: Duration::from_millis(args.delta_ms),
                     },
                 },
             }

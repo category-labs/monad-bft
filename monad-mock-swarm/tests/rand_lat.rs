@@ -1,7 +1,7 @@
 mod common;
 use std::env;
 
-use monad_consensus_types::transaction_validator::MockValidator;
+use monad_consensus_types::block_validator::MockValidator;
 use monad_mock_swarm::{
     mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
 };

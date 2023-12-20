@@ -47,7 +47,7 @@ where
     SCT: SignatureCollection,
 {
     pub fn new() -> Self {
-        let genesis_qc = QuorumCertificate::genesis_prime_qc();
+        let genesis_qc = QuorumCertificate::genesis_qc();
         ProposalGen {
             round: Round(0),
             qc: genesis_qc.clone(),

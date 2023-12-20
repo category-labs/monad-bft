@@ -1,13 +1,11 @@
-use std::time::Duration;
-
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::FullBlock,
+    block_validator::MockValidator,
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     message_signature::MessageSignature,
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
-    transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
@@ -145,7 +143,6 @@ pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
         PubKey,
         <<SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
     )>,
-    pub delta: Duration,
     pub consensus_config: ConsensusConfig,
 }
 
@@ -177,7 +174,6 @@ where
         key: config.key,
         certkey: config.cert_key,
         beneficiary: EthAddress::default(),
-        delta: config.delta,
         consensus_config: config.consensus_config,
     })
 }

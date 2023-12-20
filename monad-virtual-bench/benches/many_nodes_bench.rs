@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    bls::BlsSignatureCollection, multi_sig::MultiSig, payload::StateRoot,
-    transaction_validator::MockValidator,
+    block_validator::MockValidator, bls::BlsSignatureCollection, multi_sig::MultiSig,
+    payload::StateRoot,
 };
 use monad_crypto::NopSignature;
 use monad_executor::timed_event::TimedEvent;

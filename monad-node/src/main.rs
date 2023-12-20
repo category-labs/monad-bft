@@ -8,7 +8,7 @@ use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    bls::BlsSignatureCollection, payload::NopStateRoot, transaction_validator::MockValidator,
+    block_validator::MockValidator, bls::BlsSignatureCollection, payload::NopStateRoot,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
@@ -42,10 +42,10 @@ use state::NodeState;
 type SignatureType = SecpSignature;
 type SignatureCollectionType = BlsSignatureCollection;
 // FIXME real tx validator
-type TransactionValidatorType = MockValidator;
+type BlockValidatorType = MockValidator;
 type StateRootValidatorType = NopStateRoot;
 type MonadState = monad_state::MonadState<
-    ConsensusState<SignatureCollectionType, TransactionValidatorType, StateRootValidatorType>,
+    ConsensusState<SignatureCollectionType, BlockValidatorType, StateRootValidatorType>,
     SignatureType,
     SignatureCollectionType,
     ValidatorSet,
@@ -140,12 +140,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         beneficiary: node_state.node_config.beneficiary,
-        delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 5000,
             proposal_gas_limit: 8_000_000,
             state_root_delay: SeqNum(0),
             propose_with_missing_blocks: false,
+            delta: Duration::from_secs(1),
         },
     });
 

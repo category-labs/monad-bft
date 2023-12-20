@@ -94,6 +94,7 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
 mod test {
     use monad_consensus_types::{
         block::{Block, FullBlock as MonadFullBlock},
+        block_validator::MockValidator,
         ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{
@@ -101,7 +102,6 @@ mod test {
             TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
-        transaction_validator::MockValidator,
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};

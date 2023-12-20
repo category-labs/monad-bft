@@ -12,12 +12,12 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{BlockType, FullBlock},
+    block_validator::BlockValidator,
     command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
     payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionHashList},
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
-    transaction_validator::TransactionValidator,
     voting::ValidatorMapping,
 };
 use monad_crypto::{
@@ -39,28 +39,168 @@ pub mod blocksync;
 pub mod command;
 pub mod wrapper;
 
-pub struct ConsensusState<SCT: SignatureCollection, TV, SVT> {
-    pending_block_tree: BlockTree<SCT>,
-    vote_state: VoteState<SCT>,
-    high_qc: QuorumCertificate<SCT>,
-    state_root_validator: SVT,
+/// Interface to the core consensus algorithm
+pub trait ConsensusProcess<SCT>
+where
+    SCT: SignatureCollection,
+{
+    type BlockValidatorType;
 
-    pacemaker: Pacemaker<SCT>,
-    safety: Safety,
+    /// Create the core consensus state
+    ///
+    /// Arguments
+    ///
+    /// block_validator - validation for incoming proposals
+    /// my_pubkey - pubkey for NodeId used to identify this Node to the network
+    /// config - collection of configurable parameters for core consensus algorithm  
+    /// beneficiary - Eth format address to deliver proposer rewards to
+    /// keypair - keypair used for protocol level message signing
+    /// cert_keypair - keypair used for certificate level signing
+    fn new(
+        block_validator: Self::BlockValidatorType,
+        my_pubkey: PubKey,
+        config: ConsensusConfig,
+        beneficiary: EthAddress,
+        keypair: KeyPair,
+        cert_keypair: SignatureCollectionKeyPairType<SCT>,
+    ) -> Self;
 
-    nodeid: NodeId,
-    config: ConsensusConfig,
+    fn get_pubkey(&self) -> PubKey;
 
-    transaction_validator: TV,
-    block_sync_requester: BlockSyncRequester<SCT>,
+    fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT>;
 
-    // TODO-2 deprecate
-    keypair: KeyPair,
-    cert_keypair: SignatureCollectionKeyPairType<SCT>,
-    beneficiary: EthAddress,
+    fn get_nodeid(&self) -> NodeId;
+
+    fn get_beneficiary(&self) -> EthAddress;
+
+    fn blocktree(&self) -> &BlockTree<SCT>;
+
+    /// handles the local timeout expiry event
+    fn handle_timeout_expiry(&mut self) -> Vec<PacemakerCommand<SCT>>;
+
+    /// handles proposal messages from other nodes
+    /// the proposal contains txn hashes so this handler should retrieve full
+    /// transactions and then call handle_proposal_message_full with this proposal
+    /// and the full messages
+    fn handle_proposal_message(
+        &mut self,
+        author: NodeId,
+        p: ProposalMessage<SCT>,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    /// handles an external proposal along with the associated list of full transactions
+    /// validators and election are required as part of verifying the proposal certificates
+    /// as well as determining the next leader
+    fn handle_proposal_message_full<VT: ValidatorSetType, LT: LeaderElection>(
+        &mut self,
+        author: NodeId,
+        p: ProposalMessage<SCT>,
+        txns: FullTransactionList,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &LT,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    /// collect votes from other nodes
+    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection>(
+        &mut self,
+        author: NodeId,
+        v: VoteMessage<SCT>,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &LT,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    /// handle timeout messages from other nodes
+    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
+        &mut self,
+        author: NodeId,
+        tm: TimeoutMessage<SCT>,
+        validators: &VT,
+        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        election: &LT,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    /// handle the response to a block sync message
+    fn handle_block_sync<VT: ValidatorSetType>(
+        &mut self,
+        author: NodeId,
+        msg: BlockSyncResponseMessage<SCT>,
+        validators: &VT,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    /// handler when a block sync request has timed out
+    fn handle_block_sync_tmo<VT: ValidatorSetType>(
+        &mut self,
+        bid: BlockId,
+        validators: &VT,
+    ) -> Vec<ConsensusCommand<SCT>>;
+
+    /// state root hashes are produced when blocks are executed. They can
+    /// arrive after the delay-gap between execution so they need to be handled
+    /// asynchronously
+    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash);
+
+    fn get_current_round(&self) -> Round;
+
+    fn get_keypair(&self) -> &KeyPair;
+
+    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>>;
 }
 
-impl<SCT, TVT, SVT> PartialEq for ConsensusState<SCT, TVT, SVT>
+pub struct ConsensusState<SCT: SignatureCollection, BV, SVT> {
+    /// This nodes public NodeId; what other nodes see in the validator set
+    nodeid: NodeId,
+    /// Parameters for consensus algorithm behaviour
+    config: ConsensusConfig,
+    /// Prospective blocks are stored here while they wait to be
+    /// committed
+    pending_block_tree: BlockTree<SCT>,
+    /// State machine to track collected votes for proposals
+    vote_state: VoteState<SCT>,
+    /// The highest QC (QC height determined by Round) known to this node
+    high_qc: QuorumCertificate<SCT>,
+    /// Policy for validating the state root hashes included in proposals
+    state_root_validator: SVT,
+    /// Tracks and updates the current round
+    pacemaker: Pacemaker<SCT>,
+    /// Policy for upholding consensus safety when voting or extending branches
+    safety: Safety,
+    /// Policy for validating incoming proposals
+    block_validator: BV,
+    /// State machine used to request missing blocks from previous rounds
+    block_sync_requester: BlockSyncRequester<SCT>,
+    /// Destination address for proposal payments
+    beneficiary: EthAddress,
+
+    // TODO-2 deprecate keypairs should probably have a different interface
+    // so that users have options for securely storing their keys
+    keypair: KeyPair,
+    cert_keypair: SignatureCollectionKeyPairType<SCT>,
+}
+
+/// Consensus algorithm's configurable parameters
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct ConsensusConfig {
+    /// Maximum number of transactions allowed in a proposal
+    pub proposal_txn_limit: usize,
+    /// Maximum cumulative gas allowed for all transactions in a proposal
+    pub proposal_gas_limit: u64,
+    /// The gap between the current SeqNum and the SeqNum of the state-root-hash
+    /// included in a proposal
+    pub state_root_delay: SeqNum,
+    /// If the current leader has the highest qc but is missing some blocks in the
+    /// pending blocktree (ie, there isn't a path to the root of the tree from the
+    /// highest qc), this bool controls whether we still try to propose a block with
+    /// transactions instead of proposing an empty block
+    pub propose_with_missing_blocks: bool,
+    /// Duration used by consensus to determine timeout lengths
+    /// delta should be approximately equal to the upper bound of message
+    /// delivery during a broadcast
+    pub delta: Duration,
+}
+
+impl<SCT, BVT, SVT> PartialEq for ConsensusState<SCT, BVT, SVT>
 where
     SCT: SignatureCollection,
 {
@@ -75,7 +215,9 @@ where
             && self.block_sync_requester.eq(&other.block_sync_requester)
     }
 }
-impl<SCT, TVT, SVT> std::fmt::Debug for ConsensusState<SCT, TVT, SVT>
+impl<SCT, BVT, SVT> Eq for ConsensusState<SCT, BVT, SVT> where SCT: SignatureCollection {}
+
+impl<SCT, BVT, SVT> std::fmt::Debug for ConsensusState<SCT, BVT, SVT>
 where
     SCT: SignatureCollection,
 {
@@ -93,145 +235,42 @@ where
     }
 }
 
-impl<SCT, TVT, SVT> Eq for ConsensusState<SCT, TVT, SVT> where SCT: SignatureCollection {}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct ConsensusConfig {
-    /// Maximum number of transactions allowed in a proposal
-    pub proposal_txn_limit: usize,
-    /// Maximum cumulative gas allowed for all transactions in a proposal
-    pub proposal_gas_limit: u64,
-    /// The gap between the current SeqNum and the SeqNum of the state-root-hash
-    /// included in a proposal
-    pub state_root_delay: SeqNum,
-    /// If the current leader has the highest qc but is missing some blocks in the
-    /// pending blocktree (ie, there isn't a path to the root of the tree from the
-    /// highest qc), this bool controls whether we still try to propose a block with
-    /// transactions instead of proposing an empty block
-    pub propose_with_missing_blocks: bool,
-}
-
-pub trait ConsensusProcess<SCT>
+impl<SCT, BVT, SVT> ConsensusProcess<SCT> for ConsensusState<SCT, BVT, SVT>
 where
     SCT: SignatureCollection,
-{
-    type TransactionValidatorType;
-
-    fn new(
-        transaction_validator: Self::TransactionValidatorType,
-        my_pubkey: PubKey,
-        delta: Duration,
-        config: ConsensusConfig,
-        keypair: KeyPair,
-        cert_keypair: SignatureCollectionKeyPairType<SCT>,
-        beneficiary: EthAddress,
-    ) -> Self;
-
-    fn get_pubkey(&self) -> PubKey;
-
-    fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT>;
-
-    fn get_nodeid(&self) -> NodeId;
-
-    fn get_beneficiary(&self) -> EthAddress;
-
-    fn blocktree(&self) -> &BlockTree<SCT>;
-
-    fn handle_timeout_expiry(&mut self) -> Vec<PacemakerCommand<SCT>>;
-
-    fn handle_proposal_message(
-        &mut self,
-        author: NodeId,
-        p: ProposalMessage<SCT>,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    fn handle_proposal_message_full<VT: ValidatorSetType, LT: LeaderElection>(
-        &mut self,
-        author: NodeId,
-        p: ProposalMessage<SCT>,
-        txns: FullTransactionList,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection>(
-        &mut self,
-        author: NodeId,
-        v: VoteMessage<SCT>,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
-        &mut self,
-        author: NodeId,
-        tm: TimeoutMessage<SCT>,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-        election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    fn handle_block_sync<VT: ValidatorSetType>(
-        &mut self,
-        author: NodeId,
-        msg: BlockSyncResponseMessage<SCT>,
-        validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    fn handle_block_sync_tmo<VT: ValidatorSetType>(
-        &mut self,
-        bid: BlockId,
-        validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash);
-
-    fn get_current_round(&self) -> Round;
-
-    fn get_keypair(&self) -> &KeyPair;
-
-    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>>;
-}
-
-impl<SCT, TVT, SVT> ConsensusProcess<SCT> for ConsensusState<SCT, TVT, SVT>
-where
-    SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
     SVT: StateRootValidator,
 {
-    type TransactionValidatorType = TVT;
+    type BlockValidatorType = BVT;
 
     fn new(
-        transaction_validator: Self::TransactionValidatorType,
+        block_validator: Self::BlockValidatorType,
         my_pubkey: PubKey,
-        delta: Duration,
         config: ConsensusConfig,
+        beneficiary: EthAddress,
 
         // TODO-2 deprecate
         keypair: KeyPair,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
-        beneficiary: EthAddress,
     ) -> Self {
-        let genesis_qc = QuorumCertificate::genesis_prime_qc();
+        let genesis_qc = QuorumCertificate::genesis_qc();
         ConsensusState {
             pending_block_tree: BlockTree::new(genesis_qc.clone()),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             state_root_validator: SVT::new(config.state_root_delay),
             // high_qc round is 0, so pacemaker round should start at 1
-            pacemaker: Pacemaker::new(delta, Round(1), None),
+            pacemaker: Pacemaker::new(config.delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId(my_pubkey),
             config,
 
-            transaction_validator,
+            block_validator,
             // timeout has to be proportional to delta, too slow/fast is bad
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
             // as 1 * delta for original ask, 2 * delta for reaction from peer
-            block_sync_requester: BlockSyncRequester::new(NodeId(my_pubkey), delta * 3),
+            block_sync_requester: BlockSyncRequester::new(NodeId(my_pubkey), config.delta * 3),
             keypair,
             cert_keypair,
             beneficiary,
@@ -254,6 +293,7 @@ where
     /// an empty list.
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
+    #[must_use]
     fn handle_proposal_message(
         &mut self,
         author: NodeId,
@@ -307,6 +347,9 @@ where
         }
     }
 
+    /// Once we have validated the state root hash and fetched the full transactions
+    /// validate and handle the rest of the proposal
+    #[must_use]
     fn handle_proposal_message_full<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
@@ -320,6 +363,7 @@ where
         inc_count!(fetched_proposal);
         let mut cmds = vec![];
 
+        // certificate handling
         let process_certificate_cmds = self.process_certificate_qc(&p.block.qc, validators);
         cmds.extend(process_certificate_cmds);
 
@@ -337,6 +381,7 @@ where
         let round = self.pacemaker.get_current_round();
         let block_round_leader = election.get_leader(p.block.get_round(), validators.get_list());
 
+        // randao validating
         let author_pubkey = validator_mapping
             .map
             .get(&author)
@@ -353,14 +398,15 @@ where
             return cmds;
         };
 
-        let Some(full_block) =
-            FullBlock::from_block(p.block, full_txs, &self.transaction_validator)
+        // block validating
+        let Some(full_block) = FullBlock::from_block(p.block, full_txs, &self.block_validator)
         else {
             warn!("Transaction validation failed");
             inc_count!(failed_txn_validation);
             return cmds;
         };
 
+        // author, leader, round checks
         if full_block.get_round() > round
             || author != block_round_leader
             || full_block.get_author() != block_round_leader
@@ -381,10 +427,14 @@ where
             return cmds;
         }
 
+        // at this point, block is valid and can be added to the blocktree
         self.pending_block_tree
             .add(full_block.clone())
             .expect("Failed to add block to blocktree");
 
+        // out-of-order proposals are possible if some round R+1 proposal arrives
+        // before R because of network conditions. The proposals are still valid but
+        // we don't vote on them
         if full_block.get_round() != round {
             debug!(
                 "Out-of-order proposal: expected-round={:?} \
@@ -396,6 +446,7 @@ where
             return cmds;
         }
 
+        // decide if its safe to cast vote on this proposal
         let vote = self
             .safety
             .make_vote::<SCT>(full_block.get_block(), &p.last_round_tc);
@@ -416,6 +467,9 @@ where
         cmds
     }
 
+    /// handle votes at the vote_state state machine. When enough votes are collected,
+    /// a QC is formed and broadcast to other nodes
+    #[must_use]
     fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
@@ -451,6 +505,8 @@ where
         cmds
     }
 
+    /// handling remote timeout messages
+    #[must_use]
     fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
@@ -523,6 +579,7 @@ where
     /// it is possible that a requested block failed to be added to the tree
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
+    #[must_use]
     fn handle_block_sync<VT: ValidatorSetType>(
         &mut self,
         author: NodeId,
@@ -536,7 +593,7 @@ where
             &author,
             msg,
             validators,
-            &self.transaction_validator,
+            &self.block_validator,
         );
         block_sync_result.log(bid);
 
@@ -562,10 +619,13 @@ where
         cmds
     }
 
+    /// a blocksync request could be for a block that is not yet committed so we
+    /// try and fetch it from the blocktree
     fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>> {
         self.pending_block_tree.tree().get(bid)
     }
 
+    /// if a blocksync request timesout, try again with a different validator
     fn handle_block_sync_tmo<VT: ValidatorSetType>(
         &mut self,
         bid: BlockId,
@@ -607,15 +667,25 @@ where
     }
 }
 
-impl<SCT, TVT, SVT> ConsensusState<SCT, TVT, SVT>
+/// Possible actions a leader node can take when entering a new round
+pub enum ConsensusAction {
+    /// Create a proposal with this state-root-hash and txn hash list
+    Propose(Hash, Vec<TransactionHashList>),
+    /// Create an empty block proposal
+    ProposeEmpty,
+    /// Do nothing which will lead to the round timing out
+    Abstain,
+}
+
+impl<SCT, BVT, SVT> ConsensusState<SCT, BVT, SVT>
 where
     SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
     SVT: StateRootValidator,
 {
-    // If the qc has a commit_state_hash, commit the parent block and prune the
-    // block tree
-    // Update our highest seen qc (high_qc) if the incoming qc is of higher rank
+    /// If the qc has a commit_state_hash, commit the parent block and prune the
+    /// block tree
+    /// Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
     pub fn process_qc(&mut self, qc: &QuorumCertificate<SCT>) -> Vec<ConsensusCommand<SCT>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
@@ -677,10 +747,13 @@ where
                 .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd)),
         );
 
+        // if the qc points to a block that is missing from the blocktree, we need
+        // to request it.
         cmds.extend(self.request_block_if_missing_ancestor(qc, validators));
         cmds
     }
 
+    /// called when the node is entering a new round and is the leader for that round
     #[must_use]
     fn process_new_round_event(
         &mut self,
@@ -770,6 +843,7 @@ where
         ConsensusAction::Abstain
     }
 
+    #[must_use]
     fn request_block_if_missing_ancestor<VT: ValidatorSetType>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
@@ -781,12 +855,6 @@ where
             vec![]
         }
     }
-}
-
-pub enum ConsensusAction {
-    Propose(Hash, Vec<TransactionHashList>),
-    ProposeEmpty,
-    Abstain,
 }
 
 #[cfg(test)]
@@ -803,6 +871,7 @@ mod test {
     };
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedFullBlock},
+        block_validator::MockValidator,
         certificate_signature::CertificateKeyPair,
         ledger::CommitResult,
         multi_sig::MultiSig,
@@ -812,7 +881,6 @@ mod test {
         },
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
-        transaction_validator::{MockValidator, TransactionValidator},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
@@ -839,9 +907,8 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
     type StateRootValidatorType = NopStateRoot;
-    type TransactionValidatorType = MockValidator;
 
-    fn setup<SCT: SignatureCollection, SVT: StateRootValidator, TVT: TransactionValidator>(
+    fn setup<SCT: SignatureCollection, SVT: StateRootValidator>(
         num_states: u32,
     ) -> (
         Vec<KeyPair>,
@@ -867,16 +934,16 @@ mod test {
                 ConsensusState::<SCT, _, SVT>::new(
                     MockValidator,
                     k.pubkey(),
-                    Duration::from_secs(1),
                     ConsensusConfig {
                         proposal_txn_limit: 5000,
                         proposal_gas_limit: 8_000_000,
                         state_root_delay: SeqNum(1),
                         propose_with_missing_blocks: false,
+                        delta: Duration::from_secs(1),
                     },
+                    EthAddress::default(),
                     std::mem::replace(&mut dupkeys[i], default_key),
                     std::mem::replace(&mut dupcertkeys[i], default_cert_key),
-                    EthAddress::default(),
                 )
             })
             .collect::<Vec<_>>();
@@ -889,7 +956,7 @@ mod test {
     #[test]
     fn lock_qc_high() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
 
         let state = &mut states[0];
@@ -942,7 +1009,7 @@ mod test {
     #[test]
     fn timeout_stops_voting() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -989,7 +1056,7 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1092,7 +1159,7 @@ mod test {
     #[test]
     fn duplicate_proposals() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1150,7 +1217,7 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1348,7 +1415,7 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1455,7 +1522,7 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1576,7 +1643,7 @@ mod test {
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -2003,7 +2070,7 @@ mod test {
     #[test]
     fn test_receive_empty_block() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRoot>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
@@ -2043,13 +2110,13 @@ mod test {
     #[test]
     fn test_lagging_execution() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRoot>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
         let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
 
-        let p0 = proposal_gen.next_proposal(
+        proposal_gen.next_proposal(
             &keys,
             &certkeys,
             &valset,
@@ -2091,7 +2158,7 @@ mod test {
     #[test]
     fn test_state_root_updates() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRoot, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRoot>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
@@ -2255,9 +2322,9 @@ mod test {
     #[test]
     fn test_fetch_uncommitted_block() {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(4);
+            setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
-        let (first_state, xs) = states.split_first_mut().unwrap();
+        let (first_state, _) = states.split_first_mut().unwrap();
 
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
         let mut branch_off_proposal_gen = ProposalGen::<SignatureType, _>::new();
@@ -2324,7 +2391,7 @@ mod test {
 
         let mut ledger_blocks = Vec::new();
         // if a certain commit is triggered, then fetching block would fail
-        for i in 0..3 {
+        for _ in 0..3 {
             let cp = correct_proposal_gen.next_proposal(
                 &keys,
                 &certkeys,
@@ -2378,9 +2445,7 @@ mod test {
     #[test_case(523; "523 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-                num_state as u32,
-            );
+            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
 
         let election = SimpleRoundRobin::new();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
@@ -2500,9 +2565,7 @@ mod test {
     fn test_observe_qc_through_tmo() {
         let num_state = 5;
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-                num_state as u32,
-            );
+            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -2574,9 +2637,7 @@ mod test {
     fn test_observe_qc_through_proposal() {
         let num_state = 5;
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-                num_state as u32,
-            );
+            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -2638,9 +2699,7 @@ mod test {
     fn test_reject_non_leader_proposal() {
         let num_state = 4;
         let (keys, certkeys, valset, valmap, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-                num_state as u32,
-            );
+            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
 
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();

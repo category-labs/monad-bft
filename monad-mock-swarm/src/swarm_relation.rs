@@ -1,11 +1,11 @@
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::FullBlock,
+    block_validator::{BlockValidator, MockValidator},
     message_signature::MessageSignature,
     multi_sig::MultiSig,
     payload::StateRoot,
     signature_collection::SignatureCollection,
-    transaction_validator::{MockValidator, TransactionValidator},
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
@@ -32,7 +32,7 @@ pub trait SwarmRelation {
     type OutboundMessage: Clone;
     type TransportMessage: PartialEq + Eq + Send;
 
-    type TransactionValidator: TransactionValidator + Clone;
+    type TransactionValidator: BlockValidator + Clone;
 
     type State: State<
         Block = FullBlock<Self::SignatureCollectionType>,

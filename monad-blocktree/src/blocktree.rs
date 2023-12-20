@@ -212,12 +212,12 @@ impl<T: SignatureCollection> BlockTree<T> {
 mod test {
     use monad_consensus_types::{
         block::{Block as ConsensusBlock, BlockType, FullBlock},
+        block_validator::MockValidator,
         ledger::CommitResult,
         payload::{
             ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
         },
         quorum_certificate::{QcInfo, QuorumCertificate},
-        transaction_validator::MockValidator,
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair};
@@ -246,7 +246,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_prime_qc()),
+            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
             FullTransactionList::empty(),
             &MockValidator {},
         )
@@ -456,7 +456,7 @@ mod test {
         //  b2    b5
         //        |
         //        b6
-        let mut blocktree = BlockTree::<MockSignatures>::new(QuorumCertificate::genesis_prime_qc());
+        let mut blocktree = BlockTree::<MockSignatures>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
 
         assert!(blocktree.add(b1.clone()).is_ok());
@@ -548,7 +548,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_prime_qc()),
+            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
             FullTransactionList::empty(),
             &MockValidator {},
         )
@@ -611,7 +611,7 @@ mod test {
         .unwrap();
 
         let gid = g.get_id();
-        let mut blocktree = BlockTree::new(QC::genesis_prime_qc());
+        let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g).is_ok());
 
         assert!(blocktree.add(b2.clone()).is_ok());
@@ -649,7 +649,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::genesis_prime_qc(),
+                &QC::genesis_qc(),
             ),
             FullTransactionList::empty(),
             &MockValidator {},
@@ -756,7 +756,7 @@ mod test {
         //  b1    b2
         //  |
         //  b3
-        let mut blocktree = BlockTree::new(QC::genesis_prime_qc());
+        let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.add(b2.clone()).is_ok());
@@ -792,7 +792,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QC::genesis_prime_qc(),
+                &QC::genesis_qc(),
             ),
             FullTransactionList::empty(),
             &MockValidator {},
@@ -833,7 +833,7 @@ mod test {
         )
         .unwrap();
 
-        let mut blocktree = BlockTree::new(QC::genesis_prime_qc());
+        let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
@@ -852,7 +852,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_prime_qc()),
+            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
             FullTransactionList::empty(),
             &MockValidator {},
         )
@@ -954,7 +954,7 @@ mod test {
         )
         .unwrap();
 
-        let mut blocktree = BlockTree::new(QC::genesis_prime_qc());
+        let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
         assert!(blocktree.has_path_to_root(&g.get_id()));
         assert!(!blocktree.has_path_to_root(&b1.get_id()));
@@ -999,7 +999,7 @@ mod test {
             randao_reveal: RandaoReveal::default(),
         };
         let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_prime_qc()),
+            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
             FullTransactionList::empty(),
             &MockValidator {},
         )
@@ -1101,7 +1101,7 @@ mod test {
         )
         .unwrap();
 
-        let mut blocktree = BlockTree::new(QC::genesis_prime_qc());
+        let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.get_block().qc).is_none()); // root naturally don't have missing ancestor
 

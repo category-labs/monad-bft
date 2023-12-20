@@ -8,9 +8,9 @@ use std::{
 
 use itertools::{izip, Itertools};
 use monad_consensus_types::{
+    block_validator::BlockValidator,
     certificate_signature::CertificateKeyPair,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    transaction_validator::TransactionValidator,
 };
 use monad_crypto::{
     hasher::{Hasher, HasherType},
@@ -56,13 +56,13 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<SCT, TVT>
+pub struct FullTwinsNodeConfig<SCT, BVT>
 where
     SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
 {
     id: ID,
-    state_config: MonadConfig<SCT, TVT>,
+    state_config: MonadConfig<SCT, BVT>,
     partition: BTreeMap<Round, Vec<ID>>,
     default_partition: Vec<ID>,
 
@@ -74,10 +74,10 @@ where
     is_honest: bool,
 }
 
-impl<SCT, TVT> Clone for FullTwinsNodeConfig<SCT, TVT>
+impl<SCT, BVT> Clone for FullTwinsNodeConfig<SCT, BVT>
 where
     SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
 {
     fn clone(&self) -> Self {
         Self {
@@ -91,8 +91,7 @@ where
                 )
                 .unwrap(),
                 beneficiary: self.state_config.beneficiary,
-                delta: self.state_config.delta,
-                consensus_config: self.state_config.consensus_config.clone(),
+                consensus_config: self.state_config.consensus_config,
             },
             partition: self.partition.clone(),
             default_partition: self.default_partition.clone(),
@@ -105,10 +104,10 @@ where
         }
     }
 }
-impl<SCT, TVT> Debug for FullTwinsNodeConfig<SCT, TVT>
+impl<SCT, BVT> Debug for FullTwinsNodeConfig<SCT, BVT>
 where
     SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -119,23 +118,23 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<SCT, TVT>
+pub struct TwinsNodeConfig<SCT, BVT>
 where
     SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
 {
     pub id: ID,
-    pub state_config: MonadConfig<SCT, TVT>,
+    pub state_config: MonadConfig<SCT, BVT>,
     pub partition: BTreeMap<Round, Vec<ID>>,
     pub default_partition: Vec<ID>,
 }
 
-impl<SCT, TVT> From<FullTwinsNodeConfig<SCT, TVT>> for TwinsNodeConfig<SCT, TVT>
+impl<SCT, BVT> From<FullTwinsNodeConfig<SCT, BVT>> for TwinsNodeConfig<SCT, BVT>
 where
     SCT: SignatureCollection,
-    TVT: TransactionValidator,
+    BVT: BlockValidator,
 {
-    fn from(value: FullTwinsNodeConfig<SCT, TVT>) -> Self {
+    fn from(value: FullTwinsNodeConfig<SCT, BVT>) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,

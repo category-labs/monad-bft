@@ -2,7 +2,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::QuicSwarm;
-use monad_consensus_types::transaction_validator::MockValidator;
+use monad_consensus_types::block_validator::MockValidator;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
