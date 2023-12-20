@@ -51,8 +51,6 @@ pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     phantom: PhantomData<OM>,
 }
 
-const SERVER_NAME: &str = "MONAD";
-
 impl<G: Gossip, IM, OM> RouterScheduler for QuicRouterScheduler<G, IM, OM>
 where
     IM: Deserializable<Bytes>,
@@ -116,7 +114,7 @@ where
             client_config.transport_config(transport_config.clone());
 
             let (connection_handle, connection) = endpoint
-                .connect(config.zero_instant, client_config, sock_addr, SERVER_NAME)
+                .connect(config.zero_instant, client_config, sock_addr, "MONAD")
                 .expect("mock quic should never fail to connect");
             connections.insert(connection_handle, connection);
             outbound_connections.insert(*peer, (connection_handle, None));

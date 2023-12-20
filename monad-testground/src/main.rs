@@ -16,7 +16,7 @@ use monad_consensus_types::{
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
-use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
+use monad_quic::{SafeQuinnConfig, ServiceConfig};
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
@@ -263,7 +263,6 @@ where
                             gossip,
                         } => RouterConfig::MonadP2P {
                             config: ServiceConfig {
-                                zero_instant: Instant::now(),
                                 me,
                                 server_address: address.parse().unwrap(),
                                 quinn_config: SafeQuinnConfig::new(

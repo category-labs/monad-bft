@@ -13,7 +13,7 @@ use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
-use monad_quic::service::{SafeQuinnConfig, Service, ServiceConfig};
+use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 
 #[derive(Parser, Debug)]
@@ -72,7 +72,6 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
             let server_address = *known_addresses.get(&me).unwrap();
             Service::new(
                 ServiceConfig {
-                    zero_instant: Instant::now(),
                     me,
                     known_addresses: known_addresses.clone(),
                     server_address,

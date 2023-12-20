@@ -15,7 +15,7 @@ use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
-use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
+use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
@@ -193,13 +193,12 @@ async fn build_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: &KeyPair,
     peers: &[NodeBootstrapPeerConfig],
-) -> monad_quic::service::Service<SafeQuinnConfig, MockGossip, M, OM>
+) -> Service<SafeQuinnConfig, MockGossip, M, OM>
 where
     M: Message,
 {
-    monad_quic::service::Service::new(
+    Service::new(
         ServiceConfig {
-            zero_instant: Instant::now(),
             me: NodeId(identity.pubkey()),
             server_address: generate_bind_address(
                 network_config.bind_address_host,
