@@ -7,10 +7,12 @@ pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 
+/// A list of Eth transaction hash
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EthTransactionList(pub Vec<TxHash>);
 
 impl EthTransactionList {
+    /// rlp encode EthTransactionList as a rlp list
     pub fn rlp_encode(self) -> Bytes {
         let mut buf = BytesMut::new();
 
@@ -24,10 +26,12 @@ impl EthTransactionList {
     }
 }
 
+/// A list of signed Eth transaction with recovered signer
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EthFullTransactionList(pub Vec<TransactionSignedEcRecovered>);
 
 impl EthFullTransactionList {
+    /// rlp encode EthFullTransactionList as a rlp list
     pub fn rlp_encode(self) -> Bytes {
         let mut buf = BytesMut::default();
 
@@ -41,6 +45,7 @@ impl EthFullTransactionList {
     }
 }
 
+/// A 20-byte Eth address
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct EthAddress(pub Address);
 
