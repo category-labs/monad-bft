@@ -11,6 +11,7 @@ use monad_executor_glue::TimerCommand;
 use monad_types::TimeoutVariant;
 use tokio::task::{AbortHandle, JoinSet};
 
+/// This updater allows timer events to be scheduled to fire in the future
 pub struct TokioTimer<E> {
     timers: JoinSet<Option<E>>,
     aborts: HashMap<TimeoutVariant, AbortHandle>,

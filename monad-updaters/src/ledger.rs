@@ -13,6 +13,10 @@ use monad_executor_glue::LedgerCommand;
 use monad_types::{BlockId, NodeId};
 use tracing::warn;
 
+/// A ledger for commited Monad Blocks
+/// Purpose of the ledger is to have retrievable committed blocks to
+/// respond the BlockSync requests
+/// MockLedger stores the ledger in memory and is only expected to be used in testing
 pub struct MockLedger<O: BlockType, E> {
     blockchain: Vec<O>,
     block_index: HashMap<BlockId, usize>,

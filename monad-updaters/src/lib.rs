@@ -19,6 +19,7 @@ pub mod timer;
 #[cfg(feature = "tokio")]
 pub mod local_router;
 
+/// An Updater executes commands and produces events for State
 pub trait Updater<E>: Executor + Stream<Item = E> {
     fn boxed<'a>(self) -> BoxUpdater<'a, Self::Command, E>
     where

@@ -11,6 +11,9 @@ use monad_executor_glue::{
     RouterCommand, TimerCommand,
 };
 
+/// Single top-level executor for all other required by a node.
+/// This executor will distribute commands to the appropriate sub-executor
+/// and will poll them for events
 pub struct ParentExecutor<R, T, M, L, EL, C> {
     pub router: R,
     pub timer: T,

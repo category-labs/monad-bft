@@ -17,6 +17,10 @@ use monad_types::SeqNum;
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 
+/// An updater that immediately creates a StateRootHash update
+/// when it receives a ledger commit command.
+/// Goal is to mimic the behaviour of execution receiving a commit
+/// and generating the state root hash and sending it back to consensus
 pub struct MockStateRootHash<O, ST, SCT> {
     update: Option<(SeqNum, Hash)>,
     waker: Option<Waker>,
@@ -47,6 +51,8 @@ impl<O: BlockType, ST, SCT> Executor for MockStateRootHash<O, ST, SCT> {
         for command in commands {
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
+                    // hash is pseudorandom seeded by the block's seq num to ensure
+                    // that it is deterministic between nodes
                     let seq_num = block.get_seq_num();
                     let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
                     let mut hash = Hash([0; 32]);

@@ -11,6 +11,8 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{NodeId, RouterTarget};
 
+/// Implementation of the Router which uses tokio channels (as opposed to network links)
+/// to communicate between nodes. Useful for local testing
 pub struct LocalRouterConfig {
     pub all_peers: Vec<NodeId>,
     pub external_latency: Duration,

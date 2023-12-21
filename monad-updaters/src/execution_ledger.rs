@@ -4,6 +4,8 @@ use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::Executor;
 use monad_executor_glue::ExecutionLedgerCommand;
 
+/// A ledger for committed Ethereum blocks
+/// Blocks are RLP encoded and written to a file which is read by Execution client
 pub struct MonadFileLedger<SCT> {
     file: File,
 
