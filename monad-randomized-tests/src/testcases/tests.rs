@@ -11,7 +11,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, RandLatencyTransformer,
     ReplayTransformer, TransformerReplayOrder, ID,
 };
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum};
 use monad_wal::mock::MockWALoggerConfig;
 
 use crate::RandomizedTest;
@@ -36,6 +36,8 @@ fn random_latency_test(seed: u64) {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            val_set_update_interval: SeqNum(2000),
+            epoch_start_delay: Round(50),
         },
     );
 }
@@ -49,6 +51,8 @@ fn delayed_message_test(seed: u64) {
         delta,
         4,
         0,
+        SeqNum(2000),
+        Round(50),
     );
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");

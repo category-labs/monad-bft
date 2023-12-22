@@ -20,7 +20,7 @@ mod test {
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
         PeriodicTransformer, ID,
     };
-    use monad_types::NodeId;
+    use monad_types::{NodeId, Round, SeqNum};
     use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
 
@@ -34,7 +34,15 @@ mod test {
             <MonadMessageNoSerSwarm as SwarmRelation>::SignatureType,
             <MonadMessageNoSerSwarm as SwarmRelation>::SignatureCollectionType,
             _,
-        >(MockValidator, num_nodes, delta, u64::MAX, 0);
+        >(
+            MockValidator,
+            num_nodes,
+            delta,
+            u64::MAX,
+            0,
+            SeqNum(2000),
+            Round(50),
+        );
 
         let filter_peers = HashSet::from([ID::new(NodeId(pubkeys[0]))]);
 
@@ -137,6 +145,8 @@ mod test {
             delta,
             u64::MAX,
             0,
+            SeqNum(2000),
+            Round(50),
         );
 
         let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
@@ -187,6 +197,8 @@ mod test {
             delta,
             u64::MAX,
             0,
+            SeqNum(2000),
+            Round(50),
         );
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
@@ -247,6 +259,8 @@ mod test {
             delta,
             u64::MAX,
             0,
+            SeqNum(2000),
+            Round(50),
         );
 
         assert!(num_nodes >= 4, "test requires 4 or more nodes");

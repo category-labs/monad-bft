@@ -12,7 +12,7 @@ use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
     TransformerReplayOrder, ID,
 };
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum};
 use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -51,7 +51,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let (pubkeys, state_configs) =
         // due to the burst behavior of replay-transformer, its okay to have delay as 1
         // TODO-4?: Make Replay Transformer's stored message not burst within the same Duration
-        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta, 1, 0);
+        get_configs::<NopSignature, MultiSig<NopSignature>, _>(MockValidator, num_nodes, delta, 1, 0, SeqNum(2000), Round(50));
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 

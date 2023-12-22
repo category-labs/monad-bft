@@ -6,7 +6,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection, transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::timed_event::TimedEvent;
+use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockExecutor, MockMempool, MockMempoolConfig},
@@ -17,7 +17,8 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum};
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -60,6 +61,12 @@ impl SwarmRelation for ReplaySwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 fn run_nodes_until<S, CT, ST, SCT, VT, LT>(
@@ -123,12 +130,28 @@ fn replay_one_honest(failure_idx: &[usize]) {
         <ReplaySwarm as SwarmRelation>::SignatureType,
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0);
+    >(
+        MockValidator,
+        4,
+        CONSENSUS_DELTA,
+        4,
+        0,
+        SeqNum(2000),
+        Round(50),
+    );
     let (_, mut state_configs_duplicate) = get_configs::<
         <ReplaySwarm as SwarmRelation>::SignatureType,
         <ReplaySwarm as SwarmRelation>::SignatureCollectionType,
         _,
-    >(MockValidator, 4, CONSENSUS_DELTA, 4, 0);
+    >(
+        MockValidator,
+        4,
+        CONSENSUS_DELTA,
+        4,
+        0,
+        SeqNum(2000),
+        Round(50),
+    );
 
     let pubkeys = peers;
     let router_scheduler_config = |all_peers: Vec<NodeId>, _: NodeId| NoSerRouterConfig {

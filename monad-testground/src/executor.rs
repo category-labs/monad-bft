@@ -20,7 +20,7 @@ use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gos
 use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
 use monad_quic::service::SafeQuinnConfig;
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
-use monad_types::Stake;
+use monad_types::{Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
@@ -140,6 +140,9 @@ pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
 
     pub cert_key: <SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType,
 
+    pub val_set_update_interval: SeqNum,
+    pub epoch_start_delay: Round,
+
     pub genesis_peers: Vec<(
         PubKey,
         <<SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
@@ -178,6 +181,8 @@ where
             .collect(),
         key: config.key,
         certkey: config.cert_key,
+        val_set_update_interval: config.val_set_update_interval,
+        epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
         delta: config.delta,
         consensus_config: config.consensus_config,

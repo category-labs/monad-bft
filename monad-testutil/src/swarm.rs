@@ -21,7 +21,7 @@ use monad_mock_swarm::{
 };
 use monad_state::MonadConfig;
 use monad_transformer::ID;
-use monad_types::{NodeId, SeqNum, Stake};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 
 use crate::{signing::get_genesis_config, validators::create_keys_w_validators};
 
@@ -35,6 +35,8 @@ pub struct SwarmTestConfig {
     pub state_root_delay: u64,
     pub seed: u64,
     pub proposal_size: usize,
+    pub val_set_update_interval: SeqNum,
+    pub epoch_start_delay: Round,
 }
 
 pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: TransactionValidator>(
@@ -43,6 +45,8 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
+    val_set_update_interval: SeqNum,
+    epoch_start_delay: Round,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_nodes as u32);
@@ -54,6 +58,8 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, TVT: Transact
         delta,
         state_root_delay,
         proposal_size,
+        val_set_update_interval,
+        epoch_start_delay,
     )
 }
 
@@ -69,6 +75,8 @@ pub fn complete_config<
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
+    val_set_update_interval: SeqNum,
+    epoch_start_delay: Round,
 ) -> (Vec<PubKey>, Vec<MonadConfig<SCT, TVT>>) {
     let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
     let voting_keys = keys
@@ -87,6 +95,8 @@ pub fn complete_config<
             transaction_validator: tvt.clone(),
             key,
             certkey,
+            val_set_update_interval,
+            epoch_start_delay,
             beneficiary: EthAddress::default(),
             validators: validator_mapping
                 .map
@@ -162,6 +172,8 @@ where
             swarm_config.consensus_delta,
             swarm_config.state_root_delay,
             swarm_config.proposal_size,
+            swarm_config.val_set_update_interval,
+            swarm_config.epoch_start_delay,
         );
     run_nodes_until::<S, _, _>(
         peers,

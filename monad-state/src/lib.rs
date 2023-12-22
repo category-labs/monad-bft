@@ -55,7 +55,6 @@ where
     VT: ValidatorSetType,
 {
     consensus: CT,
-    epoch: Epoch,
     epoch_manager: EpochManager,
     val_epoch_map: ValidatorsEpochMapping<VT, SCT>,
     leader_election: LT,
@@ -73,6 +72,10 @@ where
 {
     pub fn consensus(&self) -> &CT {
         &self.consensus
+    }
+
+    pub fn epoch_manager(&self) -> &EpochManager {
+        &self.epoch_manager
     }
 
     pub fn pubkey(&self) -> PubKey {
@@ -207,6 +210,8 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub validators: Vec<(PubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
     pub key: KeyPair,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
+    pub val_set_update_interval: SeqNum,
+    pub epoch_start_delay: Round,
     pub beneficiary: EthAddress,
 
     pub delta: Duration,
@@ -273,11 +278,12 @@ where
         );
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
-            // TODO: Make this configurable
-            epoch_manager: EpochManager::new(SeqNum(2000), Round(50)),
+            epoch_manager: EpochManager::new(
+                config.val_set_update_interval,
+                config.epoch_start_delay,
+            ),
             val_epoch_map,
             leader_election: election,
-            epoch: Epoch(1),
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
@@ -331,7 +337,7 @@ where
                         TimeoutVariant::BlockSync(bid) => {
                             let val_set = self
                                 .val_epoch_map
-                                .get_val_set(&self.epoch)
+                                .get_val_set(&self.epoch_manager.current_epoch)
                                 .expect("current validator set should be in the map");
                             self.consensus.handle_block_sync_tmo(bid, val_set)
                         }
@@ -424,7 +430,6 @@ where
                         let verified_message = match unverified_message.verify::<HasherType, _>(
                             &self.val_epoch_map,
                             &self.epoch_manager,
-                            self.consensus().get_current_round(),
                             &sender,
                         ) {
                             Ok(m) => m,
@@ -475,7 +480,7 @@ where
                             ConsensusMessage::BlockSync(msg) => {
                                 let val_set = self
                                     .val_epoch_map
-                                    .get_val_set(&self.epoch)
+                                    .get_val_set(&self.epoch_manager.current_epoch)
                                     .expect("current validator set should be in the map");
                                 self.consensus.handle_block_sync(author, msg, val_set)
                             }

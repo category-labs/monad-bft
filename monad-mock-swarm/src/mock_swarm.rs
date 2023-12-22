@@ -512,6 +512,7 @@ where
             <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
             mock_mempool_config,
             val_data,
+            state_config.val_set_update_interval,
             self.tick,
         );
         let (wal, replay_events) = S::Logger::new(logger_config).unwrap();

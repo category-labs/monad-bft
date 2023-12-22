@@ -16,8 +16,11 @@ use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
     validators::create_keys_w_validators,
 };
-use monad_types::*;
-use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+use monad_types::{epoch_manager::EpochManager, BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+use monad_validator::{
+    validator_set::{ValidatorSet, ValidatorSetType},
+    validators_epoch_map::ValidatorsEpochMapping,
+};
 
 type SignatureCollectionType = MockSignatures;
 
@@ -60,6 +63,9 @@ fn setup_block(
 #[test]
 fn test_proposal_hash() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
     let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
@@ -79,13 +85,16 @@ fn test_proposal_hash() {
     let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
 
     assert!(sp
-        .verify::<HasherType, _>(&vset, &vmap, &keypairs[0].pubkey())
+        .verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
         .is_ok());
 }
 
 #[test]
 fn test_proposal_missing_tc() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
     let proposal = ProposalMessage {
@@ -105,7 +114,7 @@ fn test_proposal_missing_tc() {
     let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
 
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &keypairs[0].pubkey())
+        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
             .unwrap_err(),
         Error::NotWellFormed
     );
@@ -114,6 +123,9 @@ fn test_proposal_missing_tc() {
 #[test]
 fn test_proposal_author_not_sender() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(2);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(Epoch(1), vset, vmap);
 
     let author_keypair = &keypairs[0];
     let sender_keypair = &keypairs[1];
@@ -135,7 +147,7 @@ fn test_proposal_author_not_sender() {
 
     let sp = TestSigner::sign_object::<HasherType, _>(proposal, author_keypair);
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &sender_keypair.pubkey())
+        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
             .unwrap_err(),
         Error::AuthorNotSender
     );
@@ -167,8 +179,11 @@ fn test_proposal_invalid_author() {
         NodeId(author_keypair.pubkey()),
         author_keypair.pubkey(),
     )]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(Epoch(1), vset, vmap);
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &author.0)
+        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &author.0)
             .unwrap_err(),
         Error::InvalidAuthor
     );
@@ -204,8 +219,11 @@ fn test_proposal_invalid_qc() {
             non_staked_keypair.pubkey(),
         ),
     ]);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    val_epoch_map.insert(Epoch(1), vset, vmap);
     assert_eq!(
-        sp.verify::<HasherType, _>(&vset, &vmap, &non_staked_keypair.pubkey())
+        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &non_staked_keypair.pubkey())
             .unwrap_err(),
         Error::InsufficientStake
     );

@@ -8,6 +8,7 @@ use monad_mock_swarm::{
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{GenericTransformer, LatencyTransformer};
+use monad_types::{Round, SeqNum};
 use monad_wal::mock::MockWALoggerConfig;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -41,6 +42,8 @@ fn two_nodes() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 5_000,
+            val_set_update_interval: SeqNum(2000),
+            epoch_start_delay: Round(50),
         },
     );
 }

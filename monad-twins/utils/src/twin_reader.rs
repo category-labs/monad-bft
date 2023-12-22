@@ -20,7 +20,7 @@ use monad_mock_swarm::{mock_swarm::ProgressTerminator, swarm_relation::SwarmRela
 use monad_state::MonadConfig;
 use monad_testutil::{swarm::complete_config, validators::complete_keys_w_validators};
 use monad_transformer::ID;
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
 use serde::Deserialize;
 
 // following paramters don't matter too much for twins thus kept as constant
@@ -90,6 +90,8 @@ where
                     &mut self.certkey_secret.clone(),
                 )
                 .unwrap(),
+                val_set_update_interval: self.state_config.val_set_update_interval,
+                epoch_start_delay: self.state_config.epoch_start_delay,
                 beneficiary: self.state_config.beneficiary,
                 delta: self.state_config.delta,
                 consensus_config: self.state_config.consensus_config.clone(),
@@ -221,6 +223,8 @@ where
         Duration::from_millis(delta_ms),
         TWINS_STATE_ROOT_DELAY,
         10,
+        SeqNum(2000),
+        Round(50),
     );
 
     let mut nodes = BTreeMap::new();

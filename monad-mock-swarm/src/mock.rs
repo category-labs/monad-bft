@@ -23,9 +23,9 @@ use monad_executor_glue::{
     TimerCommand,
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
-use monad_types::{NodeId, TimeoutVariant};
+use monad_types::{NodeId, SeqNum, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockStateRootHash,
+    checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockableStateRootHash,
 };
 use priority_queue::PriorityQueue;
 use rand::{Rng, RngCore};
@@ -53,8 +53,7 @@ where
     ledger: MockLedger<<S::State as State>::Block, <S::State as State>::Event>,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
-    state_root_hash:
-        MockStateRootHash<<S::State as State>::Block, S::SignatureType, S::SignatureCollectionType>,
+    state_root_hash: S::StateRootHashExecutor,
     tick: Duration,
 
     timer: PriorityQueue<TimerEvent<<S::State as State>::Event>, Reverse<Duration>>,
@@ -141,6 +140,7 @@ where
         router: S::RouterScheduler,
         mempool_config: <S::MempoolExecutor as MockableExecutor>::Config,
         peers: ValidatorData<S::SignatureCollectionType>,
+        val_set_update_interval: SeqNum,
         tick: Duration,
     ) -> Self {
         Self {
@@ -148,7 +148,10 @@ where
             ledger: Default::default(),
             execution_ledger: Default::default(),
             mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
-            state_root_hash: MockStateRootHash::new(peers),
+            state_root_hash: <S::StateRootHashExecutor as MockableStateRootHash>::new(
+                peers,
+                val_set_update_interval,
+            ),
 
             tick,
 

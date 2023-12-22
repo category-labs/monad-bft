@@ -6,7 +6,7 @@ use monad_consensus_types::{
     transaction_validator::MockValidator,
 };
 use monad_crypto::NopSignature;
-use monad_executor::timed_event::TimedEvent;
+use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
@@ -20,7 +20,8 @@ use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{
     BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer,
 };
-use monad_types::{NodeId, Round};
+use monad_types::{NodeId, Round, SeqNum};
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -40,6 +41,8 @@ fn setup() -> (
         state_root_delay: u64::MAX,
         seed: 1,
         proposal_size: 0,
+        val_set_update_interval: SeqNum(2000),
+        epoch_start_delay: Round(50),
     };
     let rsc = move |all_peers: Vec<NodeId>, me: NodeId| QuicRouterSchedulerConfig {
         zero_instant,
@@ -89,6 +92,12 @@ impl SwarmRelation for NopSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 struct BlsSwarm;
@@ -123,6 +132,12 @@ impl SwarmRelation for BlsSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 fn many_nodes_nop_timeout() -> u128 {

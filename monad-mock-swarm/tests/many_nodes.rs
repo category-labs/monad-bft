@@ -11,6 +11,7 @@ use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer};
+use monad_types::{Round, SeqNum};
 use monad_wal::mock::MockWALoggerConfig;
 
 #[test]
@@ -34,6 +35,8 @@ fn many_nodes_noser() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            val_set_update_interval: SeqNum(2000),
+            epoch_start_delay: Round(50),
         },
     );
 }
@@ -67,6 +70,8 @@ fn many_nodes_quic() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 150,
+            val_set_update_interval: SeqNum(2000),
+            epoch_start_delay: Round(50),
         },
     );
 }
@@ -83,6 +88,8 @@ fn many_nodes_quic_bw() {
         state_root_delay: u64::MAX,
         seed: 1,
         proposal_size: 5000,
+        val_set_update_interval: SeqNum(2000),
+        epoch_start_delay: Round(50),
     };
 
     let xfmrs = vec![

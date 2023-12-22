@@ -17,7 +17,7 @@ use monad_crypto::{
 use monad_proto::proto::message::{
     proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{epoch_manager::EpochManager, Epoch, NodeId, Round, SeqNum, Stake};
+use monad_types::{epoch_manager::EpochManager, NodeId, SeqNum, Stake};
 use monad_validator::{
     validator_set::ValidatorSetType, validators_epoch_map::ValidatorsEpochMapping,
 };
@@ -108,39 +108,21 @@ where
     S: MessageSignature,
     SCT: SignatureCollection,
 {
-    fn get_msg_epoch(&self, epoch_manager: &EpochManager, current_round: Round) -> Epoch {
-        match &self.obj {
-            ConsensusMessage::Proposal(m) => epoch_manager.get_epoch(m.block.round),
-            ConsensusMessage::Vote(m) => epoch_manager.get_epoch(m.vote.vote_info.round),
-            ConsensusMessage::Timeout(m) => epoch_manager.get_epoch(m.timeout.tminfo.round),
-            _ => epoch_manager.get_epoch(current_round),
-        }
-    }
-
     // A verified proposal is one which is well-formed and has valid
     // signatures for the present TC or QC
     pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         epoch_manager: &EpochManager,
-        current_round: Round,
         sender: &PubKey,
     ) -> Result<Verified<S, ConsensusMessage<SCT>>, Error> {
-        let epoch = self.get_msg_epoch(epoch_manager, current_round);
-        let validator_set = val_epoch_map
-            .get_val_set(&epoch)
-            .ok_or(Error::ValDataUnavailable)?;
-        let validator_cert_pubkeys = val_epoch_map
-            .get_cert_pubkeys(&epoch)
-            .ok_or(Error::ValDataUnavailable)?;
-
         // FIXME-2 this feels wrong... it feels like the enum variant should factor into the hash so
         //       signatures can't be reused across variant members
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    validator_set,
-                    validator_cert_pubkeys,
+                    epoch_manager,
+                    val_epoch_map,
                     sender,
                 )?;
                 Verified {
@@ -152,6 +134,11 @@ where
                 }
             }
             ConsensusMessage::Vote(m) => {
+                let vote_epoch = epoch_manager.get_epoch(m.vote.vote_info.round);
+                let validator_set = val_epoch_map
+                    .get_val_set(&vote_epoch)
+                    .ok_or(Error::ValDataUnavailable)?;
+
                 let verified = Unverified::new(m, self.author_signature)
                     .verify::<H>(validator_set.get_members(), sender)?;
                 Verified {
@@ -164,8 +151,8 @@ where
             }
             ConsensusMessage::Timeout(m) => {
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    validator_set,
-                    validator_cert_pubkeys,
+                    epoch_manager,
+                    val_epoch_map,
                     sender,
                 )?;
                 Verified {
@@ -177,6 +164,10 @@ where
                 }
             }
             ConsensusMessage::RequestBlockSync(m) => {
+                let validator_set = val_epoch_map
+                    .get_val_set(&epoch_manager.current_epoch)
+                    .ok_or(Error::ValDataUnavailable)?;
+
                 let verified = Unverified::new(m, self.author_signature)
                     .verify::<H>(validator_set.get_members(), sender)?;
                 Verified {
@@ -189,8 +180,8 @@ where
             }
             ConsensusMessage::BlockSync(m) => {
                 let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    validator_set,
-                    validator_cert_pubkeys,
+                    epoch_manager,
+                    val_epoch_map,
                     sender,
                 )?;
                 Verified {
@@ -214,21 +205,27 @@ where
     // signatures for the present TC or QC
     pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         sender: &PubKey,
     ) -> Result<Verified<S, ProposalMessage<SCT>>, Error> {
         self.well_formed_proposal()?;
         let msg = H::hash_object(&self.obj);
+
+        let epoch = epoch_manager.get_epoch(self.obj.block.round);
+        let validator_set = val_epoch_map
+            .get_val_set(&epoch)
+            .ok_or(Error::ValDataUnavailable)?;
+
         let author = verify_author(
-            validators.get_members(),
+            validator_set.get_members(),
             sender,
             &msg,
             &self.author_signature,
         )?;
         verify_certificates::<H, _, _>(
-            validators,
-            validator_mapping,
+            epoch_manager,
+            val_epoch_map,
             &self.obj.last_round_tc,
             &self.obj.block.qc,
         )?;
@@ -286,21 +283,27 @@ where
 {
     pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         sender: &PubKey,
     ) -> Result<Verified<S, TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
         let msg = H::hash_object(&self.obj);
+
+        let epoch = epoch_manager.get_epoch(self.obj.timeout.tminfo.round);
+        let validator_set = val_epoch_map
+            .get_val_set(&epoch)
+            .ok_or(Error::ValDataUnavailable)?;
+
         let author = verify_author(
-            validators.get_members(),
+            validator_set.get_members(),
             sender,
             &msg,
             &self.author_signature,
         )?;
         verify_certificates::<H, _, _>(
-            validators,
-            validator_mapping,
+            epoch_manager,
+            val_epoch_map,
             &self.obj.timeout.last_round_tc,
             &self.obj.timeout.tminfo.high_qc,
         )?;
@@ -347,21 +350,25 @@ where
 {
     pub fn verify<H: Hasher, VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         sender: &PubKey,
     ) -> Result<Verified<S, BlockSyncResponseMessage<SCT>>, Error> {
         let msg = H::hash_object(&self.obj);
 
+        let validator_set = val_epoch_map
+            .get_val_set(&epoch_manager.current_epoch)
+            .ok_or(Error::ValDataUnavailable)?;
+
         let author = verify_author(
-            validators.get_members(),
+            validator_set.get_members(),
             sender,
             &msg,
             &self.author_signature,
         )?;
 
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates::<H, _, _>(validators, validator_mapping, &(None), &b.block.qc)?;
+            verify_certificates::<H, _, _>(epoch_manager, val_epoch_map, &(None), &b.block.qc)?;
         }
 
         let result = Verified {
@@ -374,8 +381,8 @@ where
 }
 
 fn verify_certificates<H, SCT, VT>(
-    validators: &VT,
-    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    epoch_manager: &EpochManager,
+    val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     tc: &Option<TimeoutCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
@@ -385,10 +392,24 @@ where
     VT: ValidatorSetType,
 {
     if let Some(tc) = tc {
-        verify_tc::<SCT, H, _>(validators, validator_mapping, tc)?;
+        let tc_epoch = epoch_manager.get_epoch(tc.round);
+        let validator_set = val_epoch_map
+            .get_val_set(&tc_epoch)
+            .ok_or(Error::ValDataUnavailable)?;
+        let validator_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&tc_epoch)
+            .ok_or(Error::ValDataUnavailable)?;
+        verify_tc::<SCT, H, _>(validator_set, validator_cert_pubkeys, tc)?;
     }
 
-    verify_qc::<SCT, H, _>(validators, validator_mapping, qc)?;
+    let qc_epoch = epoch_manager.get_epoch(qc.info.vote.round);
+    let validator_set = val_epoch_map
+        .get_val_set(&qc_epoch)
+        .ok_or(Error::ValDataUnavailable)?;
+    let validator_cert_pubkeys = val_epoch_map
+        .get_cert_pubkeys(&qc_epoch)
+        .ok_or(Error::ValDataUnavailable)?;
+    verify_qc::<SCT, H, _>(validator_set, validator_cert_pubkeys, qc)?;
 
     Ok(())
 }
@@ -549,8 +570,11 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+    use monad_types::{epoch_manager::EpochManager, BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+    use monad_validator::{
+        validator_set::{ValidatorSet, ValidatorSetType},
+        validators_epoch_map::ValidatorsEpochMapping,
+    };
     use test_case::test_case;
 
     use super::{verify_qc, verify_tc, Unverified, Verified};
@@ -796,8 +820,13 @@ mod test {
         let signed_tmo_msg = Verified::<SignatureType, _>::new::<HasherType>(tmo_msg, &keypairs[0]);
         let (author, signature, tm) = signed_tmo_msg.destructure();
 
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        val_epoch_map.insert(Epoch(1), vset, vmap);
+
         let unverified_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
+        let err =
+            unverified_tmo_msg.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &author.0);
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -854,8 +883,16 @@ mod test {
             Verified::<SignatureType, _>::new::<HasherType>(byzantine_tmo_msg, &keypairs[0]);
         let (author, signature, tm) = signed_byzantine_tmo_msg.destructure();
 
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        val_epoch_map.insert(Epoch(1), vset, vmap);
+
         let unverified_byzantine_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_byzantine_tmo_msg.verify::<HasherType, _>(&vset, &vmap, &author.0);
+        let err = unverified_byzantine_tmo_msg.verify::<HasherType, _>(
+            &epoch_manager,
+            &val_epoch_map,
+            &author.0,
+        );
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 

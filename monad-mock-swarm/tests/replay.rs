@@ -6,7 +6,7 @@ use monad_consensus_types::{
     transaction_validator::MockValidator,
 };
 use monad_crypto::secp256k1::SecpSignature;
-use monad_executor::timed_event::TimedEvent;
+use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig},
@@ -19,7 +19,8 @@ use monad_testutil::swarm::{get_configs, node_ledger_verification};
 use monad_transformer::{
     GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer, ID,
 };
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum};
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
@@ -55,11 +56,17 @@ impl SwarmRelation for ReplaySwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 #[test]
 fn test_replay() {
-    recover_nodes_msg_delays(4, 10, 5, 4, 0);
+    recover_nodes_msg_delays(4, 10, 5, 4, 0, SeqNum(2000), Round(50));
 }
 
 pub fn recover_nodes_msg_delays(
@@ -68,6 +75,8 @@ pub fn recover_nodes_msg_delays(
     num_block_after: usize,
     state_root_delay: u64,
     proposal_size: usize,
+    val_set_update_interval: SeqNum,
+    epoch_start_delay: Round,
 ) {
     let (pubkeys, state_configs) = get_configs::<
         <ReplaySwarm as SwarmRelation>::SignatureType,
@@ -79,6 +88,8 @@ pub fn recover_nodes_msg_delays(
         Duration::from_millis(101),
         state_root_delay,
         proposal_size,
+        val_set_update_interval,
+        epoch_start_delay,
     );
 
     // create the log file path
@@ -148,6 +159,8 @@ pub fn recover_nodes_msg_delays(
         Duration::from_millis(2),
         4,
         proposal_size,
+        val_set_update_interval,
+        epoch_start_delay,
     );
 
     let peers_clone = pubkeys_clone

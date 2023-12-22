@@ -113,7 +113,7 @@ fn test_consensus_message_event_proposal_bls() {
         genesis_vote_info(genesis_block.get_id()),
         genesis_sigs,
     );
-    let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
         ProposalGen::new(genesis_qc);

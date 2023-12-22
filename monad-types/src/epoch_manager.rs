@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{Epoch, Round, SeqNum};
 
+#[derive(Clone)]
 pub struct EpochManager {
     pub current_epoch: Epoch,
 
@@ -25,7 +26,7 @@ impl EpochManager {
             epoch_starts: BTreeMap::new(),
         };
 
-        epoch_manager.insert_epoch_start(Round(1), Epoch(1));
+        epoch_manager.insert_epoch_start(Round(0), Epoch(1));
 
         epoch_manager
     }
@@ -39,38 +40,26 @@ impl EpochManager {
         );
     }
 
-    pub fn handle_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
-        if block_num.0 % self.val_set_update_interval.0 == 0 {
-            self.insert_epoch_start(
-                block_round + self.epoch_start_delay,
-                self.current_epoch + Epoch(1),
-            );
+    pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
+        if block_num % self.val_set_update_interval == SeqNum(0) {
+            let epoch_start_round = block_round + self.epoch_start_delay;
+            self.insert_epoch_start(epoch_start_round, self.current_epoch + Epoch(1));
         }
     }
 
     pub fn handle_advance_epoch(&mut self, current_round: Round) {
-        let epoch = self.get_epoch(current_round);
-        if epoch > self.current_epoch {
-            self.current_epoch = epoch;
+        let round_epoch = self.get_epoch(current_round);
+        if round_epoch > self.current_epoch {
+            self.current_epoch = round_epoch;
         }
     }
 
     pub fn get_epoch(&self, round: Round) -> Epoch {
-        // TODO: Use BTreeMap upper_bound from nightly version
-        // or find better way
-
-        // Find the largest round key, r, such that r <= round
-        // highest_round is the largest round less than or equal to round
-        let mut highest_round = Round(1);
-        self.epoch_starts.keys().for_each(|r| {
-            if r > &highest_round && r <= &round {
-                highest_round = *r;
-            }
-        });
+        let epoch_start = self.epoch_starts.keys().rfind(|&k| k <= &round).unwrap();
 
         *self
             .epoch_starts
-            .get(&highest_round)
+            .get(epoch_start)
             .expect("must have epoch value")
     }
 }

@@ -4663,6 +4663,7 @@ dependencies = [
  "monad-state",
  "monad-transformer",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "monad-wal",
  "zerocopy 0.6.5",
@@ -4793,6 +4794,7 @@ dependencies = [
  "monad-testutil",
  "monad-transformer",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "monad-wal",
 ]
@@ -4817,6 +4819,7 @@ dependencies = [
  "monad-testutil",
  "monad-transformer",
  "monad-types",
+ "monad-updaters",
  "monad-validator",
  "monad-wal",
 ]

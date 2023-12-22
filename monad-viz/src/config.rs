@@ -16,7 +16,7 @@ use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
 use monad_transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID};
-use monad_types::{NodeId, SeqNum, Stake};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 
 use crate::{graph::SimulationConfig, VizSwarm};
 
@@ -90,6 +90,8 @@ impl SimulationConfig<VizSwarm> for SimConfig {
                 transaction_validator: MockValidator,
                 key,
                 certkey,
+                val_set_update_interval: SeqNum(2000),
+                epoch_start_delay: Round(50),
                 beneficiary: EthAddress::default(),
                 validators: validator_mapping
                     .map
