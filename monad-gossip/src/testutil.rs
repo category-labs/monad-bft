@@ -15,9 +15,14 @@ use rand::Rng;
 use super::{Gossip, GossipEvent};
 use crate::AppMessage;
 
+struct Node<G> {
+    gossip: G,
+    pipeline: BytesTransformerPipeline,
+}
+
 pub struct Swarm<G> {
     current_tick: Duration,
-    nodes: BTreeMap<NodeId, (G, BytesTransformerPipeline)>,
+    nodes: BTreeMap<NodeId, Node<G>>,
     pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<AppMessage>)>>,
     seq_no: usize,
 }
@@ -30,9 +35,17 @@ pub enum SwarmEventType {
 
 impl<G: Gossip> Swarm<G> {
     pub fn new(configs: impl Iterator<Item = (NodeId, G, BytesTransformerPipeline)>) -> Self {
-        let nodes = configs
-            .map(|(peer_id, gossip, pipeline)| (peer_id, (gossip, pipeline)))
+        let mut nodes: BTreeMap<_, _> = configs
+            .map(|(peer_id, gossip, pipeline)| (peer_id, Node { gossip, pipeline }))
             .collect();
+
+        let peers: Vec<NodeId> = nodes.keys().copied().collect();
+
+        for (id, node) in &mut nodes {
+            for (idx, peer) in peers.iter().filter(|peer| &id != peer).enumerate() {
+                node.gossip.connected(Duration::ZERO, *peer)
+            }
+        }
 
         Self {
             current_tick: Duration::ZERO,
@@ -46,15 +59,16 @@ impl<G: Gossip> Swarm<G> {
         self.nodes
             .get_mut(from)
             .expect("peer doesn't exist")
-            .0
+            .gossip
             .send(self.current_tick, to, message)
     }
 
     pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, NodeId)> {
         self.nodes
             .iter()
-            .filter_map(|(id, (node, _))| {
-                node.peek_tick()
+            .filter_map(|(id, node)| {
+                node.gossip
+                    .peek_tick()
                     .map(|tick| (tick, SwarmEventType::GossipEvent, *id))
             })
             .chain(
@@ -82,13 +96,16 @@ impl<G: Gossip> Swarm<G> {
 
             let event = match event_type {
                 SwarmEventType::GossipEvent => {
-                    let (gossip, pipeline) = self.nodes.get_mut(&id).expect("invariant broken");
-                    let gossip_event = gossip.poll(tick);
+                    let node = self.nodes.get_mut(&id).expect("invariant broken");
+                    let gossip_event = node.gossip.poll(tick);
                     match gossip_event {
                         None => continue,
+                        Some(GossipEvent::RequestConnect(to)) => {
+                            todo!("multiple connections not supported")
+                        }
                         Some(GossipEvent::Emit(from, message)) => (from, message),
                         Some(GossipEvent::Send(to, bytes)) => {
-                            let scheduled_messages = pipeline.process(LinkMessage {
+                            let scheduled_messages = node.pipeline.process(LinkMessage {
                                 from: ID::new(id),
                                 to: ID::new(to),
                                 message: bytes,
@@ -116,15 +133,16 @@ impl<G: Gossip> Swarm<G> {
                         .expect("invariant broken");
                     assert_eq!(tick, scheduled_tick);
 
-                    self.nodes
+                    let to_node = self
+                        .nodes
                         .get_mut(gossip_message.to.get_peer_id())
-                        .expect("invariant broken")
-                        .0
-                        .handle_gossip_message(
-                            scheduled_tick,
-                            *gossip_message.from.get_peer_id(),
-                            gossip_message.message,
-                        );
+                        .expect("invariant broken");
+
+                    to_node.gossip.handle_gossip_message(
+                        scheduled_tick,
+                        *gossip_message.from.get_peer_id(),
+                        gossip_message.message,
+                    );
 
                     continue;
                 }

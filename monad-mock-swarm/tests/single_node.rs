@@ -95,7 +95,7 @@ fn two_nodes_quic_bw() {
             BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             BytesTransformer::Bw(BwTransformer::new(8, Duration::from_secs(1))),
         ],
-        UntilTerminator::new().until_tick(Duration::from_secs(5)),
+        UntilTerminator::new().until_tick(Duration::from_secs(10)),
         SwarmTestConfig {
             num_nodes: 2,
             consensus_delta: Duration::from_millis(1000),

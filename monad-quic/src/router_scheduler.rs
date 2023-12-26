@@ -13,7 +13,7 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
-    TransportConfig, WriteError,
+    TransportConfig, VarInt, WriteError,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 
@@ -30,13 +30,30 @@ pub struct QuicRouterSchedulerConfig<G> {
     pub gossip: G,
 }
 
+struct ConnectionState {
+    connection: Connection,
+    stream: Option<StreamId>,
+    pending_outbound_messages: VecDeque<Bytes>,
+}
+
+impl ConnectionState {
+    fn new(connection: Connection) -> Self {
+        Self {
+            connection,
+            stream: None,
+            pending_outbound_messages: VecDeque::new(),
+        }
+    }
+}
+
 pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     zero_instant: Instant,
 
     me: NodeId,
     endpoint: quinn_proto::Endpoint,
-    connections: BTreeMap<ConnectionHandle, Connection>,
-    outbound_connections: HashMap<NodeId, (ConnectionHandle, Option<StreamId>)>,
+    client_config: ClientConfig,
+    connections: BTreeMap<ConnectionHandle, ConnectionState>,
+    node_connections: HashMap<NodeId, ConnectionHandle>,
 
     peer_ids: HashMap<NodeId, SocketAddr>,
     addresses: HashMap<SocketAddr, NodeId>,
@@ -46,7 +63,6 @@ pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     timeouts: TimeoutQueue,
 
     pending_events: BTreeMap<Duration, VecDeque<RouterEvent<IM, Bytes>>>,
-    pending_outbound_messages: HashMap<NodeId, VecDeque<Bytes>>,
 
     phantom: PhantomData<OM>,
 }
@@ -81,7 +97,7 @@ where
 
         let mut seed = [0; 32];
         rng.fill_bytes(&mut seed);
-        let mut endpoint = quinn_proto::Endpoint::new(
+        let endpoint = quinn_proto::Endpoint::new(
             Arc::new(EndpointConfig::default()),
             Some(Arc::new(
                 {
@@ -96,38 +112,33 @@ where
             Some(seed),
         );
 
-        let mut connections = BTreeMap::new();
-        let mut outbound_connections = HashMap::new();
-        let mut peer_ids = HashMap::new();
-        for (idx, peer) in config
+        let peer_ids: HashMap<_, _> = config
             .all_peers
             .iter()
             .enumerate()
             .filter(|(_, peer)| peer != &&config.me)
-        {
-            let sock_addr =
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000 + idx as u16));
-            peer_ids.insert(*peer, sock_addr);
-
-            let mut client_config =
-                ClientConfig::new(Arc::new(TlsVerifier::make_client_config(&scratch_keypair)));
-            client_config.transport_config(transport_config.clone());
-
-            let (connection_handle, connection) = endpoint
-                .connect(config.zero_instant, client_config, sock_addr, "MONAD")
-                .expect("mock quic should never fail to connect");
-            connections.insert(connection_handle, connection);
-            outbound_connections.insert(*peer, (connection_handle, None));
-        }
+            .map(|(idx, peer)| {
+                (
+                    *peer,
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000 + idx as u16)),
+                )
+            })
+            .collect();
         let addresses = peer_ids.iter().map(|(x, y)| (*y, *x)).collect();
 
-        let mut scheduler = Self {
+        Self {
             zero_instant: config.zero_instant,
 
             me: config.me,
             endpoint,
-            connections,
-            outbound_connections,
+            client_config: {
+                let mut client_config =
+                    ClientConfig::new(Arc::new(TlsVerifier::make_client_config(&scratch_keypair)));
+                client_config.transport_config(transport_config);
+                client_config
+            },
+            connections: Default::default(),
+            node_connections: Default::default(),
 
             peer_ids,
             addresses,
@@ -136,19 +147,9 @@ where
 
             timeouts: Default::default(),
             pending_events: Default::default(),
-            pending_outbound_messages: HashMap::new(),
 
             phantom: PhantomData,
-        };
-
-        let mut handles: Vec<_> = scheduler.connections.keys().cloned().collect();
-        handles.sort();
-        for handle in &handles {
-            scheduler.poll_connection(Duration::ZERO, handle);
-            // don't need to poll_gossip, because no read events may be generated here
         }
-
-        scheduler
     }
 
     fn process_inbound(
@@ -157,10 +158,8 @@ where
         from: NodeId,
         message: Self::TransportMessage,
     ) {
-        if from == self.me {
-            self.gossip.handle_gossip_message(time, from, message);
-            self.poll_gossip(time);
-        } else if let Some(maybe_event) = self.endpoint.handle(
+        assert_ne!(from, self.me);
+        if let Some(maybe_event) = self.endpoint.handle(
             self.zero_instant + time,
             *self.peer_ids.get(&from).expect("peer_id should exist"),
             None,
@@ -169,23 +168,24 @@ where
         ) {
             match maybe_event {
                 DatagramEvent::ConnectionEvent(connection_handle, event) => {
-                    let connection = self
+                    let state = self
                         .connections
                         .get_mut(&connection_handle)
                         .expect("connection should exist");
 
-                    connection.handle_event(event);
+                    state.connection.handle_event(event);
 
                     self.poll_connection(time, &connection_handle);
                     self.poll_gossip(time);
                 }
                 DatagramEvent::NewConnection(connection_handle, connection) => {
-                    let replaced = self.connections.insert(connection_handle, connection);
+                    let replaced = self
+                        .connections
+                        .insert(connection_handle, ConnectionState::new(connection));
                     assert!(replaced.is_none());
 
                     self.poll_connection(time, &connection_handle);
                     self.poll_gossip(time);
-                    return;
                 }
                 DatagramEvent::Response(quinn_proto::Transmit {
                     destination,
@@ -250,12 +250,11 @@ where
                         self.timeouts.pop().expect("invariant broken");
                     assert_eq!(min_tick, timeout_tick);
 
-                    let connection = self
-                        .connections
+                    self.connections
                         .get_mut(&connection_handle)
-                        .expect("connection should exist");
-
-                    connection.handle_timeout(self.zero_instant + timeout_tick);
+                        .expect("connection should exist")
+                        .connection
+                        .handle_timeout(self.zero_instant + timeout_tick);
                     self.poll_connection(timeout_tick, &connection_handle);
                     self.poll_gossip(timeout_tick);
                 }
@@ -301,20 +300,48 @@ where
             .min_by_key(|(tick, _)| *tick)
     }
 
+    fn canonical_connection(&self, node: &NodeId) -> Option<(ConnectionHandle, StreamId)> {
+        let connection_handle = self.node_connections.get(node)?;
+        let state = self
+            .connections
+            .get(connection_handle)
+            .expect("connection should exist");
+
+        Some((*connection_handle, state.stream?))
+    }
+
     /// should be followed up with a self.poll_gossip (because connection events may be generated)
     fn poll_connection(&mut self, time: Duration, connection_handle: &ConnectionHandle) {
+        let state = self
+            .connections
+            .get(connection_handle)
+            .expect("connection should exist");
+        let connection = &state.connection;
+        let remote_peer_id = self
+            .addresses
+            .get(&connection.remote_address())
+            .expect("address should exist");
+
         let mut should_poll = true;
         while should_poll {
             should_poll = false;
-            let connection = self
-                .connections
-                .get_mut(connection_handle)
-                .expect("connection should exist");
 
-            let remote_peer_id = self
-                .addresses
-                .get(&connection.remote_address())
-                .expect("address should exist");
+            let canonical_connection = self.canonical_connection(remote_peer_id);
+            let this_is_canonical_connection = canonical_connection.and_then(|(ch, stream_id)| {
+                if &ch == connection_handle {
+                    Some(stream_id)
+                } else {
+                    None
+                }
+            });
+
+            // we remove the connection state from the map so that we can close other connections
+            // we add it back to the map at the end of the loop
+            let mut state = self
+                .connections
+                .remove(connection_handle)
+                .expect("connection should exist");
+            let connection = &mut state.connection;
 
             while let Some(transmit) = connection.poll_transmit(self.zero_instant + time, 1)
             // TODO what do we set MAX_DATAGRAMS to?
@@ -345,56 +372,91 @@ where
                 }
             }
 
-            if let Some((outbound_connection_handle, Some(stream_id))) =
-                self.outbound_connections.get(remote_peer_id)
-            {
-                if connection_handle == outbound_connection_handle {
-                    // we only check pending_outbound if it's an outbound connection.
-                    let pending_outbound = self
-                        .pending_outbound_messages
-                        .entry(*remote_peer_id)
-                        .or_default();
-                    while let Some(mut gossip_message) = pending_outbound.pop_front() {
-                        should_poll = true;
-                        match connection.send_stream(*stream_id).write(&gossip_message) {
-                            Ok(num_sent) => {
-                                if num_sent < gossip_message.len() {
-                                    pending_outbound.push_front(gossip_message.split_off(num_sent));
-                                    break;
-                                }
-                            }
-                            Err(WriteError::Blocked) => {
-                                pending_outbound.push_front(gossip_message);
+            if let Some(stream_id) = this_is_canonical_connection {
+                while let Some(mut gossip_message) = state.pending_outbound_messages.pop_front() {
+                    match connection.send_stream(stream_id).write(&gossip_message) {
+                        Ok(num_sent) => {
+                            should_poll = true;
+                            if num_sent < gossip_message.len() {
+                                state
+                                    .pending_outbound_messages
+                                    .push_front(gossip_message.split_off(num_sent));
                                 break;
                             }
-                            Err(WriteError::Stopped(_) | WriteError::UnknownStream) => {
-                                unreachable!("expect no write error")
-                            }
+                        }
+                        Err(WriteError::Blocked) => {
+                            state.pending_outbound_messages.push_front(gossip_message);
+                            break;
+                        }
+                        Err(WriteError::Stopped(_) | WriteError::UnknownStream) => {
+                            unreachable!("expect no write error")
                         }
                     }
                 }
+
+                let mut recv_stream = connection.recv_stream(stream_id);
+                let mut chunks = recv_stream.read(true).expect("failed to read chunks");
+                while let Ok(Some(chunk)) = chunks.next(
+                    10_000, // TODO ?
+                ) {
+                    self.gossip
+                        .handle_gossip_message(time, *remote_peer_id, chunk.bytes);
+                }
+                let _should_transmit = chunks.finalize();
             }
 
             while let Some(event) = connection.poll() {
                 match event {
                     quinn_proto::Event::HandshakeDataReady => (),
                     quinn_proto::Event::Connected => {
+                        if let Some((canonical_handle, _)) = canonical_connection {
+                            assert_ne!(&canonical_handle, connection_handle);
+                            // there's an existing connection for the desired node_id
+                            // tiebreak based on NodeId
+                            if &self.me < remote_peer_id {
+                                // disconnect new connection
+                                connection.close(
+                                    self.zero_instant + time,
+                                    VarInt::from_u32(0),
+                                    "existing connection".into(),
+                                );
+                                should_poll = true;
+                                break;
+                            } else {
+                                // disconnect old connection
+                                let old_state = self
+                                    .connections
+                                    .get_mut(&canonical_handle)
+                                    .expect("connection should exist");
+                                old_state.connection.close(
+                                    self.zero_instant + time,
+                                    VarInt::from_u32(0),
+                                    "new connection replacing this one".into(),
+                                );
+                                self.timeouts.insert(time, &canonical_handle);
+                                self.gossip.disconnected(time, *remote_peer_id);
+                            }
+                        }
+                        self.node_connections
+                            .insert(*remote_peer_id, *connection_handle);
                         if connection.side().is_client() {
                             let stream_id = connection
                                 .streams()
-                                .open(Dir::Uni)
+                                .open(Dir::Bi)
                                 .expect("creating stream_id failed");
 
-                            self.outbound_connections
-                                .get_mut(remote_peer_id)
-                                .expect("outbound connection should already exist")
-                                .1 = Some(stream_id);
+                            state.stream = Some(stream_id);
+                            // TODO if duplicate, dc one of them
+                            self.gossip.connected(time, *remote_peer_id);
                             should_poll = true;
                             break;
                         }
                     }
                     quinn_proto::Event::ConnectionLost { reason } => {
-                        todo!("time: {:?}, {reason:?}", time)
+                        if this_is_canonical_connection.is_some() {
+                            self.gossip.disconnected(time, *remote_peer_id);
+                        }
+                        self.node_connections.remove(remote_peer_id);
                     }
                     quinn_proto::Event::Stream(stream_event) => match stream_event {
                         quinn_proto::StreamEvent::Opened { dir } => {
@@ -402,58 +464,15 @@ where
                                 .streams()
                                 .accept(dir)
                                 .expect("stream id should exist");
+                            assert!(state.stream.is_none(), "only one bidi stream supported");
+                            state.stream = Some(stream_id);
 
-                            let mut recv_stream = connection.recv_stream(stream_id);
-                            let mut chunks = recv_stream.read(true).expect("failed to read chunks");
-                            while let Ok(Some(chunk)) = chunks.next(
-                                10_000, // TODO ?
-                            ) {
-                                self.gossip.handle_gossip_message(
-                                    time,
-                                    *remote_peer_id,
-                                    chunk.bytes,
-                                );
-                            }
-                            let _should_transmit = chunks.finalize();
+                            self.gossip.connected(time, *remote_peer_id);
+                            should_poll = true;
+                            break;
                         }
-                        quinn_proto::StreamEvent::Readable { id } => {
-                            let mut recv_stream = connection.recv_stream(id);
-                            let mut chunks = recv_stream.read(true).expect("failed to read chunks");
-                            while let Ok(Some(chunk)) = chunks.next(
-                                10_000, // TODO ?
-                            ) {
-                                self.gossip.handle_gossip_message(
-                                    time,
-                                    *remote_peer_id,
-                                    chunk.bytes,
-                                );
-                            }
-                            let _should_transmit = chunks.finalize();
-                        }
-                        quinn_proto::StreamEvent::Writable { id } => {
-                            let pending_outbound = self
-                                .pending_outbound_messages
-                                .entry(*remote_peer_id)
-                                .or_default();
-                            while let Some(mut gossip_message) = pending_outbound.pop_front() {
-                                match connection.send_stream(id).write(&gossip_message) {
-                                    Ok(num_sent) => {
-                                        if num_sent < gossip_message.len() {
-                                            pending_outbound
-                                                .push_front(gossip_message.split_off(num_sent));
-                                            break;
-                                        }
-                                    }
-                                    Err(WriteError::Blocked) => {
-                                        pending_outbound.push_front(gossip_message);
-                                        break;
-                                    }
-                                    Err(WriteError::Stopped(_) | WriteError::UnknownStream) => {
-                                        unreachable!("expect no write error")
-                                    }
-                                }
-                            }
-                        }
+                        quinn_proto::StreamEvent::Readable { id } => should_poll = true,
+                        quinn_proto::StreamEvent::Writable { id } => should_poll = true,
                         quinn_proto::StreamEvent::Finished { id } => todo!(),
                         quinn_proto::StreamEvent::Stopped { id, error_code } => todo!(),
                         quinn_proto::StreamEvent::Available { dir } => todo!(),
@@ -461,32 +480,56 @@ where
                     quinn_proto::Event::DatagramReceived => todo!(),
                 }
             }
+            if connection.is_drained() {
+                assert_ne!(
+                    self.node_connections.get(remote_peer_id),
+                    Some(connection_handle)
+                );
+                assert!(!self.connections.contains_key(connection_handle));
+                self.timeouts.remove(connection_handle);
+                break;
+            } else {
+                self.connections.insert(*connection_handle, state);
+            }
         }
     }
 
     fn poll_gossip(&mut self, time: Duration) {
         while let Some(event) = self.gossip.poll(time) {
             match event {
-                GossipEvent::Send(peer_id, gossip_message) => {
-                    if peer_id == self.me {
-                        self.pending_events
-                            .entry(time)
-                            .or_default()
-                            .push_back(RouterEvent::Tx(peer_id, gossip_message))
-                    } else {
-                        let maybe_connection_handle = self
-                            .outbound_connections
-                            .get(&peer_id)
-                            .map(|(handle, _)| handle)
-                            .copied();
-                        assert!(maybe_connection_handle.is_some());
-                        self.pending_outbound_messages
-                            .entry(peer_id)
-                            .or_default()
+                GossipEvent::RequestConnect(to) => {
+                    if self.node_connections.contains_key(&to) {
+                        // we already have an open connection, so we can ignore
+                        continue;
+                    }
+                    let sock_addr = self
+                        .peer_ids
+                        .get(&to)
+                        .expect("peer address should be known");
+                    let (connection_handle, connection) = self
+                        .endpoint
+                        .connect(
+                            self.zero_instant + time,
+                            self.client_config.clone(),
+                            *sock_addr,
+                            "MONAD",
+                        )
+                        .expect("mock quic should never fail to connect");
+                    self.connections
+                        .insert(connection_handle, ConnectionState::new(connection));
+                    self.node_connections.insert(to, connection_handle);
+                    self.poll_connection(time, &connection_handle);
+                }
+                GossipEvent::Send(to, gossip_message) => {
+                    let connection_handle = *self
+                        .node_connections
+                        .get(&to)
+                        .expect("must only emit Send once connected");
+                    if let Some(connection) = self.connections.get_mut(&connection_handle) {
+                        connection
+                            .pending_outbound_messages
                             .push_back(gossip_message);
-                        if let Some(connection_handle) = maybe_connection_handle {
-                            self.poll_connection(time, &connection_handle);
-                        }
+                        self.poll_connection(time, &connection_handle);
                     }
                 }
                 GossipEvent::Emit(peer_id, message) => {

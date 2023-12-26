@@ -30,7 +30,7 @@ impl UnsafeGossipsubConfig {
             rng: ChaCha20Rng::from_seed(self.seed),
             config: self,
 
-            read_buffers: Default::default(),
+            connections: Default::default(),
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
 
@@ -39,11 +39,25 @@ impl UnsafeGossipsubConfig {
     }
 }
 
+struct Connection {
+    buffer_status: BufferStatus,
+    buffer: SegmentedBuf<GossipMessage>,
+}
+
+impl Connection {
+    fn new() -> Self {
+        Self {
+            buffer_status: BufferStatus::None,
+            buffer: SegmentedBuf::new(),
+        }
+    }
+}
+
 pub struct UnsafeGossipsub {
     config: UnsafeGossipsubConfig,
     rng: ChaCha20Rng,
 
-    read_buffers: HashMap<NodeId, (BufferStatus, SegmentedBuf<GossipMessage>)>,
+    connections: HashMap<NodeId, Connection>,
     events: VecDeque<GossipEvent>,
     current_tick: Duration,
 
@@ -77,15 +91,21 @@ impl Default for BufferStatus {
 }
 
 impl UnsafeGossipsub {
+    /// to must not be self
     fn send_message(&mut self, to: NodeId, header: MessageHeader, message: AppMessage) {
-        assert_eq!(header.message_len, message.len() as u32);
-        let header = bincode::serialize(&header).unwrap();
-        let gossip_message =
-            std::iter::once(Vec::from((header.len() as MessageHeaderLenType).to_le_bytes()).into())
-                .chain(std::iter::once(header.into()))
-                .chain(std::iter::once(message));
-        self.events
-            .extend(gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)));
+        if self.connections.contains_key(&to) {
+            assert_eq!(header.message_len, message.len() as u32);
+            let header = bincode::serialize(&header).unwrap();
+            let gossip_message = std::iter::once(
+                Vec::from((header.len() as MessageHeaderLenType).to_le_bytes()).into(),
+            )
+            .chain(std::iter::once(header.into()))
+            .chain(std::iter::once(message));
+            self.events
+                .extend(gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)));
+        } else {
+            self.events.push_back(GossipEvent::RequestConnect(to));
+        }
     }
 
     fn handle_message(&mut self, from: NodeId, header: MessageHeader, message: AppMessage) {
@@ -114,11 +134,27 @@ impl UnsafeGossipsub {
 }
 
 impl Gossip for UnsafeGossipsub {
+    fn connected(&mut self, time: Duration, peer: NodeId) {
+        self.current_tick = time;
+        let removed = self.connections.insert(peer, Connection::new());
+        assert!(removed.is_none());
+    }
+
+    fn disconnected(&mut self, time: Duration, peer: NodeId) {
+        self.current_tick = time;
+        let removed = self.connections.remove(&peer);
+        assert!(removed.is_some());
+
+        // remove all pending sends to the disconnected peer
+        self.events
+            .retain(|event| !matches!(event, GossipEvent::Send(to, _) if to == &peer))
+    }
+
     fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
         match to {
             // when self.handle_message is called, the broadcast actually happens
-            RouterTarget::Broadcast => self.send_message(
+            RouterTarget::Broadcast => self.handle_message(
                 self.config.me,
                 MessageHeader {
                     id: {
@@ -132,20 +168,26 @@ impl Gossip for UnsafeGossipsub {
                 },
                 message,
             ),
-            RouterTarget::PointToPoint(to) => self.send_message(
-                to,
-                MessageHeader {
-                    id: {
-                        let mut hasher = HasherType::new();
-                        hasher.update(&message);
-                        hasher.hash().0
-                    },
-                    creator: self.config.me.0.bytes(),
-                    broadcast: false,
-                    message_len: message.len().try_into().unwrap(),
-                },
-                message,
-            ),
+            RouterTarget::PointToPoint(to) => {
+                if to == self.config.me {
+                    self.events.push_back(GossipEvent::Emit(to, message));
+                } else {
+                    self.send_message(
+                        to,
+                        MessageHeader {
+                            id: {
+                                let mut hasher = HasherType::new();
+                                hasher.update(&message);
+                                hasher.hash().0
+                            },
+                            creator: self.config.me.0.bytes(),
+                            broadcast: false,
+                            message_len: message.len().try_into().unwrap(),
+                        },
+                        message,
+                    )
+                }
+            }
         }
     }
 
@@ -156,16 +198,23 @@ impl Gossip for UnsafeGossipsub {
         gossip_message: GossipMessage,
     ) {
         self.current_tick = time;
-        let (_buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
-        read_buffer.push(gossip_message);
+        let connection = self
+            .connections
+            .get_mut(&from)
+            .expect("invariant: Gossip::connected must have been called before");
+        connection.buffer.push(gossip_message);
         loop {
-            let (buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
-            match buffer_status {
+            let connection = self
+                .connections
+                .get_mut(&from)
+                .expect("invariant: Gossip::connected must have been called before");
+            match &connection.buffer_status {
                 BufferStatus::None => {
-                    if read_buffer.remaining() >= MESSAGE_HEADER_LEN_LEN {
-                        *buffer_status =
+                    if connection.buffer.remaining() >= MESSAGE_HEADER_LEN_LEN {
+                        connection.buffer_status =
                             BufferStatus::HeaderLen(MessageHeaderLenType::from_le_bytes(
-                                read_buffer
+                                connection
+                                    .buffer
                                     .copy_to_bytes(MESSAGE_HEADER_LEN_LEN)
                                     .to_vec()
                                     .try_into()
@@ -176,18 +225,19 @@ impl Gossip for UnsafeGossipsub {
                 }
                 BufferStatus::HeaderLen(header_len) => {
                     let header_len = *header_len as usize;
-                    if read_buffer.remaining() >= header_len {
-                        *buffer_status = BufferStatus::Header(
-                            bincode::deserialize(&read_buffer.copy_to_bytes(header_len)).unwrap(),
+                    if connection.buffer.remaining() >= header_len {
+                        connection.buffer_status = BufferStatus::Header(
+                            bincode::deserialize(&connection.buffer.copy_to_bytes(header_len))
+                                .unwrap(),
                         );
                         continue;
                     }
                 }
                 BufferStatus::Header(header) => {
-                    if read_buffer.remaining() >= header.message_len as usize {
-                        let message = read_buffer.copy_to_bytes(header.message_len as usize);
+                    if connection.buffer.remaining() >= header.message_len as usize {
+                        let message = connection.buffer.copy_to_bytes(header.message_len as usize);
                         let header = header.clone();
-                        *buffer_status = BufferStatus::None;
+                        connection.buffer_status = BufferStatus::None;
                         self.handle_message(from, header, message);
                         continue;
                     }

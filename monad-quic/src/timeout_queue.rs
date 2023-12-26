@@ -48,4 +48,16 @@ impl TimeoutQueue {
             }
         }
     }
+
+    pub fn remove(&mut self, handle: &ConnectionHandle) {
+        let duration = self.connection_timeouts.remove(handle);
+        if let Some(duration) = duration {
+            let timeouts = self.timeouts.get_mut(&duration).expect("invariant broken");
+            let removed = timeouts.remove(handle);
+            assert!(removed);
+            if timeouts.is_empty() {
+                self.timeouts.remove(&duration).expect("invariant broken");
+            }
+        }
+    }
 }

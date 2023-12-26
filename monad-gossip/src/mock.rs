@@ -20,9 +20,23 @@ impl MockGossipConfig {
         MockGossip {
             config: self,
 
-            read_buffers: Default::default(),
+            connections: Default::default(),
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
+        }
+    }
+}
+
+struct Connection {
+    maybe_message_len: Option<MessageLenType>,
+    buffer: SegmentedBuf<GossipMessage>,
+}
+
+impl Connection {
+    fn new() -> Self {
+        Self {
+            maybe_message_len: None,
+            buffer: SegmentedBuf::new(),
         }
     }
 }
@@ -30,7 +44,7 @@ impl MockGossipConfig {
 pub struct MockGossip {
     config: MockGossipConfig,
 
-    read_buffers: HashMap<NodeId, (Option<MessageLenType>, SegmentedBuf<GossipMessage>)>,
+    connections: HashMap<NodeId, Connection>,
     events: VecDeque<GossipEvent>,
     current_tick: Duration,
 }
@@ -39,6 +53,22 @@ type MessageLenType = u32;
 const MESSAGE_HEADER_LEN: usize = std::mem::size_of::<MessageLenType>();
 
 impl Gossip for MockGossip {
+    fn connected(&mut self, time: Duration, peer: NodeId) {
+        self.current_tick = time;
+        let removed = self.connections.insert(peer, Connection::new());
+        assert!(removed.is_none());
+    }
+
+    fn disconnected(&mut self, time: Duration, peer: NodeId) {
+        self.current_tick = time;
+        let removed = self.connections.remove(&peer);
+        assert!(removed.is_some());
+
+        // remove all pending sends to the disconnected peer
+        self.events
+            .retain(|event| !matches!(event, GossipEvent::Send(to, _) if to == &peer))
+    }
+
     fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
         let gossip_message_header: GossipMessage =
@@ -53,11 +83,15 @@ impl Gossip for MockGossip {
                     .iter()
                     .filter(|to| to != &&self.config.me)
                 {
-                    self.events.extend(
-                        gossip_message
-                            .clone()
-                            .map(|gossip_message| GossipEvent::Send(*peer, gossip_message)),
-                    );
+                    if self.connections.contains_key(peer) {
+                        self.events.extend(
+                            gossip_message
+                                .clone()
+                                .map(|gossip_message| GossipEvent::Send(*peer, gossip_message)),
+                        );
+                    } else {
+                        self.events.push_back(GossipEvent::RequestConnect(*peer));
+                    }
                 }
                 self.events
                     .push_back(GossipEvent::Emit(self.config.me, message))
@@ -66,10 +100,12 @@ impl Gossip for MockGossip {
                 if to == self.config.me {
                     self.events
                         .push_back(GossipEvent::Emit(self.config.me, message))
-                } else {
+                } else if self.connections.contains_key(&to) {
                     self.events.extend(
                         gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)),
-                    )
+                    );
+                } else {
+                    self.events.push_back(GossipEvent::RequestConnect(to));
                 }
             }
         }
@@ -82,23 +118,30 @@ impl Gossip for MockGossip {
         gossip_message: GossipMessage,
     ) {
         self.current_tick = time;
-        let (maybe_message_len, read_buffer) = self.read_buffers.entry(from).or_default();
-        read_buffer.push(gossip_message);
+        let connection = self
+            .connections
+            .get_mut(&from)
+            .expect("invariant: Gossip::connected must have been called before");
+        connection.buffer.push(gossip_message);
         loop {
-            if maybe_message_len.is_none() && read_buffer.remaining() >= MESSAGE_HEADER_LEN {
-                *maybe_message_len = Some(MessageLenType::from_le_bytes(
-                    read_buffer
+            if connection.maybe_message_len.is_none()
+                && connection.buffer.remaining() >= MESSAGE_HEADER_LEN
+            {
+                // TODO if this is too big (> MAX_MESSAGE_SIZE), dc peer?
+                connection.maybe_message_len = Some(MessageLenType::from_le_bytes(
+                    connection
+                        .buffer
                         .copy_to_bytes(MESSAGE_HEADER_LEN)
                         .to_vec()
                         .try_into()
                         .unwrap(),
                 ));
             }
-            if let Some(message_len) = *maybe_message_len {
-                if read_buffer.remaining() >= message_len as usize {
-                    let message = read_buffer.copy_to_bytes(message_len as usize);
+            if let Some(message_len) = connection.maybe_message_len {
+                if connection.buffer.remaining() >= message_len as usize {
+                    let message = connection.buffer.copy_to_bytes(message_len as usize);
                     self.events.push_back(GossipEvent::Emit(from, message));
-                    *maybe_message_len = None;
+                    connection.maybe_message_len = None;
                     continue;
                 }
             }
