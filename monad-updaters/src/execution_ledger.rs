@@ -1,12 +1,13 @@
-use std::{marker::PhantomData, path::PathBuf};
+use std::{fs::File, io::Write, marker::PhantomData, path::PathBuf};
 
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::Executor;
 use monad_executor_glue::ExecutionLedgerCommand;
-use monad_wal::aof::AppendOnlyFile;
 
+/// A ledger for committed Ethereum blocks
+/// Blocks are RLP encoded and written to a file which is read by Execution client
 pub struct MonadFileLedger<SCT> {
-    file: AppendOnlyFile,
+    file: File,
 
     phantom: PhantomData<SCT>,
 }
@@ -31,7 +32,7 @@ where
 {
     pub fn new(file_path: PathBuf) -> Self {
         Self {
-            file: AppendOnlyFile::new(file_path).unwrap(),
+            file: File::create(file_path).unwrap(),
 
             phantom: PhantomData,
         }

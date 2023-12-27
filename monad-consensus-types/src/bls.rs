@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use bitvec::prelude::*;
 use monad_crypto::{
     bls12_381::{BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature},
-    hasher::{Hash, Hashable, Hasher},
+    hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_proto::proto::signing::ProtoBlsSignatureCollection;
 use monad_types::NodeId;
@@ -193,8 +193,8 @@ impl SignatureCollection for BlsSignatureCollection {
             .map_err(SignatureCollectionError::InvalidSignaturesCreate)
     }
 
-    fn get_hash<H: Hasher>(&self) -> Hash {
-        H::hash_object(self)
+    fn get_hash(&self) -> Hash {
+        HasherType::hash_object(self)
     }
 
     fn verify(

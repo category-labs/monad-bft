@@ -12,10 +12,10 @@ use monad_types::*;
 
 #[test]
 fn block_hash_id() {
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
     let author = node_id();
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
+    let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
             vote: VoteInfo {
                 id: BlockId(Hash([0x00_u8; 32])),
@@ -29,7 +29,7 @@ fn block_hash_id() {
         MockSignatures::with_pubkeys(&[]),
     );
 
-    let block = Block::<MockSignatures>::new::<HasherType>(
+    let block = Block::<MockSignatures>::new(
         author,
         round,
         &Payload {

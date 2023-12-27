@@ -25,7 +25,7 @@ type SignatureCollectionType = MultiSig<SecpSignature>;
 fn timeout_digest() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new::<HasherType>(
+        high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x00_u8; 32])),
@@ -45,7 +45,7 @@ fn timeout_digest() {
     hasher.update(ti.high_qc.info.vote.round);
     let h1 = hasher.hash();
 
-    let h2 = ti.timeout_digest::<HasherType>();
+    let h2 = ti.timeout_digest();
 
     assert_eq!(h1, h2);
 }
@@ -54,7 +54,7 @@ fn timeout_digest() {
 fn timeout_info_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new::<HasherType>(
+        high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x00_u8; 32])),
@@ -84,7 +84,7 @@ fn timeout_info_hash() {
 fn timeout_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new::<HasherType>(
+        high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x00_u8; 32])),
@@ -119,7 +119,7 @@ fn timeout_hash() {
 fn timeout_msg_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new::<HasherType>(
+        high_qc: QuorumCertificate::<MockSignatures>::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x00_u8; 32])),
@@ -141,7 +141,7 @@ fn timeout_msg_hash() {
 
     let cert_key = get_certificate_key::<MockSignatures>(7);
 
-    let tmo_msg = TimeoutMessage::new::<HasherType>(tmo, &cert_key);
+    let tmo_msg = TimeoutMessage::new(tmo, &cert_key);
 
     let mut hasher = HasherType::new();
     hasher.update(tmo_msg.timeout.tminfo.round.0.as_bytes());
@@ -168,13 +168,13 @@ fn timeout_msg_hash() {
 fn proposal_msg_hash() {
     use monad_testutil::signing::hash;
 
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
 
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
     let author = NodeId(keypair.pubkey());
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
+    let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
             vote: VoteInfo {
                 id: BlockId(Hash([0x00_u8; 32])),
@@ -188,7 +188,7 @@ fn proposal_msg_hash() {
         MockSignatures::with_pubkeys(&[]),
     );
 
-    let block = Block::<MockSignatures>::new::<HasherType>(
+    let block = Block::<MockSignatures>::new(
         author,
         round,
         &Payload {
@@ -261,7 +261,7 @@ fn vote_msg_hash(cs: Option<Hash>) {
     };
 
     let certkey = get_certificate_key::<SignatureCollectionType>(7);
-    let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkey);
+    let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
 
     let mut hasher = HasherType::new();
     hasher.update(vi_hash);

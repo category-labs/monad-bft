@@ -6,6 +6,7 @@ use zerocopy::AsBytes;
 
 use crate::{certificate_signature::CertificateKeyPair, ledger::LedgerCommitInfo};
 
+/// Map validator NodeId to its Certificate PubKey
 pub struct ValidatorMapping<VKT: CertificateKeyPair> {
     pub map: BTreeMap<NodeId, VKT::PubKeyType>,
 }
@@ -27,9 +28,12 @@ impl<VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<VKT> {
     }
 }
 
+/// Vote for consensus proposals
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Vote {
+    /// contents of the vote over which the QC is eventually formed
     pub vote_info: VoteInfo,
+    /// commit decision
     pub ledger_commit_info: LedgerCommitInfo,
 }
 
@@ -50,10 +54,15 @@ impl Hashable for Vote {
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct VoteInfo {
+    /// id of the proposed block
     pub id: BlockId,
+    /// round of the proposed block
     pub round: Round,
+    /// parent block id of the proposed block
     pub parent_id: BlockId,
+    /// parent round of the proposed block
     pub parent_round: Round,
+    /// seqnum of the proposed block
     pub seq_num: SeqNum,
 }
 

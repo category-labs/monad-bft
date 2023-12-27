@@ -18,6 +18,7 @@ monad-executor = { path = "../monad-executor" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-types = { path = "../monad-types" }
 
+bytes = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }

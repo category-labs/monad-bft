@@ -518,12 +518,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "asn1_der"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "155a5a185e42c6b77ac7b88a15143d930a9e9727a5b7b77eed417404ab15c247"
-
-[[package]]
 name = "async-io"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -960,6 +954,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2bd12c1caf447e69cd4528f47f94d203fd2582878ecb9e9465484c4148a8223"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "bytes-utils"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
+dependencies = [
+ "bytes",
+ "either",
 ]
 
 [[package]]
@@ -4219,7 +4223,6 @@ dependencies = [
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
- "ptree",
  "tracing",
 ]
 
@@ -4228,6 +4231,7 @@ name = "monad-compress"
 version = "0.1.0"
 dependencies = [
  "brotli",
+ "bytes",
  "criterion",
  "flate2",
  "lz4",
@@ -4246,10 +4250,12 @@ dependencies = [
 name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
  "monad-proto",
+ "monad-state",
  "monad-testutil",
  "monad-types",
  "monad-validator",
@@ -4284,6 +4290,7 @@ name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
  "bitvec",
+ "bytes",
  "criterion",
  "monad-crypto",
  "monad-eth-types",
@@ -4303,7 +4310,6 @@ dependencies = [
 name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
- "asn1_der",
  "blake3",
  "blst",
  "criterion",
@@ -4324,6 +4330,7 @@ dependencies = [
 name = "monad-eth-types"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "reth-primitives",
  "reth-rlp",
  "serde",
@@ -4333,6 +4340,7 @@ dependencies = [
 name = "monad-executor"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
@@ -4344,6 +4352,7 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
@@ -4357,6 +4366,8 @@ name = "monad-gossip"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bytes",
+ "bytes-utils",
  "criterion",
  "fastrand",
  "monad-crypto",
@@ -4468,6 +4479,7 @@ dependencies = [
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "criterion",
  "futures",
  "itertools",
@@ -4506,6 +4518,7 @@ dependencies = [
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.5",
  "clap 4.4.10",
  "env_logger",
  "futures-util",
@@ -4528,13 +4541,13 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_api",
- "rustls-pemfile",
  "serde",
  "thiserror",
  "tokio",
  "toml 0.7.8",
  "tracing",
  "tracing-opentelemetry",
+ "zeroize",
 ]
 
 [[package]]
@@ -4550,6 +4563,7 @@ dependencies = [
 name = "monad-quic"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clap 4.4.10",
  "env_logger",
  "futures",
@@ -4594,6 +4608,7 @@ dependencies = [
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-blocktree",
  "monad-consensus",
  "monad-consensus-state",
@@ -4607,10 +4622,11 @@ dependencies = [
  "monad-tracing-counter",
  "monad-types",
  "monad-validator",
+ "prost",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
- "ref-cast",
  "tempfile",
+ "test-case",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -4682,6 +4698,8 @@ dependencies = [
 name = "monad-transformer"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "bytes-utils",
  "monad-tracing-counter",
  "monad-types",
  "rand 0.8.5",
@@ -4737,6 +4755,7 @@ version = "0.1.0"
 dependencies = [
  "monad-crypto",
  "monad-proto",
+ "serde",
  "zerocopy 0.6.5",
 ]
 
@@ -4755,7 +4774,6 @@ dependencies = [
  "monad-mempool-messenger",
  "monad-testutil",
  "monad-types",
- "monad-wal",
  "ntest",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -4781,6 +4799,7 @@ dependencies = [
 name = "monad-virtual-bench"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -4828,6 +4847,7 @@ dependencies = [
 name = "monad-wal"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "criterion",
  "monad-consensus",
  "monad-consensus-state",
@@ -6124,15 +6144,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptree"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0de80796b316aec75344095a6d2ef68ec9b8f573b9e7adc821149ba3598e270"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6432,26 +6443,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4722d768eff46b75989dd134e5c353f0d6296e5aaa3132e776cbdb56be7731aa"
 dependencies = [
  "bitflags 1.3.2",
-]
-
-[[package]]
-name = "ref-cast"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acde58d073e9c79da00f2b5b84eed919c8326832648a5b109b3fce1bb1175280"
-dependencies = [
- "ref-cast-impl",
-]
-
-[[package]]
-name = "ref-cast-impl"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f7473c2cfcf90008193dd0e3e16599455cb601a9fce322b5bb55de799664925"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.39",
 ]
 
 [[package]]

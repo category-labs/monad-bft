@@ -18,10 +18,13 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-proto = { path = "../monad-proto" }
+monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
-ref-cast = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+prost = { workspace = true }
 
 [dev-dependencies]
 monad-tracing-counter = { path = "../monad-tracing-counter" }
@@ -34,3 +37,4 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true }
+test-case = "3.3.1"

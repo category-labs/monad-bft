@@ -11,6 +11,7 @@ use monad_executor_glue::TimerCommand;
 use monad_types::TimeoutVariant;
 use tokio::task::{AbortHandle, JoinSet};
 
+/// This updater allows timer events to be scheduled to fire in the future
 pub struct TokioTimer<E> {
     timers: JoinSet<Option<E>>,
     aborts: HashMap<TimeoutVariant, AbortHandle>,
@@ -78,6 +79,8 @@ where
 {
     type Item = E;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut _timer_poll_span = tracing::info_span!("timer_poll_span").entered();
+
         let this = self.deref_mut();
 
         // its possible to get Poll::Ready(None) because the join_set might be empty

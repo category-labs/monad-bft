@@ -1,39 +1,37 @@
-use std::{fmt::Debug, marker::PhantomData, ops::Deref, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, time::Duration};
 
+use bytes::Bytes;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage},
     },
-    validation::signing::{Unverified, Verified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand},
+    command::{Checkpoint, ConsensusCommand, PublishMessage},
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
     block::{Block, FullBlock},
     message_signature::MessageSignature,
     payload::{ExecutionArtifacts, Payload, RandaoReveal},
-    quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
+    validation,
     validator_data::ValidatorData,
-    voting::{ValidatorMapping, VoteInfo},
+    voting::ValidatorMapping,
 };
-use monad_crypto::{
-    hasher::HasherType,
-    secp256k1::{KeyPair, PubKey},
-};
+use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, Identifiable,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
-    TimerCommand,
+    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
+    MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
 };
+use monad_tracing_counter::inc_count;
 use monad_types::{
     epoch_manager::EpochManager, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant,
 };
@@ -54,11 +52,17 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
+    /// Core consensus algorithm state machine
     consensus: CT,
-    epoch_manager: EpochManager,
-    val_epoch_map: ValidatorsEpochMapping<VT, SCT>,
-    leader_election: LT,
+    /// Handle responses to block sync requests from other nodes
     block_sync_respond: BlockSyncResponder,
+
+    /// Algorithm for choosing leaders for the consensus algorithm
+    leader_election: LT,
+    /// Track the information for epochs
+    epoch_manager: EpochManager,
+    /// Maps the epoch number to validator stakes and certificate pubkeys
+    val_epoch_map: ValidatorsEpochMapping<VT, SCT>,
 
     _pd: PhantomData<ST>,
 }
@@ -95,29 +99,69 @@ where
             ValidatorMapping::new(val_data.get_cert_pubkeys()),
         );
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedMonadMessage<ST, SCT: SignatureCollection>(Verified<ST, ConsensusMessage<SCT>>);
-
-impl<ST, SCT: SignatureCollection> From<Verified<ST, ConsensusMessage<SCT>>>
-    for VerifiedMonadMessage<ST, SCT>
-{
-    fn from(value: Verified<ST, ConsensusMessage<SCT>>) -> Self {
-        Self(value)
+    fn handle_validation_error(e: validation::Error) {
+        match e {
+            validation::Error::InvalidAuthor => {
+                inc_count!(invalid_author)
+            }
+            validation::Error::NotWellFormed => {
+                inc_count!(not_well_formed_sig)
+            }
+            validation::Error::InvalidSignature => {
+                inc_count!(invalid_signature)
+            }
+            validation::Error::AuthorNotSender => {
+                inc_count!(author_not_sender)
+            }
+            validation::Error::InvalidTcRound => {
+                inc_count!(invalid_tc_round)
+            }
+            validation::Error::InsufficientStake => {
+                inc_count!(insufficient_stake)
+            }
+            validation::Error::InvalidSeqNum => {
+                inc_count!(invalid_seq_num)
+            }
+            validation::Error::ValDataUnavailable => {
+                inc_count!(val_data_unavailable)
+            }
+        };
     }
 }
 
-#[derive(RefCast)]
-#[repr(transparent)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadMessage<ST, SCT: SignatureCollection>(Unverified<ST, ConsensusMessage<SCT>>);
+pub enum VerifiedMonadMessage<ST, SCT: SignatureCollection> {
+    Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
+    BlockSyncRequest(Validated<RequestBlockSyncMessage>),
+    BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
+}
 
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Vec<u8>>
+impl<ST, SCT: SignatureCollection> From<Verified<ST, Validated<ConsensusMessage<SCT>>>>
+    for VerifiedMonadMessage<ST, SCT>
+{
+    fn from(value: Verified<ST, Validated<ConsensusMessage<SCT>>>) -> Self {
+        Self::Consensus(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonadMessage<ST, SCT: SignatureCollection> {
+    /// Consensus protocol message
+    Consensus(Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>),
+
+    /// Request a missing block given BlockId
+    BlockSyncRequest(Unvalidated<RequestBlockSyncMessage>),
+
+    /// Block sync response
+    BlockSyncResponse(Unvalidated<BlockSyncResponseMessage<SCT>>),
+}
+
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Bytes>
     for VerifiedMonadMessage<MS, SCT>
 {
-    fn serialize(&self) -> Vec<u8> {
-        monad_consensus::convert::interface::serialize_verified_consensus_message(&self.0)
+    fn serialize(&self) -> Bytes {
+        crate::convert::interface::serialize_verified_monad_message(self)
     }
 }
 
@@ -125,64 +169,39 @@ impl<MS: MessageSignature, SCT: SignatureCollection>
     monad_types::Serializable<MonadMessage<MS, SCT>> for VerifiedMonadMessage<MS, SCT>
 {
     fn serialize(&self) -> MonadMessage<MS, SCT> {
-        MonadMessage(self.0.clone().into())
+        match self.clone() {
+            VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
+            VerifiedMonadMessage::BlockSyncRequest(msg) => {
+                MonadMessage::BlockSyncRequest(msg.into())
+            }
+            VerifiedMonadMessage::BlockSyncResponse(msg) => {
+                MonadMessage::BlockSyncResponse(msg.into())
+            }
+        }
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<[u8]>
+impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<Bytes>
     for MonadMessage<MS, SCT>
 {
     type ReadError = monad_proto::error::ProtoError;
 
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
-        Ok(MonadMessage(
-            monad_consensus::convert::interface::deserialize_unverified_consensus_message(message)?,
-        ))
-    }
-}
-
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<Vec<u8>>
-    for MonadMessage<MS, SCT>
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(message: &Vec<u8>) -> Result<Self, Self::ReadError> {
-        Ok(MonadMessage(
-            monad_consensus::convert::interface::deserialize_unverified_consensus_message(
-                message.as_ref(),
-            )?,
-        ))
+    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
+        crate::convert::interface::deserialize_monad_message(message.clone())
     }
 }
 
 impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
-        MonadMessage(value.0.into())
-    }
-}
-
-impl<ST, SCT: SignatureCollection> AsRef<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT> {
-    fn as_ref(&self) -> &MonadMessage<ST, SCT> {
-        MonadMessage::ref_cast(self.0.as_ref())
-    }
-}
-
-impl<ST, SCT: SignatureCollection> Deref for VerifiedMonadMessage<ST, SCT> {
-    type Target = ConsensusMessage<SCT>;
-    fn deref(&self) -> &ConsensusMessage<SCT> {
-        self.0.deref()
-    }
-}
-
-impl<ST, SCT> Identifiable for MonadMessage<ST, SCT>
-where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-{
-    type Id = ST;
-
-    fn id(&self) -> Self::Id {
-        *self.0.author_signature()
+        match value {
+            VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
+            VerifiedMonadMessage::BlockSyncRequest(msg) => {
+                MonadMessage::BlockSyncRequest(msg.into())
+            }
+            VerifiedMonadMessage::BlockSyncResponse(msg) => {
+                MonadMessage::BlockSyncResponse(msg.into())
+            }
+        }
     }
 }
 
@@ -197,11 +216,24 @@ where
         // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
-
-        Self::Event::ConsensusEvent(ConsensusEvent::Message {
-            sender: from.0,
-            unverified_message: self.0,
-        })
+        match self {
+            MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
+                sender: from.0,
+                unverified_message: msg,
+            }),
+            MonadMessage::BlockSyncRequest(msg) => {
+                MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncRequest {
+                    sender: from.0,
+                    unvalidated_request: msg,
+                })
+            }
+            MonadMessage::BlockSyncResponse(msg) => {
+                MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncResponse {
+                    sender: from.0,
+                    unvalidated_response: msg,
+                })
+            }
+        }
     }
 }
 
@@ -216,9 +248,6 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
 
     pub delta: Duration,
     pub consensus_config: ConsensusConfig,
-    pub genesis_block: FullBlock<SCT>,
-    pub genesis_vote_info: VoteInfo,
-    pub genesis_signatures: SCT,
 }
 
 impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
@@ -272,11 +301,6 @@ where
 
         let election = LT::new();
 
-        let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
-            config.genesis_vote_info,
-            config.genesis_signatures,
-        );
-
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
             epoch_manager: EpochManager::new(
                 config.val_set_update_interval,
@@ -287,8 +311,6 @@ where
             consensus: CT::new(
                 config.transaction_validator,
                 config.key.pubkey(),
-                config.genesis_block,
-                genesis_qc,
                 config.delta,
                 config.consensus_config,
                 config.key,
@@ -319,13 +341,14 @@ where
             Self::SignatureCollection,
         >,
     > {
+        let _event_span = tracing::info_span!("event_span", ?event).entered();
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
                     ConsensusEvent::Timeout(tmo_event) => match tmo_event {
                         TimeoutVariant::Pacemaker => self
                             .consensus
-                            .handle_timeout_expiry::<HasherType>()
+                            .handle_timeout_expiry()
                             .into_iter()
                             .map(|cmd| {
                                 ConsensusCommand::from_pacemaker_command(
@@ -352,7 +375,7 @@ where
                         if fetched.round == self.consensus.get_current_round() {
                             let mut header = ExecutionArtifacts::zero();
                             header.state_root = fetched.state_root_hash;
-                            let b = Block::new::<HasherType>(
+                            let b = Block::new(
                                 fetched.node_id,
                                 fetched.round,
                                 &Payload {
@@ -375,7 +398,9 @@ where
 
                             cmds.push(ConsensusCommand::Publish {
                                 target: RouterTarget::Broadcast,
-                                message: ConsensusMessage::Proposal(p),
+                                message: PublishMessage::ConsensusMessage(
+                                    ConsensusMessage::Proposal(p),
+                                ),
                             });
                         }
 
@@ -391,7 +416,7 @@ where
                             };
                             cmds.extend(
                                 self.consensus
-                                    .handle_proposal_message_full::<HasherType, _, _>(
+                                    .handle_proposal_message_full(
                                         fetched_txs.author,
                                         proposal_msg,
                                         txns,
@@ -412,7 +437,7 @@ where
                             ),
                             ConsensusCommand::Publish {
                                 target: RouterTarget::PointToPoint(NodeId(fetched_b.requester.0)),
-                                message: ConsensusMessage::BlockSync(
+                                message: PublishMessage::BlockSyncResponse(
                                     match fetched_b.unverified_full_block {
                                         Some(b) => BlockSyncResponseMessage::BlockFound(b),
                                         None => BlockSyncResponseMessage::NotAvailable(
@@ -427,62 +452,51 @@ where
                         sender,
                         unverified_message,
                     } => {
-                        let verified_message = match unverified_message.verify::<HasherType, _>(
-                            &self.val_epoch_map,
-                            &self.epoch_manager,
-                            &sender,
-                        ) {
-                            Ok(m) => m,
-                            Err(e) => todo!("{e:?}"),
-                        };
-                        let (author, _, verified_message) = verified_message.destructure();
-                        match verified_message {
-                            ConsensusMessage::Proposal(msg) => self
-                                .consensus
-                                .handle_proposal_message::<HasherType>(author, msg),
-                            ConsensusMessage::Vote(msg) => {
-                                self.consensus.handle_vote_message::<HasherType, _, _>(
-                                    author,
-                                    msg,
-                                    &mut self.epoch_manager,
-                                    &self.val_epoch_map,
-                                    &self.leader_election,
-                                )
-                            }
-                            ConsensusMessage::Timeout(msg) => {
-                                self.consensus.handle_timeout_message::<HasherType, _, _>(
-                                    author,
-                                    msg,
-                                    &mut self.epoch_manager,
-                                    &self.val_epoch_map,
-                                    &self.leader_election,
-                                )
-                            }
-                            ConsensusMessage::RequestBlockSync(msg) => {
-                                if let Some(block) =
-                                    self.consensus.fetch_uncommitted_block(&msg.block_id)
-                                {
-                                    // retrieve if currently cached in pending block tree
-                                    vec![ConsensusCommand::Publish {
-                                        target: RouterTarget::PointToPoint(author),
-                                        message: ConsensusMessage::BlockSync(
-                                            BlockSyncResponseMessage::BlockFound(
-                                                block.clone().into(),
-                                            ),
-                                        ),
-                                    }]
-                                } else {
-                                    // else ask ledger
-                                    self.block_sync_respond
-                                        .handle_request_block_sync_message(author, msg)
+                        // Verify the author signature on the message and sender is author
+                        let verified_message =
+                            match unverified_message.verify(&self.epoch_manager, &self.val_epoch_map, &sender) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    Self::handle_validation_error(e);
+                                    // TODO-2: collect evidence
+                                    let evidence_cmds = vec![];
+                                    return evidence_cmds;
                                 }
+                            };
+
+                        let (author, _, verified_message) = verified_message.destructure();
+                        // Validated message according to consensus protocol spec
+                        let validated_mesage = match verified_message
+                            .validate(&self.epoch_manager, &self.val_epoch_map)
+                        {
+                            Ok(m) => m.into_inner(),
+                            Err(e) => {
+                                Self::handle_validation_error(e);
+                                // TODO-2: collect evidence
+                                let evidence_cmds = vec![];
+                                return evidence_cmds;
                             }
-                            ConsensusMessage::BlockSync(msg) => {
-                                let val_set = self
-                                    .val_epoch_map
-                                    .get_val_set(&self.epoch_manager.current_epoch)
-                                    .expect("current validator set should be in the map");
-                                self.consensus.handle_block_sync(author, msg, val_set)
+                        };
+
+                        match validated_mesage {
+                            ConsensusMessage::Proposal(msg) => {
+                                self.consensus.handle_proposal_message(author, msg)
+                            }
+                            ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
+                                author,
+                                msg,
+                                &self.epoch_manager,
+                                &self.val_epoch_map,
+                                &self.leader_election,
+                            ),
+                            ConsensusMessage::Timeout(msg) => {
+                                self.consensus.handle_timeout_message(
+                                    author,
+                                    msg,
+                                    &self.epoch_manager,
+                                    &self.val_epoch_map,
+                                    &self.leader_election,
+                                )
                             }
                         }
                     }
@@ -494,13 +508,70 @@ where
                         self.consensus.handle_state_root_update(seq_num, root_hash);
                         Vec::new()
                     }
+                    ConsensusEvent::BlockSyncRequest {
+                        sender,
+                        unvalidated_request,
+                    } => {
+                        let validated_request = match unvalidated_request.validate() {
+                            Ok(req) => req,
+                            Err(e) => todo!("{e:?}"),
+                        }
+                        .into_inner();
+                        if let Some(block) = self
+                            .consensus
+                            .fetch_uncommitted_block(&validated_request.block_id)
+                        {
+                            // retrieve if currently cached in pending block tree
+                            vec![ConsensusCommand::Publish {
+                                target: RouterTarget::PointToPoint(NodeId(sender)),
+                                message: PublishMessage::BlockSyncResponse(
+                                    BlockSyncResponseMessage::BlockFound(block.clone().into()),
+                                ),
+                            }]
+                        } else {
+                            // else ask ledger
+                            self.block_sync_respond.handle_request_block_sync_message(
+                                NodeId(sender),
+                                validated_request,
+                            )
+                        }
+                    }
+                    ConsensusEvent::BlockSyncResponse {
+                        sender,
+                        unvalidated_response,
+                    } => {
+                        let validated_response = match unvalidated_response
+                            .validate(&self.epoch_manager, &self.val_epoch_map)
+                        {
+                            Ok(req) => req,
+                            Err(e) => todo!("{e:?}"),
+                        }
+                        .into_inner();
+
+                        let val_set = self
+                            .val_epoch_map
+                            .get_val_set(&self.epoch_manager.current_epoch)
+                            .expect("current validator set should be in the map");
+                        self.consensus.handle_block_sync(
+                            NodeId(sender),
+                            validated_response,
+                            val_set,
+                        )
+                    }
                 };
 
                 let prepare_router_message =
-                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
-                        let message = VerifiedMonadMessage(
-                            message.sign::<HasherType, ST>(self.consensus.get_keypair()),
-                        );
+                    |target: RouterTarget, message: PublishMessage<SCT>| {
+                        let message = match message {
+                            PublishMessage::ConsensusMessage(msg) => {
+                                VerifiedMonadMessage::Consensus(
+                                    msg.sign::<ST>(self.consensus.get_keypair()),
+                                )
+                            }
+                            PublishMessage::BlockSyncResponse(msg) => {
+                                VerifiedMonadMessage::BlockSyncResponse(Validated::new(msg))
+                            }
+                        };
                         Command::RouterCommand(RouterCommand::Publish { target, message })
                     };
 
@@ -523,12 +594,9 @@ where
                         ConsensusCommand::ScheduleReset(on_timeout) => cmds.push(
                             Command::TimerCommand(TimerCommand::ScheduleReset(on_timeout)),
                         ),
-                        ConsensusCommand::FetchTxs(max_txns, pending_txs, fetch_params) => cmds
-                            .push(Command::MempoolCommand(MempoolCommand::FetchTxs(
-                                max_txns,
-                                pending_txs,
-                                fetch_params,
-                            ))),
+                        ConsensusCommand::FetchTxs(fetch_criteria) => cmds.push(
+                            Command::MempoolCommand(MempoolCommand::FetchTxs(fetch_criteria)),
+                        ),
                         ConsensusCommand::FetchTxsReset => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
                         }
@@ -546,12 +614,12 @@ where
                         }
 
                         ConsensusCommand::RequestSync { peer, block_id } => {
-                            cmds.push(prepare_router_message(
-                                RouterTarget::PointToPoint(peer),
-                                ConsensusMessage::RequestBlockSync(RequestBlockSyncMessage {
-                                    block_id,
-                                }),
-                            ));
+                            cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                                target: RouterTarget::PointToPoint(peer),
+                                message: VerifiedMonadMessage::BlockSyncRequest(Validated::new(
+                                    RequestBlockSyncMessage { block_id },
+                                )),
+                            }));
                         }
                         ConsensusCommand::LedgerCommit(block) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(

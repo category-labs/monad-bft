@@ -250,7 +250,7 @@ mod test {
     use std::time::Duration;
 
     use monad_consensus_types::{
-        block::{Block, UnverifiedFullBlock},
+        block::{Block, BlockType, UnverifiedFullBlock},
         ledger::LedgerCommitInfo,
         payload::{
             ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
@@ -260,8 +260,8 @@ mod test {
         transaction_validator::MockValidator,
         voting::VoteInfo,
     };
-    use monad_crypto::hasher::{Hash, Hasher, HasherType};
-    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+    use monad_crypto::hasher::Hash;
+    use monad_eth_types::EthAddress;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
@@ -275,42 +275,6 @@ mod test {
     type VT = ValidatorSet;
     type QC = QuorumCertificate<SC>;
     type TV = MockValidator;
-
-    struct FakeHasher1();
-
-    impl Hasher for FakeHasher1 {
-        fn new() -> Self {
-            Self()
-        }
-        fn update(&mut self, _data: impl AsRef<[u8]>) {}
-        fn hash(self) -> Hash {
-            Hash([0x01_u8; 32])
-        }
-    }
-
-    struct FakeHasher2();
-
-    impl Hasher for FakeHasher2 {
-        fn new() -> Self {
-            Self()
-        }
-        fn update(&mut self, _data: impl AsRef<[u8]>) {}
-        fn hash(self) -> Hash {
-            Hash([0x02_u8; 32])
-        }
-    }
-
-    struct FakeHasher3();
-
-    impl Hasher for FakeHasher3 {
-        fn new() -> Self {
-            Self()
-        }
-        fn update(&mut self, _data: impl AsRef<[u8]>) {}
-        fn hash(self) -> Hash {
-            Hash([0x03_u8; 32])
-        }
-    }
 
     fn extract_request_sync<SCT: SignatureCollection>(
         cmds: &[ConsensusCommand<SCT>],
@@ -333,7 +297,7 @@ mod test {
         let mut manager = BlockSyncRequester::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
 
-        let qc = &QC::new::<HasherType>(
+        let qc = &QC::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x01_u8; 32])),
@@ -364,7 +328,7 @@ mod test {
             assert!(cmds.is_empty());
         }
 
-        let qc = &QC::new::<HasherType>(
+        let qc = &QC::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x02_u8; 32])),
@@ -396,11 +360,76 @@ mod test {
         let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
         let transaction_validator = TV::default();
 
+        let payload = Payload {
+            txns: TransactionHashList::empty(),
+            header: ExecutionArtifacts::zero(),
+            seq_num: SeqNum(0),
+            beneficiary: EthAddress::default(),
+            randao_reveal: RandaoReveal::default(),
+        };
+
+        let block_1 = Block::new(
+            NodeId(keypair.pubkey()),
+            Round(0),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let block_2 = Block::new(
+            NodeId(keypair.pubkey()),
+            Round(1),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
+        let block_3 = Block::new(
+            NodeId(keypair.pubkey()),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            ),
+        );
+
         // first qc
-        let qc_1 = &QC::new::<HasherType>(
+        let qc_1 = &QC::new(
             QcInfo {
                 vote: VoteInfo {
-                    id: BlockId(Hash([0x01_u8; 32])),
+                    id: block_1.get_id(),
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
@@ -423,10 +452,10 @@ mod test {
         assert!(bid == qc_1.info.vote.id);
 
         // second qc
-        let qc_2 = &QC::new::<HasherType>(
+        let qc_2 = &QC::new(
             QcInfo {
                 vote: VoteInfo {
-                    id: BlockId(Hash([0x02_u8; 32])),
+                    id: block_2.get_id(),
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
@@ -449,10 +478,10 @@ mod test {
         assert!(bid == qc_2.info.vote.id);
 
         // third request
-        let qc_3 = &QC::new::<HasherType>(
+        let qc_3 = &QC::new(
             QcInfo {
                 vote: VoteInfo {
-                    id: BlockId(Hash([0x03_u8; 32])),
+                    id: block_3.get_id(),
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
@@ -474,93 +503,25 @@ mod test {
         assert!(peer_3 == valset.get_list()[0]);
         assert!(bid == qc_3.info.vote.id);
 
-        let payload = Payload {
-            txns: TransactionHashList::default(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
-
-        let block_1 = Block::new::<FakeHasher1>(
-            NodeId(keypair.pubkey()),
-            Round(3),
-            &payload,
-            &QC::new::<HasherType>(
-                QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
-                    },
-                    ledger_commit: LedgerCommitInfo::default(),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let block_2 = Block::new::<FakeHasher2>(
-            NodeId(keypair.pubkey()),
-            Round(3),
-            &payload,
-            &QC::new::<HasherType>(
-                QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
-                    },
-                    ledger_commit: LedgerCommitInfo::default(),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let block_3 = Block::new::<FakeHasher3>(
-            NodeId(keypair.pubkey()),
-            Round(3),
-            &payload,
-            &QC::new::<HasherType>(
-                QcInfo {
-                    vote: VoteInfo {
-                        id: BlockId(Hash([0x01_u8; 32])),
-                        round: Round(0),
-                        parent_id: BlockId(Hash([0x02_u8; 32])),
-                        parent_round: Round(0),
-                        seq_num: SeqNum(0),
-                    },
-                    ledger_commit: LedgerCommitInfo::default(),
-                },
-                MockSignatures::with_pubkeys(&[]),
-            ),
-        );
-
-        let msg_no_block_1 =
-            BlockSyncResponseMessage::<SC>::NotAvailable(BlockId(Hash([0x01_u8; 32])));
+        let msg_no_block_1 = BlockSyncResponseMessage::<SC>::NotAvailable(block_1.get_id());
 
         let msg_with_block_1 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_1.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
-        let msg_no_block_2 =
-            BlockSyncResponseMessage::<SC>::NotAvailable(BlockId(Hash([0x02_u8; 32])));
+        let msg_no_block_2 = BlockSyncResponseMessage::<SC>::NotAvailable(block_2.get_id());
 
         let msg_with_block_2 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_2.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
-        let msg_no_block_3 =
-            BlockSyncResponseMessage::<SC>::NotAvailable(BlockId(Hash([0x03_u8; 32])));
+        let msg_no_block_3 = BlockSyncResponseMessage::<SC>::NotAvailable(block_3.get_id());
 
         let msg_with_block_3 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block_3.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
         // arbitrary response should be rejected
@@ -660,7 +621,7 @@ mod test {
         let my_id = valset.get_list()[0];
         let mut manager = BlockSyncRequester::<SC>::new(my_id, Duration::MAX);
 
-        let qc = &QC::new::<HasherType>(
+        let qc = &QC::new(
             QcInfo {
                 vote: VoteInfo {
                     id: BlockId(Hash([0x01_u8; 32])),
@@ -726,10 +687,36 @@ mod test {
         let my_id = valset.get_list()[0];
         let mut manager = BlockSyncRequester::<SC>::new(my_id, Duration::MAX);
 
-        let qc = &QC::new::<HasherType>(
+        let block = {
+            let payload = Payload {
+                txns: TransactionHashList::empty(),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            };
+
+            let qc = &QC::new(
+                QcInfo {
+                    vote: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(0),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(0),
+                    },
+                    ledger_commit: LedgerCommitInfo::default(),
+                },
+                MockSignatures::with_pubkeys(&[]),
+            );
+
+            Block::new(valset.get_list()[0], Round(0), &payload, qc)
+        };
+
+        let qc = &QC::new(
             QcInfo {
                 vote: VoteInfo {
-                    id: BlockId(Hash([0x01_u8; 32])),
+                    id: block.get_id(),
                     round: Round(0),
                     parent_id: BlockId(Hash([0x02_u8; 32])),
                     parent_round: Round(0),
@@ -828,18 +815,10 @@ mod test {
         assert!(bid == qc.info.vote.id);
 
         // if somehow we sync up on the block, timeout should be ignored
-        let payload = Payload {
-            txns: TransactionHashList::default(),
-            header: ExecutionArtifacts::zero(),
-            seq_num: SeqNum(0),
-            beneficiary: EthAddress::default(),
-            randao_reveal: RandaoReveal::default(),
-        };
-        let block = Block::new::<FakeHasher1>(peer, Round(3), &payload, qc);
 
         let msg_with_block = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
             block: block.clone(),
-            full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            full_txs: FullTransactionList::empty(),
         });
 
         let BlockSyncResult::<SC>::Success(b) =

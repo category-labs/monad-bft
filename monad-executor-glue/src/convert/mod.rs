@@ -54,7 +54,7 @@ where
                     high_qc: Some((&fetched.high_qc).into()),
                     last_round_tc: fetched.last_round_tc.as_ref().map(Into::into),
 
-                    tx_hashes: txns.as_bytes().to_vec(),
+                    tx_hashes: txns.bytes().clone(),
                     seq_num: Some((&fetched.seq_num).into()),
                     state_root_hash: Some((&fetched.state_root_hash).into()),
                 })
@@ -66,7 +66,7 @@ where
                     p_last_round_tc: fetched_full.p_last_round_tc.as_ref().map(Into::into),
                     full_txs: txns
                         .as_ref()
-                        .map(|txns| txns.as_bytes().to_vec())
+                        .map(|txns| txns.bytes().clone())
                         .unwrap_or_default(),
                 })
             }
@@ -91,6 +91,20 @@ where
                     state_root_hash: Some(hash.into()),
                 })
             }
+            ConsensusEvent::BlockSyncRequest {
+                sender,
+                unvalidated_request,
+            } => proto_consensus_event::Event::BlockSyncReq(ProtoBlockSyncRequestWithSender {
+                sender: Some(sender.into()),
+                request: Some(unvalidated_request.into()),
+            }),
+            ConsensusEvent::BlockSyncResponse {
+                sender,
+                unvalidated_response,
+            } => proto_consensus_event::Event::BlockSyncResp(ProtoBlockSyncResponseWithSender {
+                sender: Some(sender.into()),
+                response: Some(unvalidated_response.into()),
+            }),
         };
         Self { event: Some(event) }
     }
@@ -251,6 +265,49 @@ where
 
                 ConsensusEvent::StateUpdate((s, h))
             }
+
+            Some(proto_consensus_event::Event::BlockSyncReq(event)) => {
+                let sender = event
+                    .sender
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::BlockSyncReq::sender".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                let unvalidated_request = event
+                    .request
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::BlockSyncReq::request".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                ConsensusEvent::BlockSyncRequest {
+                    sender,
+                    unvalidated_request,
+                }
+            }
+
+            Some(proto_consensus_event::Event::BlockSyncResp(event)) => {
+                let sender = event
+                    .sender
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::BlockSyncResp::sender".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                let unvalidated_response = event
+                    .response
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::BlockSyncResp::response".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                ConsensusEvent::BlockSyncResponse {
+                    sender,
+                    unvalidated_response,
+                }
+            }
+
             None => Err(ProtoError::MissingRequiredField(
                 "ConsensusEvent.event".to_owned(),
             ))?,

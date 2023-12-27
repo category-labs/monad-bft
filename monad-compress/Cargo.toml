@@ -8,6 +8,7 @@ bench = false
 
 [dependencies]
 brotli = { workspace = true }
+bytes = { workspace = true }
 flate2 = { workspace = true }
 lz4 = { workspace = true }
 

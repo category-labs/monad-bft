@@ -56,7 +56,7 @@ fn two_nodes_quic() {
 
             master_seed: 7,
 
-            gossip: MockGossipConfig { all_peers }.build(),
+            gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -92,13 +92,13 @@ fn two_nodes_quic_bw() {
 
             master_seed: 7,
 
-            gossip: MockGossipConfig { all_peers }.build(),
+            gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
         vec![
             BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
-            BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
+            BytesTransformer::Bw(BwTransformer::new(8, Duration::from_secs(1))),
         ],
         UntilTerminator::new().until_tick(Duration::from_secs(5)),
         SwarmTestConfig {

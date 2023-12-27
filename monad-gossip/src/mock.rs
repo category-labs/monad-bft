@@ -3,12 +3,16 @@ use std::{
     time::Duration,
 };
 
+use bytes::Buf;
+use bytes_utils::SegmentedBuf;
 use monad_types::{NodeId, RouterTarget};
 
 use super::{Gossip, GossipEvent};
+use crate::{AppMessage, GossipMessage};
 
 pub struct MockGossipConfig {
     pub all_peers: Vec<NodeId>,
+    pub me: NodeId,
 }
 
 impl MockGossipConfig {
@@ -26,8 +30,8 @@ impl MockGossipConfig {
 pub struct MockGossip {
     config: MockGossipConfig,
 
-    read_buffers: HashMap<NodeId, (Option<MessageLenType>, Vec<u8>)>,
-    events: VecDeque<GossipEvent<Vec<u8>>>,
+    read_buffers: HashMap<NodeId, (Option<MessageLenType>, SegmentedBuf<GossipMessage>)>,
+    events: VecDeque<GossipEvent>,
     current_tick: Duration,
 }
 
@@ -35,44 +39,64 @@ type MessageLenType = u32;
 const MESSAGE_HEADER_LEN: usize = std::mem::size_of::<MessageLenType>();
 
 impl Gossip for MockGossip {
-    fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
+    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
-        let mut gossip_message = Vec::from((message.len() as MessageLenType).to_le_bytes());
-        gossip_message.extend_from_slice(message);
+        let gossip_message_header: GossipMessage =
+            Vec::from((message.len() as MessageLenType).to_le_bytes()).into();
+        let gossip_message =
+            std::iter::once(gossip_message_header).chain(std::iter::once(message.clone()));
         match to {
             RouterTarget::Broadcast => {
-                for peer in &self.config.all_peers {
-                    self.events
-                        .push_back(GossipEvent::Send(*peer, gossip_message.clone()))
+                for peer in self
+                    .config
+                    .all_peers
+                    .iter()
+                    .filter(|to| to != &&self.config.me)
+                {
+                    self.events.extend(
+                        gossip_message
+                            .clone()
+                            .map(|gossip_message| GossipEvent::Send(*peer, gossip_message)),
+                    );
                 }
+                self.events
+                    .push_back(GossipEvent::Emit(self.config.me, message))
             }
             RouterTarget::PointToPoint(to) => {
-                self.events.push_back(GossipEvent::Send(to, gossip_message))
+                if to == self.config.me {
+                    self.events
+                        .push_back(GossipEvent::Emit(self.config.me, message))
+                } else {
+                    self.events.extend(
+                        gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)),
+                    )
+                }
             }
         }
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
+    fn handle_gossip_message(
+        &mut self,
+        time: Duration,
+        from: NodeId,
+        gossip_message: GossipMessage,
+    ) {
         self.current_tick = time;
         let (maybe_message_len, read_buffer) = self.read_buffers.entry(from).or_default();
-        read_buffer.extend(gossip_message.iter());
+        read_buffer.push(gossip_message);
         loop {
-            if maybe_message_len.is_none() && read_buffer.len() >= MESSAGE_HEADER_LEN {
+            if maybe_message_len.is_none() && read_buffer.remaining() >= MESSAGE_HEADER_LEN {
                 *maybe_message_len = Some(MessageLenType::from_le_bytes(
                     read_buffer
-                        .iter()
-                        .copied()
-                        .take(MESSAGE_HEADER_LEN)
-                        .collect::<Vec<_>>()
+                        .copy_to_bytes(MESSAGE_HEADER_LEN)
+                        .to_vec()
                         .try_into()
                         .unwrap(),
                 ));
-                read_buffer.drain(0..MESSAGE_HEADER_LEN);
             }
             if let Some(message_len) = *maybe_message_len {
-                if read_buffer.len() >= message_len as usize {
-                    let remaining = read_buffer.split_off(message_len as usize);
-                    let message = std::mem::replace(read_buffer, remaining);
+                if read_buffer.remaining() >= message_len as usize {
+                    let message = read_buffer.copy_to_bytes(message_len as usize);
                     self.events.push_back(GossipEvent::Emit(from, message));
                     *maybe_message_len = None;
                     continue;
@@ -90,7 +114,7 @@ impl Gossip for MockGossip {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }
@@ -114,9 +138,10 @@ mod tests {
     fn test_framed_messages() {
         let mut swarm = make_swarm(
             NUM_NODES,
-            |all_peers, _me| {
+            |all_peers, me| {
                 MockGossipConfig {
                     all_peers: all_peers.to_vec(),
+                    me: *me,
                 }
                 .build()
             },
@@ -148,9 +173,10 @@ mod tests {
     fn test_split_messages() {
         let mut swarm = make_swarm(
             NUM_NODES,
-            |all_peers, _me| {
+            |all_peers, me| {
                 MockGossipConfig {
                     all_peers: all_peers.to_vec(),
+                    me: *me,
                 }
                 .build()
             },

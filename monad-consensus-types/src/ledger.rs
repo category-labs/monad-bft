@@ -1,4 +1,4 @@
-use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
 
 use crate::voting::VoteInfo;
 
@@ -32,10 +32,10 @@ impl std::fmt::Debug for LedgerCommitInfo {
 }
 
 impl LedgerCommitInfo {
-    pub fn new<H: Hasher>(commit_state_hash: Option<Hash>, vote_info: &VoteInfo) -> Self {
+    pub fn new(commit_state_hash: Option<Hash>, vote_info: &VoteInfo) -> Self {
         LedgerCommitInfo {
             commit_state_hash,
-            vote_info_hash: H::hash_object(vote_info),
+            vote_info_hash: HasherType::hash_object(vote_info),
         }
     }
 }

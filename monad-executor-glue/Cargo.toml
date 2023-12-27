@@ -17,4 +17,5 @@ monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
+bytes = { workspace = true }
 prost = { workspace = true }

@@ -14,7 +14,10 @@ bench = false
 monad-crypto = { path = "../monad-crypto" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
+
 bincode = { workspace = true }
+bytes = { workspace = true }
+bytes-utils = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, ops::Deref, time::Duration};
 
 use itertools::Itertools;
 use monad_consensus::messages::consensus_message::ConsensusMessage;
@@ -40,13 +40,14 @@ where
         &mut self,
         link_m: LinkMessage<VerifiedMonadMessage<ST, SCT>>,
     ) -> TransformerStream<VerifiedMonadMessage<ST, SCT>> {
-        let should_drop = match *link_m.message {
-            ConsensusMessage::Proposal(_) => self.drop_proposal,
-            ConsensusMessage::Vote(_) => self.drop_vote,
-            ConsensusMessage::Timeout(_) => self.drop_timeout,
-            ConsensusMessage::RequestBlockSync(_) | ConsensusMessage::BlockSync(_) => {
-                self.drop_block_sync
-            }
+        let should_drop = match &link_m.message {
+            VerifiedMonadMessage::Consensus(consensus_msg) => match consensus_msg.deref().deref() {
+                ConsensusMessage::Proposal(_) => self.drop_proposal,
+                ConsensusMessage::Vote(_) => self.drop_vote,
+                ConsensusMessage::Timeout(_) => self.drop_timeout,
+            },
+            VerifiedMonadMessage::BlockSyncRequest(_)
+            | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
         };
 
         if should_drop {
@@ -109,12 +110,15 @@ where
         // only process messages that came in as default_id and spread to non-unique-ids
         assert_eq!(dup_identifier, UNIQUE_ID);
 
-        let capture = match &*message {
-            ConsensusMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.round),
-            ConsensusMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
-            // timeout naturally spread because liveness
-            ConsensusMessage::Timeout(_) => TwinsCapture::Spread(pid),
-            ConsensusMessage::RequestBlockSync(_) | ConsensusMessage::BlockSync(_) => {
+        let capture = match &message {
+            VerifiedMonadMessage::Consensus(consensus_msg) => match consensus_msg.deref().deref() {
+                ConsensusMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.round),
+                ConsensusMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
+                // timeout naturally spread because liveness
+                ConsensusMessage::Timeout(_) => TwinsCapture::Spread(pid),
+            },
+            VerifiedMonadMessage::BlockSyncRequest(_)
+            | VerifiedMonadMessage::BlockSyncResponse(_) => {
                 if self.ban_block_sync {
                     TwinsCapture::Drop
                 } else {
@@ -419,14 +423,14 @@ mod test {
             let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
                 from: ID::new(NodeId(keys[0].pubkey())),
                 to: ID::new(NodeId(keys[1].pubkey())),
-                message: bytes,
+                message: bytes.into(),
                 from_tick: Duration::from_millis(idx),
             }) else {
                 panic!("bytes_splitter_transformer returned wrong type")
             };
             for (_, message) in &mut c {
                 max_received_message_len = max(max_received_message_len, message.message.len());
-                received_stream.append(&mut message.message);
+                received_stream.extend_from_slice(&message.message);
             }
         }
 
@@ -605,12 +609,11 @@ mod test {
         }
 
         // throwing it block sync message should get rejected
-
         for msg in vec![
-            fake_request_block_sync(&keys[1]),
-            fake_block_sync(&keys[1]),
-            fake_request_block_sync(&keys[0]),
-            fake_block_sync(&keys[0]),
+            fake_request_block_sync(),
+            fake_block_sync(),
+            fake_request_block_sync(),
+            fake_block_sync(),
         ] {
             let TransformerStream::Complete(c) = t.transform(LinkMessage {
                 from: default_id,
@@ -626,10 +629,10 @@ mod test {
         // however if we enable block_sync then it should be broadcasted
         t = TwinsTransformer::new(pid_to_dups, filter, vec![], false);
         for msg in vec![
-            fake_request_block_sync(&keys[1]),
-            fake_block_sync(&keys[1]),
-            fake_request_block_sync(&keys[0]),
-            fake_block_sync(&keys[0]),
+            fake_request_block_sync(),
+            fake_block_sync(),
+            fake_request_block_sync(),
+            fake_block_sync(),
         ] {
             let TransformerStream::Continue(c) = t.transform(LinkMessage {
                 from: default_id,

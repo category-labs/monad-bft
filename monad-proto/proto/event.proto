@@ -22,7 +22,7 @@ message ProtoPaceMakerTimeout {
 }
 
 message ProtoBlockSyncTimeout {
-    monad_proto.basic.ProtoBlockId block_id = 1;
+  monad_proto.basic.ProtoBlockId block_id = 1;
 }
 
 message ProtoScheduleTimeout {
@@ -66,6 +66,17 @@ message ProtoStateUpdateEvent {
   monad_proto.basic.ProtoHash state_root_hash = 2;
 }
 
+message ProtoBlockSyncRequestWithSender {
+  monad_proto.basic.ProtoPubkey sender = 1;
+  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;
+
+}
+
+message ProtoBlockSyncResponseWithSender {
+  monad_proto.basic.ProtoPubkey sender = 1;
+  monad_proto.message.ProtoBlockSyncMessage response = 2;
+}
+
 message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
@@ -75,6 +86,8 @@ message ProtoConsensusEvent {
     ProtoUpdateNextValSetEvent update_next_val_set = 5;
     ProtoFetchedBlock fetched_block = 6;
     ProtoStateUpdateEvent state_update = 7;
+    ProtoBlockSyncRequestWithSender block_sync_req = 8;
+    ProtoBlockSyncResponseWithSender block_sync_resp = 9;
   }
 }
 

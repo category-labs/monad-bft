@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use monad_crypto::{rustls::TlsVerifier, secp256k1::KeyPair};
 use monad_gossip::{Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
@@ -44,8 +45,8 @@ pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
 
     timeouts: TimeoutQueue,
 
-    pending_events: BTreeMap<Duration, VecDeque<RouterEvent<IM, Vec<u8>>>>,
-    pending_outbound_messages: HashMap<NodeId, VecDeque<Vec<u8>>>,
+    pending_events: BTreeMap<Duration, VecDeque<RouterEvent<IM, Bytes>>>,
+    pending_outbound_messages: HashMap<NodeId, VecDeque<Bytes>>,
 
     phantom: PhantomData<OM>,
 }
@@ -54,14 +55,14 @@ const SERVER_NAME: &str = "MONAD";
 
 impl<G: Gossip, IM, OM> RouterScheduler for QuicRouterScheduler<G, IM, OM>
 where
-    IM: Deserializable<Vec<u8>>,
-    OM: Serializable<Vec<u8>>,
+    IM: Deserializable<Bytes>,
+    OM: Serializable<Bytes>,
 {
     type Config = QuicRouterSchedulerConfig<G>;
 
     type InboundMessage = IM;
     type OutboundMessage = OM;
-    type TransportMessage = Vec<u8>;
+    type TransportMessage = Bytes;
 
     fn new(config: Self::Config) -> Self {
         let mut rng = StdRng::seed_from_u64(config.master_seed);
@@ -159,7 +160,7 @@ where
         message: Self::TransportMessage,
     ) {
         if from == self.me {
-            self.gossip.handle_gossip_message(time, from, &message);
+            self.gossip.handle_gossip_message(time, from, message);
             self.poll_gossip(time);
         } else if let Some(maybe_event) = self.endpoint.handle(
             self.zero_instant + time,
@@ -210,14 +211,14 @@ where
                     self.pending_events
                         .entry(time)
                         .or_default()
-                        .push_back(RouterEvent::Tx(to, contents.into()))
+                        .push_back(RouterEvent::Tx(to, contents))
                 }
             };
         }
     }
 
     fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
-        self.gossip.send(time, to, &message.serialize());
+        self.gossip.send(time, to, message.serialize());
         self.poll_gossip(time);
     }
 
@@ -279,8 +280,8 @@ enum QuicEventType {
 
 impl<G: Gossip, IM, OM> QuicRouterScheduler<G, IM, OM>
 where
-    IM: Deserializable<Vec<u8>>,
-    OM: Serializable<Vec<u8>>,
+    IM: Deserializable<Bytes>,
+    OM: Serializable<Bytes>,
 {
     fn peek_event(&self) -> Option<(Duration, QuicEventType)> {
         std::iter::empty()
@@ -327,7 +328,7 @@ where
                 self.pending_events
                     .entry(time)
                     .or_default()
-                    .push_back(RouterEvent::Tx(to, transmit.contents.into()))
+                    .push_back(RouterEvent::Tx(to, transmit.contents))
             }
 
             if let Some(timeout) = connection.poll_timeout() {
@@ -412,7 +413,7 @@ where
                                 self.gossip.handle_gossip_message(
                                     time,
                                     *remote_peer_id,
-                                    &chunk.bytes,
+                                    chunk.bytes,
                                 );
                             }
                             let _should_transmit = chunks.finalize();
@@ -426,7 +427,7 @@ where
                                 self.gossip.handle_gossip_message(
                                     time,
                                     *remote_peer_id,
-                                    &chunk.bytes,
+                                    chunk.bytes,
                                 );
                             }
                             let _should_transmit = chunks.finalize();

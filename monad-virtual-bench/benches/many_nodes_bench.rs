@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     bls::BlsSignatureCollection, multi_sig::MultiSig, payload::StateRoot,
@@ -49,7 +50,7 @@ fn setup() -> (
         all_peers: all_peers.iter().cloned().collect(),
         me,
         master_seed: 7,
-        gossip: MockGossipConfig { all_peers }.build(),
+        gossip: MockGossipConfig { all_peers, me }.build(),
     };
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
@@ -68,7 +69,7 @@ impl SwarmRelation for NopSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Vec<u8>;
+    type TransportMessage = Bytes;
 
     type TransactionValidator = MockValidator;
 
@@ -108,7 +109,7 @@ impl SwarmRelation for BlsSwarm {
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Vec<u8>;
+    type TransportMessage = Bytes;
 
     type TransactionValidator = MockValidator;
 

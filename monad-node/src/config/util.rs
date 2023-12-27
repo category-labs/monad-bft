@@ -1,7 +1,5 @@
-use monad_crypto::secp256k1::PubKey;
+use monad_crypto::{bls12_381::BlsPubKey, secp256k1::PubKey};
 use serde::{de::Error, Deserialize, Deserializer};
-
-use crate::SignatureType;
 
 pub fn deserialize_secp256k1_pubkey<'de, D>(deserializer: D) -> Result<PubKey, D::Error>
 where
@@ -18,7 +16,7 @@ where
     PubKey::from_slice(&key).map_err(D::Error::custom)
 }
 
-pub fn deserialize_secp256k1_signature<'de, D>(deserializer: D) -> Result<SignatureType, D::Error>
+pub fn deserialize_bls12_381_pubkey<'de, D>(deserializer: D) -> Result<BlsPubKey, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -30,5 +28,5 @@ where
 
     let key: Vec<u8> = hex::decode(hex_str).map_err(D::Error::custom)?;
 
-    SignatureType::deserialize(&key).map_err(D::Error::custom)
+    BlsPubKey::deserialize(&key).map_err(D::Error::custom)
 }

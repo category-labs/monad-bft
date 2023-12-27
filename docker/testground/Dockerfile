@@ -10,7 +10,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     cargo build --release --bin monad-testground && \
     mv target/release/monad-testground testground
-RUN python3 tc-gen.py > tc.sh
+RUN python3 docker/testground/tc-gen.py > tc.sh
 
 # Runner
 FROM debian:buster-slim

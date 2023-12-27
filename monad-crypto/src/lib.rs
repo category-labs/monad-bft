@@ -10,9 +10,9 @@ pub mod convert;
 pub mod hasher;
 pub mod secp256k1;
 
-// This implementation won't sign or verify anything, but its still required to return a PubKey
-// It's Hash must also be unique (Signature's Hash is used as a MonadMessage ID) for some period
-// of time (the executor message window size?)
+// This implementation won't sign or verify anything, but its still required to
+// return a PubKey It's Hash must also be unique (Signature's Hash is used as a
+// MonadMessage ID) for some period of time (the executor message window size?)
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NopSignature {
     pub pubkey: PubKey,

@@ -1,17 +1,15 @@
+use bytes::Bytes;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::ConsensusMessage;
 use monad_consensus_types::{
-    block::BlockType,
     bls::BlsSignatureCollection,
     payload::{ExecutionArtifacts, TransactionHashList},
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    transaction_validator::MockValidator,
     voting::ValidatorMapping,
 };
-use monad_crypto::{hasher::HasherType, secp256k1::SecpSignature};
+use monad_crypto::secp256k1::SecpSignature;
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{
-    proposal::ProposalGen, signing::get_genesis_config, validators::create_keys_w_validators,
+    proposal::ProposalGen, validators::create_keys_w_validators,
 };
 use monad_types::{epoch_manager::EpochManager, Epoch, NodeId, Round, SeqNum, Serializable};
 use monad_validator::{
@@ -45,26 +43,8 @@ fn main() {
             .expect("ValidatorData should not have duplicates or invalid entries"),
         ValidatorMapping::new(valmap),
     );
-
-    let valmap = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
-
-    let voting_keys = keys
-        .iter()
-        .map(|k| NodeId(k.pubkey()))
-        .zip(cert_keys.iter())
-        .collect::<Vec<_>>();
-    let (genesis_block, genesis_sigs) = get_genesis_config::<
-        HasherType,
-        BlsSignatureCollection,
-        MockValidator,
-    >(voting_keys.iter(), valmap, &MockValidator {});
-    let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
-        genesis_vote_info(genesis_block.get_id()),
-        genesis_sigs,
-    );
     let election = SimpleRoundRobin::new();
-    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
-        ProposalGen::new(genesis_qc);
+    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
 
     let proposal = propgen
         .next_proposal(
@@ -91,10 +71,10 @@ fn main() {
 
     let proposal: VerifiedMonadMessage<SecpSignature, BlsSignatureCollection> =
         ConsensusMessage::<BlsSignatureCollection>::Proposal(proposal)
-            .sign::<HasherType, SecpSignature>(leader_key)
+            .sign(leader_key)
             .into();
 
-    let proposal_bytes: Vec<u8> = proposal.serialize();
+    let proposal_bytes: Bytes = proposal.serialize();
 
     println!(
         "current mem usage before compression {:?} MB",

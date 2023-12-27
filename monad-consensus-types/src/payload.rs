@@ -1,5 +1,6 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
+use bytes::Bytes;
 use monad_crypto::hasher::{Hash, Hashable, Hasher};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{Round, SeqNum};
@@ -21,7 +22,7 @@ impl Bloom {
 
 impl AsRef<[u8]> for Bloom {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
+        &self.0
     }
 }
 
@@ -75,21 +76,19 @@ impl Hashable for ExecutionArtifacts {
 
 /// RLP encoded list of the 256-bit hashes of a set of Eth transactions
 #[derive(Clone, PartialEq, Eq)]
-pub struct TransactionHashList(Arc<Vec<u8>>);
+pub struct TransactionHashList(Bytes);
 
 impl TransactionHashList {
-    pub fn new(tx_hashes: Vec<u8>) -> Self {
-        Self(Arc::new(tx_hashes))
+    pub fn empty() -> Self {
+        Self::new(vec![EMPTY_RLP_TX_LIST].into())
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
+    pub fn new(tx_hashes: Bytes) -> Self {
+        Self(tx_hashes)
+    }
+
+    pub fn bytes(&self) -> &Bytes {
         &self.0
-    }
-}
-
-impl Default for TransactionHashList {
-    fn default() -> TransactionHashList {
-        Self::new(vec![EMPTY_RLP_TX_LIST])
     }
 }
 
@@ -101,7 +100,7 @@ impl std::fmt::Debug for TransactionHashList {
 
 impl AsRef<[u8]> for TransactionHashList {
     fn as_ref(&self) -> &[u8] {
-        self.as_bytes()
+        &self.0
     }
 }
 
@@ -109,14 +108,18 @@ impl AsRef<[u8]> for TransactionHashList {
 // Do NOT derive or implement Default!
 // Empty byte array is not valid RLP
 #[derive(Clone, PartialEq, Eq)]
-pub struct FullTransactionList(Arc<Vec<u8>>);
+pub struct FullTransactionList(Bytes);
 
 impl FullTransactionList {
-    pub fn new(txs: Vec<u8>) -> Self {
-        Self(Arc::new(txs))
+    pub fn empty() -> Self {
+        Self::new(vec![EMPTY_RLP_TX_LIST].into())
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
+    pub fn new(txs: Bytes) -> Self {
+        Self(txs)
+    }
+
+    pub fn bytes(&self) -> &Bytes {
         &self.0
     }
 }
@@ -149,7 +152,7 @@ impl RandaoReveal {
 
 impl AsRef<[u8]> for RandaoReveal {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
+        &self.0
     }
 }
 

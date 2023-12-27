@@ -6,11 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
 use monad_crypto::secp256k1::KeyPair;
 use monad_executor::Executor;
-use monad_executor_glue::{Identifiable, Message, RouterCommand};
+use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_quic::service::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -79,6 +80,7 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                 },
                 MockGossipConfig {
                     all_peers: peers.clone(),
+                    me,
                 }
                 .build(),
             )
@@ -171,27 +173,14 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
 }
 
 #[derive(Clone)]
-struct MockMessage(Vec<u8>);
+struct MockMessage {
+    id: u8,
+    message_len: usize,
+}
 
 impl MockMessage {
     fn new(id: u8, message_len: usize) -> Self {
-        let mut message = vec![0; message_len];
-        message[0] = id;
-        Self(message)
-    }
-}
-
-impl AsRef<Self> for MockMessage {
-    fn as_ref(&self) -> &Self {
-        self
-    }
-}
-
-impl Identifiable for MockMessage {
-    type Id = u8;
-
-    fn id(&self) -> Self::Id {
-        self.0[0]
+        Self { id, message_len }
     }
 }
 
@@ -199,20 +188,22 @@ impl Message for MockMessage {
     type Event = (NodeId, u8);
 
     fn event(self, from: NodeId) -> Self::Event {
-        (from, self.0[0])
+        (from, self.id)
     }
 }
 
-impl Serializable<Vec<u8>> for MockMessage {
-    fn serialize(&self) -> Vec<u8> {
-        self.0.clone()
+impl Serializable<Bytes> for MockMessage {
+    fn serialize(&self) -> Bytes {
+        let mut message = BytesMut::zeroed(self.message_len);
+        message[0] = self.id;
+        message.into()
     }
 }
 
-impl Deserializable<[u8]> for MockMessage {
+impl Deserializable<Bytes> for MockMessage {
     type ReadError = ParseIntError;
 
-    fn deserialize(message: &[u8]) -> Result<Self, Self::ReadError> {
-        Ok(Self(message.to_vec()))
+    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
+        Ok(Self::new(message[0], message.len()))
     }
 }

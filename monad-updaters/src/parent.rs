@@ -11,6 +11,9 @@ use monad_executor_glue::{
     RouterCommand, TimerCommand,
 };
 
+/// Single top-level executor for all other required by a node.
+/// This executor will distribute commands to the appropriate sub-executor
+/// and will poll them for events
 pub struct ParentExecutor<R, T, M, L, EL, C> {
     pub router: R,
     pub timer: T,
@@ -33,6 +36,7 @@ where
 {
     type Command = Command<E, OM, B, C, S>;
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
+        let _exec_span = tracing::info_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
             timer_cmds,

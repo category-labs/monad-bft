@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use futures::{future::BoxFuture, stream::SelectAll, FutureExt, Stream, StreamExt};
 use monad_crypto::{
     rustls::{self, TlsVerifier},
@@ -42,7 +43,7 @@ where
 
     accept: BoxFuture<'static, Option<Connecting>>,
     inbound_connections: SelectAll<InboundConnection>,
-    outbound_messages: HashMap<NodeId, tokio::sync::mpsc::Sender<Vec<u8>>>,
+    outbound_messages: HashMap<NodeId, tokio::sync::mpsc::Sender<Bytes>>,
 
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
     waker: Option<Waker>,
@@ -114,11 +115,11 @@ impl<QC, G, M, OM> Executor for Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
-    <M as Deserializable<[u8]>>::ReadError: 'static,
-    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
+    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
 
-    OM: Into<M> + AsRef<M> + Clone,
+    OM: Into<M> + Clone,
 {
     type Command = RouterCommand<OM>;
 
@@ -128,8 +129,13 @@ where
         for command in commands {
             match command {
                 RouterCommand::Publish { target, message } => {
-                    let message = message.serialize();
-                    self.gossip.send(time, target, &message);
+                    let message = {
+                        let mut _ser_span = tracing::info_span!("serialize_span").entered();
+                        message.serialize()
+                    };
+                    let mut _publish_span =
+                        tracing::info_span!("publish_span", message_len = message.len()).entered();
+                    self.gossip.send(time, target, message);
 
                     if let Some(waker) = self.waker.take() {
                         waker.wake();
@@ -144,11 +150,11 @@ impl<QC, G, M, OM> Stream for Service<QC, G, M, OM>
 where
     QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<[u8]> + Send + Sync + 'static,
-    <M as Deserializable<[u8]>>::ReadError: 'static,
-    OM: Serializable<Vec<u8>> + Send + Sync + 'static,
+    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
 
-    OM: Into<M> + AsRef<M> + Clone,
+    OM: Into<M> + Clone,
 
     Self: Unpin,
 {
@@ -158,6 +164,8 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        let mut _router_poll_span = tracing::info_span!("router_poll_span").entered();
+
         let this = self.deref_mut();
         if this.waker.is_none() {
             this.waker = Some(cx.waker().clone());
@@ -177,10 +185,12 @@ where
 
             if !this.inbound_connections.is_empty() {
                 if let Poll::Ready(message) = this.inbound_connections.poll_next_unpin(cx) {
-                    let (from, gossip_message) =
+                    let (from, gossip_messages) =
                         message.expect("inbound stream should never be exhausted");
-                    this.gossip
-                        .handle_gossip_message(time, from, &gossip_message);
+                    for gossip_message in gossip_messages {
+                        this.gossip
+                            .handle_gossip_message(time, from, gossip_message);
+                    }
                     continue;
                 }
             }
@@ -195,7 +205,7 @@ where
                         Some(GossipEvent::Send(to, gossip_message)) => {
                             if to == this.me {
                                 this.gossip
-                                    .handle_gossip_message(time, this.me, &gossip_message);
+                                    .handle_gossip_message(time, this.me, gossip_message);
                             } else {
                                 let maybe_unsent_gossip_message = match this
                                     .outbound_messages
@@ -220,7 +230,7 @@ where
                                 };
 
                                 if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
-                                    const MAX_BUFFERED_MESSAGES: usize = 10;
+                                    const MAX_BUFFERED_MESSAGES: usize = 100;
                                     let (sender, mut receiver) =
                                         tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
                                     sender
@@ -268,11 +278,26 @@ where
                             }
                         }
                         Some(GossipEvent::Emit(from, app_message)) => {
-                            let message = match M::deserialize(&app_message) {
-                                Ok(m) => m,
-                                Err(e) => todo!("err deserializing message: {:?}", e),
+                            let message = {
+                                let mut _deser_span = tracing::info_span!(
+                                    "deserialize_span",
+                                    message_len = app_message.len()
+                                )
+                                .entered();
+                                match M::deserialize(&app_message) {
+                                    Ok(m) => m,
+                                    Err(e) => todo!("err deserializing message: {:?}", e),
+                                }
                             };
-                            return Poll::Ready(Some(message.event(from)));
+                            let event = {
+                                let mut _message_to_event_span = tracing::info_span!(
+                                    "message_to_event_span",
+                                    message_len = app_message.len()
+                                )
+                                .entered();
+                                message.event(from)
+                            };
+                            return Poll::Ready(Some(event));
                         }
                         None => {}
                     }
@@ -289,7 +314,7 @@ where
 type InboundConnectionError = Box<dyn Error>;
 enum InboundConnection {
     Pending(BoxFuture<'static, Result<(NodeId, RecvStream), InboundConnectionError>>),
-    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Vec<u8>), InboundConnectionError>>),
+    Active(BoxFuture<'static, Result<(NodeId, RecvStream, Vec<Bytes>), InboundConnectionError>>),
 }
 
 impl InboundConnection {
@@ -305,12 +330,11 @@ impl InboundConnection {
         Self::Pending(fut)
     }
     fn active(peer: NodeId, mut stream: RecvStream) -> Self {
-        const RX_MESSAGE_BUFFER_SIZE: usize = 64 * 1024;
         let fut = async move {
-            let mut buf = vec![0_u8; RX_MESSAGE_BUFFER_SIZE];
-            let bytes = stream.read(&mut buf).await?;
-            buf.truncate(bytes.unwrap_or(0));
-            Ok((peer, stream, buf))
+            let mut bufs = vec![Bytes::new(); 32];
+            let num_chunks = stream.read_chunks(&mut bufs).await?.unwrap_or(0);
+            bufs.truncate(num_chunks);
+            Ok((peer, stream, bufs))
         };
         Self::Active(fut.boxed())
     }
@@ -320,7 +344,7 @@ impl Stream for InboundConnection
 where
     Self: Unpin,
 {
-    type Item = (NodeId, Vec<u8>);
+    type Item = (NodeId, Vec<Bytes>);
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -343,13 +367,12 @@ where
                 InboundConnection::Active(stream) => {
                     if let Poll::Ready(maybe_bytes) = stream.poll_unpin(cx) {
                         match maybe_bytes {
-                            Ok((peer, stream, bytes)) => {
-                                if bytes.is_empty() {
+                            Ok((peer, stream, chunks)) => {
+                                if chunks.is_empty() {
                                     return Poll::Ready(None);
                                 }
-
                                 *this = InboundConnection::active(peer, stream);
-                                return Poll::Ready(Some((peer, bytes)));
+                                return Poll::Ready(Some((peer, chunks)));
                             }
                             Err(e) => todo!("connection read stream err: {:?}", e),
                         }

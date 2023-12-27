@@ -1,5 +1,6 @@
 use std::{array::TryFromSliceError, fmt::Debug, time::Duration};
 
+use bytes::{Bytes, BytesMut};
 use monad_types::{Deserializable, Serializable};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -8,12 +9,12 @@ pub struct TimedEvent<M> {
     pub event: M,
 }
 
-impl<M: Serializable<Vec<u8>>> Serializable<Vec<u8>> for TimedEvent<M> {
-    fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
+impl<M: Serializable<Bytes>> Serializable<Bytes> for TimedEvent<M> {
+    fn serialize(&self) -> Bytes {
+        let mut buf = BytesMut::new();
         buf.extend_from_slice(&self.timestamp.as_secs_f64().to_be_bytes());
         buf.extend_from_slice(&self.event.serialize());
-        buf
+        buf.into()
     }
 }
 

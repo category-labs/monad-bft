@@ -28,6 +28,7 @@ monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
+bytes = { workspace = true }
 
 [[bench]]
 name = "two_node_bench"

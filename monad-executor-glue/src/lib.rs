@@ -1,13 +1,18 @@
 pub mod convert;
 
-use std::{fmt::Debug, hash::Hash};
+use std::fmt::Debug;
 
+use bytes::Bytes;
 use monad_consensus::{
-    messages::consensus_message::ConsensusMessage, validation::signing::Unverified,
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
+    },
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
     block::FullBlock,
-    command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
+    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria, FetchedBlock},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
@@ -22,17 +27,11 @@ pub enum RouterCommand<OM> {
     Publish { target: RouterTarget, message: OM },
 }
 
-pub trait Message: Identifiable + Clone {
+pub trait Message: Clone {
     type Event;
 
     // TODO-3 NodeId -> &NodeId
     fn event(self, from: NodeId) -> Self::Event;
-}
-
-pub trait Identifiable {
-    type Id: Eq + Hash + Clone;
-
-    fn id(&self) -> Self::Id;
 }
 
 pub enum TimerCommand<E> {
@@ -51,14 +50,7 @@ pub enum MempoolCommand<SCT> {
     /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
     /// This is to prevent E from firing twice on replay
     // TODO-2 create test to demonstrate faulty behavior if written improperly
-    FetchTxs(
-        /// max number of txns to fetch
-        usize,
-        /// list of txns to avoid fetching (as they are already in pending blocks)
-        Vec<TransactionHashList>,
-        /// params of the proposal of this fetch
-        FetchTxParams<SCT>,
-    ),
+    FetchTxs(FetchTxsCriteria<SCT>),
     FetchReset,
     FetchFullTxs(
         /// Transaction hashes of the Full transaction to be fetched
@@ -150,7 +142,7 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
 pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
         sender: PubKey,
-        unverified_message: Unverified<ST, ConsensusMessage<SCT>>,
+        unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
@@ -158,6 +150,14 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedBlock(FetchedBlock<SCT>),
     UpdateNextValSet(ValidatorData<SCT>),
     StateUpdate((SeqNum, ConsensusHash)),
+    BlockSyncRequest {
+        sender: PubKey,
+        unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
+    },
+    BlockSyncResponse {
+        sender: PubKey,
+        unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
+    },
 }
 
 impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT> {
@@ -173,7 +173,10 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
             ConsensusEvent::FetchedTxs(p, t) => {
-                f.debug_tuple("FetchedTxs").field(p).field(t).finish()
+                f.debug_tuple("FetchedTxs")
+                    .field(p)
+                    // .field(t)
+                    .finish()
             }
             ConsensusEvent::FetchedFullTxs(p, _) => f
                 .debug_struct("FetchedFullTxs")
@@ -187,6 +190,22 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .finish(),
             ConsensusEvent::UpdateNextValSet(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
+            ConsensusEvent::BlockSyncRequest {
+                sender,
+                unvalidated_request,
+            } => f
+                .debug_struct("BlockSyncRequest")
+                .field("sender", &sender)
+                .field("request", &unvalidated_request)
+                .finish(),
+            ConsensusEvent::BlockSyncResponse {
+                sender,
+                unvalidated_response,
+            } => f
+                .debug_struct("BlockSyncResponse")
+                .field("sender", &sender)
+                .field("response", &unvalidated_response)
+                .finish(),
         }
     }
 }
@@ -213,13 +232,13 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Vec<u8>>
+impl monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::NopSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
     >
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }
@@ -237,13 +256,13 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Vec<u8>>
+impl monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::bls::BlsSignatureCollection,
     >
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }
@@ -261,13 +280,13 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Vec<u8>>
+impl monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
         monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
     >
 {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
     }
 }

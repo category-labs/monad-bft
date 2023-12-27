@@ -1,5 +1,6 @@
 use std::{error::Error, fmt::Debug, io, marker::PhantomData, path::PathBuf};
 
+use bytes::Bytes;
 use monad_types::{Deserializable, Serializable};
 
 use crate::{aof::AppendOnlyFile, PersistenceLogger};
@@ -52,7 +53,7 @@ pub struct WALogger<M> {
     sync: bool,
 }
 
-impl<M: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug> PersistenceLogger for WALogger<M> {
+impl<M: Serializable<Bytes> + Deserializable<[u8]> + Debug> PersistenceLogger for WALogger<M> {
     type Event = M;
     type Error = WALError<<M as Deserializable<[u8]>>::ReadError>;
     type Config = WALoggerConfig;
@@ -96,28 +97,13 @@ impl<M: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug> PersistenceLogger 
 
 impl<M> WALogger<M>
 where
-    M: Serializable<Vec<u8>> + Deserializable<[u8]> + Debug,
+    M: Serializable<Bytes> + Deserializable<[u8]> + Debug,
 {
-    pub fn push_two_write(
-        &mut self,
-        message: &M,
-    ) -> Result<(), <Self as PersistenceLogger>::Error> {
-        let msg_buf = message.serialize();
-        let len_buf = (msg_buf.len() as EventHeaderType).to_le_bytes();
-
-        self.file_handle.write_all(&len_buf)?;
-        self.file_handle.write_all(&msg_buf)?;
-        if self.sync {
-            self.file_handle.sync_all()?;
-        }
-        Ok(())
-    }
-
     pub fn push(&mut self, message: &M) -> Result<(), <Self as PersistenceLogger>::Error> {
-        let mut msg_buf = message.serialize();
-        let mut buf = (msg_buf.len() as EventHeaderType).to_le_bytes().to_vec();
-        buf.append(&mut msg_buf);
+        let msg_buf = message.serialize();
+        let buf = (msg_buf.len() as EventHeaderType).to_le_bytes().to_vec();
         self.file_handle.write_all(&buf)?;
+        self.file_handle.write_all(&msg_buf)?;
         if self.sync {
             self.file_handle.sync_all()?;
         }

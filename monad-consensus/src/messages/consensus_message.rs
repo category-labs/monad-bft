@@ -7,13 +7,11 @@ use monad_crypto::{
     hasher::{Hashable, Hasher},
     secp256k1::KeyPair,
 };
+use monad_types::EnumDiscriminant;
 
 use crate::{
-    messages::message::{
-        BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-        VoteMessage,
-    },
-    validation::signing::Verified,
+    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    validation::signing::{Validated, Verified},
 };
 
 /// Consensus protocol messages
@@ -27,12 +25,6 @@ pub enum ConsensusMessage<SCT: SignatureCollection> {
 
     /// Consensus protocol timeout message
     Timeout(TimeoutMessage<SCT>),
-
-    /// Request a missing block given BlockId
-    RequestBlockSync(RequestBlockSyncMessage),
-
-    /// Block sync response
-    BlockSync(BlockSyncResponseMessage<SCT>),
 }
 
 impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {
@@ -41,8 +33,6 @@ impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {
             ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
             ConsensusMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
             ConsensusMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
-            ConsensusMessage::RequestBlockSync(s) => f.debug_tuple("").field(&s).finish(),
-            ConsensusMessage::BlockSync(s) => f.debug_tuple("").field(&s).finish(),
         }
     }
 }
@@ -53,17 +43,25 @@ where
     SCT: SignatureCollection,
 {
     fn hash(&self, state: &mut impl Hasher) {
+        state.update(std::any::type_name::<Self>().as_bytes());
         match self {
-            ConsensusMessage::Proposal(m) => m.hash(state),
+            ConsensusMessage::Proposal(m) => {
+                EnumDiscriminant(1).hash(state);
+                m.hash(state);
+            }
             // FIXME-2:
             // it can be confusing as we are hashing only part of the message
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct
             //      protocol sig: signatures outlined in the protocol
-            ConsensusMessage::Vote(m) => m.hash(state),
-            ConsensusMessage::Timeout(m) => m.hash(state),
-            ConsensusMessage::RequestBlockSync(m) => m.hash(state),
-            ConsensusMessage::BlockSync(m) => m.hash(state),
+            ConsensusMessage::Vote(m) => {
+                EnumDiscriminant(2).hash(state);
+                m.hash(state);
+            }
+            ConsensusMessage::Timeout(m) => {
+                EnumDiscriminant(3).hash(state);
+                m.hash(state);
+            }
         }
     }
 }
@@ -72,10 +70,10 @@ impl<SCT> ConsensusMessage<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn sign<H: Hasher, ST: MessageSignature>(
+    pub fn sign<ST: MessageSignature>(
         self,
         keypair: &KeyPair,
-    ) -> Verified<ST, ConsensusMessage<SCT>> {
-        Verified::new::<H>(self, keypair)
+    ) -> Verified<ST, Validated<ConsensusMessage<SCT>>> {
+        Verified::new(Validated::new(self), keypair)
     }
 }

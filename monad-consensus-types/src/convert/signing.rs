@@ -38,8 +38,10 @@ impl<S: CertificateSignatureRecoverable> TryFrom<ProtoMultiSig> for MultiSig<S> 
 impl From<&BlsSignatureCollection> for ProtoBlsSignatureCollection {
     fn from(value: &BlsSignatureCollection) -> Self {
         Self {
-            signers: serde_cbor::to_vec(&value.signers).expect("serialization success"),
-            sig: value.sig.serialize(),
+            signers: serde_cbor::to_vec(&value.signers)
+                .expect("serialization success")
+                .into(),
+            sig: value.sig.serialize().into(),
         }
     }
 }
@@ -49,9 +51,9 @@ impl TryFrom<ProtoBlsSignatureCollection> for BlsSignatureCollection {
 
     fn try_from(value: ProtoBlsSignatureCollection) -> Result<Self, Self::Error> {
         Ok(Self {
-            signers: serde_cbor::from_slice(value.signers.as_slice())
+            signers: serde_cbor::from_slice(&value.signers)
                 .map_err(|e| ProtoError::DeserializeError(format!("{}", e)))?,
-            sig: BlsAggregateSignature::deserialize(value.sig.as_slice())
+            sig: BlsAggregateSignature::deserialize(&value.sig)
                 .map_err(|e| ProtoError::CryptoError(format!("{}", e)))?,
         })
     }
@@ -59,7 +61,7 @@ impl TryFrom<ProtoBlsSignatureCollection> for BlsSignatureCollection {
 
 pub fn signature_collection_to_proto(sc: &impl SignatureCollection) -> ProtoSignatureCollection {
     ProtoSignatureCollection {
-        data: sc.serialize(),
+        data: sc.serialize().into(),
     }
 }
 
@@ -74,7 +76,7 @@ pub fn proto_to_signature_collection<SCT: SignatureCollection>(
 
 pub fn message_signature_to_proto(signature: &impl MessageSignature) -> ProtoSignature {
     ProtoSignature {
-        sig: signature.serialize(),
+        sig: signature.serialize().into(),
     }
 }
 
@@ -86,7 +88,7 @@ pub fn proto_to_message_signature<S: MessageSignature>(
 
 pub fn certificate_signature_to_proto(signature: &impl CertificateSignature) -> ProtoSignature {
     ProtoSignature {
-        sig: signature.serialize(),
+        sig: signature.serialize().into(),
     }
 }
 

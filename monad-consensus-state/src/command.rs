@@ -1,18 +1,30 @@
 use std::time::Duration;
 
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::TimeoutMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{BlockSyncResponseMessage, TimeoutMessage},
+    },
     pacemaker::PacemakerCommand,
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
     block::{Block, FullBlock, UnverifiedFullBlock},
-    command::{FetchFullTxParams, FetchTxParams, FetchedBlock},
+    command::{FetchFullTxParams, FetchTxsCriteria, FetchedBlock},
     payload::TransactionHashList,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
-use monad_crypto::hasher::HasherType;
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
+
+/// The message that consensus state machine is publishing. This is converted to
+/// a VerifiedMonadMessage in monad-state
+pub enum PublishMessage<SCT: SignatureCollection> {
+    /// Consensus protocol message emitted from consensus state machine
+    ConsensusMessage(ConsensusMessage<SCT>),
+
+    /// Response to a BlockSyncRequest, with the requested block or not found
+    BlockSyncResponse(BlockSyncResponseMessage<SCT>),
+}
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
@@ -21,7 +33,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
     Publish {
         target: RouterTarget,
-        message: ConsensusMessage<SCT>,
+        message: PublishMessage<SCT>,
     },
     /// Schedule a timeout event to be emitted in `duration`
     Schedule {
@@ -31,14 +43,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset(TimeoutVariant),
     /// Fetch transaction hashes for inclusion in proposal (as proposer)
-    FetchTxs(
-        /// max number of txns to fetch
-        usize,
-        /// list of txns to avoid fetching (as they are already in pending blocks)
-        Vec<TransactionHashList>,
-        /// params of the proposal of this fetch
-        FetchTxParams<SCT>,
-    ),
+    FetchTxs(FetchTxsCriteria<SCT>),
     /// Cancel any in-progress FetchTxs commands
     /// This is only necessary to not double-emit events on replay
     FetchTxsReset,
@@ -81,9 +86,8 @@ impl<SCT: SignatureCollection> ConsensusCommand<SCT> {
         match cmd {
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
-                message: ConsensusMessage::Timeout(TimeoutMessage::new::<HasherType>(
-                    tmo,
-                    cert_keypair,
+                message: PublishMessage::ConsensusMessage(ConsensusMessage::Timeout(
+                    TimeoutMessage::new(tmo, cert_keypair),
                 )),
             },
             PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {

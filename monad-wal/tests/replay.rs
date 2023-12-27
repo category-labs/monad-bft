@@ -2,8 +2,9 @@
 mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
+    use bytes::Bytes;
     use monad_executor::State;
-    use monad_executor_glue::{Identifiable, Message};
+    use monad_executor_glue::Message;
     use monad_testutil::block::MockBlock;
     use monad_types::{Deserializable, NodeId, Serializable};
     use monad_wal::{
@@ -16,9 +17,9 @@ mod test {
         data: i32,
     }
 
-    impl Serializable<Vec<u8>> for TestEvent {
-        fn serialize(&self) -> Vec<u8> {
-            self.data.to_be_bytes().to_vec()
+    impl Serializable<Bytes> for TestEvent {
+        fn serialize(&self) -> Bytes {
+            self.data.to_be_bytes().to_vec().into()
         }
     }
 
@@ -51,25 +52,11 @@ mod test {
     #[derive(Clone)]
     struct MockMessage;
 
-    impl Identifiable for MockMessage {
-        type Id = i32;
-
-        fn id(&self) -> Self::Id {
-            0
-        }
-    }
-
     impl Message for MockMessage {
         type Event = TestEvent;
 
         fn event(self, _from: NodeId) -> Self::Event {
             TestEvent { data: 0 }
-        }
-    }
-
-    impl AsRef<MockMessage> for MockMessage {
-        fn as_ref(&self) -> &MockMessage {
-            self
         }
     }
 
@@ -160,7 +147,7 @@ mod test {
             // state is not updated
             if i == input1_len - 1 {
                 let file_len = fs::metadata(&log1_path).unwrap().len();
-                let payload_len = Serializable::<Vec<u8>>::serialize(&e).len() as u64;
+                let payload_len = Serializable::<Bytes>::serialize(&e).len() as u64;
 
                 let truncated_len = match test_config {
                     TestConfig::Full => file_len,

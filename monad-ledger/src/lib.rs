@@ -30,7 +30,7 @@ pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SC
 }
 
 fn generate_block_body(monad_full_txs: FullTransactionList) -> BlockBody {
-    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.as_bytes().to_vec())
+    let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.bytes().clone())
         .unwrap()
         .0
         .into_iter()
@@ -98,11 +98,7 @@ mod test {
         transaction_validator::MockValidator,
         voting::VoteInfo,
     };
-    use monad_crypto::{
-        hasher::{Hash, HasherType},
-        secp256k1::KeyPair,
-        NopSignature,
-    };
+    use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
@@ -113,11 +109,11 @@ mod test {
         let pubkey = KeyPair::from_bytes(&mut [127; 32]).unwrap().pubkey();
 
         let full_block = MonadFullBlock::<MultiSig<NopSignature>>::from_block(
-            Block::new::<HasherType>(
+            Block::new(
                 NodeId(pubkey),
                 Round(0),
                 &Payload {
-                    txns: TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]),
+                    txns: TransactionHashList::new(vec![EMPTY_RLP_TX_LIST].into()),
                     header: ExecutionArtifacts {
                         parent_hash: Hash::default(),
                         state_root: Hash::default(),
@@ -130,7 +126,7 @@ mod test {
                     beneficiary: EthAddress::default(),
                     randao_reveal: RandaoReveal::default(),
                 },
-                &QuorumCertificate::new::<HasherType>(
+                &QuorumCertificate::new(
                     QcInfo {
                         vote: VoteInfo {
                             id: BlockId(Hash([0x00_u8; 32])),
@@ -147,7 +143,7 @@ mod test {
                     MultiSig::default(),
                 ),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
+            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),
             &MockValidator::default(),
         )
         .unwrap();

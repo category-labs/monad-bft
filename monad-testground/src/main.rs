@@ -8,32 +8,20 @@ use executor::MonadP2PGossipConfig;
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block::{Block, BlockType, FullBlock},
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
-    ledger::LedgerCommitInfo,
+    certificate_signature::CertificateKeyPair,
     message_signature::MessageSignature,
     multi_sig::MultiSig,
-    payload::{
-        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
-    },
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    transaction_validator::MockValidator,
-    voting::ValidatorMapping,
 };
-use monad_crypto::{
-    hasher::{Hasher, HasherType},
-    secp256k1::{KeyPair, SecpSignature},
-};
-use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
-use tracing::{event, instrument::WithSubscriber, Level};
+use tracing::{event, instrument::WithSubscriber, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::executor::{
@@ -161,7 +149,7 @@ async fn main() {
         router: RouterArgs::MonadP2P {
             max_rtt_ms: 150,
             bandwidth_Mbps: 1_000,
-            gossip: GossipArgs::Gossipsub { fanout: 7 },
+            gossip: GossipArgs::Simple,
         },
         mempool: MempoolArgs::Mock,
         execution_ledger: ExecutionLedgerArgs::Mock,
@@ -232,59 +220,10 @@ where
     .take(addresses.len())
     .collect::<Vec<_>>();
 
-    let validator_mapping = ValidatorMapping::new(
-        configs
-            .iter()
-            .map(|(keypair, cert_keypair)| (NodeId(keypair.pubkey()), cert_keypair.pubkey()))
-            .collect::<Vec<_>>(),
-    );
-
     let genesis_peers = configs
         .iter()
         .map(|(keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
         .collect::<Vec<_>>();
-    let genesis_block = {
-        let genesis_txn = TransactionHashList::new(vec![EMPTY_RLP_TX_LIST]);
-        let genesis_prime_qc = QuorumCertificate::genesis_prime_qc::<HasherType>();
-        let genesis_execution_header = ExecutionArtifacts::zero();
-        FullBlock::from_block(
-            Block::new::<HasherType>(
-                NodeId(KeyPair::from_bytes(&mut [0xBE_u8; 32]).unwrap().pubkey()),
-                Round(0),
-                &Payload {
-                    txns: genesis_txn,
-                    header: genesis_execution_header,
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &genesis_prime_qc,
-            ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-            &MockValidator,
-        )
-        .unwrap()
-    };
-    let gen_vote_info = genesis_vote_info(genesis_block.get_id());
-    let genesis_signatures = {
-        let genesis_lci = LedgerCommitInfo::new::<HasherType>(None, &gen_vote_info);
-        let msg = HasherType::hash_object(&genesis_lci);
-
-        let mut sigs = Vec::new();
-        for (key, cert_key) in &configs {
-            let node_id = NodeId(key.pubkey());
-            let sig = <SignatureCollectionType as SignatureCollection>::SignatureType::sign(
-                msg.as_ref(),
-                cert_key,
-            );
-            sigs.push((node_id, sig));
-        }
-
-        let signatures =
-            SignatureCollectionType::new(sigs, &validator_mapping, msg.as_ref()).unwrap();
-
-        signatures
-    };
 
     let mut maybe_local_routers = match args.router {
         RouterArgs::Local {
@@ -345,6 +284,7 @@ where
                                             .iter()
                                             .map(|(pubkey, _)| NodeId(*pubkey))
                                             .collect(),
+                                        me,
                                     })
                                 }
                                 GossipArgs::Gossipsub { fanout } => {
@@ -378,13 +318,11 @@ where
                     genesis_peers: genesis_peers.clone(),
                     delta: Duration::from_millis(args.delta_ms),
                     consensus_config: ConsensusConfig {
-                        proposal_size: args.proposal_size,
+                        proposal_txn_limit: args.proposal_size,
+                        proposal_gas_limit: 8_000_000,
                         state_root_delay: SeqNum(args.state_root_delay),
                         propose_with_missing_blocks: false,
                     },
-                    genesis_block: genesis_block.clone(),
-                    genesis_vote_info: gen_vote_info,
-                    genesis_signatures: genesis_signatures.clone(),
                 },
             }
         })
@@ -417,13 +355,12 @@ async fn run<MessageSignatureType, SignatureCollectionType>(
         ledger_span.set_parent(cx.clone());
     }
 
-    while let Some(event) = executor.next().await {
-        let commands = {
+    while let Some(event) = executor.next().instrument(ledger_span.clone()).await {
+        {
             let _ledger_span = ledger_span.enter();
-            let _event_span = tracing::info_span!("event_span", ?event).entered();
-            state.update(event)
-        };
-        executor.exec(commands);
+            let commands = state.update(event);
+            executor.exec(commands);
+        }
         let ledger_len = executor.ledger().get_blocks().len();
         if ledger_len > last_ledger_len {
             last_ledger_len = ledger_len;

@@ -3,6 +3,8 @@ use std::{
     time::Duration,
 };
 
+use bytes::Buf;
+use bytes_utils::SegmentedBuf;
 use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::PubKey,
@@ -13,6 +15,7 @@ use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 
 use super::{Gossip, GossipEvent};
+use crate::{AppMessage, GossipMessage};
 
 pub struct UnsafeGossipsubConfig {
     pub seed: [u8; 32],
@@ -40,8 +43,8 @@ pub struct UnsafeGossipsub {
     config: UnsafeGossipsubConfig,
     rng: ChaCha20Rng,
 
-    read_buffers: HashMap<NodeId, (BufferStatus, Vec<u8>)>,
-    events: VecDeque<GossipEvent<Vec<u8>>>,
+    read_buffers: HashMap<NodeId, (BufferStatus, SegmentedBuf<GossipMessage>)>,
+    events: VecDeque<GossipEvent>,
     current_tick: Duration,
 
     /// Cache of received message_ids
@@ -74,16 +77,18 @@ impl Default for BufferStatus {
 }
 
 impl UnsafeGossipsub {
-    fn send_message(&mut self, to: NodeId, header: MessageHeader, message: &[u8]) {
+    fn send_message(&mut self, to: NodeId, header: MessageHeader, message: AppMessage) {
         assert_eq!(header.message_len, message.len() as u32);
         let header = bincode::serialize(&header).unwrap();
-        let mut gossip_message = Vec::from((header.len() as MessageHeaderLenType).to_le_bytes());
-        gossip_message.extend_from_slice(&header);
-        gossip_message.extend_from_slice(message);
-        self.events.push_back(GossipEvent::Send(to, gossip_message));
+        let gossip_message =
+            std::iter::once(Vec::from((header.len() as MessageHeaderLenType).to_le_bytes()).into())
+                .chain(std::iter::once(header.into()))
+                .chain(std::iter::once(message));
+        self.events
+            .extend(gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)));
     }
 
-    fn handle_message(&mut self, from: NodeId, header: MessageHeader, message: Vec<u8>) {
+    fn handle_message(&mut self, from: NodeId, header: MessageHeader, message: AppMessage) {
         if self.message_cache.contains(&Hash(header.id)) {
             return;
         }
@@ -101,7 +106,7 @@ impl UnsafeGossipsub {
                 .filter(|peer| peer != &self.config.me && peer != &from && peer != &creator)
                 .choose_multiple(&mut self.rng, self.config.fanout)
             {
-                self.send_message(to, header.clone(), &message);
+                self.send_message(to, header.clone(), message.clone());
             }
         }
         self.events.push_back(GossipEvent::Emit(creator, message));
@@ -109,7 +114,7 @@ impl UnsafeGossipsub {
 }
 
 impl Gossip for UnsafeGossipsub {
-    fn send(&mut self, time: Duration, to: RouterTarget, message: &[u8]) {
+    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
         match to {
             // when self.handle_message is called, the broadcast actually happens
@@ -118,7 +123,7 @@ impl Gossip for UnsafeGossipsub {
                 MessageHeader {
                     id: {
                         let mut hasher = HasherType::new();
-                        hasher.update(message);
+                        hasher.update(&message);
                         hasher.hash().0
                     },
                     creator: self.config.me.0.bytes(),
@@ -132,7 +137,7 @@ impl Gossip for UnsafeGossipsub {
                 MessageHeader {
                     id: {
                         let mut hasher = HasherType::new();
-                        hasher.update(message);
+                        hasher.update(&message);
                         hasher.hash().0
                     },
                     creator: self.config.me.0.bytes(),
@@ -144,43 +149,43 @@ impl Gossip for UnsafeGossipsub {
         }
     }
 
-    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, gossip_message: &[u8]) {
+    fn handle_gossip_message(
+        &mut self,
+        time: Duration,
+        from: NodeId,
+        gossip_message: GossipMessage,
+    ) {
         self.current_tick = time;
         let (_buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
-        read_buffer.extend(gossip_message.iter());
+        read_buffer.push(gossip_message);
         loop {
             let (buffer_status, read_buffer) = self.read_buffers.entry(from).or_default();
             match buffer_status {
                 BufferStatus::None => {
-                    if read_buffer.len() >= MESSAGE_HEADER_LEN_LEN {
+                    if read_buffer.remaining() >= MESSAGE_HEADER_LEN_LEN {
                         *buffer_status =
                             BufferStatus::HeaderLen(MessageHeaderLenType::from_le_bytes(
                                 read_buffer
-                                    .iter()
-                                    .copied()
-                                    .take(MESSAGE_HEADER_LEN_LEN)
-                                    .collect::<Vec<_>>()
+                                    .copy_to_bytes(MESSAGE_HEADER_LEN_LEN)
+                                    .to_vec()
                                     .try_into()
                                     .unwrap(),
                             ));
-                        read_buffer.drain(0..MESSAGE_HEADER_LEN_LEN);
                         continue;
                     }
                 }
                 BufferStatus::HeaderLen(header_len) => {
                     let header_len = *header_len as usize;
-                    if read_buffer.len() >= header_len {
+                    if read_buffer.remaining() >= header_len {
                         *buffer_status = BufferStatus::Header(
-                            bincode::deserialize(&read_buffer[..header_len]).unwrap(),
+                            bincode::deserialize(&read_buffer.copy_to_bytes(header_len)).unwrap(),
                         );
-                        read_buffer.drain(0..header_len);
                         continue;
                     }
                 }
                 BufferStatus::Header(header) => {
-                    if read_buffer.len() >= header.message_len as usize {
-                        let remaining = read_buffer.split_off(header.message_len as usize);
-                        let message = std::mem::replace(read_buffer, remaining);
+                    if read_buffer.remaining() >= header.message_len as usize {
+                        let message = read_buffer.copy_to_bytes(header.message_len as usize);
                         let header = header.clone();
                         *buffer_status = BufferStatus::None;
                         self.handle_message(from, header, message);
@@ -200,7 +205,7 @@ impl Gossip for UnsafeGossipsub {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Vec<u8>>> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }

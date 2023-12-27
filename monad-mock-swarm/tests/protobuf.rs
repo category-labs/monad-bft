@@ -1,16 +1,13 @@
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::VoteMessage},
-    validation::signing::Unverified,
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::BlockType,
     bls::BlsSignatureCollection,
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
-    payload::ExecutionArtifacts,
-    quorum_certificate::{genesis_vote_info, QuorumCertificate},
-    transaction_validator::MockValidator,
-    voting::{ValidatorMapping, Vote, VoteInfo},
+    payload::{ExecutionArtifacts, TransactionHashList},
+    voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
@@ -22,7 +19,7 @@ use monad_executor_glue::{
 };
 use monad_testutil::{
     proposal::ProposalGen,
-    signing::{get_certificate_key, get_genesis_config, get_key},
+    signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
 use monad_types::{epoch_manager::EpochManager, BlockId, Epoch, NodeId, Round, SeqNum};
@@ -70,11 +67,11 @@ fn test_consensus_message_event_vote_multisig() {
     };
 
     let votemsg: ConsensusMessage<SignatureCollectionType> =
-        ConsensusMessage::Vote(VoteMessage::new::<HasherType>(vote, &certkeypair));
+        ConsensusMessage::Vote(VoteMessage::new(vote, &certkeypair));
     let votemsg_hash = HasherType::hash_object(&votemsg);
     let sig = keypair.sign(votemsg_hash.as_ref());
 
-    let unverified_votemsg = Unverified::new(votemsg, sig);
+    let unverified_votemsg = Unverified::new(Unvalidated::new(votemsg), sig);
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),
@@ -102,21 +99,9 @@ fn test_consensus_message_event_proposal_bls() {
         .map(|k| NodeId(k.pubkey()))
         .zip(cert_keys.iter())
         .collect::<Vec<_>>();
-    let val_cert_pubkeys = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
-    let (genesis_block, genesis_sigs) =
-        get_genesis_config::<HasherType, BlsSignatureCollection, MockValidator>(
-            voting_keys.iter(),
-            val_cert_pubkeys,
-            &MockValidator {},
-        );
-    let genesis_qc = QuorumCertificate::genesis_qc::<HasherType>(
-        genesis_vote_info(genesis_block.get_id()),
-        genesis_sigs,
-    );
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let election = SimpleRoundRobin::new();
-    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> =
-        ProposalGen::new(genesis_qc);
+    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
 
     let proposal = propgen.next_proposal(
         &keys,
@@ -124,7 +109,7 @@ fn test_consensus_message_event_proposal_bls() {
         &epoch_manager,
         &val_epoch_map,
         &election,
-        Default::default(),
+        TransactionHashList::empty(),
         ExecutionArtifacts::zero(),
     );
 
@@ -132,7 +117,10 @@ fn test_consensus_message_event_proposal_bls() {
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: proposal.author().0,
-        unverified_message: Unverified::new(consensus_proposal_msg, *proposal.author_signature()),
+        unverified_message: Unverified::new(
+            Unvalidated::new(consensus_proposal_msg),
+            *proposal.author_signature(),
+        ),
     });
 
     let buf = serialize_event(&event);

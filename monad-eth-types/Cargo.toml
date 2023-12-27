@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+bytes = { workspace = true }
 reth-primitives = { workspace = true }
 reth-rlp = { workspace = true }
 serde = { workspace = true, optional = true }

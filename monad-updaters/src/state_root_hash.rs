@@ -31,6 +31,10 @@ pub trait MockableStateRootHash:
     fn ready(&self) -> bool;
 }
 
+/// An updater that immediately creates a StateRootHash update
+/// when it receives a ledger commit command.
+/// Goal is to mimic the behaviour of execution receiving a commit
+/// and generating the state root hash and sending it back to consensus
 pub struct MockStateRootHashNop<O, ST, SCT: SignatureCollection> {
     state_root_update: Option<(SeqNum, Hash)>,
 
@@ -81,6 +85,8 @@ where
         for command in commands {
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
+                    // hash is pseudorandom seeded by the block's seq num to ensure
+                    // that it is deterministic between nodes
                     let seq_num = block.get_seq_num();
                     let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
                     let mut hash = Hash([0; 32]);

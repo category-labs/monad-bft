@@ -5,9 +5,13 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
 pub struct Cli {
-    /// Set the certificate key path
+    /// Set the bls12_381 secret key path
     #[arg(long)]
-    pub certkey: PathBuf,
+    pub bls_identity: PathBuf,
+
+    /// Set the secp256k1 key path
+    #[arg(long)]
+    pub secp_identity: PathBuf,
 
     /// Set the node config path
     #[arg(long)]
@@ -16,14 +20,6 @@ pub struct Cli {
     // Set the path where the execution ledger will be stored
     #[arg(long)]
     pub execution_ledger_path: PathBuf,
-
-    /// Set the genesis config path
-    #[arg(long)]
-    pub genesis: PathBuf,
-
-    /// Set the identity key path
-    #[arg(long)]
-    pub identity: PathBuf,
 
     /// Set a custom monad mempool ipc path
     #[arg(long)]

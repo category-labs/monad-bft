@@ -13,7 +13,6 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 
-ptree = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -1,12 +1,13 @@
 use std::fs::create_dir_all;
 
+use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
-    validation::signing::Unverified,
+    validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
     certificate_signature::CertificateSignature,
@@ -57,7 +58,7 @@ impl MonadEventBencher {
         };
         println!(
             "size of event: {}",
-            Serializable::<Vec<u8>>::serialize(&event).len()
+            Serializable::<Bytes>::serialize(&event).len()
         );
         Self {
             event,
@@ -72,7 +73,7 @@ impl MonadEventBencher {
 }
 
 fn bench_proposal(c: &mut Criterion) {
-    let txns = TransactionHashList::new(vec![0x23_u8; 32 * 10000]);
+    let txns = TransactionHashList::new(vec![0x23_u8; 32 * 10000].into());
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
         create_keys_w_validators::<MultiSig<SecpSignature>>(1);
     let author_keypair = &keypairs[0];
@@ -92,7 +93,10 @@ fn bench_proposal(c: &mut Criterion) {
         last_round_tc: None,
     });
     let proposal_hash = HasherType::hash_object(&proposal);
-    let unverified_message = Unverified::new(proposal, author_keypair.sign(proposal_hash.as_ref()));
+    let unverified_message = Unverified::new(
+        Unvalidated::new(proposal),
+        author_keypair.sign(proposal_hash.as_ref()),
+    );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: author_keypair.pubkey(),
@@ -124,12 +128,12 @@ fn bench_vote(c: &mut Criterion) {
         ledger_commit_info: lci,
     };
 
-    let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkey);
+    let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
 
     let vote = ConsensusMessage::Vote(vm);
 
     let vote_hash = HasherType::hash_object(&vote);
-    let unverified_message = Unverified::new(vote, <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
+    let unverified_message = Unverified::new(Unvalidated::new(vote), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: keypair.pubkey(),
@@ -160,7 +164,7 @@ fn bench_timeout(c: &mut Criterion) {
         parent_round: Round(2),
         seq_num: SeqNum(0),
     };
-    let lci = LedgerCommitInfo::new::<HasherType>(None, &vi);
+    let lci = LedgerCommitInfo::new(None, &vi);
 
     let qcinfo = QcInfo {
         vote: vi,
@@ -178,7 +182,7 @@ fn bench_timeout(c: &mut Criterion) {
     let aggsig =
         SignatureCollectionType::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
-    let qc = QuorumCertificate::new::<HasherType>(qcinfo, aggsig);
+    let qc = QuorumCertificate::new(qcinfo, aggsig);
 
     let tmo_info = TimeoutInfo {
         round: Round(3),
@@ -217,10 +221,13 @@ fn bench_timeout(c: &mut Criterion) {
         last_round_tc: Some(tc),
     };
 
-    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new::<HasherType>(timeout, author_certkey));
+    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new(timeout, author_certkey));
 
     let tmo_hash = HasherType::hash_object(&tmo);
-    let unverified_message = Unverified::new(tmo, author_keypair.sign(tmo_hash.as_ref()));
+    let unverified_message = Unverified::new(
+        Unvalidated::new(tmo),
+        author_keypair.sign(tmo_hash.as_ref()),
+    );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: author_keypair.pubkey(),

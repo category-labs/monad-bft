@@ -55,6 +55,7 @@ impl Pool {
         priority: i64,
     ) -> Result<(), PoolError> {
         let hash = tx.hash();
+        let gas_limit = tx.gas_limit();
 
         // TODO-4: try_insert when stable
         if self.map.contains_key(&hash) {
@@ -67,6 +68,7 @@ impl Pool {
             hash,
             priority,
             timestamp,
+            gas_limit,
         });
 
         Ok(())
@@ -94,6 +96,7 @@ impl Pool {
     pub fn create_proposal(
         &mut self,
         tx_limit: usize,
+        size_limit: u64,
         pending_blocktree_txs: Vec<EthTransactionList>,
     ) -> EthTransactionList {
         let pending_blocktree_txs: HashSet<TxHash> = pending_blocktree_txs
@@ -103,6 +106,7 @@ impl Pool {
 
         let mut txs = Vec::new();
         let mut return_to_mempool_txs = Vec::default();
+        let mut block_gas_consumed: u64 = 0;
 
         let now = SystemTime::now();
 
@@ -141,6 +145,12 @@ impl Pool {
                 continue;
             }
 
+            if block_gas_consumed + tx.gas_limit > size_limit {
+                return_to_mempool_txs.push(tx);
+                continue;
+            }
+
+            block_gas_consumed += tx.gas_limit;
             txs.push(tx);
         }
 
@@ -172,7 +182,7 @@ mod test {
     use std::time::{Duration, SystemTime};
 
     use monad_eth_types::EthTransactionList;
-    use monad_mempool_testutil::create_signed_eth_txs;
+    use monad_mempool_testutil::{create_signed_eth_txs, create_signed_eth_txs_with_gas};
     use reth_primitives::TxHash;
 
     use super::{Pool, PoolConfig};
@@ -180,6 +190,7 @@ mod test {
     #[test]
     fn test_pool() {
         const TX_BATCH_SIZE: usize = 10;
+        const BLOCK_GAS_LIMIT: u64 = 1_000_000;
 
         let mut pool =
             Pool::new(PoolConfig::default().with_pending_duration(Duration::from_secs(0)));
@@ -213,7 +224,7 @@ mod test {
         )
         .unwrap();
 
-        let proposal = pool.create_proposal(TX_BATCH_SIZE, vec![]);
+        let proposal = pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]);
         let expected_proposal = txs[TX_BATCH_SIZE..TX_BATCH_SIZE * 2]
             .iter()
             .map(|tx| tx.hash)
@@ -231,7 +242,7 @@ mod test {
             assert!(pool.fetch_full_txs(EthTransactionList(vec![tx])).is_none());
         }
 
-        let proposal2 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
+        let proposal2 = pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]);
         let expected_proposal2 = txs[0..TX_BATCH_SIZE]
             .iter()
             .map(|tx| tx.hash)
@@ -249,7 +260,7 @@ mod test {
 
         // Simulate a failed proposal, doesn't get removed
 
-        let proposal3 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
+        let proposal3 = pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]);
         assert_eq!(proposal3.0.len(), TX_BATCH_SIZE);
         assert_eq!(proposal3.0, expected_proposal2);
         pool.remove_tx_hashes(proposal3);
@@ -258,17 +269,20 @@ mod test {
             assert!(pool.fetch_full_txs(EthTransactionList(vec![tx])).is_none());
         }
 
-        let proposal3 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
+        let proposal3 = pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]);
         assert_eq!(proposal3.0.len(), 1);
         assert_eq!(proposal3.0[0], TxHash::from(txs[TX_BATCH_SIZE * 2].hash));
         pool.remove_tx_hashes(proposal3);
 
-        let proposal4 = pool.create_proposal(TX_BATCH_SIZE, vec![]);
+        let proposal4 = pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]);
         assert_eq!(proposal4.0.len(), 0);
     }
 
     #[test]
     fn test_create_proposal_non_empty_pending_txs() {
+        const TX_BATCH_SIZE: usize = 10;
+        const BLOCK_GAS_LIMIT: u64 = 1_000_000;
+
         let mut pool =
             Pool::new(PoolConfig::default().with_pending_duration(Duration::from_secs(0)));
 
@@ -279,7 +293,7 @@ mod test {
         pool.insert(tx1.to_owned(), SystemTime::now()).unwrap();
 
         assert_eq!(
-            pool.create_proposal(10, vec![]),
+            pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]),
             EthTransactionList(
                 vec![tx1]
                     .into_iter()
@@ -289,14 +303,18 @@ mod test {
         );
 
         assert!(pool
-            .create_proposal(10, vec![EthTransactionList(vec![tx1.hash])])
+            .create_proposal(
+                TX_BATCH_SIZE,
+                BLOCK_GAS_LIMIT,
+                vec![EthTransactionList(vec![tx1.hash])]
+            )
             .0
             .is_empty());
 
         pool.insert(tx2.to_owned(), SystemTime::now()).unwrap();
 
         assert_eq!(
-            pool.create_proposal(10, vec![]),
+            pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]),
             EthTransactionList(
                 vec![tx1, tx2]
                     .into_iter()
@@ -306,7 +324,11 @@ mod test {
         );
 
         assert_eq!(
-            pool.create_proposal(10, vec![EthTransactionList(vec![tx2.hash])]),
+            pool.create_proposal(
+                TX_BATCH_SIZE,
+                BLOCK_GAS_LIMIT,
+                vec![EthTransactionList(vec![tx2.hash])]
+            ),
             EthTransactionList(
                 vec![tx1]
                     .into_iter()
@@ -318,6 +340,8 @@ mod test {
 
     #[test]
     fn test_create_proposal_pending_duration() {
+        const TX_BATCH_SIZE: usize = 10;
+        const BLOCK_GAS_LIMIT: u64 = 1_000_000;
         let mut pool = Pool::new(PoolConfig::default());
 
         let [tx1] = &create_signed_eth_txs(0, 1)[..] else {
@@ -326,12 +350,15 @@ mod test {
 
         pool.insert(tx1.to_owned(), SystemTime::now()).unwrap();
 
-        assert_eq!(pool.create_proposal(10, vec![]), EthTransactionList(vec![]));
+        assert_eq!(
+            pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]),
+            EthTransactionList(vec![])
+        );
 
         std::thread::sleep(Duration::from_secs(1));
 
         assert_eq!(
-            pool.create_proposal(10, vec![]),
+            pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]),
             EthTransactionList(
                 vec![tx1]
                     .into_iter()
@@ -339,5 +366,31 @@ mod test {
                     .collect::<Vec<TxHash>>()
             )
         );
+    }
+
+    #[test]
+    fn test_gas_limit() {
+        const TX_BATCH_SIZE: usize = 10000;
+        const BLOCK_GAS_LIMIT: u64 = 25_000;
+        let mut pool =
+            Pool::new(PoolConfig::default().with_pending_duration(Duration::from_secs(0)));
+
+        let [tx1, tx2] = &create_signed_eth_txs_with_gas(15_000, 0, 2)[..] else {
+            panic!();
+        };
+
+        let [tx3] = &create_signed_eth_txs_with_gas(10_000, 0, 1)[..] else {
+            panic!();
+        };
+
+        pool.insert(tx1.to_owned(), SystemTime::now())
+            .expect("insert should succeed");
+        pool.insert(tx2.to_owned(), SystemTime::now())
+            .expect("insert should succeed");
+        pool.insert(tx3.to_owned(), SystemTime::now())
+            .expect("insert should succeed");
+
+        let p = pool.create_proposal(TX_BATCH_SIZE, BLOCK_GAS_LIMIT, vec![]);
+        assert_eq!(2, p.0.len());
     }
 }

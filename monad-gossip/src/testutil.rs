@@ -13,13 +13,12 @@ use monad_types::{NodeId, RouterTarget};
 use rand::Rng;
 
 use super::{Gossip, GossipEvent};
-
-type BytesType = Vec<u8>;
+use crate::AppMessage;
 
 pub struct Swarm<G> {
     current_tick: Duration,
     nodes: BTreeMap<NodeId, (G, BytesTransformerPipeline)>,
-    pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<BytesType>)>>,
+    pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<AppMessage>)>>,
     seq_no: usize,
 }
 
@@ -43,7 +42,7 @@ impl<G: Gossip> Swarm<G> {
         }
     }
 
-    pub fn send(&mut self, from: &NodeId, to: RouterTarget, message: &[u8]) {
+    pub fn send(&mut self, from: &NodeId, to: RouterTarget, message: AppMessage) {
         self.nodes
             .get_mut(from)
             .expect("peer doesn't exist")
@@ -75,7 +74,7 @@ impl<G: Gossip> Swarm<G> {
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<(Duration, NodeId, (NodeId, BytesType))> {
+    ) -> Option<(Duration, NodeId, (NodeId, AppMessage))> {
         while let Some((tick, event_type, id)) = self.peek_event() {
             if tick > until {
                 break;
@@ -124,7 +123,7 @@ impl<G: Gossip> Swarm<G> {
                         .handle_gossip_message(
                             scheduled_tick,
                             *gossip_message.from.get_peer_id(),
-                            &gossip_message.message,
+                            gossip_message.message,
                         );
 
                     continue;
@@ -179,21 +178,21 @@ pub fn test_broadcast<G: Gossip>(
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
     for tx_peer in peer_ids.iter().take(max_payload_broadcasts) {
-        let message: Vec<u8> = (0..payload_size_bytes).map(|_| rng.gen()).collect();
+        let message: AppMessage = (0..payload_size_bytes).map(|_| rng.gen()).collect();
         let target = RouterTarget::Broadcast;
-        swarm.send(tx_peer, target, &message);
 
         for rx_peer in &peer_ids {
             pending_messages.insert((*rx_peer, (*tx_peer, message.clone())));
         }
+        swarm.send(tx_peer, target, message);
     }
 
     // some random extra messages to flush pipeline transformers
     for _ in 0..10 {
         for tx_peer in &peer_ids {
-            let message: Vec<u8> = (0..10).map(|_| rng.gen()).collect();
+            let message: AppMessage = (0..10).map(|_| rng.gen()).collect();
             let target = RouterTarget::Broadcast;
-            swarm.send(tx_peer, target, &message);
+            swarm.send(tx_peer, target, message);
         }
     }
 
@@ -223,9 +222,9 @@ pub fn test_direct<G: Gossip>(
     let mut pending_messages = HashSet::new();
     for tx_peer in &peer_ids {
         for rx_peer in &peer_ids {
-            let message: Vec<u8> = (0..payload_size_bytes).map(|_| rng.gen()).collect();
+            let message: AppMessage = (0..payload_size_bytes).map(|_| rng.gen()).collect();
             let target = RouterTarget::PointToPoint(*rx_peer);
-            swarm.send(tx_peer, target, &message);
+            swarm.send(tx_peer, target, message.clone());
 
             pending_messages.insert((*rx_peer, (*tx_peer, message)));
         }
@@ -234,10 +233,10 @@ pub fn test_direct<G: Gossip>(
     // some random extra messages to flush pipeline transformers
     for _ in 0..10 {
         for tx_peer in &peer_ids {
-            let message: Vec<u8> = (0..10).map(|_| rng.gen()).collect();
+            let message: AppMessage = (0..10).map(|_| rng.gen()).collect();
             for rx_peer in &peer_ids {
                 let target = RouterTarget::PointToPoint(*rx_peer);
-                swarm.send(tx_peer, target, &message);
+                swarm.send(tx_peer, target, message.clone());
             }
         }
     }

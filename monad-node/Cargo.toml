@@ -25,6 +25,7 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"]}
 monad-validator = { path = "../monad-validator" }
 
+base64 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 futures-util = { workspace = true }
@@ -34,10 +35,10 @@ opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry_api = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true }
-rustls-pemfile = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
+zeroize = { workspace = true }

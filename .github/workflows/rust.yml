@@ -15,12 +15,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: rustup toolchain install nightly-2023-11-29 --profile minimal --component rustfmt
       - name: Format
-        run: cargo +nightly fmt --all --check --verbose
+        run: cargo +nightly-2023-11-29 fmt --all --check --verbose
       - run: cargo install cargo-udeps --locked
       - name: Lint unused deps
-        run: cargo +nightly udeps --all-targets --all-features
+        run: cargo +nightly-2023-11-29 udeps --all-targets --all-features
       - uses: Swatinem/rust-cache@v2
       - name: Lint
         run: cargo clippy --all-targets --all-features --
@@ -43,6 +43,7 @@ jobs:
           -A clippy::int_plus_one
           -A clippy::uninlined-format-args
           -A clippy::enum-variant-names
+          -A clippy::mutable_key_type
       - name: Check
         run: cargo check --all-targets --all-features --verbose
       - name: Run tests

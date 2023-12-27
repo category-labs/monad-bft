@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
 use monad_types::*;
 use zerocopy::AsBytes;
 
@@ -12,9 +12,12 @@ use crate::{
     voting::ValidatorMapping,
 };
 
+/// Timeout message to broadcast to other nodes after a local timeout
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timeout<SCT: SignatureCollection> {
     pub tminfo: TimeoutInfo<SCT>,
+    /// if the high qc round != tminfo.round-1, then this must be the
+    /// TC for tminfo.round-1. Otherwise it must be None
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 }
 
@@ -25,9 +28,12 @@ impl<SCT: SignatureCollection> Hashable for Timeout<SCT> {
     }
 }
 
+/// Data to include in a timeout
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutInfo<SCT> {
+    /// The round that timed out
     pub round: Round,
+    /// The node's highest known qc
     pub high_qc: QuorumCertificate<SCT>,
 }
 
@@ -40,8 +46,8 @@ impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
 }
 
 impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
-    pub fn timeout_digest<H: Hasher>(&self) -> Hash {
-        let mut hasher = H::new();
+    pub fn timeout_digest(&self) -> Hash {
+        let mut hasher = HasherType::new();
         hasher.update(self.round.as_bytes());
         hasher.update(self.high_qc.info.vote.round.as_bytes());
         hasher.hash()
@@ -65,14 +71,22 @@ pub struct HighQcRoundSigColTuple<SCT> {
     pub sigs: SCT,
 }
 
+/// TimeoutCertificate is used to advance rounds when a QC is unable to
+/// form for a round
+/// A collection of Timeout messages is the basis for building a TC
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutCertificate<SCT> {
+    /// The Timeout messages must have been for the same round
+    /// to create a TC
     pub round: Round,
+    /// signatures over the round of the TC and the high qc round,
+    /// proving that the supermajority of the network is locked on the
+    /// same high_qc
     pub high_qc_rounds: Vec<HighQcRoundSigColTuple<SCT>>,
 }
 
 impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
-    pub fn new<H: Hasher>(
+    pub fn new(
         round: Round,
         high_qc_round_sig_tuple: &[(NodeId, TimeoutInfo<SCT>, SCT::SignatureType)],
         validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
@@ -82,7 +96,7 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
             let high_qc_round = HighQcRound {
                 qc_round: tmo_info.high_qc.info.vote.round,
             };
-            let tminfo_digest = tmo_info.timeout_digest::<H>();
+            let tminfo_digest = tmo_info.timeout_digest();
             let entry = sigs
                 .entry(high_qc_round)
                 .or_insert((tminfo_digest, Vec::new()));

@@ -54,7 +54,7 @@ fn many_nodes_quic() {
 
             master_seed: 7,
 
-            gossip: MockGossipConfig { all_peers }.build(),
+            gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),
@@ -94,7 +94,7 @@ fn many_nodes_quic_bw() {
 
     let xfmrs = vec![
         BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(5))),
+        BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(10))),
     ];
 
     create_and_run_nodes::<QuicSwarm, _, _>(
@@ -106,7 +106,7 @@ fn many_nodes_quic_bw() {
 
             master_seed: 7,
 
-            gossip: MockGossipConfig { all_peers }.build(),
+            gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
         MockMempoolConfig::default(),

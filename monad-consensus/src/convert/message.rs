@@ -18,11 +18,12 @@ use crate::{
             VoteMessage,
         },
     },
-    validation::signing::{Unverified, Verified},
+    validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 
-pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, ConsensusMessage<SCT>>;
-pub(crate) type UnverifiedConsensusMessage<MS, SCT> = Unverified<MS, ConsensusMessage<SCT>>;
+pub(crate) type VerifiedConsensusMessage<MS, SCT> = Verified<MS, Validated<ConsensusMessage<SCT>>>;
+pub(crate) type UnverifiedConsensusMessage<MS, SCT> =
+    Unverified<MS, Unvalidated<ConsensusMessage<SCT>>>;
 
 impl<SCT: SignatureCollection> From<&VoteMessage<SCT>> for ProtoVoteMessage {
     fn from(value: &VoteMessage<SCT>) -> Self {
@@ -102,31 +103,33 @@ impl<SCT: SignatureCollection> TryFrom<ProtoProposalMessage> for ProposalMessage
     }
 }
 
-impl From<&RequestBlockSyncMessage> for ProtoRequestBlockSyncMessage {
-    fn from(value: &RequestBlockSyncMessage) -> Self {
+impl From<&Validated<RequestBlockSyncMessage>> for ProtoRequestBlockSyncMessage {
+    fn from(value: &Validated<RequestBlockSyncMessage>) -> Self {
         ProtoRequestBlockSyncMessage {
             block_id: Some((&value.block_id).into()),
         }
     }
 }
 
-impl TryFrom<ProtoRequestBlockSyncMessage> for RequestBlockSyncMessage {
+impl TryFrom<ProtoRequestBlockSyncMessage> for Unvalidated<RequestBlockSyncMessage> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoRequestBlockSyncMessage) -> Result<Self, Self::Error> {
-        Ok(Self {
+        Ok(Unvalidated::new(RequestBlockSyncMessage {
             block_id: value
                 .block_id
                 .ok_or(Self::Error::MissingRequiredField(
                     "RequestBlockSyncMessage.block_id".to_owned(),
                 ))?
                 .try_into()?,
-        })
+        }))
     }
 }
 
-impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>> for ProtoBlockSyncMessage {
-    fn from(value: &BlockSyncResponseMessage<SCT>) -> Self {
+impl<SCT: SignatureCollection> From<&Validated<BlockSyncResponseMessage<SCT>>>
+    for ProtoBlockSyncMessage
+{
+    fn from(value: &Validated<BlockSyncResponseMessage<SCT>>) -> Self {
         Self {
             oneof_message: Some(match value.deref() {
                 BlockSyncResponseMessage::BlockFound(b) => {
@@ -140,11 +143,13 @@ impl<SCT: SignatureCollection> From<&BlockSyncResponseMessage<SCT>> for ProtoBlo
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncResponseMessage<SCT> {
+impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage>
+    for Unvalidated<BlockSyncResponseMessage<SCT>>
+{
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlockSyncMessage) -> Result<Self, Self::Error> {
-        Ok(match value.oneof_message {
+        let msg = match value.oneof_message {
             Some(proto_block_sync_message::OneofMessage::BlockFound(b)) => {
                 BlockSyncResponseMessage::BlockFound(b.try_into()?)
             }
@@ -154,14 +159,17 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage> for BlockSyncRespo
             None => Err(ProtoError::MissingRequiredField(
                 "BlockSyncMessage.oneofmessage".to_owned(),
             ))?,
-        })
+        };
+
+        Ok(Unvalidated::new(msg))
     }
 }
+
 impl<MS: MessageSignature, SCT: SignatureCollection> From<&VerifiedConsensusMessage<MS, SCT>>
     for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &VerifiedConsensusMessage<MS, SCT>) -> Self {
-        let oneof_message = match value.deref() {
+        let oneof_message = match value.deref().deref() {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
             }
@@ -170,12 +178,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&VerifiedConsensusMess
             }
             ConsensusMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
-            }
-            ConsensusMessage::RequestBlockSync(msg) => {
-                proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg.into())
-            }
-            ConsensusMessage::BlockSync(msg) => {
-                proto_unverified_consensus_message::OneofMessage::BlockSync(msg.into())
             }
         };
         Self {
@@ -201,12 +203,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoUnverifiedCons
             Some(proto_unverified_consensus_message::OneofMessage::Vote(msg)) => {
                 ConsensusMessage::Vote(msg.try_into()?)
             }
-            Some(proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg)) => {
-                ConsensusMessage::RequestBlockSync(msg.try_into()?)
-            }
-            Some(proto_unverified_consensus_message::OneofMessage::BlockSync(msg)) => {
-                ConsensusMessage::BlockSync(msg.try_into()?)
-            }
             None => Err(ProtoError::MissingRequiredField(
                 "Unverified<ConsensusMessage>.oneofmessage".to_owned(),
             ))?,
@@ -214,6 +210,6 @@ impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoUnverifiedCons
         let signature = proto_to_message_signature(value.author_signature.ok_or(
             Self::Error::MissingRequiredField("Unverified<ConsensusMessage>.signature".to_owned()),
         )?)?;
-        Ok(Unverified::new(message, signature))
+        Ok(Unverified::new(Unvalidated::new(message), signature))
     }
 }

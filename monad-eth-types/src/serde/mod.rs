@@ -5,6 +5,7 @@ use serde::{de::Visitor, Deserializer};
 
 use crate::EthAddress;
 
+/// Deserialize Eth address from a hex string or raw bytes
 pub fn deserialize_eth_address_from_str<'de, D>(deserializer: D) -> Result<EthAddress, D::Error>
 where
     D: Deserializer<'de>,

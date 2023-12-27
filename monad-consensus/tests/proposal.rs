@@ -1,4 +1,7 @@
-use monad_consensus::messages::message::ProposalMessage;
+use monad_consensus::{
+    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
+    validation::signing::Unvalidated,
+};
 use monad_consensus_types::{
     block::Block,
     ledger::LedgerCommitInfo,
@@ -7,10 +10,7 @@ use monad_consensus_types::{
     validation::Error,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::{
-    hasher::{Hash, HasherType},
-    secp256k1::PubKey,
-};
+use monad_crypto::{hasher::Hash, secp256k1::PubKey};
 use monad_eth_types::EthAddress;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
@@ -30,7 +30,7 @@ fn setup_block(
     qc_round: Round,
     signers: &[PubKey],
 ) -> Block<MockSignatures> {
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4]);
+    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: qc_round,
@@ -38,15 +38,15 @@ fn setup_block(
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let qc = QuorumCertificate::<MockSignatures>::new::<HasherType>(
+    let qc = QuorumCertificate::<MockSignatures>::new(
         QcInfo {
             vote: vi,
-            ledger_commit: LedgerCommitInfo::new::<HasherType>(Some(Default::default()), &vi),
+            ledger_commit: LedgerCommitInfo::new(Some(Default::default()), &vi),
         },
         MockSignatures::with_pubkeys(signers),
     );
 
-    Block::<MockSignatures>::new::<HasherType>(
+    Block::<MockSignatures>::new(
         author,
         block_round,
         &Payload {
@@ -68,7 +68,7 @@ fn test_proposal_hash() {
     val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
-    let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
+    let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -80,12 +80,12 @@ fn test_proposal_hash() {
                 .as_slice(),
         ),
         last_round_tc: None,
-    };
+    });
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
+    let sp = TestSigner::sign_object(proposal, &keypairs[0]);
 
     assert!(sp
-        .verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
+        .verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
         .is_ok());
 }
 
@@ -97,7 +97,7 @@ fn test_proposal_missing_tc() {
     val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
-    let proposal = ProposalMessage {
+    let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -109,15 +109,12 @@ fn test_proposal_missing_tc() {
                 .as_slice(),
         ),
         last_round_tc: None,
-    };
+    });
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &keypairs[0]);
-
-    assert_eq!(
-        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
-            .unwrap_err(),
-        Error::NotWellFormed
-    );
+    assert!(matches!(
+        proposal.validate(&epoch_manager, &val_epoch_map),
+        Err(Error::NotWellFormed)
+    ));
 }
 
 #[test]
@@ -131,7 +128,7 @@ fn test_proposal_author_not_sender() {
     let sender_keypair = &keypairs[1];
     let author = NodeId(author_keypair.pubkey());
 
-    let proposal = ProposalMessage {
+    let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -143,11 +140,11 @@ fn test_proposal_author_not_sender() {
                 .as_ref(),
         ),
         last_round_tc: None,
-    };
+    });
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, author_keypair);
+    let sp = TestSigner::sign_object(proposal, author_keypair);
     assert_eq!(
-        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
+        sp.verify(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
             .unwrap_err(),
         Error::AuthorNotSender
     );
@@ -162,7 +159,7 @@ fn test_proposal_invalid_author() {
     vlist.push((NodeId(author_keypair.pubkey()), Stake(0)));
 
     let author = NodeId(author_keypair.pubkey());
-    let proposal = ProposalMessage {
+    let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -170,9 +167,9 @@ fn test_proposal_invalid_author() {
             &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
         ),
         last_round_tc: None,
-    };
+    });
 
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_valdiator_keypair);
+    let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![(
@@ -183,7 +180,7 @@ fn test_proposal_invalid_author() {
     let mut val_epoch_map = ValidatorsEpochMapping::new();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     assert_eq!(
-        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &author.0)
+        sp.verify(&epoch_manager, &val_epoch_map, &author.0)
             .unwrap_err(),
         Error::InvalidAuthor
     );
@@ -199,7 +196,7 @@ fn test_proposal_invalid_qc() {
     vlist.push((NodeId(staked_keypair.pubkey()), Stake(1)));
 
     let author = NodeId(non_staked_keypair.pubkey());
-    let proposal = ProposalMessage {
+    let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -207,9 +204,7 @@ fn test_proposal_invalid_qc() {
             &[non_staked_keypair.pubkey()],
         ),
         last_round_tc: None,
-    };
-
-    let sp = TestSigner::sign_object::<HasherType, _>(proposal, &non_staked_keypair);
+    });
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
@@ -222,9 +217,8 @@ fn test_proposal_invalid_qc() {
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map = ValidatorsEpochMapping::new();
     val_epoch_map.insert(Epoch(1), vset, vmap);
-    assert_eq!(
-        sp.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &non_staked_keypair.pubkey())
-            .unwrap_err(),
-        Error::InsufficientStake
-    );
+
+    let validate_result = proposal.validate(&epoch_manager, &val_epoch_map);
+
+    assert!(matches!(validate_result, Err(Error::InsufficientStake)));
 }

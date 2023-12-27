@@ -11,13 +11,14 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::{
-    hasher::{Hash, Hashable, Hasher},
+    hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, PubKey},
 };
 use monad_proto::proto::message::{
-    proto_unverified_consensus_message, ProtoUnverifiedConsensusMessage,
+    proto_block_sync_message, proto_unverified_consensus_message, ProtoBlockSyncMessage,
+    ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
 };
-use monad_types::{epoch_manager::EpochManager, NodeId, SeqNum, Stake};
+use monad_types::{epoch_manager::EpochManager, NodeId, Round, SeqNum, Stake};
 use monad_validator::{
     validator_set::ValidatorSetType, validators_epoch_map::ValidatorsEpochMapping,
 };
@@ -50,8 +51,8 @@ impl<S: MessageSignature, M> Verified<S, M> {
 }
 
 impl<S: MessageSignature, M: Hashable> Verified<S, M> {
-    pub fn new<H: Hasher>(msg: M, keypair: &KeyPair) -> Self {
-        let hash = H::hash_object(&msg);
+    pub fn new(msg: M, keypair: &KeyPair) -> Self {
+        let hash = HasherType::hash_object(&msg);
         let signature = S::sign(hash.as_ref(), keypair);
         Self {
             author: NodeId(keypair.pubkey()),
@@ -103,116 +104,26 @@ impl<S, M> From<Verified<S, M>> for Unverified<S, M> {
     }
 }
 
-impl<S, SCT> Unverified<S, ConsensusMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    // A verified proposal is one which is well-formed and has valid
-    // signatures for the present TC or QC
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
-        self,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-        epoch_manager: &EpochManager,
-        sender: &PubKey,
-    ) -> Result<Verified<S, ConsensusMessage<SCT>>, Error> {
-        // FIXME-2 this feels wrong... it feels like the enum variant should factor into the hash so
-        //       signatures can't be reused across variant members
-        Ok(match self.obj {
-            ConsensusMessage::Proposal(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    epoch_manager,
-                    val_epoch_map,
-                    sender,
-                )?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::Proposal(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::Vote(m) => {
-                let vote_epoch = epoch_manager.get_epoch(m.vote.vote_info.round);
-                let validator_set = val_epoch_map
-                    .get_val_set(&vote_epoch)
-                    .ok_or(Error::ValDataUnavailable)?;
-
-                let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validator_set.get_members(), sender)?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::Vote(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::Timeout(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    epoch_manager,
-                    val_epoch_map,
-                    sender,
-                )?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::Timeout(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::RequestBlockSync(m) => {
-                let validator_set = val_epoch_map
-                    .get_val_set(&epoch_manager.current_epoch)
-                    .ok_or(Error::ValDataUnavailable)?;
-
-                let verified = Unverified::new(m, self.author_signature)
-                    .verify::<H>(validator_set.get_members(), sender)?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::RequestBlockSync(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-            ConsensusMessage::BlockSync(m) => {
-                let verified = Unverified::new(m, self.author_signature).verify::<H, _>(
-                    epoch_manager,
-                    val_epoch_map,
-                    sender,
-                )?;
-                Verified {
-                    author: verified.author,
-                    message: Unverified::new(
-                        ConsensusMessage::BlockSync(verified.message.obj),
-                        verified.message.author_signature,
-                    ),
-                }
-            }
-        })
+impl<S, M> From<Verified<S, Validated<M>>> for Unverified<S, Unvalidated<M>> {
+    fn from(value: Verified<S, Validated<M>>) -> Self {
+        let validated = value.message.obj;
+        Unverified {
+            obj: validated.into(),
+            author_signature: value.message.author_signature,
+        }
     }
 }
 
-impl<S, SCT> Unverified<S, ProposalMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    // A verified proposal is one which is well-formed and has valid
-    // signatures for the present TC or QC
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+impl<S: MessageSignature, M: Hashable> Unverified<S, M> {
+    pub fn verify<VT: ValidatorSetType>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         sender: &PubKey,
-    ) -> Result<Verified<S, ProposalMessage<SCT>>, Error> {
-        self.well_formed_proposal()?;
-        let msg = H::hash_object(&self.obj);
+    ) -> Result<Verified<S, M>, Error> {
+        let msg = HasherType::hash_object(&self.obj);
 
-        let epoch = epoch_manager.get_epoch(self.obj.block.round);
+        let epoch = epoch_manager.get_epoch(self.obj);
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
             .ok_or(Error::ValDataUnavailable)?;
@@ -223,12 +134,6 @@ where
             &msg,
             &self.author_signature,
         )?;
-        verify_certificates::<H, _, _>(
-            epoch_manager,
-            val_epoch_map,
-            &self.obj.last_round_tc,
-            &self.obj.block.qc,
-        )?;
 
         let result = Verified {
             author: NodeId(author),
@@ -236,6 +141,115 @@ where
         };
 
         Ok(result)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Validated<M> {
+    message: Unvalidated<M>,
+}
+
+impl<M> Validated<M> {
+    pub fn new(msg: M) -> Self {
+        Self {
+            message: Unvalidated::new(msg),
+        }
+    }
+
+    pub fn into_inner(self) -> M {
+        self.message.obj
+    }
+}
+
+impl<M> Deref for Validated<M> {
+    type Target = M;
+
+    fn deref(&self) -> &Self::Target {
+        &self.message.obj
+    }
+}
+
+impl<M> AsRef<Unvalidated<M>> for Validated<M> {
+    fn as_ref(&self) -> &Unvalidated<M> {
+        &self.message
+    }
+}
+
+impl<SCT: SignatureCollection> Hashable for Validated<ConsensusMessage<SCT>> {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.as_ref().hash(state)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unvalidated<M> {
+    obj: M,
+}
+
+impl<M> Unvalidated<M> {
+    pub fn new(obj: M) -> Self {
+        Self { obj }
+    }
+}
+
+impl<M> From<Validated<M>> for Unvalidated<M> {
+    fn from(value: Validated<M>) -> Self {
+        value.message
+    }
+}
+
+impl<M: Hashable> Hashable for Unvalidated<M> {
+    fn hash(&self, state: &mut impl Hasher) {
+        self.obj.hash(state)
+    }
+}
+
+impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+    ) -> Result<Validated<ConsensusMessage<SCT>>, Error> {
+        Ok(match self.obj {
+            ConsensusMessage::Proposal(m) => {
+                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::Proposal(validated.into_inner())),
+                }
+            }
+            ConsensusMessage::Vote(m) => {
+                let validated = Unvalidated::new(m).validate()?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::Vote(validated.into_inner())),
+                }
+            }
+            ConsensusMessage::Timeout(m) => {
+                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
+                Validated {
+                    message: Unvalidated::new(ConsensusMessage::Timeout(validated.into_inner())),
+                }
+            }
+        })
+    }
+}
+
+impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
+    // A verified proposal is one which is well-formed and has valid
+    // signatures for the present TC or QC
+    pub fn validate<VT: ValidatorSetType>(
+        self,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+    ) -> Result<Validated<ProposalMessage<SCT>>, Error> {
+        self.well_formed_proposal()?;
+        verify_certificates(
+            epoch_manager,
+            val_epoch_map,
+            &self.obj.last_round_tc,
+            &self.obj.block.qc,
+        )?;
+
+        Ok(Validated { message: self })
     }
 
     fn well_formed_proposal(&self) -> Result<(), Error> {
@@ -255,64 +269,28 @@ where
     }
 }
 
-impl<S: MessageSignature, SCT: SignatureCollection> Unverified<S, VoteMessage<SCT>> {
-    // A verified vote message has a valid signature
-    // Return type must keep the signature with the message as it is used later by the protocol
-    pub fn verify<H: Hasher>(
-        self,
-        validators: &HashMap<NodeId, Stake>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, VoteMessage<SCT>>, Error> {
-        let msg = H::hash_object(&self.obj);
-
-        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
-
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-
-        Ok(result)
+impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
+    pub fn validate(self) -> Result<Validated<VoteMessage<SCT>>, Error> {
+        Ok(Validated { message: self })
     }
 }
 
-impl<S, SCT> Unverified<S, TimeoutMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, TimeoutMessage<SCT>>, Error> {
+    ) -> Result<Validated<TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
-        let msg = H::hash_object(&self.obj);
 
-        let epoch = epoch_manager.get_epoch(self.obj.timeout.tminfo.round);
-        let validator_set = val_epoch_map
-            .get_val_set(&epoch)
-            .ok_or(Error::ValDataUnavailable)?;
-
-        let author = verify_author(
-            validator_set.get_members(),
-            sender,
-            &msg,
-            &self.author_signature,
-        )?;
-        verify_certificates::<H, _, _>(
+        verify_certificates(
             epoch_manager,
             val_epoch_map,
             &self.obj.timeout.last_round_tc,
             &self.obj.timeout.tminfo.high_qc,
         )?;
 
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-        Ok(result)
+        Ok(Validated { message: self })
     }
 
     fn well_formed_timeout(&self) -> Result<(), Error> {
@@ -324,70 +302,33 @@ where
     }
 }
 
-impl<S: MessageSignature> Unverified<S, RequestBlockSyncMessage> {
-    pub fn verify<H: Hasher>(
-        self,
-        validators: &HashMap<NodeId, Stake>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, RequestBlockSyncMessage>, Error> {
-        let msg = H::hash_object(&self.obj);
-
-        let author = verify_author(validators, sender, &msg, &self.author_signature)?;
-
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-
-        Ok(result)
+impl Unvalidated<RequestBlockSyncMessage> {
+    pub fn validate(self) -> Result<Validated<RequestBlockSyncMessage>, Error> {
+        Ok(Validated { message: self })
     }
 }
 
-impl<S, SCT> Unverified<S, BlockSyncResponseMessage<SCT>>
-where
-    S: MessageSignature,
-    SCT: SignatureCollection,
-{
-    pub fn verify<H: Hasher, VT: ValidatorSetType>(
+impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
+    pub fn validate<VT: ValidatorSetType>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-        sender: &PubKey,
-    ) -> Result<Verified<S, BlockSyncResponseMessage<SCT>>, Error> {
-        let msg = H::hash_object(&self.obj);
-
-        let validator_set = val_epoch_map
-            .get_val_set(&epoch_manager.current_epoch)
-            .ok_or(Error::ValDataUnavailable)?;
-
-        let author = verify_author(
-            validator_set.get_members(),
-            sender,
-            &msg,
-            &self.author_signature,
-        )?;
-
+    ) -> Result<Validated<BlockSyncResponseMessage<SCT>>, Error> {
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates::<H, _, _>(epoch_manager, val_epoch_map, &(None), &b.block.qc)?;
+            verify_certificates(epoch_manager, val_epoch_map, &(None), &b.block.qc)?;
         }
 
-        let result = Verified {
-            author: NodeId(author),
-            message: self,
-        };
-
-        Ok(result)
+        Ok(Validated { message: self })
     }
 }
 
-fn verify_certificates<H, SCT, VT>(
+fn verify_certificates<SCT, VT>(
     epoch_manager: &EpochManager,
     val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     tc: &Option<TimeoutCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
-    H: Hasher,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
 {
@@ -399,7 +340,7 @@ where
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&tc_epoch)
             .ok_or(Error::ValDataUnavailable)?;
-        verify_tc::<SCT, H, _>(validator_set, validator_cert_pubkeys, tc)?;
+        verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
 
     let qc_epoch = epoch_manager.get_epoch(qc.info.vote.round);
@@ -409,7 +350,7 @@ where
     let validator_cert_pubkeys = val_epoch_map
         .get_cert_pubkeys(&qc_epoch)
         .ok_or(Error::ValDataUnavailable)?;
-    verify_qc::<SCT, H, _>(validator_set, validator_cert_pubkeys, qc)?;
+    verify_qc(validator_set, validator_cert_pubkeys, qc)?;
 
     Ok(())
 }
@@ -419,14 +360,13 @@ where
 /// The signature collections are created over `Hash(tc.round, high_qc.round)`
 ///
 /// See [monad_consensus_types::timeout::TimeoutInfo::timeout_digest]
-fn verify_tc<SCT, H, VT>(
+fn verify_tc<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     tc: &TimeoutCertificate<SCT>,
 ) -> Result<(), Error>
 where
     SCT: SignatureCollection,
-    H: Hasher,
     VT: ValidatorSetType,
 {
     let mut node_ids = Vec::new();
@@ -435,7 +375,7 @@ where
             return Err(Error::InvalidTcRound);
         }
 
-        let mut h = H::new();
+        let mut h = HasherType::new();
         h.update(tc.round);
         h.update(t.high_qc_round.qc_round);
         let msg = h.hash();
@@ -456,22 +396,28 @@ where
     Ok(())
 }
 
-fn verify_qc<SCT, H, VT>(
+fn verify_qc<SCT, VT>(
     validators: &VT,
     validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
     SCT: SignatureCollection,
-    H: Hasher,
     VT: ValidatorSetType,
 {
-    if H::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
+    if qc.info.vote.round == Round(0) {
+        if qc == &QuorumCertificate::genesis_prime_qc() {
+            return Ok(());
+        } else {
+            return Err(Error::InvalidSignature);
+        }
+    }
+    if HasherType::hash_object(&qc.info.vote) != qc.info.ledger_commit.vote_info_hash {
         // TODO-3: collect author for evidence?
         return Err(Error::InvalidSignature);
     }
 
-    let qc_msg = H::hash_object(&qc.info.ledger_commit);
+    let qc_msg = HasherType::hash_object(&qc.info.ledger_commit);
     let node_ids = qc
         .signatures
         .verify(validator_mapping, qc_msg.as_ref())
@@ -509,7 +455,7 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMe
     for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &UnverifiedConsensusMessage<MS, SCT>) -> Self {
-        let oneof_message = match &value.obj {
+        let oneof_message = match &value.obj.obj {
             ConsensusMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
             }
@@ -519,16 +465,35 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&UnverifiedConsensusMe
             ConsensusMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
             }
-            ConsensusMessage::RequestBlockSync(msg) => {
-                proto_unverified_consensus_message::OneofMessage::RequestBlockSync(msg.into())
-            }
-            ConsensusMessage::BlockSync(msg) => {
-                proto_unverified_consensus_message::OneofMessage::BlockSync(msg.into())
-            }
         };
         Self {
             author_signature: Some(message_signature_to_proto(value.author_signature())),
             oneof_message: Some(oneof_message),
+        }
+    }
+}
+
+impl From<&Unvalidated<RequestBlockSyncMessage>> for ProtoRequestBlockSyncMessage {
+    fn from(value: &Unvalidated<RequestBlockSyncMessage>) -> Self {
+        ProtoRequestBlockSyncMessage {
+            block_id: Some((&value.obj.block_id).into()),
+        }
+    }
+}
+
+impl<SCT: SignatureCollection> From<&Unvalidated<BlockSyncResponseMessage<SCT>>>
+    for ProtoBlockSyncMessage
+{
+    fn from(value: &Unvalidated<BlockSyncResponseMessage<SCT>>) -> Self {
+        Self {
+            oneof_message: Some(match &value.obj {
+                BlockSyncResponseMessage::BlockFound(blk) => {
+                    proto_block_sync_message::OneofMessage::BlockFound(blk.into())
+                }
+                BlockSyncResponseMessage::NotAvailable(bid) => {
+                    proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
+                }
+            }),
         }
     }
 }
@@ -577,8 +542,11 @@ mod test {
     };
     use test_case::test_case;
 
-    use super::{verify_qc, verify_tc, Unverified, Verified};
-    use crate::{messages::message::TimeoutMessage, validation::signing::VoteMessage};
+    use super::{verify_qc, verify_tc, Verified};
+    use crate::{
+        messages::message::TimeoutMessage,
+        validation::signing::{Unvalidated, VoteMessage},
+    };
 
     type SignatureType = SecpSignature;
     type SignatureCollectionType = MultiSig<SecpSignature>;
@@ -624,7 +592,7 @@ mod test {
             high_qc_rounds,
         };
 
-        verify_tc::<_, HasherType, _>(&vset, &vmap, &tc)
+        verify_tc(&vset, &vmap, &tc)
     }
 
     #[test]
@@ -637,7 +605,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypair = get_key(6);
         let cert_keypair = get_certificate_key::<SignatureCollectionType>(6);
@@ -662,7 +630,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi2,
                 ledger_commit: lci,
@@ -670,22 +638,20 @@ mod test {
             sigs,
         );
 
-        assert!(
-            verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &val_mapping, &qc).is_err()
-        );
+        assert!(verify_qc(&vset, &val_mapping, &qc).is_err());
     }
 
     #[test]
     fn test_qc_verify_insufficient_stake() {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
-            round: Round(0),
+            round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let keypairs = create_keys(2);
         let vlist = vec![
@@ -711,7 +677,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -720,7 +686,7 @@ mod test {
         );
 
         assert!(matches!(
-            verify_qc::<SignatureCollectionType, HasherType, _>(&vset, &vmap, &qc),
+            verify_qc(&vset, &vmap, &qc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -762,7 +728,7 @@ mod test {
         };
 
         assert!(matches!(
-            verify_tc::<_, HasherType, _>(&vset, &vmap, &tc),
+            verify_tc(&vset, &vmap, &tc),
             Err(Error::InsufficientStake)
         ));
     }
@@ -785,7 +751,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let msg = HasherType::hash_object(&lci);
         let mut sigs = Vec::new();
@@ -797,7 +763,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -815,18 +781,16 @@ mod test {
             last_round_tc: Some(tc),
         };
 
-        let tmo_msg =
-            TimeoutMessage::<SignatureCollectionType>::new::<HasherType>(tmo, &certkeys[0]);
-        let signed_tmo_msg = Verified::<SignatureType, _>::new::<HasherType>(tmo_msg, &keypairs[0]);
-        let (author, signature, tm) = signed_tmo_msg.destructure();
+        let unvalidated_tmo_msg = Unvalidated::new(TimeoutMessage::<SignatureCollectionType>::new(
+            tmo,
+            &certkeys[0],
+        ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
         let mut val_epoch_map = ValidatorsEpochMapping::new();
         val_epoch_map.insert(Epoch(1), vset, vmap);
 
-        let unverified_tmo_msg = Unverified::new(tm, signature);
-        let err =
-            unverified_tmo_msg.verify::<HasherType, _>(&epoch_manager, &val_epoch_map, &author.0);
+        let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map);
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -847,7 +811,7 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let msg = HasherType::hash_object(&lci);
         let mut sigs = Vec::new();
@@ -859,7 +823,7 @@ mod test {
 
         let sig_col = MultiSig::new(sigs, &vmap, msg.as_ref()).unwrap();
 
-        let qc = QuorumCertificate::new::<HasherType>(
+        let qc = QuorumCertificate::new(
             QcInfo {
                 vote: vi,
                 ledger_commit: lci,
@@ -877,22 +841,15 @@ mod test {
             last_round_tc: None,
         };
 
-        let byzantine_tmo_msg =
-            TimeoutMessage::<SignatureCollectionType>::new::<HasherType>(tmo, &certkeys[0]);
-        let signed_byzantine_tmo_msg =
-            Verified::<SignatureType, _>::new::<HasherType>(byzantine_tmo_msg, &keypairs[0]);
-        let (author, signature, tm) = signed_byzantine_tmo_msg.destructure();
+        let unvalidated_byzantine_tmo_msg = Unvalidated::new(TimeoutMessage::<
+            SignatureCollectionType,
+        >::new(tmo, &certkeys[0]));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
         let mut val_epoch_map = ValidatorsEpochMapping::new();
         val_epoch_map.insert(Epoch(1), vset, vmap);
 
-        let unverified_byzantine_tmo_msg = Unverified::new(tm, signature);
-        let err = unverified_byzantine_tmo_msg.verify::<HasherType, _>(
-            &epoch_manager,
-            &val_epoch_map,
-            &author.0,
-        );
+        let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map);
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 
@@ -905,7 +862,7 @@ mod test {
             parent_round: Round(0),
             seq_num: SeqNum(0),
         };
-        let lci = LedgerCommitInfo::new::<HasherType>(Some(Hash([0xad_u8; 32])), &vi);
+        let lci = LedgerCommitInfo::new(Some(Hash([0xad_u8; 32])), &vi);
 
         let v = Vote {
             vote_info: vi,
@@ -916,11 +873,11 @@ mod test {
         let keypair = KeyPair::from_bytes(&mut privkey.clone()).unwrap();
         let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
 
-        let vm = VoteMessage::<SignatureCollectionType>::new::<HasherType>(v, &certkeypair);
+        let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkeypair);
 
         let expected_vote_info_hash = vm.vote.ledger_commit_info.vote_info_hash;
 
-        let svm = Verified::<SignatureType, _>::new::<HasherType>(vm, &keypair);
+        let svm = Verified::<SignatureType, _>::new(vm, &keypair);
         let (author, signature, orig_vm) = svm.destructure();
         let msg = HasherType::hash_object(&vm);
         assert_eq!(

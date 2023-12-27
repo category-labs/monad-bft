@@ -11,6 +11,8 @@ bench = false
 [dependencies]
 monad-types = { path = "../monad-types" }
 
+bytes = { workspace = true }
+
 [dev-dependencies]
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }

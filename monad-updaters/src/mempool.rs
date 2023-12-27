@@ -7,7 +7,7 @@ use std::{
 
 use futures::{Stream, StreamExt};
 use monad_consensus_types::{
-    command::{FetchFullTxParams, FetchTxParams},
+    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
@@ -40,7 +40,14 @@ enum ControllerTaskError {
 
 #[derive(Debug)]
 enum ControllerTaskCommand {
-    FetchTxs(usize, Vec<TransactionHashList>),
+    FetchTxs(
+        /// max number of transactions to fetch
+        usize,
+        /// max gas of all fetched transactions
+        u64,
+        /// list of transactions to ignore for this fetch
+        Vec<TransactionHashList>,
+    ),
     FetchFullTxs(TransactionHashList),
     DrainTxs(Vec<TransactionHashList>),
 }
@@ -108,19 +115,19 @@ where
                     };
 
                     match task {
-                        ControllerTaskCommand::FetchTxs(num_max_txs, pending_blocktree_txs) => {
-                            let Ok(pending_blocktree_txs) = pending_blocktree_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.as_bytes().to_vec())).collect::<Result<Vec<_>, _>>() else {
+                        ControllerTaskCommand::FetchTxs(num_max_txs, block_gas_limit, pending_blocktree_txs) => {
+                            let Ok(pending_blocktree_txs) = pending_blocktree_txs.into_iter().map(|txs| EthTransactionList::rlp_decode(txs.bytes().clone())).collect::<Result<Vec<_>, _>>() else {
                                 error!("Invalid pending_blocktree_txs!");
                                 continue;
                             };
 
-                            let proposal = controller.create_proposal(num_max_txs, pending_blocktree_txs).await;
+                            let proposal = controller.create_proposal(num_max_txs, block_gas_limit, pending_blocktree_txs).await;
 
                             tx.send(ControllerTaskResult::FetchTxs(TransactionHashList::new(proposal.rlp_encode())))
                                 .await?;
                         }
                         ControllerTaskCommand::FetchFullTxs(txs) => {
-                            let txs = match EthTransactionList::rlp_decode(txs.as_bytes().to_vec()) {
+                            let txs = match EthTransactionList::rlp_decode(txs.bytes().clone()) {
                                 Ok(txs) => txs,
                                 Err(_) => {
                                     // TODO-1: add warn log
@@ -136,7 +143,7 @@ where
                             .await?;
                         }
                         ControllerTaskCommand::DrainTxs(drain_txs) => {
-                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.as_bytes().to_vec())).collect::<Result<Vec<EthTransactionList>, _>>() else {
+                            let Ok(drain_txs) = drain_txs.into_iter().map(|drain_txs| EthTransactionList::rlp_decode(drain_txs.bytes().clone())).collect::<Result<Vec<EthTransactionList>, _>>() else {
                                 error!("Invalid drain_txs!");
                                 continue;
                             };
@@ -170,11 +177,18 @@ impl<ST, SCT> Executor for MonadMempool<ST, SCT> {
 
         for command in commands {
             match command {
-                MempoolCommand::FetchTxs(num_max_txs, pending_blocktree_txs, s) => {
+                MempoolCommand::FetchTxs(criteria) => {
+                    let FetchTxsCriteria {
+                        max_txs,
+                        block_gas_limit,
+                        ignore_txs,
+                        proposal_params: s,
+                    } = criteria;
                     self.fetch_txs_state = Some(s);
                     fetch_txs_command = Some(ControllerTaskCommand::FetchTxs(
-                        num_max_txs,
-                        pending_blocktree_txs,
+                        max_txs,
+                        block_gas_limit,
+                        ignore_txs,
                     ));
                 }
                 MempoolCommand::FetchReset => {

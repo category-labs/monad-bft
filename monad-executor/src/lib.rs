@@ -6,6 +6,8 @@ use std::{ops::DerefMut, pin::Pin};
 use monad_consensus_types::block::BlockType;
 use monad_executor_glue::{Command, Message};
 
+/// An Executor executes Commands
+/// Commands generally are output by State
 pub trait Executor {
     type Command;
     fn exec(&mut self, commands: Vec<Self::Command>);
@@ -40,16 +42,21 @@ where
 
 pub type BoxExecutor<'a, C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin + 'a>>;
 
+/// State is updated by an event and can output a list of commands in order to apply
+/// side-effects of the update.
+/// Commands are executed by Executors
+/// Generally, updaters produce an Event to update State
 pub trait State: Sized {
     type Config;
     type Message: Message<Event = Self::Event>;
 
     type Event: Clone;
-    type OutboundMessage: Clone + Into<Self::Message> + AsRef<Self::Message>;
+    type OutboundMessage: Clone + Into<Self::Message>;
     type Block: BlockType;
     type Checkpoint;
     type SignatureCollection;
 
+    /// Create the initial State and any initial Commands for executors
     fn init(
         config: Self::Config,
     ) -> (
@@ -64,6 +71,7 @@ pub trait State: Sized {
             >,
         >,
     );
+    /// Deliver an Event to State and returns a list of Commands for executors
     fn update(
         &mut self,
         event: Self::Event,

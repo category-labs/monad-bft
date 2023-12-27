@@ -1,4 +1,3 @@
-use monad_crypto::hasher::HasherType;
 use monad_proto::{error::ProtoError, proto::quorum_certificate::*};
 
 use super::signing::{proto_to_signature_collection, signature_collection_to_proto};
@@ -47,7 +46,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoQuorumCertificate> for QuorumCertifi
     type Error = ProtoError;
 
     fn try_from(value: ProtoQuorumCertificate) -> Result<Self, Self::Error> {
-        Ok(QuorumCertificate::new::<HasherType>(
+        Ok(QuorumCertificate::new(
             value
                 .info
                 .ok_or(Self::Error::MissingRequiredField("QC.info".to_owned()))?

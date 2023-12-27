@@ -1,28 +1,21 @@
-use blst::min_pk as blst_core;
 use zeroize::Zeroize;
 
 use crate::hasher::{Hashable, Hasher};
 
-// if the curve is switched to min_sig
-// the DST needs to be BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_POP_
-// POP uses a separate pubkey validation step, enables fast verification for
-// signatures over the same message
-// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature-05#name-proof-of-possession
-const DST: &[u8] = MIN_PK_DST;
+/// The cipher suite
+///
+/// POP (proof of posession) uses a separate pubkey validation step to defend
+/// against rogue key attack. It enables fast verification for signatures over
+/// the same message
+/// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature-05#name-proof-of-possession
 #[allow(dead_code)]
 const MIN_PK_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 #[allow(dead_code)]
 const MIN_SIG_DST: &[u8] = b"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_POP_";
 
-// TODO: simplify group swap with macro?
-const SIGNATURE_BYTE_LEN: usize = G2_BYTE_LEN;
-const SIGNATURE_COMPRESSED_LEN: usize = G2_COMPRESSED_LEN;
-const INFINITY_SIGNATURE: [u8; SIGNATURE_COMPRESSED_LEN] = G2_INFINITY;
-
-const PUBKEY_BYTE_LEN: usize = G1_BYTE_LEN;
-const PUBKEY_COMPRESSED_LEN: usize = G1_COMPRESSED_LEN;
-const INFINITY_PUBKEY: [u8; PUBKEY_COMPRESSED_LEN] = G1_INFINITY;
-
+/// The two groups under BLS12-381 are different in size. G1 is smaller than G2.
+/// Using the smaller group for pubkey makes signature verification cheaper, but
+/// signing and signature aggregation more expensive.
 const G1_BYTE_LEN: usize = 96;
 const G1_COMPRESSED_LEN: usize = 48;
 const G1_INFINITY: [u8; G1_COMPRESSED_LEN] = [
@@ -38,6 +31,39 @@ const G2_INFINITY: [u8; G2_COMPRESSED_LEN] = [
     0,
 ];
 
+/// The macro assigns the right value to the constants when different groups are
+/// used for pubkey/sig
+macro_rules! set_curve_constants {
+    (minpk) => {
+        use blst::min_pk as blst_core;
+
+        const DST: &[u8] = MIN_PK_DST;
+
+        const SIGNATURE_BYTE_LEN: usize = G2_BYTE_LEN;
+        const SIGNATURE_COMPRESSED_LEN: usize = G2_COMPRESSED_LEN;
+        const INFINITY_SIGNATURE: [u8; SIGNATURE_COMPRESSED_LEN] = G2_INFINITY;
+
+        const PUBKEY_BYTE_LEN: usize = G1_BYTE_LEN;
+        const PUBKEY_COMPRESSED_LEN: usize = G1_COMPRESSED_LEN;
+        const INFINITY_PUBKEY: [u8; PUBKEY_COMPRESSED_LEN] = G1_INFINITY;
+    };
+    (minsig) => {
+        use blst::min_sig as blst_core;
+
+        const DST: &[u8] = MIN_SIG_DST;
+
+        const SIGNATURE_BYTE_LEN: usize = G1_BYTE_LEN;
+        const SIGNATURE_COMPRESSED_LEN: usize = G1_COMPRESSED_LEN;
+        const INFINITY_SIGNATURE: [u8; SIGNATURE_COMPRESSED_LEN] = G1_INFINITY;
+
+        const PUBKEY_BYTE_LEN: usize = G2_BYTE_LEN;
+        const PUBKEY_COMPRESSED_LEN: usize = G2_COMPRESSED_LEN;
+        const INFINITY_PUBKEY: [u8; PUBKEY_COMPRESSED_LEN] = G2_INFINITY;
+    };
+}
+
+set_curve_constants!(minpk);
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlsError(blst::BLST_ERROR);
 
@@ -49,6 +75,8 @@ impl std::fmt::Display for BlsError {
 
 impl std::error::Error for BlsError {}
 
+/// As [blst::BLST_ERROR::BLST_SUCCESS] is one of the error enums, we use this
+/// function to map [blst::BLST_ERROR] to our own Result type
 fn map_err_to_result(bls_error: blst::BLST_ERROR) -> Result<(), BlsError> {
     match bls_error {
         blst::BLST_ERROR::BLST_SUCCESS => Ok(()),
@@ -56,7 +84,11 @@ fn map_err_to_result(bls_error: blst::BLST_ERROR) -> Result<(), BlsError> {
     }
 }
 
-// PubKey and AggregatePubKey
+/// `BlsAggregatePubKey` and `BlsPubKey` are different representations of points
+/// in the group. There's a 1-to-1 mapping between the two representations,
+/// hence the conversion functions like `as_pubkey` and `from_pubkey`.
+///
+/// `BlsAggregatePubkey` is a faster representation for aggregation
 #[derive(Debug, Clone, Copy)]
 pub struct BlsAggregatePubKey(blst_core::AggregatePublicKey);
 
@@ -69,6 +101,9 @@ impl From<blst_core::PublicKey> for BlsPubKey {
     }
 }
 
+/// `transmute` the memory contents is faster than serializing. The memory
+/// layout is stable if locked to an implementation version. The same for all
+/// other hash implementations
 impl std::hash::Hash for BlsPubKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         unsafe {
@@ -87,6 +122,8 @@ impl PartialEq for BlsPubKey {
 impl Eq for BlsPubKey {}
 
 impl BlsPubKey {
+    /// Validate that the pubkey is a point on the curve. Used to guard against
+    /// the subgroup attack
     pub fn validate(&self) -> Result<(), BlsError> {
         self.0.validate().map_err(BlsError)
     }
@@ -127,6 +164,8 @@ impl PartialEq for BlsAggregatePubKey {
 impl Eq for BlsAggregatePubKey {}
 
 impl BlsAggregatePubKey {
+    /// The infinity point is the identity element in the group.
+    /// Aggregating/adding infinity to anything is the identity function
     pub fn infinity() -> Self {
         Self::deserialize(&INFINITY_PUBKEY).expect("Infinity BLS pubkey")
     }
@@ -139,10 +178,13 @@ impl BlsAggregatePubKey {
         Self(blst_core::AggregatePublicKey::from_public_key(&pubkey.0))
     }
 
+    /// Validate that the point is on the curve. Used to guard against the subgroup
+    /// attack
     pub fn validate(&self) -> Result<(), BlsError> {
         self.as_pubkey().validate()
     }
 
+    /// Create an AggregatePubKey from an slice of PubKeys
     pub fn aggregate(pks: &[&BlsPubKey]) -> Result<Self, BlsError> {
         let pks = pks.iter().map(|p| &p.0).collect::<Vec<_>>();
         blst_core::AggregatePublicKey::aggregate(pks.as_ref(), false)
@@ -150,10 +192,12 @@ impl BlsAggregatePubKey {
             .map_err(BlsError)
     }
 
+    /// Aggregate a Pubkey to self
     pub fn add_assign(&mut self, other: &BlsPubKey) -> Result<(), BlsError> {
         self.0.add_public_key(&other.0, false).map_err(BlsError)
     }
 
+    /// Aggregate a AggregatePubKey to self
     pub fn add_assign_aggregate(&mut self, other: &Self) {
         self.0.add_aggregate(&other.0)
     }
@@ -179,6 +223,7 @@ impl BlsAggregatePubKey {
 
 struct BlsSecretKey(blst_core::SecretKey);
 
+/// BLS keypair
 pub struct BlsKeyPair {
     pubkey: BlsPubKey,
     secretkey: BlsSecretKey,
@@ -197,6 +242,8 @@ impl BlsSecretKey {
 }
 
 impl BlsKeyPair {
+    /// https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature#section-2.3
+    /// secret MUST be at least 32 bytes
     pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
         let secret = secret.as_mut();
         let sk = BlsSecretKey::key_gen(secret, &[])?;
@@ -217,6 +264,7 @@ impl BlsKeyPair {
     }
 }
 
+/// Similar to [BlsAggregatePubKey] and [BlsPubKey]
 #[derive(Debug, Clone, Copy)]
 pub struct BlsAggregateSignature(blst_core::AggregateSignature);
 
@@ -256,35 +304,19 @@ impl PartialEq for BlsSignature {
 impl Eq for BlsSignature {}
 
 impl BlsSignature {
-    pub fn serialize(&self) -> Vec<u8> {
-        self.0.serialize().to_vec()
-    }
-
-    pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
-        blst_core::Signature::deserialize(message)
-            .map(Self)
-            .map_err(BlsError)
-    }
-
-    pub fn compress(&self) -> Vec<u8> {
-        self.0.compress().to_vec()
-    }
-
-    pub fn uncompress(message: &[u8]) -> Result<Self, BlsError> {
-        blst_core::Signature::uncompress(message)
-            .map(Self)
-            .map_err(BlsError)
-    }
-
+    /// Sign the message with `keypair`. `msg` is first hashed to a point on the
+    /// curve then signed
     pub fn sign(msg: &[u8], keypair: &BlsKeyPair) -> Self {
         keypair.sign(msg)
     }
 
+    /// Validate the signature and verify
     pub fn verify(&self, msg: &[u8], pubkey: &BlsPubKey) -> Result<(), BlsError> {
         let err = self.0.verify(true, msg, DST, &[], &pubkey.0, false);
         map_err_to_result(err)
     }
 
+    /// Validate that the signature point is on the curve
     pub fn validate(&self, sig_infcheck: bool) -> Result<(), BlsError> {
         self.0.validate(sig_infcheck).map_err(BlsError)
     }
@@ -312,6 +344,26 @@ impl BlsSignature {
         self.0
             .fast_aggregate_verify_pre_aggregated(sig_groupcheck, msg, dst, &pk.as_pubkey().0)
     }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        self.0.serialize().to_vec()
+    }
+
+    pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
+        blst_core::Signature::deserialize(message)
+            .map(Self)
+            .map_err(BlsError)
+    }
+
+    pub fn compress(&self) -> Vec<u8> {
+        self.0.compress().to_vec()
+    }
+
+    pub fn uncompress(message: &[u8]) -> Result<Self, BlsError> {
+        blst_core::Signature::uncompress(message)
+            .map(Self)
+            .map_err(BlsError)
+    }
 }
 
 impl From<blst_core::AggregateSignature> for BlsAggregateSignature {
@@ -321,40 +373,28 @@ impl From<blst_core::AggregateSignature> for BlsAggregateSignature {
 }
 
 impl BlsAggregateSignature {
-    pub fn serialize(&self) -> Vec<u8> {
-        self.as_signature().serialize()
-    }
-
-    pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
-        let sig = BlsSignature::deserialize(message)?;
-        Ok(Self::from_signature(&sig))
-    }
-
-    pub fn compress(&self) -> Vec<u8> {
-        self.as_signature().compress()
-    }
-
-    pub fn uncompress(message: &[u8]) -> Result<Self, BlsError> {
-        let sig = BlsSignature::uncompress(message)?;
-        Ok(Self::from_signature(&sig))
-    }
-
+    /// The infinity point is the identity element in the group.
+    /// Aggregating/adding infinity to anything is the identity function
     pub fn infinity() -> Self {
         Self::deserialize(&INFINITY_SIGNATURE).expect("Infinity BLS signature")
     }
 
+    /// Validate that the point is on the curve
     pub fn validate(&self) -> Result<(), BlsError> {
         self.as_signature().validate(true)
     }
 
+    /// Aggregate a signature to self
     pub fn add_assign(&mut self, other: &BlsSignature) -> Result<(), BlsError> {
         self.0.add_signature(&other.0, false).map_err(BlsError)
     }
 
+    /// Aggregate an aggregated signature to self
     pub fn add_assign_aggregate(&mut self, other: &Self) {
         self.0.add_aggregate(&other.0)
     }
 
+    /// Verify the aggregate signature created over the same message. It only requires 2 pairing function calls, hence the name fast
     pub fn fast_verify(&self, msg: &[u8], pubkey: &BlsAggregatePubKey) -> Result<(), BlsError> {
         let err = self
             .as_signature()
@@ -362,6 +402,10 @@ impl BlsAggregateSignature {
         map_err_to_result(err)
     }
 
+    /// Verify the aggregate signature created over different messages. It
+    /// requires `n+1`` pairing function calls. It is better than verifying the
+    /// `n` signatures independently as it would otherwise incur `2n` pairing
+    /// calls. (`n == msgs.len() == pubkeys.len()`)
     pub fn verify(&self, msgs: &[&[u8]], pubkeys: &[&BlsAggregatePubKey]) -> Result<(), BlsError> {
         let pks = pubkeys.iter().map(|pk| pk.as_pubkey()).collect::<Vec<_>>();
         let pks: Vec<&BlsPubKey> = pks.iter().collect();
@@ -378,6 +422,24 @@ impl BlsAggregateSignature {
 
     fn from_signature(sig: &BlsSignature) -> Self {
         blst_core::AggregateSignature::from_signature(&sig.0).into()
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        self.as_signature().serialize()
+    }
+
+    pub fn deserialize(message: &[u8]) -> Result<Self, BlsError> {
+        let sig = BlsSignature::deserialize(message)?;
+        Ok(Self::from_signature(&sig))
+    }
+
+    pub fn compress(&self) -> Vec<u8> {
+        self.as_signature().compress()
+    }
+
+    pub fn uncompress(message: &[u8]) -> Result<Self, BlsError> {
+        let sig = BlsSignature::uncompress(message)?;
+        Ok(Self::from_signature(&sig))
     }
 }
 

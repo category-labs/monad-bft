@@ -30,9 +30,10 @@ fn devnet<G: Gossip>(make_gossip: impl Fn(&[NodeId], &NodeId) -> G) -> Swarm<G> 
     })
 }
 
-fn make_mock_gossip(all_peers: &[NodeId], _me: &NodeId) -> MockGossip {
+fn make_mock_gossip(all_peers: &[NodeId], me: &NodeId) -> MockGossip {
     MockGossipConfig {
         all_peers: all_peers.to_vec(),
+        me: *me,
     }
     .build()
 }

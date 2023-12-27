@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
 use monad_proto::proto::signing::ProtoMultiSig;
 use monad_types::NodeId;
 use prost::Message;
@@ -105,8 +105,8 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         })
     }
 
-    fn get_hash<H: Hasher>(&self) -> Hash {
-        H::hash_object(self)
+    fn get_hash(&self) -> Hash {
+        HasherType::hash_object(self)
     }
 
     fn num_signatures(&self) -> usize {

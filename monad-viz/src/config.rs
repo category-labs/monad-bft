@@ -6,15 +6,13 @@ use iced::{
 };
 use iced_lazy::Component;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{
-    block::BlockType, quorum_certificate::genesis_vote_info, transaction_validator::MockValidator,
-};
-use monad_crypto::{hasher::Sha256Hash, secp256k1::KeyPair};
+use monad_consensus_types::transaction_validator::MockValidator;
+use monad_crypto::secp256k1::KeyPair;
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
-use monad_testutil::{signing::get_genesis_config, validators::create_keys_w_validators};
+use monad_testutil::validators::create_keys_w_validators;
 use monad_transformer::{GenericTransformer, LatencyTransformer, XorLatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum, Stake};
 
@@ -68,20 +66,6 @@ impl SimulationConfig<VizSwarm> for SimConfig {
         >(self.num_nodes);
 
         let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-        let voting_keys = keys
-            .iter()
-            .map(|k| NodeId(k.pubkey()))
-            .zip(cert_keys.iter())
-            .collect::<Vec<_>>();
-        let (genesis_block, genesis_sigs) = get_genesis_config::<
-            Sha256Hash,
-            <VizSwarm as SwarmRelation>::SignatureCollectionType,
-            _,
-        >(
-            voting_keys.iter(),
-            &validator_mapping,
-            &MockValidator::default(),
-        );
 
         let state_configs = keys
             .into_iter()
@@ -101,13 +85,11 @@ impl SimulationConfig<VizSwarm> for SimConfig {
 
                 delta: self.delta,
                 consensus_config: ConsensusConfig {
-                    proposal_size: 5000,
+                    proposal_txn_limit: 5000,
+                    proposal_gas_limit: 8_000_000,
                     state_root_delay: SeqNum(0),
                     propose_with_missing_blocks: false,
                 },
-                genesis_block: genesis_block.clone(),
-                genesis_vote_info: genesis_vote_info(genesis_block.get_id()),
-                genesis_signatures: genesis_sigs.clone(),
             })
             .collect::<Vec<_>>();
 

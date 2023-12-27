@@ -8,7 +8,7 @@ use monad_consensus_types::{
     timeout::{TimeoutCertificate, TimeoutInfo},
     voting::{Vote, VoteInfo},
 };
-use monad_crypto::hasher::Hasher;
+use monad_crypto::hasher::{Hasher, HasherType};
 use monad_types::*;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -84,7 +84,7 @@ impl Safety {
         }
     }
 
-    pub fn make_vote<SCT: SignatureCollection, H: Hasher>(
+    pub fn make_vote<SCT: SignatureCollection>(
         &mut self,
         block: &Block<SCT>,
         last_tc: &Option<TimeoutCertificate<SCT>>,
@@ -103,12 +103,12 @@ impl Safety {
             };
 
             let commit_hash = if commit_condition(block.round, block.qc.info) {
-                Some(H::hash_object(block))
+                Some(HasherType::hash_object(block))
             } else {
                 None
             };
 
-            let ledger_commit_info = LedgerCommitInfo::new::<H>(commit_hash, &vote_info);
+            let ledger_commit_info = LedgerCommitInfo::new(commit_hash, &vote_info);
 
             return Some(Vote {
                 vote_info,
