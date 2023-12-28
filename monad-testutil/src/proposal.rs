@@ -19,8 +19,9 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     secp256k1::KeyPair,
 };
+use monad_epoch::epoch_manager::EpochManager;
 use monad_eth_types::EthAddress;
-use monad_types::{epoch_manager::EpochManager, NodeId, Round, SeqNum};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection, validator_set::ValidatorSetType,
     validators_epoch_map::ValidatorsEpochMapping,

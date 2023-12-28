@@ -1,5 +1,4 @@
 pub mod convert;
-pub mod epoch_manager;
 
 use std::{
     error::Error,

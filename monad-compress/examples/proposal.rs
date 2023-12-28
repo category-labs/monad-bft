@@ -7,11 +7,10 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::SecpSignature;
+use monad_epoch::epoch_manager::EpochManager;
 use monad_state::VerifiedMonadMessage;
-use monad_testutil::{
-    proposal::ProposalGen, validators::create_keys_w_validators,
-};
-use monad_types::{epoch_manager::EpochManager, Epoch, NodeId, Round, SeqNum, Serializable};
+use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
+use monad_types::{Epoch, Round, SeqNum, Serializable};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -53,7 +52,7 @@ fn main() {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(transaction_hashes.to_vec()),
+            TransactionHashList::new(transaction_hashes.to_vec().into()),
             ExecutionArtifacts::zero(),
         )
         .destructure()

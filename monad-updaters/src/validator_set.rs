@@ -10,7 +10,7 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
 };
 use monad_executor_glue::MonadEvent;
-use monad_types::SeqNum;
+use monad_types::{Epoch, SeqNum};
 
 pub struct ValidatorSetUpdater<ST, SCT: SignatureCollection> {
     // TODO: Copy the latest validator set into this after receiving
@@ -58,11 +58,12 @@ where
         assert!(this.validator_data.is_some());
 
         Poll::Ready(Some(MonadEvent::ConsensusEvent(
-            monad_executor_glue::ConsensusEvent::UpdateNextValSet(
+            monad_executor_glue::ConsensusEvent::UpdateValidators((
                 this.validator_data
                     .take()
                     .expect("there should be a ValidatorData object"),
-            ),
+                Epoch(1),
+            )),
         )))
     }
 }

@@ -10,13 +10,17 @@ use monad_consensus_types::{
     validation::Error,
     voting::{ValidatorMapping, VoteInfo},
 };
-use monad_crypto::{hasher::Hash, secp256k1::PubKey};
+use monad_crypto::{
+    hasher::Hash,
+    secp256k1::{KeyPair, PubKey},
+};
+use monad_epoch::epoch_manager::EpochManager;
 use monad_eth_types::EthAddress;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
     validators::create_keys_w_validators,
 };
-use monad_types::{epoch_manager::EpochManager, BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::{
     validator_set::{ValidatorSet, ValidatorSetType},
     validators_epoch_map::ValidatorsEpochMapping,
@@ -64,7 +68,8 @@ fn setup_block(
 fn test_proposal_hash() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
+        ValidatorsEpochMapping::new();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
@@ -121,7 +126,8 @@ fn test_proposal_missing_tc() {
 fn test_proposal_author_not_sender() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(2);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
+        ValidatorsEpochMapping::new();
     val_epoch_map.insert(Epoch(1), vset, vmap);
 
     let author_keypair = &keypairs[0];
@@ -172,12 +178,13 @@ fn test_proposal_invalid_author() {
     let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
-    let vmap = ValidatorMapping::new(vec![(
+    let vmap: ValidatorMapping<KeyPair> = ValidatorMapping::new(vec![(
         NodeId(author_keypair.pubkey()),
         author_keypair.pubkey(),
     )]);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
+        ValidatorsEpochMapping::new();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &author.0)

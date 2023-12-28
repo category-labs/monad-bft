@@ -7,10 +7,10 @@ use monad_crypto::{
     hasher::{Hashable, Hasher},
     secp256k1::KeyPair,
 };
-use monad_types::EnumDiscriminant;
+use monad_types::{EnumDiscriminant, Round};
 
 use crate::{
-    messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
+    messages::message::{GetRound, ProposalMessage, TimeoutMessage, VoteMessage},
     validation::signing::{Validated, Verified},
 };
 
@@ -25,6 +25,16 @@ pub enum ConsensusMessage<SCT: SignatureCollection> {
 
     /// Consensus protocol timeout message
     Timeout(TimeoutMessage<SCT>),
+}
+
+impl<SCT: SignatureCollection> GetRound for ConsensusMessage<SCT> {
+    fn get_round(&self) -> Round {
+        match self {
+            ConsensusMessage::Proposal(p) => p.get_round(),
+            ConsensusMessage::Vote(v) => v.get_round(),
+            ConsensusMessage::Timeout(t) => t.get_round(),
+        }
+    }
 }
 
 impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {

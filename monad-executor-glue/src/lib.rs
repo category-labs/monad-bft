@@ -19,7 +19,7 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
 };
 use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
-use monad_types::{BlockId, NodeId, RouterTarget, SeqNum, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
 #[derive(Clone)]
 pub enum RouterCommand<OM> {
@@ -148,7 +148,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     FetchedBlock(FetchedBlock<SCT>),
-    UpdateNextValSet(ValidatorData<SCT>),
+    UpdateValidators((ValidatorData<SCT>, Epoch)),
     StateUpdate((SeqNum, ConsensusHash)),
     BlockSyncRequest {
         sender: PubKey,
@@ -188,7 +188,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .debug_struct("FetchedBlock")
                 .field("unverified_full_block", &b.unverified_full_block)
                 .finish(),
-            ConsensusEvent::UpdateNextValSet(e) => e.fmt(f),
+            ConsensusEvent::UpdateValidators(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
             ConsensusEvent::BlockSyncRequest {
                 sender,

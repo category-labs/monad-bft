@@ -7,12 +7,13 @@ use monad_consensus_types::{
     ledger::LedgerCommitInfo,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, TransactionHashList},
-    voting::{Vote, VoteInfo},
+    voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::{KeyPair, SecpSignature},
 };
+use monad_epoch::epoch_manager::EpochManager;
 use monad_executor_glue::{
     convert::interface::{deserialize_event, serialize_event},
     ConsensusEvent, MonadEvent,
@@ -22,7 +23,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{epoch_manager::EpochManager, BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, Round, SeqNum};
 use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
@@ -94,11 +95,6 @@ fn test_consensus_message_event_proposal_bls() {
             .expect("ValidatorData should not have duplicates or invalid entries"),
         ValidatorMapping::new(valmap),
     );
-    let voting_keys = keys
-        .iter()
-        .map(|k| NodeId(k.pubkey()))
-        .zip(cert_keys.iter())
-        .collect::<Vec<_>>();
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();

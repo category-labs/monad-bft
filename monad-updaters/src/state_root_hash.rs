@@ -39,6 +39,7 @@ pub struct MockStateRootHashNop<O, ST, SCT: SignatureCollection> {
     state_root_update: Option<(SeqNum, Hash)>,
 
     // validator set updates
+    epoch: Epoch,
     init_val_data: ValidatorData<SCT>,
     next_val_data: Option<ValidatorData<SCT>>,
     val_set_update_interval: SeqNum,
@@ -59,6 +60,7 @@ where
 
     fn new(init_val_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
         Self {
+            epoch: Epoch(1),
             state_root_update: None,
             init_val_data,
             next_val_data: None,
@@ -96,6 +98,7 @@ where
 
                     if block.get_seq_num() % self.val_set_update_interval == SeqNum(0) {
                         self.next_val_data = Some(self.init_val_data.clone());
+                        self.epoch = self.epoch + Epoch(1);
                     }
 
                     wake = true;
@@ -126,9 +129,12 @@ where
             Poll::Ready(Some(MonadEvent::ConsensusEvent(
                 monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate((seqnum, hash)),
             )))
-        } else if let Some(next_val_set) = this.next_val_data.take() {
+        } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::<ST, SCT>::UpdateNextValSet(next_val_set),
+                monad_executor_glue::ConsensusEvent::<ST, SCT>::UpdateValidators((
+                    next_val_data,
+                    this.epoch,
+                )),
             )))
         } else {
             Poll::Pending
@@ -259,9 +265,12 @@ where
             Poll::Ready(Some(MonadEvent::ConsensusEvent(
                 monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate((seqnum, hash)),
             )))
-        } else if let Some(next_val_set) = this.next_val_data.take() {
+        } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::<ST, SCT>::UpdateNextValSet(next_val_set),
+                monad_executor_glue::ConsensusEvent::<ST, SCT>::UpdateValidators((
+                    next_val_data,
+                    this.epoch,
+                )),
             )))
         } else {
             Poll::Pending

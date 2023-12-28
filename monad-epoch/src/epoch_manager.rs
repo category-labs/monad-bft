@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{Epoch, Round, SeqNum};
+use monad_types::{Epoch, Round, SeqNum};
 
 #[derive(Clone)]
 pub struct EpochManager {
@@ -13,8 +13,8 @@ pub struct EpochManager {
     // the proposed block
     pub epoch_start_delay: Round,
 
-    // A key-value (R, E) indicates that Epoch E starts on round R
-    pub epoch_starts: BTreeMap<Round, Epoch>,
+    // A key-value (E, R) indicates that Epoch E starts on round R
+    pub epoch_starts: BTreeMap<Epoch, Round>,
 }
 
 impl EpochManager {
@@ -26,24 +26,26 @@ impl EpochManager {
             epoch_starts: BTreeMap::new(),
         };
 
-        epoch_manager.insert_epoch_start(Round(0), Epoch(1));
+        epoch_manager.insert_epoch_start(Epoch(1), Round(0));
 
         epoch_manager
     }
 
-    fn insert_epoch_start(&mut self, round: Round, epoch: Epoch) {
-        let existing_epoch = self.epoch_starts.insert(round, epoch);
-
+    fn insert_epoch_start(&mut self, epoch: Epoch, round: Round) {
         assert!(
-            existing_epoch.is_none(),
-            "shouldn't insert epoch start twice"
+            !self.epoch_starts.contains_key(&epoch),
+            "should't insert epoch start twice"
         );
+
+        let start_round = self.epoch_starts.insert(epoch, round);
+
+        assert!(start_round.is_none());
     }
 
     pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
         if block_num % self.val_set_update_interval == SeqNum(0) {
             let epoch_start_round = block_round + self.epoch_start_delay;
-            self.insert_epoch_start(epoch_start_round, self.current_epoch + Epoch(1));
+            self.insert_epoch_start(self.current_epoch + Epoch(1), epoch_start_round);
         }
     }
 
@@ -55,11 +57,8 @@ impl EpochManager {
     }
 
     pub fn get_epoch(&self, round: Round) -> Epoch {
-        let epoch_start = self.epoch_starts.keys().rfind(|&k| k <= &round).unwrap();
+        let epoch_start = self.epoch_starts.iter().rfind(|&k| k.1 <= &round).unwrap();
 
-        *self
-            .epoch_starts
-            .get(epoch_start)
-            .expect("must have epoch value")
+        *epoch_start.0
     }
 }

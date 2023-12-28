@@ -6,7 +6,7 @@ use monad_consensus_types::{
 };
 use monad_proto::{
     error::ProtoError,
-    proto::{basic::ProtoPubkey, event::*, validator_set::ProtoValidatorSetData},
+    proto::{basic::ProtoPubkey, event::*, validator_data::ProtoValidatorData},
 };
 use monad_types::TimeoutVariant;
 
@@ -80,9 +80,10 @@ where
                         .map(|b| b.into()),
                 })
             }
-            ConsensusEvent::UpdateNextValSet(validator_set) => {
-                proto_consensus_event::Event::UpdateNextValSet(ProtoUpdateNextValSetEvent {
-                    validator_set: Some(validator_set.into()),
+            ConsensusEvent::UpdateValidators((validator_data, epoch)) => {
+                proto_consensus_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
+                    validator_data: Some(validator_data.into()),
+                    epoch: Some(epoch.into()),
                 })
             }
             ConsensusEvent::StateUpdate((seq_num, hash)) => {
@@ -113,7 +114,7 @@ where
 impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
     for ConsensusEvent<S, SCT>
 where
-    ValidatorData<SCT>: TryFrom<ProtoValidatorSetData, Error = ProtoError>,
+    ValidatorData<SCT>: TryFrom<ProtoValidatorData, Error = ProtoError>,
 {
     type Error = ProtoError;
 
@@ -239,15 +240,21 @@ where
                     ),
                 })
             }
-            Some(proto_consensus_event::Event::UpdateNextValSet(val_set_event)) => {
-                let vs = val_set_event
-                    .validator_set
+            Some(proto_consensus_event::Event::UpdateValidators(val_event)) => {
+                let vs = val_event
+                    .validator_data
                     .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::UpdateNextValSet::validator_set".to_owned(),
+                        "ConsensusEvent::UpdateValidators::validator_data".to_owned(),
+                    ))?
+                    .try_into()?;
+                let e = val_event
+                    .epoch
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::UpdateValidators::epoch".to_owned(),
                     ))?
                     .try_into()?;
 
-                ConsensusEvent::UpdateNextValSet(vs)
+                ConsensusEvent::UpdateValidators((vs, e))
             }
             Some(proto_consensus_event::Event::StateUpdate(event)) => {
                 let h = event

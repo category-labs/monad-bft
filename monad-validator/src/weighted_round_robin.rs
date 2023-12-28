@@ -1,7 +1,8 @@
 use std::{cmp::Ordering, fmt::Debug};
 
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_types::{epoch_manager::EpochManager, NodeId, Round, Stake};
+use monad_epoch::epoch_manager::EpochManager;
+use monad_types::{NodeId, Round, Stake};
 use tracing::warn;
 
 use super::leader_election::LeaderElection;

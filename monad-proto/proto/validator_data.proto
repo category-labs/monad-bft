@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package monad_proto.validator_set;
+package monad_proto.validator_data;
 
 import "basic.proto";
 
@@ -10,6 +10,6 @@ message ValidatorMapEntry {
     monad_proto.basic.ProtoPubkey cert_pubkey = 3;
 }
 
-message ProtoValidatorSetData {
+message ProtoValidatorData {
     repeated ValidatorMapEntry validators = 1;
 }

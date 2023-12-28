@@ -25,6 +25,7 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_epoch::epoch_manager::EpochManager;
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
@@ -32,14 +33,11 @@ use monad_executor_glue::{
     MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{
-    epoch_manager::EpochManager, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant,
-};
+use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
 use monad_validator::{
     leader_election::LeaderElection, validator_set::ValidatorSetType,
     validators_epoch_map::ValidatorsEpochMapping,
 };
-use ref_cast::RefCast;
 
 use crate::blocksync::BlockSyncResponder;
 
@@ -90,10 +88,9 @@ where
         self.consensus.blocktree()
     }
 
-    fn update_next_val_set(&mut self, val_data: ValidatorData<SCT>) {
-        let next_epoch = self.epoch_manager.current_epoch + Epoch(1);
+    fn update_next_val_set(&mut self, val_data: ValidatorData<SCT>, epoch: Epoch) {
         self.val_epoch_map.insert(
-            next_epoch,
+            epoch,
             VT::new(val_data.get_stakes())
                 .expect("ValidatorData should not have duplicates or invalid entries"),
             ValidatorMapping::new(val_data.get_cert_pubkeys()),
@@ -414,17 +411,14 @@ where
                                 block: fetched_txs.p_block,
                                 last_round_tc: fetched_txs.p_last_round_tc,
                             };
-                            cmds.extend(
-                                self.consensus
-                                    .handle_proposal_message_full(
-                                        fetched_txs.author,
-                                        proposal_msg,
-                                        txns,
-                                        &mut self.epoch_manager,
-                                        &self.val_epoch_map,
-                                        &self.leader_election,
-                                    ),
-                            );
+                            cmds.extend(self.consensus.handle_proposal_message_full(
+                                fetched_txs.author,
+                                proposal_msg,
+                                txns,
+                                &mut self.epoch_manager,
+                                &self.val_epoch_map,
+                                &self.leader_election,
+                            ));
                         }
 
                         cmds
@@ -453,16 +447,19 @@ where
                         unverified_message,
                     } => {
                         // Verify the author signature on the message and sender is author
-                        let verified_message =
-                            match unverified_message.verify(&self.epoch_manager, &self.val_epoch_map, &sender) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    Self::handle_validation_error(e);
-                                    // TODO-2: collect evidence
-                                    let evidence_cmds = vec![];
-                                    return evidence_cmds;
-                                }
-                            };
+                        let verified_message = match unverified_message.verify(
+                            &self.epoch_manager,
+                            &self.val_epoch_map,
+                            &sender,
+                        ) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                Self::handle_validation_error(e);
+                                // TODO-2: collect evidence
+                                let evidence_cmds = vec![];
+                                return evidence_cmds;
+                            }
+                        };
 
                         let (author, _, verified_message) = verified_message.destructure();
                         // Validated message according to consensus protocol spec
@@ -485,7 +482,7 @@ where
                             ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
                                 author,
                                 msg,
-                                &self.epoch_manager,
+                                &mut self.epoch_manager,
                                 &self.val_epoch_map,
                                 &self.leader_election,
                             ),
@@ -493,15 +490,15 @@ where
                                 self.consensus.handle_timeout_message(
                                     author,
                                     msg,
-                                    &self.epoch_manager,
+                                    &mut self.epoch_manager,
                                     &self.val_epoch_map,
                                     &self.leader_election,
                                 )
                             }
                         }
                     }
-                    ConsensusEvent::UpdateNextValSet(val_data) => {
-                        self.update_next_val_set(val_data);
+                    ConsensusEvent::UpdateValidators((val_data, epoch)) => {
+                        self.update_next_val_set(val_data, epoch);
                         Vec::new()
                     }
                     ConsensusEvent::StateUpdate((seq_num, root_hash)) => {

@@ -2,7 +2,7 @@ use monad_proto::{
     error::ProtoError,
     proto::{
         basic::ProtoPubkey,
-        validator_set::{ProtoValidatorSetData, ValidatorMapEntry},
+        validator_data::{ProtoValidatorData, ValidatorMapEntry},
     },
 };
 use monad_types::{NodeId, Stake};
@@ -32,7 +32,7 @@ impl<SCT: SignatureCollection> ValidatorData<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> From<&ValidatorData<SCT>> for ProtoValidatorSetData
+impl<SCT: SignatureCollection> From<&ValidatorData<SCT>> for ProtoValidatorData
 where
     for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
 {
@@ -50,12 +50,12 @@ where
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoValidatorSetData> for ValidatorData<SCT>
+impl<SCT: SignatureCollection> TryFrom<ProtoValidatorData> for ValidatorData<SCT>
 where
     ProtoPubkey: TryInto<SignatureCollectionPubKeyType<SCT>, Error = ProtoError>,
 {
     type Error = ProtoError;
-    fn try_from(value: ProtoValidatorSetData) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: ProtoValidatorData) -> std::result::Result<Self, Self::Error> {
         let mut vlist = ValidatorData(Vec::new());
         for v in value.validators {
             let a = v

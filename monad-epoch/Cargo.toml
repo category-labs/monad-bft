@@ -1,5 +1,5 @@
 [package]
-name = "monad-validator"
+name = "monad-epoch"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,12 +9,4 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-epoch = { path = "../monad-epoch" }
 monad-types = { path = "../monad-types" }
-
-tracing = { workspace = true }
-
-[dev-dependencies]
-monad-crypto = { path = "../monad-crypto" }
-monad-testutil = { path = "../monad-testutil" }
