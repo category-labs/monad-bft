@@ -3,22 +3,20 @@ use std::path::PathBuf;
 use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
 use log::info;
-use monad_consensus_types::voting::ValidatorMapping;
 use monad_crypto::{bls12_381::BlsKeyPair, secp256k1::KeyPair};
-use monad_types::NodeId;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
 use zeroize::Zeroize;
 
 use crate::{
     cli::Cli,
-    config::{NodeBootstrapConfig, NodeConfig},
+    config::{GenesisConfig, NodeConfig},
     error::NodeSetupError,
 };
 
 pub struct NodeState {
-    pub config: NodeConfig,
-    pub val_mapping: ValidatorMapping<BlsKeyPair>,
+    pub node_config: NodeConfig,
+    pub genesis_config: GenesisConfig,
 
     pub secp256k1_identity: KeyPair,
     pub bls12_381_identity: BlsKeyPair,
@@ -36,17 +34,18 @@ impl NodeState {
         info!(
             "Loaded secp256k1 key from {:?}, pubkey=0x{}",
             &cli.secp_identity,
-            hex::encode(secp_key.pubkey().bytes())
+            hex::encode(secp_key.pubkey().bytes_compressed())
         );
         let bls_key = load_bls12_381_keypair(&cli.bls_identity)?;
         info!(
             "Loaded bls12_381 key from {:?}, pubkey=0x{}",
             &cli.bls_identity,
-            hex::encode(bls_key.pubkey().serialize())
+            hex::encode(bls_key.pubkey().compress())
         );
 
-        let config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.config)?)?;
-        let val_mapping = build_validator_mapping(&config.bootstrap);
+        let node_config: NodeConfig = toml::from_str(&std::fs::read_to_string(cli.node_config)?)?;
+        let genesis_config: GenesisConfig =
+            toml::from_str(&std::fs::read_to_string(cli.genesis_config)?)?;
 
         let otel_context = if let Some(otel_endpoint) = cli.otel_endpoint {
             Some(build_otel_context(otel_endpoint)?)
@@ -55,8 +54,8 @@ impl NodeState {
         };
 
         Ok(Self {
-            config,
-            val_mapping,
+            node_config,
+            genesis_config,
 
             secp256k1_identity: secp_key,
             bls12_381_identity: bls_key,
@@ -66,16 +65,6 @@ impl NodeState {
             otel_context,
         })
     }
-}
-
-fn build_validator_mapping(bootstrap_config: &NodeBootstrapConfig) -> ValidatorMapping<BlsKeyPair> {
-    let voting_identities = bootstrap_config
-        .peers
-        .iter()
-        .map(|peer| (NodeId(peer.secp256k1_pubkey), peer.bls12_381_pubkey))
-        .collect::<Vec<_>>();
-
-    ValidatorMapping::new(voting_identities)
 }
 
 fn load_secp256k1_keypair(path: &PathBuf) -> Result<KeyPair, NodeSetupError> {

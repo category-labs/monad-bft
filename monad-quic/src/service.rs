@@ -5,67 +5,80 @@ use std::{
     net::SocketAddr,
     ops::DerefMut,
     pin::Pin,
-    sync::Arc,
     task::{Poll, Waker},
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use futures::{future::BoxFuture, stream::SelectAll, FutureExt, Stream, StreamExt};
-use monad_crypto::{
-    rustls::{self, TlsVerifier},
-    secp256k1::KeyPair,
-};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::{Gossip, GossipEvent};
 use monad_types::{Deserializable, NodeId, Serializable};
 use quinn::{Connecting, RecvStream};
-use quinn_proto::{congestion::CubicConfig, ClientConfig, TransportConfig};
+use quinn_proto::ClientConfig;
 use tokio::sync::mpsc::error::TrySendError;
 
-// used for TLS self-signed cert
-const SERVER_NAME: &str = "MONAD";
+use crate::quinn_config::QuinnConfig;
 
+/// Service is an implementation of a RouterCommand updater that's backed by Quic
+/// It can be parameterized by a Gossip algorithm
 pub struct Service<QC, G, M, OM>
 where
     G: Gossip,
     M: Message,
 {
+    /// An arbitrary starting time - used for computing internally consistent relative times,
+    /// which are in std::time::Duration, for the Gossip trait
     zero_instant: Instant,
+    /// The NodeId of self
     me: NodeId,
+    /// known_addresses is used for knowing what address to dial to connect to a given PeerId.
+    ///
+    /// The dialed peer's certificate MUST be validated to ensure that it matches the expected
+    /// PeerId.
+    ///
+    /// This might be replaced in the future once we support peer discovery
     known_addresses: HashMap<NodeId, SocketAddr>,
 
+    /// The gossip implementation
     gossip: G,
 
+    /// The main entrypoint into Quinn's API
     endpoint: quinn::Endpoint,
+    /// Configuration generator used for Quinn initialization and connections
     quinn_config: QC,
 
-    accept: BoxFuture<'static, Option<Connecting>>,
+    /// Future that yields on the next inbound connection attempt
+    accept: BoxFuture<'static, Connecting>,
+    /// SelectAll over InboundConnection streams
+    /// Each InboundConnection corresponds to a single inbound connection
+    /// Polling from inbound_connections yields the next ready inbound connection event
     inbound_connections: SelectAll<InboundConnection>,
+    /// Sender channels for each currently open outbound connection
     outbound_messages: HashMap<NodeId, tokio::sync::mpsc::Sender<Bytes>>,
 
+    /// Future that yields whenever the gossip implementation wants to be woken up
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
     waker: Option<Waker>,
 
     _pd: PhantomData<(M, OM)>,
 }
 
-pub trait QuinnConfig {
-    fn transport(&self) -> Arc<TransportConfig>;
-    fn client(&self) -> Arc<dyn quinn_proto::crypto::ClientConfig>;
-    fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig>;
-
-    fn remote_peer_id(connection: &quinn::Connection) -> NodeId;
-}
-
+/// Configuration for Service
 pub struct ServiceConfig<QC> {
-    pub zero_instant: Instant,
+    /// The NodeId of self
     pub me: NodeId,
 
+    /// The UDP address to bind the quic endpoint to
     pub server_address: SocketAddr,
+    /// Quinn configuration
     pub quinn_config: QC,
 
+    /// Lookup table for addresses of peers
+    ///
+    /// Currently, the entire validator set must be present here, because peer discovery is not
+    /// supported
     pub known_addresses: HashMap<NodeId, SocketAddr>,
 }
 
@@ -78,19 +91,22 @@ where
     pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
         server_config.transport_config(config.quinn_config.transport());
-        let endpoint =
-            quinn::Endpoint::server(server_config, config.server_address).expect(&format!(
-                "Endpoint initialization shouldn't fail: {:?}",
-                config.server_address
-            ));
+        let endpoint = quinn::Endpoint::server(server_config, config.server_address)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Endpoint initialization shouldn't fail: {:?}",
+                    config.server_address
+                )
+            });
 
         let accept = {
             let endpoint = endpoint.clone();
-            async move { endpoint.accept().await }.boxed()
+            #[allow(clippy::async_yields_async)]
+            async move { endpoint.accept().await.expect("endpoint is never closed") }.boxed()
         };
 
         Self {
-            zero_instant: config.zero_instant,
+            zero_instant: Instant::now(),
             me: config.me,
             known_addresses: config.known_addresses,
 
@@ -175,9 +191,12 @@ where
         loop {
             if let Poll::Ready(connecting) = this.accept.poll_unpin(cx) {
                 let endpoint = this.endpoint.clone();
-                this.accept = async move { endpoint.accept().await }.boxed();
+                this.accept = {
+                    #[allow(clippy::async_yields_async)]
+                    async move { endpoint.accept().await.expect("endpoint is never closed") }
+                        .boxed()
+                };
 
-                let connecting = connecting.expect("endpoint shouldn't close");
                 this.inbound_connections
                     .push(InboundConnection::pending::<QC>(connecting));
                 continue;
@@ -201,105 +220,10 @@ where
                     tokio::time::Sleep::reset(this.gossip_timeout.as_mut(), deadline.into());
                 }
                 if this.gossip_timeout.poll_unpin(cx).is_ready() || timeout <= time {
-                    match this.gossip.poll(time) {
-                        Some(GossipEvent::Send(to, gossip_message)) => {
-                            if to == this.me {
-                                this.gossip
-                                    .handle_gossip_message(time, this.me, gossip_message);
-                            } else {
-                                let maybe_unsent_gossip_message = match this
-                                    .outbound_messages
-                                    .get_mut(&to)
-                                {
-                                    Some(sender) => {
-                                        let result = sender.try_send(gossip_message);
-
-                                        match result {
-                                            Ok(()) => None,
-                                            Err(TrySendError::Full(gossip_message)) => {
-                                                todo!("channel full, how should we handle this?")
-                                            }
-                                            Err(TrySendError::Closed(gossip_message)) => {
-                                                // this implies that the connection died
-                                                this.outbound_messages.remove(&to);
-                                                Some(gossip_message)
-                                            }
-                                        }
-                                    }
-                                    None => Some(gossip_message),
-                                };
-
-                                if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
-                                    const MAX_BUFFERED_MESSAGES: usize = 100;
-                                    let (sender, mut receiver) =
-                                        tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
-                                    sender
-                                        .try_send(unsent_gossip_message)
-                                        .expect("try_send should always succeed on new chan");
-                                    this.outbound_messages.insert(to, sender);
-
-                                    let known_address = match this.known_addresses.get(&to) {
-                                        Some(address) => *address,
-                                        None => todo!("what do we do for peer discovery?"),
-                                    };
-
-                                    let endpoint = this.endpoint.clone();
-                                    let client_config = {
-                                        let mut c = ClientConfig::new(this.quinn_config.client());
-                                        c.transport_config(this.quinn_config.transport());
-                                        c
-                                    };
-                                    tokio::spawn(async move {
-                                        let fut = async move {
-                                            let connection = endpoint
-                                                .connect_with(
-                                                    client_config,
-                                                    known_address,
-                                                    SERVER_NAME,
-                                                )?
-                                                .await?;
-
-                                            if QC::remote_peer_id(&connection) != to {
-                                                todo!("unexpected peer_id, return and retry?");
-                                            }
-
-                                            let mut stream = connection.open_uni().await?;
-
-                                            while let Some(gossip_message) = receiver.recv().await {
-                                                stream.write_all(&gossip_message).await?;
-                                            }
-                                            Ok::<_, OutboundConnectionError>(())
-                                        };
-                                        if let Err(e) = fut.await {
-                                            todo!("handle outbound connection err: {:?}", e);
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                        Some(GossipEvent::Emit(from, app_message)) => {
-                            let message = {
-                                let mut _deser_span = tracing::info_span!(
-                                    "deserialize_span",
-                                    message_len = app_message.len()
-                                )
-                                .entered();
-                                match M::deserialize(&app_message) {
-                                    Ok(m) => m,
-                                    Err(e) => todo!("err deserializing message: {:?}", e),
-                                }
-                            };
-                            let event = {
-                                let mut _message_to_event_span = tracing::info_span!(
-                                    "message_to_event_span",
-                                    message_len = app_message.len()
-                                )
-                                .entered();
-                                message.event(from)
-                            };
+                    if let Some(gossip_event) = this.gossip.poll(time) {
+                        if let Some(event) = this.handle_gossip_event(time, gossip_event) {
                             return Poll::Ready(Some(event));
                         }
-                        None => {}
                     }
                     // loop if don't return value, because need to re-poll timeout
                     continue;
@@ -307,6 +231,118 @@ where
             }
 
             return Poll::Pending;
+        }
+    }
+}
+
+impl<QC, G, M, OM> Service<QC, G, M, OM>
+where
+    QC: QuinnConfig,
+    G: Gossip,
+    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
+
+    OM: Into<M> + Clone,
+{
+    fn handle_gossip_event(
+        &mut self,
+        time: Duration,
+        gossip_event: GossipEvent,
+    ) -> Option<M::Event> {
+        match gossip_event {
+            GossipEvent::Send(to, gossip_message) if to == self.me => {
+                self.gossip
+                    .handle_gossip_message(time, self.me, gossip_message);
+                None
+            }
+            GossipEvent::Send(to, gossip_message) => {
+                let maybe_unsent_gossip_message = match self.outbound_messages.get_mut(&to) {
+                    Some(sender) => {
+                        let result = sender.try_send(gossip_message);
+
+                        match result {
+                            Ok(()) => None,
+                            Err(TrySendError::Full(gossip_message)) => {
+                                todo!("channel full, how should we handle this?")
+                            }
+                            Err(TrySendError::Closed(gossip_message)) => {
+                                // this implies that the connection died
+                                self.outbound_messages.remove(&to);
+                                Some(gossip_message)
+                            }
+                        }
+                    }
+                    None => Some(gossip_message),
+                };
+
+                if let Some(unsent_gossip_message) = maybe_unsent_gossip_message {
+                    const MAX_BUFFERED_MESSAGES: usize = 100;
+                    let (sender, mut receiver) = tokio::sync::mpsc::channel(MAX_BUFFERED_MESSAGES);
+                    sender
+                        .try_send(unsent_gossip_message)
+                        .expect("try_send should always succeed on new chan");
+                    self.outbound_messages.insert(to, sender);
+
+                    let known_address = match self.known_addresses.get(&to) {
+                        Some(address) => *address,
+                        None => todo!("what do we do for peer discovery?"),
+                    };
+
+                    let endpoint = self.endpoint.clone();
+                    let client_config = {
+                        let mut c = ClientConfig::new(self.quinn_config.client());
+                        c.transport_config(self.quinn_config.transport());
+                        c
+                    };
+                    tokio::spawn(async move {
+                        let fut = async move {
+                            let connection = endpoint
+                                .connect_with(
+                                    client_config,
+                                    known_address,
+                                    "MONAD", // server_name doesn't matter because we're verifying the peer_id that signed the certificate
+                                )?
+                                .await?;
+
+                            if QC::remote_peer_id(&connection) != to {
+                                todo!("unexpected peer_id, return and retry?");
+                            }
+
+                            let mut stream = connection.open_uni().await?;
+
+                            while let Some(gossip_message) = receiver.recv().await {
+                                stream.write_all(&gossip_message).await?;
+                            }
+                            Ok::<_, OutboundConnectionError>(())
+                        };
+                        if let Err(e) = fut.await {
+                            todo!("handle outbound connection err: {:?}", e);
+                        }
+                    });
+                }
+                None
+            }
+            GossipEvent::Emit(from, app_message) => {
+                let message = {
+                    let mut _deser_span =
+                        tracing::info_span!("deserialize_span", message_len = app_message.len())
+                            .entered();
+                    match M::deserialize(&app_message) {
+                        Ok(m) => m,
+                        Err(e) => todo!("err deserializing message: {:?}", e),
+                    }
+                };
+                let event = {
+                    let mut _message_to_event_span = tracing::info_span!(
+                        "message_to_event_span",
+                        message_len = app_message.len()
+                    )
+                    .entered();
+                    message.event(from)
+                };
+                Some(event)
+            }
         }
     }
 }
@@ -385,62 +421,3 @@ where
 }
 
 type OutboundConnectionError = Box<dyn Error>;
-
-pub struct SafeQuinnConfig {
-    transport: Arc<TransportConfig>,
-    client: Arc<dyn quinn_proto::crypto::ClientConfig>,
-    server: Arc<dyn quinn_proto::crypto::ServerConfig>,
-}
-
-impl SafeQuinnConfig {
-    /// bandwidth_Mbps is in Megabit/s
-    pub fn new(identity: &KeyPair, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
-        let mut transport_config = TransportConfig::default();
-        let bandwidth_Bps = bandwidth_Mbps as u64 * 125_000;
-        let rwnd = bandwidth_Bps * max_rtt.as_millis() as u64 / 1000;
-        transport_config
-            .stream_receive_window(u32::try_from(rwnd).unwrap().into())
-            .send_window(8 * rwnd)
-            .initial_rtt(max_rtt) // not exactly initial.... because of quinn pacer
-            .congestion_controller_factory(Arc::new({
-                // this is necessary for seeding the quinn pacer correctly on init
-                let mut cubic_config = CubicConfig::default();
-                cubic_config.initial_window(rwnd);
-                cubic_config
-            }));
-        Self {
-            transport: Arc::new(transport_config),
-            client: Arc::new(TlsVerifier::make_client_config(identity)),
-            server: Arc::new(TlsVerifier::make_server_config(identity)),
-        }
-    }
-}
-
-impl QuinnConfig for SafeQuinnConfig {
-    fn transport(&self) -> Arc<TransportConfig> {
-        self.transport.clone()
-    }
-
-    fn client(&self) -> Arc<dyn quinn_proto::crypto::ClientConfig> {
-        self.client.clone()
-    }
-
-    fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig> {
-        self.server.clone()
-    }
-
-    fn remote_peer_id(connection: &quinn::Connection) -> NodeId {
-        let identity = connection
-            .peer_identity()
-            .expect("all quic sessions have TLS identity");
-        let certificates: Box<Vec<rustls::Certificate>> = identity
-            .downcast()
-            .expect("always is rustls cert for default quinn");
-
-        let raw_cert = certificates.first().expect("TLS verifier should have cert");
-        let cert = TlsVerifier::parse_cert(raw_cert).expect("cert must be x509 at this point");
-        let pubkey =
-            TlsVerifier::recover_node_pubkey(&cert).expect("must have valid pubkey at this point");
-        NodeId(pubkey)
-    }
-}

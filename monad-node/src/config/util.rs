@@ -28,5 +28,5 @@ where
 
     let key: Vec<u8> = hex::decode(hex_str).map_err(D::Error::custom)?;
 
-    BlsPubKey::deserialize(&key).map_err(D::Error::custom)
+    BlsPubKey::uncompress(&key).map_err(D::Error::custom)
 }

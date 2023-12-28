@@ -15,7 +15,7 @@ use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
-use monad_quic::service::{SafeQuinnConfig, ServiceConfig};
+use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
@@ -80,9 +80,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
     >(
-        node_state.config.network,
+        node_state.node_config.network,
         &node_state.secp256k1_identity,
-        &node_state.config.bootstrap.peers,
+        &node_state.node_config.bootstrap.peers,
     )
     .await;
 
@@ -105,9 +105,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let (mut state, init_commands) = MonadState::init(MonadConfig {
         transaction_validator: MockValidator {},
         validators: node_state
-            .config
-            .bootstrap
-            .peers
+            .genesis_config
+            .validators
             .into_iter()
             .map(|peer| (peer.secp256k1_pubkey, peer.stake, peer.bls12_381_pubkey))
             .collect(),
@@ -115,7 +114,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         certkey: node_state.bls12_381_identity,
         val_set_update_interval: SeqNum(2000),
         epoch_start_delay: Round(50),
-        beneficiary: node_state.config.beneficiary,
+        beneficiary: node_state.node_config.beneficiary,
         delta: Duration::from_secs(1),
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 5000,
@@ -196,13 +195,12 @@ async fn build_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: &KeyPair,
     peers: &[NodeBootstrapPeerConfig],
-) -> monad_quic::service::Service<SafeQuinnConfig, MockGossip, M, OM>
+) -> Service<SafeQuinnConfig, MockGossip, M, OM>
 where
     M: Message,
 {
-    monad_quic::service::Service::new(
+    Service::new(
         ServiceConfig {
-            zero_instant: Instant::now(),
             me: NodeId(identity.pubkey()),
             server_address: generate_bind_address(
                 network_config.bind_address_host,
