@@ -795,7 +795,7 @@ mod test {
         ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        let mut val_epoch_map = ValidatorsEpochMapping::default();
         val_epoch_map.insert(Epoch(1), vset, vmap);
 
         let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map);
@@ -854,7 +854,7 @@ mod test {
         >::new(tmo, &certkeys[0]));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        let mut val_epoch_map = ValidatorsEpochMapping::default();
         val_epoch_map.insert(Epoch(1), vset, vmap);
 
         let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map);

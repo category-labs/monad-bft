@@ -131,7 +131,7 @@ test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), validators, validator_mapping);
 
     let vi = VoteInfo {
@@ -186,7 +186,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), validators, validator_mapping);
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
@@ -275,7 +275,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), validators, validator_mapping);
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
@@ -323,7 +323,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), validators, validator_mapping);
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
@@ -408,7 +408,7 @@ test_all_combination!(test_block_sync_response_not_available, |num_keys| {
     let (_keypairs, _cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), validators, validator_mapping);
 
     let bid = BlockId(Hash([0x01_u8; 32]));
@@ -441,7 +441,7 @@ test_all_combination!(test_block_sync_response_found, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), validators, validator_mapping);
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 

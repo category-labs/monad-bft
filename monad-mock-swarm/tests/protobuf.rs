@@ -88,7 +88,7 @@ fn test_consensus_message_event_vote_multisig() {
 #[test]
 fn test_consensus_message_event_proposal_bls() {
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(
         Epoch(1),
         ValidatorSet::new(Vec::from_iter(valset.get_members().clone()))

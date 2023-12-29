@@ -8,6 +8,7 @@ use monad_types::Epoch;
 
 use crate::validator_set::ValidatorSetType;
 
+/// A mapping from Epoch -> (Validator Stakes, Validator Certificate Pubkeys).
 pub struct ValidatorsEpochMapping<VT, SCT>
 where
     VT: ValidatorSetType,
@@ -21,12 +22,6 @@ where
     VT: ValidatorSetType,
     SCT: SignatureCollection,
 {
-    pub fn new() -> Self {
-        Self {
-            validator_map: HashMap::new(),
-        }
-    }
-
     pub fn get_val_set(&self, epoch: &Epoch) -> Option<&VT> {
         self.validator_map.get(epoch).map(|vs| &vs.0)
     }
@@ -49,5 +44,17 @@ where
             .insert(epoch, (val_stakes, val_cert_pubkeys));
 
         assert!(res.is_none());
+    }
+}
+
+impl<VT, SCT> Default for ValidatorsEpochMapping<VT, SCT>
+where
+    VT: ValidatorSetType,
+    SCT: SignatureCollection,
+{
+    fn default() -> Self {
+        Self {
+            validator_map: HashMap::new(),
+        }
     }
 }

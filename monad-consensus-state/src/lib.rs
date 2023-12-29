@@ -910,7 +910,7 @@ mod test {
             .map(|k| NodeId(k.pubkey()))
             .zip(cert_keys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
-        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        let mut val_epoch_map = ValidatorsEpochMapping::default();
         val_epoch_map.insert(
             Epoch(1),
             ValidatorSet::new(val_stakes.clone())
@@ -2849,801 +2849,801 @@ mod test {
         });
     }
 
-    // #[test]
-    // fn test_schedule_next_epoch() {
-    //     let num_states = 2;
-    //     let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-    //         setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-    //             num_states as u32,
-    //         );
-    //     let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-    //     let election = SimpleRoundRobin::new();
-    //     let mut propgen = ProposalGen::<SignatureType, _>::new();
-    //     let mut blocks = vec![];
-
-    //     // Sequence number of the block which updates the validator set
-    //     let update_block = epoch_manager.val_set_update_interval;
-    //     // Round number of that block is the same as its sequence number (NO TCs in between)
-    //     let update_block_round = Round(update_block.0);
-
-    //     // handle update_block + 2 proposals to commit the update_block
-    //     for _ in 0..(update_block_round.0 + 2) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert!(epoch_manager.current_epoch == Epoch(1));
-
-    //         let expected_epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
-    //         // verify that the start of next epoch is scheduled correctly
-    //         assert!(epoch_manager.get_epoch(expected_epoch_start_round - Round(1)) == Epoch(1));
-    //         assert!(epoch_manager.get_epoch(expected_epoch_start_round) == Epoch(2));
-    //     }
-    // }
-
-    // #[test]
-    // fn test_advance_epoch_through_proposal_qc() {
-    //     let num_states = 2;
-    //     let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-    //         setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-    //             num_states as u32,
-    //         );
-    //     let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-    //     let mut propgen_epoch_manager = epoch_manager;
-    //     let election = SimpleRoundRobin::new();
-    //     let mut propgen = ProposalGen::<SignatureType, _>::new();
-    //     let mut blocks = vec![];
-
-    //     // Sequence number of the block which updates the validator set
-    //     let update_block = propgen_epoch_manager.val_set_update_interval;
-    //     // Round number of that block is the same as its sequence number (NO TCs in between)
-    //     let update_block_round = Round(update_block.0);
-
-    //     // commit blocks until update_block
-    //     for _ in 0..(update_block_round.0 + 2) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     let expected_epoch_start_round =
-    //         update_block_round + propgen_epoch_manager.epoch_start_delay;
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-
-    //         // verify that the start of next epoch is scheduled correctly
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
-    //             Epoch(1)
-    //         );
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round),
-    //             Epoch(2)
-    //         );
-    //     }
-
-    //     propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
-
-    //     // handle proposals until the last round of the epoch
-    //     for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-    //     }
-
-    //     // proposal for Round(expected_epoch_start_round)
-    //     let cp = propgen.next_proposal(
-    //         &keys,
-    //         &certkeys,
-    //         &propgen_epoch_manager,
-    //         &val_epoch_map,
-    //         &election,
-    //         Default::default(),
-    //         ExecutionArtifacts::zero(),
-    //     );
-
-    //     let (author, _, verified_message) = cp.destructure();
-    //     // observe QC to advance round and epoch
-    //     states[0].handle_proposal_message_full::<HasherType, _, _>(
-    //         author,
-    //         verified_message,
-    //         FullTransactionList::new(Vec::new()),
-    //         &mut epoch_managers[0],
-    //         &val_epoch_map,
-    //         &election,
-    //     );
-    //     assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
-    // }
-
-    // #[test]
-    // fn test_advance_epoch_through_proposal_tc() {
-    //     let num_states = 2;
-    //     let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-    //         setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-    //             num_states as u32,
-    //         );
-    //     let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-    //     let mut propgen_epoch_manager = epoch_manager;
-    //     let election = SimpleRoundRobin::new();
-    //     let mut propgen = ProposalGen::<SignatureType, _>::new();
-    //     let mut blocks = vec![];
-
-    //     // Sequence number of the block which updates the validator set
-    //     let update_block = propgen_epoch_manager.val_set_update_interval;
-    //     // Round number of that block is the same as its sequence number (NO TCs in between)
-    //     let update_block_round = Round(update_block.0);
-
-    //     // commit blocks until update_block
-    //     for _ in 0..(update_block_round.0 + 2) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     let expected_epoch_start_round =
-    //         update_block_round + propgen_epoch_manager.epoch_start_delay;
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-
-    //         // verify that the start of next epoch is scheduled correctly
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
-    //             Epoch(1)
-    //         );
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round),
-    //             Epoch(2)
-    //         );
-    //     }
-
-    //     propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
-
-    //     let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
-    //     let val_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
-    //     // generate TCs until the last round of the epoch
-    //     for _ in (update_block_round.0 + 1)..(expected_epoch_start_round.0 - 1) {
-    //         let _ = propgen.next_tc(&keys, &certkeys, val_set, val_mapping);
-    //     }
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-    //     }
-
-    //     // proposal for Round(expected_epoch_start_round)
-    //     let cp = propgen.next_proposal(
-    //         &keys,
-    //         &certkeys,
-    //         &propgen_epoch_manager,
-    //         &val_epoch_map,
-    //         &election,
-    //         Default::default(),
-    //         ExecutionArtifacts::zero(),
-    //     );
-
-    //     let (author, _, verified_message) = cp.destructure();
-    //     // observe TC to advance round and epoch
-    //     states[0].handle_proposal_message_full::<HasherType, _, _>(
-    //         author,
-    //         verified_message,
-    //         FullTransactionList::new(Vec::new()),
-    //         &mut epoch_managers[0],
-    //         &val_epoch_map,
-    //         &election,
-    //     );
-    //     assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
-    // }
-
-    // #[test]
-    // fn test_advance_epoch_through_local_tc() {
-    //     let num_states = 4;
-    //     let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-    //         setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-    //             num_states as u32,
-    //         );
-    //     let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-    //     let mut propgen_epoch_manager = epoch_manager;
-    //     let election = SimpleRoundRobin::new();
-    //     let mut propgen = ProposalGen::<SignatureType, _>::new();
-    //     let mut blocks = vec![];
-
-    //     // Sequence number of the block which updates the validator set
-    //     let update_block = propgen_epoch_manager.val_set_update_interval;
-    //     // Round number of that block is the same as its sequence number (NO TCs in between)
-    //     let update_block_round = Round(update_block.0);
-
-    //     // commit blocks until update_block
-    //     for _ in 0..(update_block_round.0 + 2) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
-    //                 .handle_proposal_message_full::<HasherType, _, _>(
-    //                     author,
-    //                     verified_message.clone(),
-    //                     FullTransactionList::new(Vec::new()),
-    //                     epoch_manager,
-    //                     &val_epoch_map,
-    //                     &election,
-    //                 );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     let expected_epoch_start_round =
-    //         update_block_round + propgen_epoch_manager.epoch_start_delay;
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-
-    //         // verify that the start of next epoch is scheduled correctly
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
-    //             Epoch(1)
-    //         );
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round),
-    //             Epoch(2)
-    //         );
-    //     }
-
-    //     propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
-
-    //     // handle proposals until the last round of the epoch
-    //     for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-    //     }
-
-    //     let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
-    //     let val_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
-    //     // generate TC for the last round of the epoch
-    //     let tmo_msgs = propgen.next_tc(&keys, &certkeys, val_set, val_mapping);
-
-    //     let (_, tmo_msgs) = tmo_msgs.split_first().unwrap();
-
-    //     // handle the three timeout messages from other nodes
-    //     for tmo_msg in tmo_msgs {
-    //         let (author, _, tm) = tmo_msg.clone().destructure();
-
-    //         states[0].handle_timeout_message::<HasherType, _, _>(
-    //             author,
-    //             tm,
-    //             &mut epoch_managers[0],
-    //             &val_epoch_map,
-    //             &election,
-    //         );
-    //     }
-
-    //     assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
-    // }
-
-    // #[test]
-    // fn test_schedule_epoch_on_blocksync() {
-    //     let num_states = 2;
-    //     let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-    //         setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-    //             num_states as u32,
-    //         );
-    //     let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-    //     let propgen_epoch_manager = epoch_manager;
-    //     let election = SimpleRoundRobin::new();
-    //     let mut propgen = ProposalGen::<SignatureType, _>::new();
-    //     let mut blocks = vec![];
-
-    //     // Sequence number of the block which updates the validator set
-    //     let update_block_num = propgen_epoch_manager.val_set_update_interval;
-    //     // Round number of that block is the same as its sequence number (NO TCs in between)
-    //     let update_block_round = Round(update_block_num.0);
-
-    //     // handle blocks until update_block - 1
-    //     for _ in 0..(update_block_round.0 - 1) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
-    //                 .handle_proposal_message_full::<HasherType, _, _>(
-    //                     author,
-    //                     verified_message.clone(),
-    //                     FullTransactionList::new(Vec::new()),
-    //                     epoch_manager,
-    //                     &val_epoch_map,
-    //                     &election,
-    //                 );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     let (state_1, xs) = states.split_first_mut().unwrap();
-    //     let (epoch_manager_1, xs_epoch_manager) = epoch_managers.split_first_mut().unwrap();
-    //     let state_2 = &mut xs[0];
-    //     let epoch_manager_2 = &mut xs_epoch_manager[0];
-
-    //     let mut block_sync_blocks = Vec::new();
-    //     // handle 3 blocks for only state 1
-    //     for _ in (update_block_round.0 - 1)..(update_block_round.0 + 2) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-
-    //         let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_1
-    //             .handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager_1,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //         // state should not request blocksync
-    //         let bsync_cmds: Vec<_> = cmds
-    //             .iter()
-    //             .filter_map(|c| match c {
-    //                 ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                 _ => None,
-    //             })
-    //             .collect();
-    //         assert!(bsync_cmds.is_empty());
-
-    //         block_sync_blocks.push(verified_message.block);
-    //     }
-
-    //     let expected_epoch_start_round =
-    //         update_block_round + propgen_epoch_manager.epoch_start_delay;
-
-    //     // state 1 should have committed update_block and scheduled next epoch
-    //     // verify state 1 is still in epoch 1
-    //     assert_eq!(epoch_manager_1.current_epoch, Epoch(1));
-
-    //     // verify state 1 scheduled the next epoch correctly
-    //     assert_eq!(
-    //         epoch_manager_1.get_epoch(expected_epoch_start_round - Round(1)),
-    //         Epoch(1)
-    //     );
-    //     assert_eq!(
-    //         epoch_manager_1.get_epoch(expected_epoch_start_round),
-    //         Epoch(2)
-    //     );
-
-    //     // state 2 should still not have scheduled next epoch since it didn't commit update_block
-    //     assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
-    //     assert_eq!(
-    //         epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
-    //         Epoch(1)
-    //     );
-    //     assert_eq!(
-    //         epoch_manager_2.get_epoch(expected_epoch_start_round),
-    //         Epoch(1)
-    //     ); // STILL EPOCH 1
-
-    //     // generate proposal for update_block + 3
-    //     let cp = propgen.next_proposal(
-    //         &keys,
-    //         &certkeys,
-    //         &propgen_epoch_manager,
-    //         &val_epoch_map,
-    //         &election,
-    //         Default::default(),
-    //         ExecutionArtifacts::zero(),
-    //     );
-
-    //     let (author, _, verified_message) = cp.destructure();
-    //     let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2
-    //         .handle_proposal_message_full::<HasherType, _, _>(
-    //             author,
-    //             verified_message.clone(),
-    //             FullTransactionList::new(Vec::new()),
-    //             epoch_manager_2,
-    //             &val_epoch_map,
-    //             &election,
-    //         );
-    //     // state 2 should request blocksync
-    //     let bsync_cmds: Vec<_> = cmds
-    //         .iter()
-    //         .filter_map(|c| match c {
-    //             ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //             _ => None,
-    //         })
-    //         .collect();
-    //     assert!(bsync_cmds.len() == 1);
-
-    //     blocks.push(verified_message.block);
-
-    //     let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
-    //     for block in block_sync_blocks.into_iter().rev() {
-    //         let unverified_block = UnverifiedFullBlock {
-    //             block,
-    //             full_txs: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST]),
-    //         };
-    //         let msg = BlockSyncResponseMessage::BlockFound(unverified_block);
-    //         // blocksync response for state 2
-    //         let _ = state_2.handle_block_sync(state_1.nodeid, msg, val_set);
-    //     }
-
-    //     // blocks aren't committed immediately after blocksync is finished
-    //     // state 2 should not have scheduled the next epoch yet
-    //     assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
-    //     assert_eq!(
-    //         epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
-    //         Epoch(1)
-    //     );
-    //     assert_eq!(
-    //         epoch_manager_2.get_epoch(expected_epoch_start_round),
-    //         Epoch(1)
-    //     ); // STILL EPOCH 1
-
-    //     // generate proposal for update_block + 4
-    //     let cp = propgen.next_proposal(
-    //         &keys,
-    //         &certkeys,
-    //         &propgen_epoch_manager,
-    //         &val_epoch_map,
-    //         &election,
-    //         Default::default(),
-    //         ExecutionArtifacts::zero(),
-    //     );
-
-    //     let (author, _, verified_message) = cp.destructure();
-    //     let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2
-    //         .handle_proposal_message_full::<HasherType, _, _>(
-    //             author,
-    //             verified_message,
-    //             FullTransactionList::new(Vec::new()),
-    //             epoch_manager_2,
-    //             &val_epoch_map,
-    //             &election,
-    //         );
-    //     // state 2 should not request blocksync
-    //     let bsync_cmds: Vec<_> = cmds
-    //         .iter()
-    //         .filter_map(|c| match c {
-    //             ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //             _ => None,
-    //         })
-    //         .collect();
-    //     assert!(bsync_cmds.is_empty());
-
-    //     // state 2 should have committed the update block and scheduled the next epoch
-    //     assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
-    //     assert_eq!(
-    //         epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
-    //         Epoch(1)
-    //     );
-    //     assert_eq!(
-    //         epoch_manager_2.get_epoch(expected_epoch_start_round),
-    //         Epoch(2)
-    //     ); // NOW EPOCH 2
-    // }
-
-    // #[test]
-    // fn test_advance_epoch_with_blocksync() {
-    //     let num_states = 2;
-    //     let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-    //         setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
-    //             num_states as u32,
-    //         );
-    //     let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-    //     let mut propgen_epoch_manager = epoch_manager;
-    //     let election = SimpleRoundRobin::new();
-    //     let mut propgen = ProposalGen::<SignatureType, _>::new();
-    //     let mut blocks = vec![];
-
-    //     // Sequence number of the block which updates the validator set
-    //     let update_block = propgen_epoch_manager.val_set_update_interval;
-    //     // Round number of that block is the same as its sequence number (NO TCs in between)
-    //     let update_block_round = Round(update_block.0);
-
-    //     let expected_epoch_start_round =
-    //         update_block_round + propgen_epoch_manager.epoch_start_delay;
-
-    //     // handle proposals until expected_epoch_start_round - 1
-    //     for _ in 0..(expected_epoch_start_round.0 - 1) {
-    //         let cp = propgen.next_proposal(
-    //             &keys,
-    //             &certkeys,
-    //             &propgen_epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //             Default::default(),
-    //             ExecutionArtifacts::zero(),
-    //         );
-
-    //         let (author, _, verified_message) = cp.destructure();
-    //         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //             let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //                 author,
-    //                 verified_message.clone(),
-    //                 FullTransactionList::new(Vec::new()),
-    //                 epoch_manager,
-    //                 &val_epoch_map,
-    //                 &election,
-    //             );
-    //             // state should not request blocksync
-    //             let bsync_cmds: Vec<_> = cmds
-    //                 .iter()
-    //                 .filter_map(|c| match c {
-    //                     ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                     _ => None,
-    //                 })
-    //                 .collect();
-    //             assert!(bsync_cmds.is_empty());
-    //         }
-
-    //         blocks.push(verified_message.block);
-    //     }
-
-    //     for epoch_manager in epoch_managers.iter() {
-    //         // verify all states are still in epoch 1
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(1));
-
-    //         // verify that the start of next epoch is scheduled correctly
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
-    //             Epoch(1)
-    //         );
-    //         assert_eq!(
-    //             epoch_manager.get_epoch(expected_epoch_start_round),
-    //             Epoch(2)
-    //         );
-    //     }
-
-    //     propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
-
-    //     // skip block on round expected_epoch_start_round
-    //     let _unused_proposal = propgen.next_proposal(
-    //         &keys,
-    //         &certkeys,
-    //         &propgen_epoch_manager,
-    //         &val_epoch_map,
-    //         &election,
-    //         Default::default(),
-    //         ExecutionArtifacts::zero(),
-    //     );
-
-    //     // generate proposal for expected_epoch_start_round + 1
-    //     let cp = propgen.next_proposal(
-    //         &keys,
-    //         &certkeys,
-    //         &propgen_epoch_manager,
-    //         &val_epoch_map,
-    //         &election,
-    //         Default::default(),
-    //         ExecutionArtifacts::zero(),
-    //     );
-
-    //     let (author, _, verified_message) = cp.destructure();
-    //     for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-    //         let cmds = state.handle_proposal_message_full::<HasherType, _, _>(
-    //             author,
-    //             verified_message.clone(),
-    //             FullTransactionList::new(Vec::new()),
-    //             epoch_manager,
-    //             &val_epoch_map,
-    //             &election,
-    //         );
-    //         // state should not request blocksync
-    //         let bsync_cmds: Vec<_> = cmds
-    //             .iter()
-    //             .filter_map(|c| match c {
-    //                 ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
-    //                 _ => None,
-    //             })
-    //             .collect();
-    //         // state should have requested blocksync
-    //         assert!(bsync_cmds.len() == 1);
-
-    //         // verify state is now in epoch 2
-    //         assert_eq!(epoch_manager.current_epoch, Epoch(2));
-    //     }
-    // }
+    #[test]
+    fn test_schedule_next_epoch() {
+        let num_states = 2;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_states as u32,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+
+        // Sequence number of the block which updates the validator set
+        let update_block = epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block.0);
+
+        // handle update_block + 2 proposals to commit the update_block
+        for _ in 0..(update_block_round.0 + 2) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds = state.handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert!(epoch_manager.current_epoch == Epoch(1));
+
+            let expected_epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
+            // verify that the start of next epoch is scheduled correctly
+            assert!(epoch_manager.get_epoch(expected_epoch_start_round - Round(1)) == Epoch(1));
+            assert!(epoch_manager.get_epoch(expected_epoch_start_round) == Epoch(2));
+        }
+    }
+
+    #[test]
+    fn test_advance_epoch_through_proposal_qc() {
+        let num_states = 2;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_states as u32,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let mut propgen_epoch_manager = epoch_manager;
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+
+        // Sequence number of the block which updates the validator set
+        let update_block = propgen_epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block.0);
+
+        // commit blocks until update_block
+        for _ in 0..(update_block_round.0 + 2) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds = state.handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        let expected_epoch_start_round =
+            update_block_round + propgen_epoch_manager.epoch_start_delay;
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+
+            // verify that the start of next epoch is scheduled correctly
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
+                Epoch(1)
+            );
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round),
+                Epoch(2)
+            );
+        }
+
+        propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
+
+        // handle proposals until the last round of the epoch
+        for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds = state.handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+        }
+
+        // proposal for Round(expected_epoch_start_round)
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            TransactionHashList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        // observe QC to advance round and epoch
+        states[0].handle_proposal_message_full(
+            author,
+            verified_message,
+            FullTransactionList::empty(),
+            &mut epoch_managers[0],
+            &val_epoch_map,
+            &election,
+        );
+        assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
+    }
+
+    #[test]
+    fn test_advance_epoch_through_proposal_tc() {
+        let num_states = 2;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_states as u32,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let mut propgen_epoch_manager = epoch_manager;
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+
+        // Sequence number of the block which updates the validator set
+        let update_block = propgen_epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block.0);
+
+        // commit blocks until update_block
+        for _ in 0..(update_block_round.0 + 2) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds = state.handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        let expected_epoch_start_round =
+            update_block_round + propgen_epoch_manager.epoch_start_delay;
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+
+            // verify that the start of next epoch is scheduled correctly
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
+                Epoch(1)
+            );
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round),
+                Epoch(2)
+            );
+        }
+
+        propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
+
+        let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
+        let val_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
+        // generate TCs until the last round of the epoch
+        for _ in (update_block_round.0 + 1)..(expected_epoch_start_round.0 - 1) {
+            let _ = propgen.next_tc(&keys, &certkeys, val_set, val_mapping);
+        }
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+        }
+
+        // proposal for Round(expected_epoch_start_round)
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            TransactionHashList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        // observe TC to advance round and epoch
+        states[0].handle_proposal_message_full(
+            author,
+            verified_message,
+            FullTransactionList::empty(),
+            &mut epoch_managers[0],
+            &val_epoch_map,
+            &election,
+        );
+        assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
+    }
+
+    #[test]
+    fn test_advance_epoch_through_local_tc() {
+        let num_states = 4;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_states as u32,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let mut propgen_epoch_manager = epoch_manager;
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+
+        // Sequence number of the block which updates the validator set
+        let update_block = propgen_epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block.0);
+
+        // commit blocks until update_block
+        for _ in 0..(update_block_round.0 + 2) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
+                    .handle_proposal_message_full(
+                        author,
+                        verified_message.clone(),
+                        FullTransactionList::empty(),
+                        epoch_manager,
+                        &val_epoch_map,
+                        &election,
+                    );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        let expected_epoch_start_round =
+            update_block_round + propgen_epoch_manager.epoch_start_delay;
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+
+            // verify that the start of next epoch is scheduled correctly
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
+                Epoch(1)
+            );
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round),
+                Epoch(2)
+            );
+        }
+
+        propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
+
+        // handle proposals until the last round of the epoch
+        for _ in (update_block_round.0 + 2)..(expected_epoch_start_round.0 - 1) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds = state.handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+        }
+
+        let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
+        let val_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
+        // generate TC for the last round of the epoch
+        let tmo_msgs = propgen.next_tc(&keys, &certkeys, val_set, val_mapping);
+
+        let (_, tmo_msgs) = tmo_msgs.split_first().unwrap();
+
+        // handle the three timeout messages from other nodes
+        for tmo_msg in tmo_msgs {
+            let (author, _, tm) = tmo_msg.clone().destructure();
+
+            states[0].handle_timeout_message(
+                author,
+                tm,
+                &mut epoch_managers[0],
+                &val_epoch_map,
+                &election,
+            );
+        }
+
+        assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
+    }
+
+    #[test]
+    fn test_schedule_epoch_on_blocksync() {
+        let num_states = 2;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_states as u32,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let propgen_epoch_manager = epoch_manager;
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+
+        // Sequence number of the block which updates the validator set
+        let update_block_num = propgen_epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block_num.0);
+
+        // handle blocks until update_block - 1
+        for _ in 0..(update_block_round.0 - 1) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
+                    .handle_proposal_message_full(
+                        author,
+                        verified_message.clone(),
+                        FullTransactionList::empty(),
+                        epoch_manager,
+                        &val_epoch_map,
+                        &election,
+                    );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        let (state_1, xs) = states.split_first_mut().unwrap();
+        let (epoch_manager_1, xs_epoch_manager) = epoch_managers.split_first_mut().unwrap();
+        let state_2 = &mut xs[0];
+        let epoch_manager_2 = &mut xs_epoch_manager[0];
+
+        let mut block_sync_blocks = Vec::new();
+        // handle 3 blocks for only state 1
+        for _ in (update_block_round.0 - 1)..(update_block_round.0 + 2) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+
+            let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_1
+                .handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager_1,
+                    &val_epoch_map,
+                    &election,
+                );
+            // state should not request blocksync
+            let bsync_cmds: Vec<_> = cmds
+                .iter()
+                .filter_map(|c| match c {
+                    ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                    _ => None,
+                })
+                .collect();
+            assert!(bsync_cmds.is_empty());
+
+            block_sync_blocks.push(verified_message.block);
+        }
+
+        let expected_epoch_start_round =
+            update_block_round + propgen_epoch_manager.epoch_start_delay;
+
+        // state 1 should have committed update_block and scheduled next epoch
+        // verify state 1 is still in epoch 1
+        assert_eq!(epoch_manager_1.current_epoch, Epoch(1));
+
+        // verify state 1 scheduled the next epoch correctly
+        assert_eq!(
+            epoch_manager_1.get_epoch(expected_epoch_start_round - Round(1)),
+            Epoch(1)
+        );
+        assert_eq!(
+            epoch_manager_1.get_epoch(expected_epoch_start_round),
+            Epoch(2)
+        );
+
+        // state 2 should still not have scheduled next epoch since it didn't commit update_block
+        assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
+        assert_eq!(
+            epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
+            Epoch(1)
+        );
+        assert_eq!(
+            epoch_manager_2.get_epoch(expected_epoch_start_round),
+            Epoch(1)
+        ); // STILL EPOCH 1
+
+        // generate proposal for update_block + 3
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            TransactionHashList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2
+            .handle_proposal_message_full(
+                author,
+                verified_message.clone(),
+                FullTransactionList::empty(),
+                epoch_manager_2,
+                &val_epoch_map,
+                &election,
+            );
+        // state 2 should request blocksync
+        let bsync_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                _ => None,
+            })
+            .collect();
+        assert!(bsync_cmds.len() == 1);
+
+        blocks.push(verified_message.block);
+
+        let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
+        for block in block_sync_blocks.into_iter().rev() {
+            let unverified_block = UnverifiedFullBlock {
+                block,
+                full_txs: FullTransactionList::empty(),
+            };
+            let msg = BlockSyncResponseMessage::BlockFound(unverified_block);
+            // blocksync response for state 2
+            let _ = state_2.handle_block_sync(state_1.nodeid, msg, val_set);
+        }
+
+        // blocks aren't committed immediately after blocksync is finished
+        // state 2 should not have scheduled the next epoch yet
+        assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
+        assert_eq!(
+            epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
+            Epoch(1)
+        );
+        assert_eq!(
+            epoch_manager_2.get_epoch(expected_epoch_start_round),
+            Epoch(1)
+        ); // STILL EPOCH 1
+
+        // generate proposal for update_block + 4
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            TransactionHashList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2
+            .handle_proposal_message_full(
+                author,
+                verified_message,
+                FullTransactionList::empty(),
+                epoch_manager_2,
+                &val_epoch_map,
+                &election,
+            );
+        // state 2 should not request blocksync
+        let bsync_cmds: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                _ => None,
+            })
+            .collect();
+        assert!(bsync_cmds.is_empty());
+
+        // state 2 should have committed the update block and scheduled the next epoch
+        assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
+        assert_eq!(
+            epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
+            Epoch(1)
+        );
+        assert_eq!(
+            epoch_manager_2.get_epoch(expected_epoch_start_round),
+            Epoch(2)
+        ); // NOW EPOCH 2
+    }
+
+    #[test]
+    fn test_advance_epoch_with_blocksync() {
+        let num_states = 2;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, StateRootValidatorType, TransactionValidatorType>(
+                num_states as u32,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let mut propgen_epoch_manager = epoch_manager;
+        let election = SimpleRoundRobin::new();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+
+        // Sequence number of the block which updates the validator set
+        let update_block = propgen_epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block.0);
+
+        let expected_epoch_start_round =
+            update_block_round + propgen_epoch_manager.epoch_start_delay;
+
+        // handle proposals until expected_epoch_start_round - 1
+        for _ in 0..(expected_epoch_start_round.0 - 1) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                TransactionHashList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+                let cmds = state.handle_proposal_message_full(
+                    author,
+                    verified_message.clone(),
+                    FullTransactionList::empty(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        for epoch_manager in epoch_managers.iter() {
+            // verify all states are still in epoch 1
+            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+
+            // verify that the start of next epoch is scheduled correctly
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round - Round(1)),
+                Epoch(1)
+            );
+            assert_eq!(
+                epoch_manager.get_epoch(expected_epoch_start_round),
+                Epoch(2)
+            );
+        }
+
+        propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
+
+        // skip block on round expected_epoch_start_round
+        let _unused_proposal = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            TransactionHashList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        // generate proposal for expected_epoch_start_round + 1
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            TransactionHashList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
+            let cmds = state.handle_proposal_message_full(
+                author,
+                verified_message.clone(),
+                FullTransactionList::empty(),
+                epoch_manager,
+                &val_epoch_map,
+                &election,
+            );
+            // state should not request blocksync
+            let bsync_cmds: Vec<_> = cmds
+                .iter()
+                .filter_map(|c| match c {
+                    ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                    _ => None,
+                })
+                .collect();
+            // state should have requested blocksync
+            assert!(bsync_cmds.len() == 1);
+
+            // verify state is now in epoch 2
+            assert_eq!(epoch_manager.current_epoch, Epoch(2));
+        }
+    }
 }

@@ -35,7 +35,7 @@ fn main() {
     let validator_stakes = Vec::from_iter(valset.get_members().clone());
 
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(
         Epoch(1),
         ValidatorSet::new(validator_stakes)

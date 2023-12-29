@@ -69,7 +69,7 @@ fn test_proposal_hash() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
-        ValidatorsEpochMapping::new();
+        ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
@@ -98,7 +98,7 @@ fn test_proposal_hash() {
 fn test_proposal_missing_tc() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     let author = NodeId(keypairs[0].pubkey());
 
@@ -127,7 +127,7 @@ fn test_proposal_author_not_sender() {
     let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(2);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
-        ValidatorsEpochMapping::new();
+        ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
 
     let author_keypair = &keypairs[0];
@@ -184,7 +184,7 @@ fn test_proposal_invalid_author() {
     )]);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
-        ValidatorsEpochMapping::new();
+        ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &author.0)
@@ -222,7 +222,7 @@ fn test_proposal_invalid_qc() {
         ),
     ]);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
 
     let validate_result = proposal.validate(&epoch_manager, &val_epoch_map);

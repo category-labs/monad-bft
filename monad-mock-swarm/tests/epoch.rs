@@ -80,7 +80,7 @@ mod test {
     fn verify_nodes_scheduled_epoch(
         nodes: Vec<&Node<NoSerSwarm>>,
         update_block_num: SeqNum,
-        epoch: Epoch,
+        expected_epoch: Epoch,
     ) -> Round {
         assert!(!nodes.is_empty());
 
@@ -99,8 +99,11 @@ mod test {
             let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
 
             // verify the epoch is scheduled correctly
-            assert_ne!(epoch_manager.get_epoch(epoch_start_round - Round(1)), epoch);
-            assert_eq!(epoch_manager.get_epoch(epoch_start_round), epoch);
+            assert_ne!(
+                epoch_manager.get_epoch(epoch_start_round - Round(1)),
+                expected_epoch
+            );
+            assert_eq!(epoch_manager.get_epoch(epoch_start_round), expected_epoch);
 
             epoch_start_rounds.push(epoch_start_round);
         }
@@ -184,7 +187,7 @@ mod test {
     #[test]
     fn schedule_epoch_after_blocksync() {
         let num_nodes = 4;
-        // need atleast 4 nodes (1 blackout node for TC)
+        // need atleast 4 nodes (1 blackout node)
         assert!(num_nodes >= 4, "need atleast 4 nodes");
 
         let delta = Duration::from_millis(2);

@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use monad_types::{Epoch, Round, SeqNum};
 
+/// Stores all the information related to epochs and its associated
+/// round numbers
 #[derive(Clone)]
 pub struct EpochManager {
     pub current_epoch: Epoch,
@@ -31,6 +33,7 @@ impl EpochManager {
         epoch_manager
     }
 
+    // Insert a new epoch start if the epoch doesn't exist already
     fn insert_epoch_start(&mut self, epoch: Epoch, round: Round) {
         assert!(
             !self.epoch_starts.contains_key(&epoch),
@@ -42,6 +45,7 @@ impl EpochManager {
         assert!(start_round.is_none());
     }
 
+    // Schedule next epoch start if the committed block is the last one in the current epoch
     pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
         if block_num % self.val_set_update_interval == SeqNum(0) {
             let epoch_start_round = block_round + self.epoch_start_delay;
@@ -49,6 +53,7 @@ impl EpochManager {
         }
     }
 
+    // Advance the current epoch if current round is in a new epoch
     pub fn handle_advance_epoch(&mut self, current_round: Round) {
         let round_epoch = self.get_epoch(current_round);
         if round_epoch > self.current_epoch {
@@ -56,6 +61,7 @@ impl EpochManager {
         }
     }
 
+    // Get the epoch of the given round
     pub fn get_epoch(&self, round: Round) -> Epoch {
         let epoch_start = self.epoch_starts.iter().rfind(|&k| k.1 <= &round).unwrap();
 

@@ -293,7 +293,7 @@ where
         let val_set_1 = VT::new(staking_list).expect("failed to create first validator set");
         let val_cert_pubkeys_1 = ValidatorMapping::new(voting_identities);
 
-        let mut val_epoch_map = ValidatorsEpochMapping::new();
+        let mut val_epoch_map = ValidatorsEpochMapping::default();
         val_epoch_map.insert(Epoch(1), val_set_1, val_cert_pubkeys_1);
 
         let election = LT::new();

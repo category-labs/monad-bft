@@ -31,10 +31,12 @@ pub trait MockableStateRootHash:
     fn ready(&self) -> bool;
 }
 
-/// An updater that immediately creates a StateRootHash update
-/// when it receives a ledger commit command.
+/// An updater that immediately creates a StateRootHash update and
+/// the ValidatorData for the next epoch when it receives a
+/// ledger commit command.
 /// Goal is to mimic the behaviour of execution receiving a commit
-/// and generating the state root hash and sending it back to consensus
+/// and generating the state root hash and updating the staking contract,
+/// and sending it back to consensus.
 pub struct MockStateRootHashNop<O, ST, SCT: SignatureCollection> {
     state_root_update: Option<(SeqNum, Hash)>,
 
@@ -152,6 +154,9 @@ where
     }
 }
 
+/// An updater that works the same as MockStateRootHashNop but switches
+/// between two sets of validators every epoch.
+/// Goal is to mimic new validators joining and old validators leaving.
 pub struct MockStateRootHashSwap<O, ST, SCT: SignatureCollection> {
     state_root_update: Option<(SeqNum, Hash)>,
 
