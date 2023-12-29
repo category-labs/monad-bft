@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, Instant},
 };
 
@@ -200,10 +200,10 @@ where
     Service::new(
         ServiceConfig {
             me: NodeId(identity.pubkey()),
-            server_address: generate_bind_address(
+            server_address: SocketAddr::V4(SocketAddrV4::new(
                 network_config.bind_address_host,
                 network_config.bind_address_port,
-            ),
+            )),
             quinn_config: SafeQuinnConfig::new(
                 identity,
                 Duration::from_millis(network_config.max_rtt_ms),
@@ -212,10 +212,15 @@ where
             known_addresses: peers
                 .iter()
                 .map(|peer| {
-                    (
-                        NodeId(peer.secp256k1_pubkey.to_owned()),
-                        generate_bind_address(peer.ip, peer.port),
-                    )
+                    let address = peer
+                        .address
+                        .to_socket_addrs()
+                        .unwrap_or_else(|err| {
+                            panic!("unable to resolve address={}, err={:?}", peer.address, err)
+                        })
+                        .next()
+                        .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
+                    (NodeId(peer.secp256k1_pubkey.to_owned()), address)
                 })
                 .collect(),
         },
@@ -228,8 +233,4 @@ where
         }
         .build(),
     )
-}
-
-fn generate_bind_address(host: Ipv4Addr, port: u16) -> SocketAddr {
-    SocketAddr::V4(SocketAddrV4::new(host, port))
 }
