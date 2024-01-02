@@ -14,7 +14,6 @@ monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-epoch = { path = "../monad-epoch" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }

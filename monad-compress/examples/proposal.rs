@@ -7,15 +7,15 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::SecpSignature;
-use monad_epoch::epoch_manager::EpochManager;
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
 use monad_types::{Epoch, Round, SeqNum, Serializable};
 use monad_validator::{
+    epoch_manager::EpochManager,
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSet, ValidatorSetType},
-    validators_epoch_map::ValidatorsEpochMapping,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use peak_alloc::PeakAlloc;
 use rand_chacha::rand_core::{RngCore, SeedableRng};

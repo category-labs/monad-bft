@@ -1,8 +1,10 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_epoch::epoch_manager::EpochManager;
 use monad_types::{NodeId, Round};
 
-use crate::{validator_set::ValidatorSetType, validators_epoch_map::ValidatorsEpochMapping};
+use crate::{
+    epoch_manager::EpochManager, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 // VotingPower is i64
 pub trait LeaderElection {

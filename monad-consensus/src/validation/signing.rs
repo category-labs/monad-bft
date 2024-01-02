@@ -14,14 +14,14 @@ use monad_crypto::{
     hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, PubKey},
 };
-use monad_epoch::epoch_manager::EpochManager;
 use monad_proto::proto::message::{
     proto_block_sync_message, proto_unverified_consensus_message, ProtoBlockSyncMessage,
     ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::{
-    validator_set::ValidatorSetType, validators_epoch_map::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::{
@@ -127,7 +127,7 @@ impl<S: MessageSignature, M: Hashable + GetRound> Unverified<S, M> {
         let epoch = epoch_manager.get_epoch(self.obj.get_round());
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
-            .ok_or(Error::ValDataUnavailable)?;
+            .ok_or(Error::ValidatorDataUnavailable)?;
 
         let author = verify_author(
             validator_set.get_members(),
@@ -343,20 +343,20 @@ where
         let tc_epoch = epoch_manager.get_epoch(tc.round);
         let validator_set = val_epoch_map
             .get_val_set(&tc_epoch)
-            .ok_or(Error::ValDataUnavailable)?;
+            .ok_or(Error::ValidatorDataUnavailable)?;
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&tc_epoch)
-            .ok_or(Error::ValDataUnavailable)?;
+            .ok_or(Error::ValidatorDataUnavailable)?;
         verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
 
     let qc_epoch = epoch_manager.get_epoch(qc.info.vote.round);
     let validator_set = val_epoch_map
         .get_val_set(&qc_epoch)
-        .ok_or(Error::ValDataUnavailable)?;
+        .ok_or(Error::ValidatorDataUnavailable)?;
     let validator_cert_pubkeys = val_epoch_map
         .get_cert_pubkeys(&qc_epoch)
-        .ok_or(Error::ValDataUnavailable)?;
+        .ok_or(Error::ValidatorDataUnavailable)?;
     verify_qc(validator_set, validator_cert_pubkeys, qc)?;
 
     Ok(())
@@ -538,15 +538,15 @@ mod test {
         hasher::{Hash, Hashable, Hasher, HasherType},
         secp256k1::{KeyPair, SecpSignature},
     };
-    use monad_epoch::epoch_manager::EpochManager;
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
     use monad_validator::{
+        epoch_manager::EpochManager,
         validator_set::{ValidatorSet, ValidatorSetType},
-        validators_epoch_map::ValidatorsEpochMapping,
+        validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
 

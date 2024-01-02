@@ -24,14 +24,15 @@ use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::KeyPair,
 };
-use monad_epoch::epoch_manager::EpochManager;
 use monad_state::{
     convert::interface::{deserialize_monad_message, serialize_verified_monad_message},
     MonadMessage, VerifiedMonadMessage,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
-use monad_validator::validators_epoch_map::ValidatorsEpochMapping;
+use monad_validator::{
+    epoch_manager::EpochManager, validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 fn make_tc<SCT: SignatureCollection>(
     tc_round: Round,

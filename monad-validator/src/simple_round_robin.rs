@@ -1,10 +1,9 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_epoch::epoch_manager::EpochManager;
 use monad_types::{NodeId, Round};
 
 use crate::{
-    leader_election::LeaderElection, validator_set::ValidatorSetType,
-    validators_epoch_map::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 pub struct SimpleRoundRobin {}

@@ -13,7 +13,6 @@ use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::{KeyPair, SecpSignature},
 };
-use monad_epoch::epoch_manager::EpochManager;
 use monad_executor_glue::{
     convert::interface::{deserialize_event, serialize_event},
     ConsensusEvent, MonadEvent,
@@ -25,10 +24,11 @@ use monad_testutil::{
 };
 use monad_types::{BlockId, Epoch, Round, SeqNum};
 use monad_validator::{
+    epoch_manager::EpochManager,
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
     validator_set::{ValidatorSet, ValidatorSetType},
-    validators_epoch_map::ValidatorsEpochMapping,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 type SignatureCollectionType = MultiSig<SecpSignature>;

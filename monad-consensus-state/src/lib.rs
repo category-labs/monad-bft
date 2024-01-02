@@ -23,13 +23,12 @@ use monad_crypto::{
     hasher::Hash,
     secp256k1::{KeyPair, PubKey},
 };
-use monad_epoch::epoch_manager::EpochManager;
 use monad_eth_types::EthAddress;
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
-    leader_election::LeaderElection, validator_set::ValidatorSetType,
-    validators_epoch_map::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use tracing::{debug, trace, warn};
 
@@ -154,7 +153,7 @@ where
         p: ProposalMessage<SCT>,
         txns: FullTransactionList,
         epoch_manager: &mut EpochManager,
-        validators_epoch_mapping: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
@@ -341,8 +340,6 @@ where
                 .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
                 .into_iter();
             cmds.extend(advance_round_cmds);
-
-            epoch_manager.handle_advance_epoch(self.pacemaker.get_current_round());
         }
 
         let round = self.pacemaker.get_current_round();
@@ -541,8 +538,6 @@ where
                 .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd));
             cmds.extend(advance_round_cmds);
 
-            epoch_manager.handle_advance_epoch(self.pacemaker.get_current_round());
-
             if self.nodeid
                 == election.get_leader(
                     self.pacemaker.get_current_round(),
@@ -727,8 +722,6 @@ where
 
         cmds.extend(self.request_block_if_missing_ancestor(qc, validators));
 
-        epoch_manager.handle_advance_epoch(self.pacemaker.get_current_round());
-
         cmds
     }
 
@@ -867,7 +860,6 @@ mod test {
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
-    use monad_epoch::epoch_manager::EpochManager;
     use monad_eth_types::EthAddress;
     use monad_testutil::{
         proposal::ProposalGen,
@@ -876,10 +868,11 @@ mod test {
     };
     use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
     use monad_validator::{
+        epoch_manager::EpochManager,
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
         validator_set::{ValidatorSet, ValidatorSetType},
-        validators_epoch_map::ValidatorsEpochMapping,
+        validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
     use tracing_test::traced_test;
@@ -2902,9 +2895,10 @@ mod test {
             blocks.push(verified_message.block);
         }
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert!(epoch_manager.current_epoch == Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert!(current_epoch == Epoch(1));
 
             let expected_epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
             // verify that the start of next epoch is scheduled correctly
@@ -2970,9 +2964,10 @@ mod test {
         let expected_epoch_start_round =
             update_block_round + propgen_epoch_manager.epoch_start_delay;
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
@@ -3023,9 +3018,10 @@ mod test {
             blocks.push(verified_message.block);
         }
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
         }
 
         // proposal for Round(expected_epoch_start_round)
@@ -3049,7 +3045,8 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
+        let current_epoch = epoch_managers[0].get_epoch(states[0].get_current_round());
+        assert_eq!(current_epoch, Epoch(2));
     }
 
     #[test]
@@ -3109,9 +3106,10 @@ mod test {
         let expected_epoch_start_round =
             update_block_round + propgen_epoch_manager.epoch_start_delay;
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
@@ -3133,9 +3131,10 @@ mod test {
             let _ = propgen.next_tc(&keys, &certkeys, val_set, val_mapping);
         }
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
         }
 
         // proposal for Round(expected_epoch_start_round)
@@ -3159,7 +3158,8 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
+        let current_epoch = epoch_managers[0].get_epoch(states[0].get_current_round());
+        assert_eq!(current_epoch, Epoch(2));
     }
 
     #[test]
@@ -3220,9 +3220,10 @@ mod test {
         let expected_epoch_start_round =
             update_block_round + propgen_epoch_manager.epoch_start_delay;
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
@@ -3273,9 +3274,10 @@ mod test {
             blocks.push(verified_message.block);
         }
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
         }
 
         let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
@@ -3298,7 +3300,8 @@ mod test {
             );
         }
 
-        assert_eq!(epoch_managers[0].current_epoch, Epoch(2));
+        let current_epoch = epoch_managers[0].get_epoch(states[0].get_current_round());
+        assert_eq!(current_epoch, Epoch(2));
     }
 
     #[test]
@@ -3403,7 +3406,8 @@ mod test {
 
         // state 1 should have committed update_block and scheduled next epoch
         // verify state 1 is still in epoch 1
-        assert_eq!(epoch_manager_1.current_epoch, Epoch(1));
+        let state_1_epoch = epoch_manager_1.get_epoch(state_1.get_current_round());
+        assert_eq!(state_1_epoch, Epoch(1));
 
         // verify state 1 scheduled the next epoch correctly
         assert_eq!(
@@ -3416,7 +3420,8 @@ mod test {
         );
 
         // state 2 should still not have scheduled next epoch since it didn't commit update_block
-        assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
+        let state_2_epoch = epoch_manager_2.get_epoch(state_2.get_current_round());
+        assert_eq!(state_2_epoch, Epoch(1));
         assert_eq!(
             epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
             Epoch(1)
@@ -3472,7 +3477,8 @@ mod test {
 
         // blocks aren't committed immediately after blocksync is finished
         // state 2 should not have scheduled the next epoch yet
-        assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
+        let state_2_epoch = epoch_manager_2.get_epoch(state_2.get_current_round());
+        assert_eq!(state_2_epoch, Epoch(1));
         assert_eq!(
             epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
             Epoch(1)
@@ -3514,7 +3520,8 @@ mod test {
         assert!(bsync_cmds.is_empty());
 
         // state 2 should have committed the update block and scheduled the next epoch
-        assert_eq!(epoch_manager_2.current_epoch, Epoch(1));
+        let state_2_epoch = epoch_manager_2.get_epoch(state_2.get_current_round());
+        assert_eq!(state_2_epoch, Epoch(1));
         assert_eq!(
             epoch_manager_2.get_epoch(expected_epoch_start_round - Round(1)),
             Epoch(1)
@@ -3582,9 +3589,10 @@ mod test {
             blocks.push(verified_message.block);
         }
 
-        for epoch_manager in epoch_managers.iter() {
+        for (state, epoch_manager) in states.iter().zip(epoch_managers.iter()) {
             // verify all states are still in epoch 1
-            assert_eq!(epoch_manager.current_epoch, Epoch(1));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(1));
 
             // verify that the start of next epoch is scheduled correctly
             assert_eq!(
@@ -3643,7 +3651,8 @@ mod test {
             assert!(bsync_cmds.len() == 1);
 
             // verify state is now in epoch 2
-            assert_eq!(epoch_manager.current_epoch, Epoch(2));
+            let current_epoch = epoch_manager.get_epoch(state.get_current_round());
+            assert_eq!(current_epoch, Epoch(2));
         }
     }
 }

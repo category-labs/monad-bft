@@ -25,7 +25,6 @@ use monad_consensus_types::{
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
-use monad_epoch::epoch_manager::EpochManager;
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
@@ -35,8 +34,8 @@ use monad_executor_glue::{
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
 use monad_validator::{
-    leader_election::LeaderElection, validator_set::ValidatorSetType,
-    validators_epoch_map::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::blocksync::BlockSyncResponder;
@@ -120,7 +119,7 @@ where
             validation::Error::InvalidSeqNum => {
                 inc_count!(invalid_seq_num)
             }
-            validation::Error::ValDataUnavailable => {
+            validation::Error::ValidatorDataUnavailable => {
                 inc_count!(val_data_unavailable)
             }
         };
@@ -355,9 +354,12 @@ where
                             })
                             .collect(),
                         TimeoutVariant::BlockSync(bid) => {
+                            let current_epoch = self
+                                .epoch_manager
+                                .get_epoch(self.consensus.get_current_round());
                             let val_set = self
                                 .val_epoch_map
-                                .get_val_set(&self.epoch_manager.current_epoch)
+                                .get_val_set(&current_epoch)
                                 .expect("current validator set should be in the map");
                             self.consensus.handle_block_sync_tmo(bid, val_set)
                         }
@@ -545,9 +547,12 @@ where
                         }
                         .into_inner();
 
+                        let current_epoch = self
+                            .epoch_manager
+                            .get_epoch(self.consensus.get_current_round());
                         let val_set = self
                             .val_epoch_map
-                            .get_val_set(&self.epoch_manager.current_epoch)
+                            .get_val_set(&current_epoch)
                             .expect("current validator set should be in the map");
                         self.consensus.handle_block_sync(
                             NodeId(sender),

@@ -16,7 +16,6 @@ lz4 = { workspace = true }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-epoch = { path = "../monad-epoch" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }

@@ -4238,7 +4238,6 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-state",
  "monad-testutil",
  "monad-types",
@@ -4254,7 +4253,6 @@ dependencies = [
  "bytes",
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-eth-types",
  "monad-proto",
  "monad-state",
@@ -4276,7 +4274,6 @@ dependencies = [
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-eth-types",
  "monad-testutil",
  "monad-tracing-counter",
@@ -4327,13 +4324,6 @@ dependencies = [
  "x509-parser 0.15.1",
  "zerocopy 0.6.5",
  "zeroize",
-]
-
-[[package]]
-name = "monad-epoch"
-version = "0.1.0"
-dependencies = [
- "monad-types",
 ]
 
 [[package]]
@@ -4497,7 +4487,6 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4625,7 +4614,6 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4683,7 +4671,6 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -4803,7 +4790,6 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus-types",
  "monad-crypto",
- "monad-epoch",
  "monad-testutil",
  "monad-types",
  "tracing",

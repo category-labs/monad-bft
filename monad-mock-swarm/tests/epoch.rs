@@ -4,7 +4,7 @@ mod test {
     use std::{collections::HashSet, time::Duration};
 
     use itertools::Itertools;
-    use monad_consensus_state::ConsensusState;
+    use monad_consensus_state::{ConsensusProcess, ConsensusState};
     use monad_consensus_types::{
         multi_sig::MultiSig, payload::StateRoot, transaction_validator::MockValidator,
     };
@@ -73,7 +73,11 @@ mod test {
         assert!(!nodes.is_empty());
 
         for node in nodes {
-            assert!(node.state.epoch_manager().current_epoch == epoch);
+            let current_epoch = node
+                .state
+                .epoch_manager()
+                .get_epoch(node.state.consensus().get_current_round());
+            assert!(current_epoch == epoch);
         }
     }
 

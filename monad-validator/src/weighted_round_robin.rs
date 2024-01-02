@@ -1,12 +1,14 @@
 use std::{cmp::Ordering, fmt::Debug};
 
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_epoch::epoch_manager::EpochManager;
 use monad_types::{NodeId, Round, Stake};
 use tracing::warn;
 
 use super::leader_election::LeaderElection;
-use crate::{validator_set::ValidatorSetType, validators_epoch_map::ValidatorsEpochMapping};
+use crate::{
+    epoch_manager::EpochManager, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 #[derive(Eq, Clone, Copy, Debug)]
 struct Voter {

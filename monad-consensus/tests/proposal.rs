@@ -14,7 +14,6 @@ use monad_crypto::{
     hasher::Hash,
     secp256k1::{KeyPair, PubKey},
 };
-use monad_epoch::epoch_manager::EpochManager;
 use monad_eth_types::EthAddress;
 use monad_testutil::{
     signing::{get_key, MockSignatures, TestSigner},
@@ -22,8 +21,9 @@ use monad_testutil::{
 };
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::{
+    epoch_manager::EpochManager,
     validator_set::{ValidatorSet, ValidatorSetType},
-    validators_epoch_map::ValidatorsEpochMapping,
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 type SignatureCollectionType = MockSignatures;
