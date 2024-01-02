@@ -47,7 +47,7 @@ opt-level = 1
 debug = true
 
 [workspace.dependencies]
-libp2p = { git = "https://github.com/monad-crypto/rust-libp2p.git", rev = "8ca605d9" }
+libp2p = "0.52"
 reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 
