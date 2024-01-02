@@ -29,8 +29,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncResponseMessage, GetRound, ProposalMessage, RequestBlockSyncMessage,
-            TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
+            VoteMessage,
         },
     },
     validation::message::well_formed,
@@ -115,16 +115,18 @@ impl<S, M> From<Verified<S, Validated<M>>> for Unverified<S, Unvalidated<M>> {
     }
 }
 
-impl<S: MessageSignature, M: Hashable + GetRound> Unverified<S, M> {
-    pub fn verify<VT: ValidatorSetType, SCT: SignatureCollection>(
+impl<S: MessageSignature, SCT: SignatureCollection>
+    Unverified<S, Unvalidated<ConsensusMessage<SCT>>>
+{
+    pub fn verify<VT: ValidatorSetType>(
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         sender: &PubKey,
-    ) -> Result<Verified<S, M>, Error> {
+    ) -> Result<Verified<S, Unvalidated<ConsensusMessage<SCT>>>, Error> {
         let msg = HasherType::hash_object(&self.obj);
 
-        let epoch = epoch_manager.get_epoch(self.obj.get_round());
+        let epoch = epoch_manager.get_epoch(self.obj.obj.get_round());
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
             .ok_or(Error::ValidatorDataUnavailable)?;
@@ -202,12 +204,6 @@ impl<M> From<Validated<M>> for Unvalidated<M> {
 impl<M: Hashable> Hashable for Unvalidated<M> {
     fn hash(&self, state: &mut impl Hasher) {
         self.obj.hash(state)
-    }
-}
-
-impl<M: GetRound> GetRound for Unvalidated<M> {
-    fn get_round(&self) -> Round {
-        self.obj.get_round()
     }
 }
 

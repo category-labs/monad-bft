@@ -6,11 +6,7 @@ use monad_consensus_types::{
     voting::Vote,
 };
 use monad_crypto::hasher::{Hashable, Hasher, HasherType};
-use monad_types::{BlockId, EnumDiscriminant, Round};
-
-pub trait GetRound {
-    fn get_round(&self) -> Round;
-}
+use monad_types::{BlockId, EnumDiscriminant};
 
 /// Consensus protocol vote message
 ///
@@ -53,12 +49,6 @@ impl<SCT: SignatureCollection> VoteMessage<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> GetRound for VoteMessage<SCT> {
-    fn get_round(&self) -> Round {
-        self.vote.vote_info.round
-    }
-}
-
 /// Consensus protocol timeout message
 ///
 /// The signature is a protocol signature,can be collected into the
@@ -86,12 +76,6 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> GetRound for TimeoutMessage<SCT> {
-    fn get_round(&self) -> Round {
-        self.timeout.tminfo.round
-    }
-}
-
 /// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalMessage<T> {
@@ -104,12 +88,6 @@ pub struct ProposalMessage<T> {
 impl<T: SignatureCollection> Hashable for ProposalMessage<T> {
     fn hash(&self, state: &mut impl Hasher) {
         self.block.hash(state);
-    }
-}
-
-impl<SCT: SignatureCollection> GetRound for ProposalMessage<SCT> {
-    fn get_round(&self) -> Round {
-        self.block.round
     }
 }
 
