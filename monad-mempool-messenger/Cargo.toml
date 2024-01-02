@@ -11,7 +11,7 @@ bench = false
 [dependencies]
 monad-mempool-proto = { path = "../monad-mempool-proto" }
 
-libp2p = { workspace = true, features = ["dns", "gossipsub", "macros", "mdns", "tcp", "tokio", "yamux", "noise", "websocket", "mplex"] }
+libp2p = { workspace = true, features = ["dns", "gossipsub", "macros", "mdns", "tcp", "tokio", "yamux", "noise", "websocket"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros"] }
