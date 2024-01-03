@@ -21,6 +21,7 @@ pub struct NodeState {
     pub secp256k1_identity: KeyPair,
     pub bls12_381_identity: BlsKeyPair,
 
+    pub wal_path: PathBuf,
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: Option<PathBuf>,
     pub otel_context: Option<opentelemetry::Context>,
@@ -60,6 +61,7 @@ impl NodeState {
             secp256k1_identity: secp_key,
             bls12_381_identity: bls_key,
 
+            wal_path: cli.wal_path,
             execution_ledger_path: cli.execution_ledger_path,
             mempool_ipc_path: cli.mempool_ipc_path,
             otel_context,

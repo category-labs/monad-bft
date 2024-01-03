@@ -33,6 +33,10 @@ use monad_updaters::{
     timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_wal::{
+    wal::{WALogger, WALoggerConfig},
+    PersistenceLogger,
+};
 use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -150,6 +154,18 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         ),
     };
 
+    let Ok((mut wal, wal_events)) = WALogger::new(WALoggerConfig {
+        sync: true,
+        file_path: node_state.wal_path.clone(),
+    }) else {
+        event!(
+            Level::ERROR,
+            path = node_state.wal_path.as_path().display().to_string(),
+            "failed to initialize wal",
+        );
+        return Err(());
+    };
+
     let (mut state, init_commands) = MonadState::init(MonadConfig {
         transaction_validator: MockValidator {},
         validators,
@@ -166,8 +182,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             delta: Duration::from_secs(1),
         },
     });
-
     executor.exec(init_commands);
+
+    for wal_event in wal_events {
+        let cmds = state.update(wal_event);
+        executor.exec(cmds);
+    }
 
     let total_start = Instant::now();
     let mut start = total_start;
@@ -196,6 +216,19 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         "parent executor returned none!"
                     );
                     return Err(());
+                };
+
+                {
+                    let _ledger_span = ledger_span.enter();
+                    let _wal_event_span = tracing::info_span!("wal_event_span", ?event).entered();
+                    if let Err(err) = wal.push(&event) {
+                        event!(
+                            Level::ERROR,
+                            ?err,
+                            "failed to push to wal",
+                        );
+                        return Err(());
+                    }
                 };
 
                 let commands = {

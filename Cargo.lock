@@ -3982,6 +3982,7 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
+ "monad-wal",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
