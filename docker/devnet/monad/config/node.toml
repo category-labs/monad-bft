@@ -12,10 +12,12 @@ peers = []
 
 # [[bootstrap.peers]]
 # address = "x.x.x.x:xxxx"
+# mempool_address = "x.x.x.x:xxxx"
 # secp256k1_pubkey = "..."
 
 [network]
 bind_address_host = "0.0.0.0"
 bind_address_port = 8888
+bind_address_mempool_port = 8889
 max_rtt_ms = 300
 max_mbps = 1000

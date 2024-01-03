@@ -1,11 +1,7 @@
-use std::error::Error;
+use std::{error::Error, net::Ipv4Addr};
 
 use libp2p::{
-    bytes::Bytes,
-    futures::stream::StreamExt,
-    gossipsub, identity, mdns,
-    swarm::{dial_opts::DialOpts, NetworkBehaviour, SwarmBuilder, SwarmEvent},
-    PeerId, Swarm,
+    bytes::Bytes, futures::stream::StreamExt, gossipsub, identity, swarm::SwarmEvent, PeerId, Swarm,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{event, instrument, Level};
@@ -13,16 +9,12 @@ use tracing::{event, instrument, Level};
 const TOPIC_NAME: &str = "monad-mempool";
 pub const GOSSIP_SUB_DEFAULT_BUFFER_SIZE: usize = 64;
 
-#[derive(NetworkBehaviour)]
-struct GossipSubBehavior {
-    gossipsub: gossipsub::Behaviour,
-    mdns: mdns::tokio::Behaviour,
-}
-
 #[instrument]
 pub fn start_gossipsub<T: 'static + prost::Message + Default>(
     local_key: identity::Keypair,
-    port: u16,
+    bind_address: Ipv4Addr,
+    bind_port: u16,
+    bootstrap_peers: Vec<(Ipv4Addr, u16)>,
     buffer_size: usize,
 ) -> Result<
     (
@@ -42,8 +34,6 @@ pub fn start_gossipsub<T: 'static + prost::Message + Default>(
         // The config is fixed, so this should never fail.
         ?;
 
-    let mdns_config = mdns::Config::default();
-
     let local_peer_id = PeerId::from(local_key.public());
 
     // Channel for receiving messages from external peers -> local peer
@@ -53,23 +43,26 @@ pub fn start_gossipsub<T: 'static + prost::Message + Default>(
     // When the swarm is subscribed to a peer, this channel is notified.
     let (connected_tx, connected_rx) = mpsc::channel::<()>(buffer_size);
 
-    // TODO: Use a custom transport.
-    let transport = libp2p::tokio_development_transport(local_key.clone())?;
-
-    let mdns = mdns::tokio::Behaviour::new(mdns_config, local_peer_id)?;
-
     let mut gossipsub = gossipsub::Behaviour::new(
-        gossipsub::MessageAuthenticity::Signed(local_key),
+        gossipsub::MessageAuthenticity::Signed(local_key.clone()),
         gossipsub_config,
     )?;
     gossipsub.subscribe(&topic)?;
 
-    let behavior = GossipSubBehavior { gossipsub, mdns };
+    let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
+        .with_tokio()
+        .with_quic()
+        .with_behaviour(|_| gossipsub)?
+        .build();
 
-    let mut swarm = SwarmBuilder::with_tokio_executor(transport, behavior, local_peer_id).build();
-
-    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{port}", port = port).parse()?)?;
+    swarm.listen_on(format!("/ip4/{}/udp/{}/quic-v1", bind_address, bind_port).parse()?)?;
     event! {Level::INFO, "Started listening..."}
+
+    for (dial_address, dial_port) in bootstrap_peers {
+        swarm.add_external_address(
+            format!("/ip4/{}/udp/{}/quic-v1", dial_address, dial_port).parse()?,
+        )
+    }
 
     let listen_handle = tokio::spawn(gossipsub_listen(
         swarm,
@@ -83,7 +76,7 @@ pub fn start_gossipsub<T: 'static + prost::Message + Default>(
 }
 
 async fn gossipsub_listen<T: prost::Message + Default>(
-    mut swarm: Swarm<GossipSubBehavior>,
+    mut swarm: Swarm<gossipsub::Behaviour>,
     external_tx: mpsc::Sender<T>,
     mut internal_rx: mpsc::Receiver<T>,
     connected_tx: mpsc::Sender<()>,
@@ -93,25 +86,11 @@ async fn gossipsub_listen<T: prost::Message + Default>(
         tokio::select! {
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::Behaviour(GossipSubBehaviorEvent::Mdns(mdns::Event::Discovered(list))) => {
-                        for (peer_id, _multiaddr) in list {
-                            event!(Level::INFO, %peer_id, "mDNS discovered new peer");
-                            if let Err(e) = swarm.dial(DialOpts::peer_id(peer_id).build()) {
-                                event!{Level::ERROR, %e, "Failed to dial peer"};
-                            }
-                        }
-                    },
-                    SwarmEvent::Behaviour(GossipSubBehaviorEvent::Mdns(mdns::Event::Expired(list))) => {
-                        for (peer_id, _multiaddr) in list {
-                            event!(Level::INFO, %peer_id, "mDNS discover peer has expired");
-                            // We do not need to explicitly remove peers because this is handled by gossipsub.
-                        }
-                    },
-                    SwarmEvent::Behaviour(GossipSubBehaviorEvent::Gossipsub(gossipsub::Event::Message {
+                    SwarmEvent::Behaviour(gossipsub::Event::Message {
                         propagation_source: peer_id,
                         message_id: id,
                         message,
-                    })) => {
+                    }) => {
                         event!(
                             Level::INFO,
                             %peer_id,
@@ -130,9 +109,9 @@ async fn gossipsub_listen<T: prost::Message + Default>(
                             }
                         }
                     },
-                    SwarmEvent::Behaviour(GossipSubBehaviorEvent::Gossipsub(gossipsub::Event::Subscribed {
+                    SwarmEvent::Behaviour(gossipsub::Event::Subscribed {
                         ..
-                    })) => {
+                    }) => {
                         if !connected_tx.is_closed() {
                             if let Err(err) = connected_tx.try_send(()) {
                                 event!{Level::ERROR, %err, "Failed to notify connected channel"};
@@ -145,7 +124,7 @@ async fn gossipsub_listen<T: prost::Message + Default>(
             msg = internal_rx.recv() => {
                 if let Some(msg) = msg {
                     let encoded = prost::Message::encode_to_vec(&msg);
-                    if let Err(err) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), encoded) {
+                    if let Err(err) = swarm.behaviour_mut().publish(topic.clone(), encoded) {
                         event!{Level::ERROR, %err, "Failed to publish message"}
                     }
                 }
