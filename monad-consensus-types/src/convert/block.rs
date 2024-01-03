@@ -8,7 +8,7 @@ use monad_proto::{
 };
 
 use crate::{
-    block::{Block, FullBlock, UnverifiedFullBlock},
+    block::{Block, UnverifiedBlock},
     payload::{
         Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
         TransactionHashList,
@@ -75,37 +75,26 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> From<&UnverifiedFullBlock<SCT>> for ProtoUnverifiedFullBlock {
-    fn from(value: &UnverifiedFullBlock<SCT>) -> Self {
+impl<SCT: SignatureCollection> From<&UnverifiedBlock<SCT>> for ProtoUnverifiedBlock {
+    fn from(value: &UnverifiedBlock<SCT>) -> Self {
         Self {
-            block: Some((&value.block).into()),
-            full_txs: value.full_txs.bytes().clone(),
+            block: Some((&value.0).into()),
         }
     }
 }
 
-impl<SCT: SignatureCollection> TryFrom<ProtoUnverifiedFullBlock> for UnverifiedFullBlock<SCT> {
+impl<SCT: SignatureCollection> TryFrom<ProtoUnverifiedBlock> for UnverifiedBlock<SCT> {
     type Error = ProtoError;
 
-    fn try_from(value: ProtoUnverifiedFullBlock) -> Result<Self, Self::Error> {
-        Ok(Self {
-            block: value
+    fn try_from(value: ProtoUnverifiedBlock) -> Result<Self, Self::Error> {
+        Ok(Self(
+            value
                 .block
                 .ok_or(Self::Error::MissingRequiredField(
-                    "UnverifiedFullBlock<AggregateSignatures>.block".to_owned(),
+                    "UnverifiedBlock<AggregateSignatures>.block".to_owned(),
                 ))?
                 .try_into()?,
-            full_txs: FullTransactionList::new(value.full_txs),
-        })
-    }
-}
-
-impl<SCT: SignatureCollection> From<&FullBlock<SCT>> for ProtoUnverifiedFullBlock {
-    fn from(value: &FullBlock<SCT>) -> Self {
-        Self {
-            block: Some(value.get_block().into()),
-            full_txs: value.get_full_txs().bytes().clone(),
-        }
+        ))
     }
 }
 
@@ -199,7 +188,7 @@ impl TryFrom<ProtoExecutionArtifacts> for ExecutionArtifacts {
 impl From<&Payload> for ProtoPayload {
     fn from(value: &Payload) -> Self {
         ProtoPayload {
-            txns: Some((&(value.txns)).into()),
+            txns: value.txns.bytes().clone(),
             header: Some((&(value.header)).into()),
             seq_num: Some((&(value.seq_num)).into()),
             beneficiary: value.beneficiary.0.to_vec().into(),
@@ -212,10 +201,7 @@ impl TryFrom<ProtoPayload> for Payload {
     type Error = ProtoError;
     fn try_from(value: ProtoPayload) -> Result<Self, Self::Error> {
         Ok(Self {
-            txns: value
-                .txns
-                .ok_or(Self::Error::MissingRequiredField("Payload.txns".to_owned()))?
-                .try_into()?,
+            txns: FullTransactionList::new(value.txns),
             header: value
                 .header
                 .ok_or(Self::Error::MissingRequiredField(

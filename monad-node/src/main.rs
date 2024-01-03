@@ -9,7 +9,7 @@ use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block_validator::MockValidator, bls::BlsSignatureCollection, payload::NopStateRoot,
-    validator_data::ValidatorData,
+    txpool::EthTxPool, validator_data::ValidatorData,
 };
 use monad_crypto::{
     bls12_381::BlsPubKey,
@@ -27,7 +27,6 @@ use monad_updaters::{
     checkpoint::MockCheckpoint,
     execution_ledger::MonadFileLedger,
     ledger::MockLedger,
-    mempool::MonadMempool,
     parent::ParentExecutor,
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
     timer::TokioTimer,
@@ -64,6 +63,7 @@ type MonadState = monad_state::MonadState<
     ValidatorSet,
     // FIXME weighted round robin
     SimpleRoundRobin,
+    EthTxPool,
 >;
 type MonadConfig = <MonadState as State>::Config;
 
@@ -144,7 +144,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        mempool: MonadMempool::new(mempool_controller_config),
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),

@@ -130,6 +130,12 @@ impl std::fmt::Debug for FullTransactionList {
     }
 }
 
+impl AsRef<[u8]> for FullTransactionList {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// randao_reveal uses a proposer's public key to contribute randomness
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct RandaoReveal(pub Vec<u8>);
@@ -160,7 +166,7 @@ impl AsRef<[u8]> for RandaoReveal {
 /// but not in the core bft consensus protocol
 #[derive(Clone, PartialEq, Eq)]
 pub struct Payload {
-    pub txns: TransactionHashList,
+    pub txns: FullTransactionList,
     pub header: ExecutionArtifacts,
     pub seq_num: SeqNum,
     pub beneficiary: EthAddress,
@@ -221,7 +227,7 @@ pub enum StateRootResult {
 
 /// Special hash value used in proposals for the first delay-num blocks
 /// from genesis when there isn't a valid state root hash to include.
-const INITIAL_DELAY_STATE_ROOT_HASH: Hash = Hash([0; 32]);
+pub const INITIAL_DELAY_STATE_ROOT_HASH: Hash = Hash([0; 32]);
 
 #[derive(Debug, Clone)]
 pub struct StateRoot {
@@ -315,6 +321,27 @@ impl StateRootValidator for NopStateRoot {
 
     fn get_next_state_root(&self, _seq_num: SeqNum) -> Option<Hash> {
         Some(Hash([0; 32]))
+    }
+
+    fn validate(&self, _seq_num: SeqNum, _block_state_root_hash: Hash) -> StateRootResult {
+        StateRootResult::Success
+    }
+
+    fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
+}
+
+#[derive(Debug, Clone)]
+pub struct MissingNextStateRoot {}
+
+impl StateRootValidator for MissingNextStateRoot {
+    fn new(_delay: SeqNum) -> Self {
+        Self {}
+    }
+
+    fn add_state_root(&mut self, _seq_num: SeqNum, _root_hash: Hash) {}
+
+    fn get_next_state_root(&self, _seq_num: SeqNum) -> Option<Hash> {
+        None
     }
 
     fn validate(&self, _seq_num: SeqNum, _block_state_root_hash: Hash) -> StateRootResult {

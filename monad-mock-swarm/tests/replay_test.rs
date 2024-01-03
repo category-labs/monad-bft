@@ -3,14 +3,15 @@ use std::time::Duration;
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
     block_validator::MockValidator, message_signature::MessageSignature, multi_sig::MultiSig,
-    payload::StateRoot, signature_collection::SignatureCollection,
+    payload::StateRoot, signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockExecutor, MockMempool, MockMempoolConfig},
+    mock::MockExecutor,
     mock_swarm::{Node, Nodes, UntilTerminator},
+    mock_txpool::MockTxPool,
     swarm_relation::SwarmRelation,
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
@@ -48,6 +49,7 @@ impl SwarmRelation for ReplaySwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -59,9 +61,6 @@ impl SwarmRelation for ReplaySwarm {
     type Logger =
         MockMemLogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
-
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
         Self::SignatureType,
@@ -69,20 +68,21 @@ impl SwarmRelation for ReplaySwarm {
     >;
 }
 
-fn run_nodes_until<S, CT, ST, SCT, VT, LT>(
+fn run_nodes_until<S, CT, ST, SCT, VT, LT, TT>(
     nodes: &mut Nodes<S>,
     start_tick: Duration,
     until_tick: Duration,
     until_block: usize,
 ) -> Duration
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT>>,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, TT>>,
 
     CT: ConsensusProcess<SCT> + PartialEq + Eq,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    TT: TxPool,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -178,7 +178,6 @@ fn replay_one_honest(failure_idx: &[usize]) {
                         pubkeys.iter().copied().map(NodeId).collect(),
                         NodeId(pubkey),
                     ),
-                    MockMempoolConfig::default(),
                     pipeline.clone(),
                     default_seed,
                 )
@@ -247,7 +246,6 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(NodeId).collect(),
             NodeId(pubkeys[f0]),
         ),
-        MockMempoolConfig::default(),
         pipeline.clone(),
         default_seed,
     ));
@@ -260,7 +258,6 @@ fn replay_one_honest(failure_idx: &[usize]) {
             pubkeys.iter().copied().map(NodeId).collect(),
             NodeId(pubkeys[f1]),
         ),
-        MockMempoolConfig::default(),
         pipeline,
         default_seed,
     ));

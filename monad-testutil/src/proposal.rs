@@ -5,11 +5,11 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{Block, BlockType, UnverifiedBlock},
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::CommitResult,
     message_signature::MessageSignature,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -67,7 +67,7 @@ where
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-        txns: TransactionHashList,
+        txns: FullTransactionList,
         execution_header: ExecutionArtifacts,
     ) -> Verified<ST, ProposalMessage<SCT>> {
         // high_qc is the highest qc seen in a proposal
@@ -110,7 +110,7 @@ where
         self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
 
         let proposal = ProposalMessage {
-            block,
+            block: UnverifiedBlock(block),
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;

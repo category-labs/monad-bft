@@ -1,9 +1,9 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, UnverifiedBlock},
     ledger::CommitResult,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -187,7 +187,7 @@ fn timeout_msg_hash() {
 fn proposal_msg_hash() {
     use monad_testutil::signing::hash;
 
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
 
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
@@ -223,7 +223,7 @@ fn proposal_msg_hash() {
     );
 
     let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
-        block: block.clone(),
+        block: UnverifiedBlock(block.clone()),
         last_round_tc: None,
     };
 

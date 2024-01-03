@@ -6,9 +6,7 @@ use monad_consensus::{
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
-    block::{Block, FullBlock},
-    command::{FetchFullTxParams, FetchTxsCriteria},
-    payload::TransactionHashList,
+    block::Block,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
@@ -29,14 +27,8 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     },
     /// Cancel scheduled (if exists) timeout event
     ScheduleReset(TimeoutVariant),
-    /// Fetch transaction hashes for inclusion in proposal (as proposer)
-    FetchTxs(FetchTxsCriteria<SCT>),
-    /// Fetch full transactions from hash list
-    FetchFullTxs(TransactionHashList, FetchFullTxParams<SCT>),
-    /// Drain done transactions from the mempool given hash list
-    DrainTxs(Vec<TransactionHashList>),
     /// Commit blocks to ledger
-    LedgerCommit(Vec<FullBlock<SCT>>),
+    LedgerCommit(Vec<Block<SCT>>),
     /// Requests BlockSync from given peer
     /// Gets converted to a RouterCommand::Publish
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
@@ -45,7 +37,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),
     /// Fetch the state root hash for the given block
-    StateRootHash(FullBlock<SCT>),
+    StateRootHash(Block<SCT>),
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
 }

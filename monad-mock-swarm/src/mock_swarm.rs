@@ -7,7 +7,7 @@ use std::{
 use itertools::Itertools;
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+    message_signature::MessageSignature, signature_collection::SignatureCollection, txpool::TxPool,
     validator_data::ValidatorData,
 };
 use monad_executor::{timed_event::TimedEvent, Executor, State};
@@ -204,15 +204,16 @@ impl UntilTerminator {
     }
 }
 
-impl<S, CT, ST, SCT, VT, LT> NodesTerminator<S> for UntilTerminator
+impl<S, CT, ST, SCT, VT, LT, TT> NodesTerminator<S> for UntilTerminator
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT>>,
+    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, TT>>,
 
     CT: ConsensusProcess<SCT> + PartialEq + Eq,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    TT: TxPool,
 {
     fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         nodes.tick > self.until_tick
@@ -339,7 +340,6 @@ where
             <S::State as State>::Config,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
-            S::MempoolConfig,
             S::Pipeline,
             u64,
         )>,
@@ -481,20 +481,11 @@ where
             <S::State as State>::Config,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
-            S::MempoolConfig,
             S::Pipeline,
             u64,
         ),
     ) {
-        let (
-            id,
-            state_config,
-            logger_config,
-            router_scheduler_config,
-            mock_mempool_config,
-            pipeline,
-            seed,
-        ) = peer;
+        let (id, state_config, logger_config, router_scheduler_config, pipeline, seed) = peer;
 
         // No duplicate ID insertion should be allowed
         assert!(!self.states.contains_key(&id));
@@ -505,7 +496,6 @@ where
 
         let mut executor: MockExecutor<S> = MockExecutor::new(
             <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
-            mock_mempool_config,
             genesis_validator_data,
             state_config.val_set_update_interval,
             self.tick,

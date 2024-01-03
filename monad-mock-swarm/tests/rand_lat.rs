@@ -2,9 +2,7 @@ mod common;
 use std::env;
 
 use monad_consensus_types::block_validator::MockValidator;
-use monad_mock_swarm::{
-    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
-};
+use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::GenericTransformer;
@@ -59,7 +57,6 @@ fn nodes_with_random_latency(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![GenericTransformer::RandLatency(
             RandLatencyTransformer::new(seed, 330),
         )],

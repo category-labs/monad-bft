@@ -3,8 +3,7 @@ use monad_consensus::{
     validation::signing::Validated,
 };
 use monad_consensus_types::{
-    block::FullBlock, message_signature::MessageSignature,
-    signature_collection::SignatureCollection,
+    block::Block, message_signature::MessageSignature, signature_collection::SignatureCollection,
 };
 use monad_executor_glue::{
     BlockSyncEvent, Command, FetchedBlock, LedgerCommand, MonadEvent, RouterCommand,
@@ -27,9 +26,8 @@ impl BlockSyncResponder {
         &mut self,
         author: NodeId,
         s: RequestBlockSyncMessage,
-        consensus_cached_block: Option<&FullBlock<SCT>>,
-    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, FullBlock<SCT>, C, SCT>>
-    {
+        consensus_cached_block: Option<&Block<SCT>>,
+    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, C, SCT>> {
         if let Some(block) = consensus_cached_block {
             // use retrieved block if currently cached in pending block tree
             vec![Command::RouterCommand(RouterCommand::Publish {
@@ -43,14 +41,14 @@ impl BlockSyncResponder {
             vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(
                 author,
                 s.block_id,
-                Box::new(move |full_block: Option<FullBlock<_>>| {
+                Box::new(move |block: Option<Block<SCT>>| {
                     let requester = author;
                     let block_id = s.block_id;
 
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::FetchedBlock(FetchedBlock {
                         requester,
                         block_id,
-                        unverified_full_block: full_block.map(|block| block.into()),
+                        unverified_block: block.map(|b| b.into()),
                     }))
                 }),
             ))]

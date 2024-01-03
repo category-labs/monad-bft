@@ -21,7 +21,6 @@ use crate::{graph::SimulationConfig, VizSwarm};
 type MonadStateConfig = <<VizSwarm as SwarmRelation>::State as State>::Config;
 type LoggerConfig = <VizSwarm as SwarmRelation>::LoggerConfig;
 type RouterSchedulerConfig = <VizSwarm as SwarmRelation>::RouterSchedulerConfig;
-type MempoolConfig = <VizSwarm as SwarmRelation>::MempoolConfig;
 type Pipeline = <VizSwarm as SwarmRelation>::Pipeline;
 
 #[derive(Debug, Clone)]
@@ -57,7 +56,6 @@ impl SimulationConfig<VizSwarm> for SimConfig {
         MonadStateConfig,
         LoggerConfig,
         RouterSchedulerConfig,
-        MempoolConfig,
         Pipeline,
         u64,
     )> {
@@ -105,7 +103,6 @@ impl SimulationConfig<VizSwarm> for SimConfig {
                     RouterSchedulerConfig {
                         all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                     },
-                    MempoolConfig::default(),
                     self.pipeline.clone(),
                     1,
                 )

@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt, result::Result as StdResult};
 
 use monad_consensus_types::{
-    block::{BlockType, FullBlock},
-    payload::TransactionHashList,
+    block::{Block, BlockType},
+    payload::FullTransactionList,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
@@ -44,7 +44,7 @@ pub struct BlockTree<T> {
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: HashMap<BlockId, FullBlock<T>>,
+    tree: HashMap<BlockId, Block<T>>,
 }
 
 impl<T: SignatureCollection> BlockTree<T> {
@@ -79,9 +79,9 @@ impl<T: SignatureCollection> BlockTree<T> {
     /// - When prune is called on round `new_root` block, only round `n+1` block
     ///   is added (as `new_root`'s children) All the blocks that remains
     ///   shouldn't be pruned -> complete
-    pub fn prune(&mut self, new_root: &BlockId) -> Vec<FullBlock<T>> {
+    pub fn prune(&mut self, new_root: &BlockId) -> Vec<Block<T>> {
         assert!(self.has_path_to_root(new_root));
-        let mut commit: Vec<FullBlock<T>> = Vec::new();
+        let mut commit: Vec<Block<T>> = Vec::new();
 
         if new_root == &self.root.block_id {
             return commit;
@@ -125,7 +125,7 @@ impl<T: SignatureCollection> BlockTree<T> {
 
     /// Add a new block to the block tree if it's not in the tree and is higher
     /// than the root block's round number
-    pub fn add(&mut self, b: FullBlock<T>) -> Result<()> {
+    pub fn add(&mut self, b: Block<T>) -> Result<()> {
         if !self.is_valid_to_insert(&b) {
             inc_count!(blocktree.add.duplicate);
             return Ok(());
@@ -146,7 +146,7 @@ impl<T: SignatureCollection> BlockTree<T> {
         let mut maybe_unknown_block_qc = qc;
         let mut maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
         while let Some(known_block) = self.tree.get(&maybe_unknown_bid) {
-            maybe_unknown_block_qc = &known_block.get_block().qc;
+            maybe_unknown_block_qc = &known_block.qc;
             maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
             // If the unknown block's round == self.root, that means we've already committed it
             if maybe_unknown_block_qc.get_round() == self.root.round {
@@ -172,7 +172,7 @@ impl<T: SignatureCollection> BlockTree<T> {
     }
 
     /// Fetches transactions on the path in [`b`, root)
-    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<TransactionHashList>> {
+    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<FullTransactionList>> {
         let mut txs = Vec::default();
 
         if b == &self.root.block_id {
@@ -186,7 +186,7 @@ impl<T: SignatureCollection> BlockTree<T> {
                 return Some(txs);
             }
 
-            txs.push(btb.get_block().payload.txns.clone());
+            txs.push(btb.payload.txns.clone());
 
             visit = btb.get_parent_id();
         }
@@ -195,11 +195,11 @@ impl<T: SignatureCollection> BlockTree<T> {
 
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
-    pub fn is_valid_to_insert(&self, b: &FullBlock<T>) -> bool {
+    pub fn is_valid_to_insert(&self, b: &Block<T>) -> bool {
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.round
     }
 
-    pub fn tree(&self) -> &HashMap<BlockId, FullBlock<T>> {
+    pub fn tree(&self) -> &HashMap<BlockId, Block<T>> {
         &self.tree
     }
 
@@ -211,12 +211,9 @@ impl<T: SignatureCollection> BlockTree<T> {
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block as ConsensusBlock, BlockType, FullBlock},
-        block_validator::MockValidator,
+        block::{Block as ConsensusBlock, BlockType},
         ledger::CommitResult,
-        payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
-        },
+        payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
@@ -239,18 +236,13 @@ mod test {
     #[test]
     fn test_prune() {
         let payload = Payload {
-            txns: TransactionHashList::empty(),
+            txns: FullTransactionList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
@@ -260,25 +252,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b1 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -288,25 +275,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b2 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b2 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v3 = VoteInfo {
             id: g.get_id(),
@@ -316,25 +298,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b3 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v3,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b3 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v3,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v4 = VoteInfo {
             id: g.get_id(),
@@ -344,25 +321,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b4 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v4,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b4 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v4,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v5 = VoteInfo {
             id: b3.get_id(),
@@ -372,25 +344,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b5 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(3),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v5,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b5 = Block::new(
+            node_id(),
+            Round(3),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v5,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v6 = VoteInfo {
             id: b5.get_id(),
@@ -400,25 +367,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b6 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(4),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v6,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b6 = Block::new(
+            node_id(),
+            Round(4),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v6,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v7 = VoteInfo {
             id: b6.get_id(),
@@ -428,25 +390,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b7 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(7),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v7,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b7 = Block::new(
+            node_id(),
+            Round(7),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v7,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         // Initial blocktree
         //        g
@@ -514,25 +471,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b8 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(8),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v8,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b8 = Block::new(
+            node_id(),
+            Round(8),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v8,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         assert!(blocktree.add(b8).is_ok());
         println!("{:?}", blocktree);
@@ -541,18 +493,13 @@ mod test {
     #[test]
     fn test_add_parent_not_exist() {
         let payload = Payload {
-            txns: TransactionHashList::empty(),
+            txns: FullTransactionList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
@@ -562,25 +509,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b1 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -590,25 +532,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b2 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(3),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b2 = Block::new(
+            node_id(),
+            Round(3),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let gid = g.get_id();
         let mut blocktree = BlockTree::new(QC::genesis_qc());
@@ -638,23 +575,18 @@ mod test {
 
     #[test]
     fn equal_level_branching() {
-        let g = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(1),
-                &Payload {
-                    txns: TransactionHashList::empty(),
-                    header: ExecutionArtifacts::zero(),
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &QC::genesis_qc(),
-            ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        let g = Block::new(
+            node_id(),
+            Round(1),
+            &Payload {
+                txns: FullTransactionList::empty(),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QC::genesis_qc(),
+        );
 
         let v1 = VoteInfo {
             id: g.get_id(),
@@ -664,57 +596,47 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &Payload {
-                    txns: TransactionHashList::new(vec![1].into()),
-                    header: ExecutionArtifacts::zero(),
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b1 = Block::new(
+            node_id(),
+            Round(2),
+            &Payload {
+                txns: FullTransactionList::new(vec![1].into()),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
-        let b2 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &Payload {
-                    txns: TransactionHashList::new(vec![2].into()),
-                    header: ExecutionArtifacts::zero(),
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b2 = Block::new(
+            node_id(),
+            Round(2),
+            &Payload {
+                txns: FullTransactionList::new(vec![2].into()),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -724,31 +646,26 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b3 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(3),
-                &Payload {
-                    txns: TransactionHashList::new(vec![3].into()),
-                    header: ExecutionArtifacts::zero(),
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b3 = Block::new(
+            node_id(),
+            Round(3),
+            &Payload {
+                txns: FullTransactionList::new(vec![3].into()),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         // Initial blocktree
         //        g
@@ -781,23 +698,18 @@ mod test {
 
     #[test]
     fn duplicate_blocks() {
-        let g = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(1),
-                &Payload {
-                    txns: TransactionHashList::empty(),
-                    header: ExecutionArtifacts::zero(),
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &QC::genesis_qc(),
-            ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        let g = Block::new(
+            node_id(),
+            Round(1),
+            &Payload {
+                txns: FullTransactionList::empty(),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QC::genesis_qc(),
+        );
 
         let v1 = VoteInfo {
             id: g.get_id(),
@@ -807,31 +719,26 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &Payload {
-                    txns: TransactionHashList::new(vec![1].into()),
-                    header: ExecutionArtifacts::zero(),
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
-                },
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b1 = Block::new(
+            node_id(),
+            Round(2),
+            &Payload {
+                txns: FullTransactionList::new(vec![1].into()),
+                header: ExecutionArtifacts::zero(),
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g).is_ok());
@@ -845,18 +752,13 @@ mod test {
     #[test]
     fn paths_to_root() {
         let payload = Payload {
-            txns: TransactionHashList::empty(),
+            txns: FullTransactionList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
@@ -866,25 +768,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b1 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -894,65 +791,50 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b2 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(3),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b2 = Block::new(
+            node_id(),
+            Round(3),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
-        let b3 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(4),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b3 = Block::new(
+            node_id(),
+            Round(4),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
-        let b4 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(5),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b4 = Block::new(
+            node_id(),
+            Round(5),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
@@ -992,18 +874,13 @@ mod test {
         //  b2    b3    b4
 
         let payload = Payload {
-            txns: TransactionHashList::empty(),
+            txns: FullTransactionList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = FullBlock::from_block(
-            Block::new(node_id(), Round(1), &payload, &QC::genesis_qc()),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
@@ -1013,25 +890,20 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b1 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(2),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v1,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b1 = Block::new(
+            node_id(),
+            Round(2),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v1,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let v2 = VoteInfo {
             id: b1.get_id(),
@@ -1041,91 +913,76 @@ mod test {
             seq_num: SeqNum(0),
         };
 
-        let b2 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(3),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b2 = Block::new(
+            node_id(),
+            Round(3),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
-        let b3 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(4),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b3 = Block::new(
+            node_id(),
+            Round(4),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
-        let b4 = FullBlock::from_block(
-            Block::new(
-                node_id(),
-                Round(5),
-                &payload,
-                &QC::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: v2,
-                            ledger_commit_info: CommitResult::NoCommit,
-                        },
+        let b4 = Block::new(
+            node_id(),
+            Round(5),
+            &payload,
+            &QC::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: v2,
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MockSignatures::with_pubkeys(&[]),
-                ),
+                },
+                MockSignatures::with_pubkeys(&[]),
             ),
-            FullTransactionList::empty(),
-            &MockValidator {},
-        )
-        .unwrap();
+        );
 
         let mut blocktree = BlockTree::new(QC::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&g.get_block().qc).is_none()); // root naturally don't have missing ancestor
+        assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 
         assert!(blocktree.add(b2.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b2.get_block().qc).unwrap() == b2.get_block().qc);
+        assert!(blocktree.get_missing_ancestor(&b2.qc).unwrap() == b2.qc);
 
         assert!(blocktree.add(b3.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b3.get_block().qc).unwrap() == b3.get_block().qc);
+        assert!(blocktree.get_missing_ancestor(&b3.qc).unwrap() == b3.qc);
 
         assert!(blocktree.add(b4.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b4.get_block().qc).unwrap() == b4.get_block().qc);
+        assert!(blocktree.get_missing_ancestor(&b4.qc).unwrap() == b4.qc);
 
         assert!(blocktree.add(b1.clone()).is_ok());
-        assert!(blocktree.get_missing_ancestor(&b1.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b2.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b3.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b4.get_block().qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b4.qc).is_none());
 
         blocktree.prune(&b1.get_id());
-        assert!(blocktree.get_missing_ancestor(&g.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b1.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b2.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b3.get_block().qc).is_none());
-        assert!(blocktree.get_missing_ancestor(&b4.get_block().qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&g.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b1.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b2.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b3.qc).is_none());
+        assert!(blocktree.get_missing_ancestor(&b4.qc).is_none());
 
         assert_eq!(blocktree.size(), 3);
     }

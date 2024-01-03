@@ -469,7 +469,7 @@ impl Transformer<Bytes> for BwTransformer {
         if self.window.try_push(self.burst_size, &message) {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
         } else {
-            inc_count!(bwtransfomer_dropped_msg);
+            inc_count!(bwtransformer_dropped_msg);
             TransformerStream::Complete(vec![])
         }
     }

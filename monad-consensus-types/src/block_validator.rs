@@ -2,17 +2,17 @@ use core::fmt::Debug;
 
 use monad_eth_types::EthFullTransactionList;
 
-use crate::payload::{FullTransactionList, TransactionHashList};
+use crate::payload::FullTransactionList;
 
 pub trait BlockValidator: Clone + Default {
-    fn validate(&self, txs: &TransactionHashList, full_txs: &FullTransactionList) -> bool;
+    fn validate(&self, full_txs: &FullTransactionList) -> bool;
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
 impl BlockValidator for MockValidator {
-    fn validate(&self, _txs: &TransactionHashList, _full_txs: &FullTransactionList) -> bool {
+    fn validate(&self, _full_txs: &FullTransactionList) -> bool {
         true
     }
 }
@@ -37,7 +37,7 @@ impl EthereumValidator {
 }
 
 impl BlockValidator for EthereumValidator {
-    fn validate(&self, _txs: &TransactionHashList, full_txs: &FullTransactionList) -> bool {
+    fn validate(&self, full_txs: &FullTransactionList) -> bool {
         let Ok(eth_txns) = EthFullTransactionList::rlp_decode(full_txs.bytes().clone()) else {
             return false;
         };

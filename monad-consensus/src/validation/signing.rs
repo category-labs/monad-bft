@@ -269,7 +269,7 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
             epoch_manager,
             val_epoch_map,
             &self.obj.last_round_tc,
-            &self.obj.block.qc,
+            &self.obj.block.0.qc,
         )?;
 
         Ok(Validated { message: self })
@@ -282,14 +282,14 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     fn well_formed_proposal(&self) -> Result<(), Error> {
         self.valid_seq_num()?;
         well_formed(
-            self.obj.block.round,
-            self.obj.block.qc.get_round(),
+            self.obj.block.0.round,
+            self.obj.block.0.qc.get_round(),
             &self.obj.last_round_tc,
         )
     }
 
     fn valid_seq_num(&self) -> Result<(), Error> {
-        if self.obj.block.get_seq_num() != self.obj.block.qc.get_seq_num() + SeqNum(1) {
+        if self.obj.block.0.get_seq_num() != self.obj.block.0.qc.get_seq_num() + SeqNum(1) {
             return Err(Error::InvalidSeqNum);
         }
         Ok(())
@@ -361,7 +361,7 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     ) -> Result<Validated<BlockSyncResponseMessage<SCT>>, Error> {
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates(epoch_manager, val_epoch_map, &(None), &b.block.qc)?;
+            verify_certificates(epoch_manager, val_epoch_map, &(None), &b.0.qc)?;
         }
 
         Ok(Validated { message: self })

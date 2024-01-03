@@ -11,9 +11,7 @@ use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
-    mock_swarm::UntilTerminator,
-    swarm_relation::SwarmRelation,
+    mock_swarm::UntilTerminator, mock_txpool::MockTxPool, swarm_relation::SwarmRelation,
 };
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
@@ -79,6 +77,7 @@ impl SwarmRelation for NopSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
@@ -90,9 +89,6 @@ impl SwarmRelation for NopSwarm {
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
@@ -119,6 +115,7 @@ impl SwarmRelation for BlsSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterScheduler =
@@ -130,9 +127,6 @@ impl SwarmRelation for BlsSwarm {
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
@@ -148,7 +142,6 @@ fn many_nodes_nop_timeout() -> u128 {
         MockValidator,
         rsc,
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         xfmrs,
         terminator,
         stc,
@@ -164,7 +157,6 @@ fn many_nodes_bls_timeout() -> u128 {
         MockValidator,
         rsc,
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         xfmrs,
         terminator,
         stc,

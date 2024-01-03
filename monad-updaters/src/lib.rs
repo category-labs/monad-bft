@@ -11,9 +11,6 @@ pub mod state_root_hash;
 pub mod validator_set;
 
 #[cfg(feature = "tokio")]
-pub mod mempool;
-
-#[cfg(feature = "tokio")]
 pub mod timer;
 
 #[cfg(feature = "tokio")]

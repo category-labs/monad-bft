@@ -11,13 +11,16 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{BlockType, FullBlock},
+    block::{Block, BlockType, UnverifiedBlock},
     block_validator::BlockValidator,
-    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
-    payload::{FullTransactionList, StateRootResult, StateRootValidator, TransactionHashList},
+    payload::{
+        ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, StateRootResult,
+        StateRootValidator, INITIAL_DELAY_STATE_ROOT_HASH,
+    },
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::TimeoutCertificate,
+    txpool::TxPool,
 };
 use monad_crypto::{
     hasher::Hash,
@@ -25,7 +28,7 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
     validators_epoch_mapping::ValidatorsEpochMapping,
@@ -81,43 +84,34 @@ where
     fn handle_timeout_expiry(&mut self) -> Vec<PacemakerCommand<SCT>>;
 
     /// handles proposal messages from other nodes
-    /// the proposal contains txn hashes so this handler should retrieve full
-    /// transactions and then call handle_proposal_message_full with this proposal
-    /// and the full messages
-    fn handle_proposal_message(
-        &mut self,
-        author: NodeId,
-        p: ProposalMessage<SCT>,
-    ) -> Vec<ConsensusCommand<SCT>>;
-
-    /// handles an external proposal along with the associated list of full transactions
     /// validators and election are required as part of verifying the proposal certificates
     /// as well as determining the next leader
-    fn handle_proposal_message_full<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_proposal_message<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
         p: ProposalMessage<SCT>,
-        txns: FullTransactionList,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     /// collect votes from other nodes
-    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
         &mut self,
         author: NodeId,
         v: VoteMessage<SCT>,
+        tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>>;
 
     /// handle timeout messages from other nodes
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
         &mut self,
         author: NodeId,
         tm: TimeoutMessage<SCT>,
+        tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
@@ -147,7 +141,7 @@ where
 
     fn get_keypair(&self) -> &KeyPair;
 
-    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>>;
+    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>>;
 }
 
 pub struct ConsensusState<SCT: SignatureCollection, BV, SVT> {
@@ -296,131 +290,46 @@ where
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
     #[must_use]
-    fn handle_proposal_message(
+    fn handle_proposal_message<VT: ValidatorSetType, LT: LeaderElection>(
         &mut self,
         author: NodeId,
         p: ProposalMessage<SCT>,
-    ) -> Vec<ConsensusCommand<SCT>> {
-        // NULL blocks are not required to have state root hashes
-        if p.block.payload.txns == TransactionHashList::empty() {
-            debug!("Received empty block: block={:?}", p.block);
-            inc_count!(rx_empty_block);
-            return vec![ConsensusCommand::FetchFullTxs(
-                TransactionHashList::empty(),
-                FetchFullTxParams {
-                    author,
-                    p_block: p.block,
-                    p_last_round_tc: p.last_round_tc,
-                },
-            )];
-        }
-
-        match self
-            .state_root_validator
-            .validate(p.block.payload.seq_num, p.block.payload.header.state_root)
-        {
-            // TODO-1 execution lagging too far behind should be a trigger for something
-            // to try and catch up faster. For now, just wait
-            StateRootResult::OutOfRange => {
-                inc_count!(rx_execution_lagging);
-                vec![]
-            }
-            // Don't vote and locally timeout if the proposed state root does not match
-            // or if state root is missing
-            StateRootResult::Missing | StateRootResult::Mismatch => {
-                inc_count!(rx_bad_state_root);
-                vec![]
-            }
-            StateRootResult::Success => {
-                debug!(
-                    "Received Proposal Message, fetching txns: txns_len={}",
-                    p.block.payload.txns.bytes().len()
-                );
-                inc_count!(rx_proposal);
-                vec![ConsensusCommand::FetchFullTxs(
-                    p.block.payload.txns.clone(),
-                    FetchFullTxParams {
-                        author,
-                        p_block: p.block,
-                        p_last_round_tc: p.last_round_tc,
-                    },
-                )]
-            }
-        }
-    }
-
-    /// Once we have validated the state root hash and fetched the full transactions
-    /// validate and handle the rest of the proposal
-    #[must_use]
-    fn handle_proposal_message_full<VT: ValidatorSetType, LT: LeaderElection>(
-        &mut self,
-        author: NodeId,
-        p: ProposalMessage<SCT>,
-        full_txs: FullTransactionList,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<SCT>> {
-        debug!("Fetched full proposal: {:?}", p);
-        inc_count!(fetched_proposal);
-        let mut cmds = vec![];
+        debug!("Proposal Message: {:?}", p);
+        inc_count!(handle_proposal);
+        let mut cmds = Vec::new();
 
-        let epoch = epoch_manager.get_epoch(p.block.round);
+        let epoch = epoch_manager.get_epoch(p.block.0.round);
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
             .expect("proposal message was verified");
 
-        // certificate handling
-        let process_certificate_cmds =
-            self.process_certificate_qc(&p.block.qc, epoch_manager, validator_set);
-        cmds.extend(process_certificate_cmds);
-
-        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
-            debug!("Handled proposal with TC: {:?}", last_round_tc);
-            inc_count!(proposal_with_tc);
-            let advance_round_cmds = self
-                .pacemaker
-                .advance_round_tc(last_round_tc)
-                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
-                .into_iter();
-            cmds.extend(advance_round_cmds);
+        if !self.state_root_hash_validation(&p) {
+            return cmds;
         }
 
-        let round = self.pacemaker.get_current_round();
-        let block_round_leader =
-            election.get_leader(p.block.get_round(), epoch_manager, val_epoch_map);
+        cmds.extend(self.proposal_certificate_handling(&p, epoch_manager, validator_set));
 
-        // randao validating
-        let author_pubkey = val_epoch_map
-            .get_cert_pubkeys(&epoch)
-            .expect("proposal message was verified")
-            .map
-            .get(&author)
-            .expect("proposal author exists in validator_mapping");
-
-        if let Err(e) = p
-            .block
-            .payload
-            .randao_reveal
-            .verify::<SCT::SignatureType>(p.block.get_round(), author_pubkey)
-        {
-            warn!("Invalid randao_reveal signature, reason: {:?}", e);
-            inc_count!(failed_verify_randao_reveal_signature);
+        if !self.randao_validation(&p, author, epoch, val_epoch_map) {
             return cmds;
-        };
+        }
 
-        // block validating
-        let Some(full_block) = FullBlock::from_block(p.block, full_txs, &self.block_validator)
-        else {
+        let Some(block) = Block::try_from_unverified(p.block, &self.block_validator) else {
             warn!("Transaction validation failed");
             inc_count!(failed_txn_validation);
             return cmds;
         };
 
         // author, leader, round checks
-        if full_block.get_round() > round
+        let round = self.pacemaker.get_current_round();
+        let block_round_leader =
+            election.get_leader(block.get_round(), epoch_manager, val_epoch_map);
+        if block.get_round() > round
             || author != block_round_leader
-            || full_block.get_author() != block_round_leader
+            || block.get_author() != block_round_leader
         {
             debug!(
                 "Invalid proposal: expected-round={:?} \
@@ -429,10 +338,10 @@ where
                 author={:?} \
                 block-author={:?}",
                 round,
-                full_block.get_round(),
+                block.get_round(),
                 block_round_leader,
                 author,
-                full_block.get_author()
+                block.get_author()
             );
             inc_count!(invalid_proposal_round_leader);
             return cmds;
@@ -440,27 +349,25 @@ where
 
         // at this point, block is valid and can be added to the blocktree
         self.pending_block_tree
-            .add(full_block.clone())
+            .add(block.clone())
             .expect("Failed to add block to blocktree");
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
         // before R because of network conditions. The proposals are still valid but
         // we don't vote on them
-        if full_block.get_round() != round {
+        if block.get_round() != round {
             debug!(
                 "Out-of-order proposal: expected-round={:?} \
                 round={:?}",
                 round,
-                full_block.get_round(),
+                block.get_round(),
             );
             inc_count!(out_of_order_proposals);
             return cmds;
         }
 
         // decide if its safe to cast vote on this proposal
-        let vote = self
-            .safety
-            .make_vote::<SCT>(full_block.get_block(), &p.last_round_tc);
+        let vote = self.safety.make_vote::<SCT>(&block, &p.last_round_tc);
 
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new(v, &self.cert_keypair);
@@ -481,10 +388,11 @@ where
     /// handle votes at the vote_state state machine. When enough votes are collected,
     /// a QC is formed and broadcast to other nodes
     #[must_use]
-    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
         &mut self,
         author: NodeId,
         vote_msg: VoteMessage<SCT>,
+        tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
@@ -522,7 +430,7 @@ where
                     val_epoch_map,
                 )
             {
-                cmds.extend(self.process_new_round_event(None));
+                cmds.extend(self.process_new_round_event(tx_pool, None));
             }
         }
         cmds
@@ -530,10 +438,11 @@ where
 
     /// handling remote timeout messages
     #[must_use]
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
         &mut self,
         author: NodeId,
         tmo_msg: TimeoutMessage<SCT>,
+        tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
@@ -601,7 +510,7 @@ where
                     val_epoch_map,
                 )
             {
-                cmds.extend(self.process_new_round_event(Some(tc)));
+                cmds.extend(self.process_new_round_event(tx_pool, Some(tc)));
             }
         }
 
@@ -634,16 +543,11 @@ where
         block_sync_result.log(bid);
 
         match block_sync_result {
-            BlockSyncResult::Success(full_block) => {
-                if self.pending_block_tree.is_valid_to_insert(&full_block) {
-                    cmds.extend(
-                        self.request_block_if_missing_ancestor(
-                            &full_block.get_block().qc,
-                            validators,
-                        ),
-                    );
+            BlockSyncResult::Success(block) => {
+                if self.pending_block_tree.is_valid_to_insert(&block) {
+                    cmds.extend(self.request_block_if_missing_ancestor(&block.qc, validators));
                     self.pending_block_tree
-                        .add(full_block)
+                        .add(block)
                         .expect("failed to add block to tree during block sync");
                 }
             }
@@ -657,7 +561,7 @@ where
 
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
-    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&FullBlock<SCT>> {
+    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
         self.pending_block_tree.tree().get(bid)
     }
 
@@ -706,7 +610,7 @@ where
 /// Possible actions a leader node can take when entering a new round
 pub enum ConsensusAction {
     /// Create a proposal with this state-root-hash and txn hash list
-    Propose(Hash, Vec<TransactionHashList>),
+    Propose(Hash, Vec<FullTransactionList>),
     /// Create an empty block proposal
     ProposeEmpty,
     /// Do nothing which will lead to the round timing out
@@ -764,12 +668,6 @@ where
                         .iter()
                         .map(|b| ConsensusCommand::StateRootHash(b.clone())),
                 );
-                cmds.push(ConsensusCommand::DrainTxs(
-                    blocks_to_commit
-                        .iter()
-                        .map(|b| b.get_block().payload.txns.clone())
-                        .collect(),
-                ));
                 cmds.push(ConsensusCommand::<SCT>::LedgerCommit(blocks_to_commit));
             }
         }
@@ -801,8 +699,9 @@ where
 
     /// called when the node is entering a new round and is the leader for that round
     #[must_use]
-    fn process_new_round_event(
+    fn process_new_round_event<TT: TxPool>(
         &mut self,
+        txpool: &mut TT,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
     ) -> Vec<ConsensusCommand<SCT>> {
         self.vote_state
@@ -815,24 +714,53 @@ where
         let parent_bid = high_qc.get_block_id();
         let seq_num_qc = high_qc.get_seq_num();
         let proposed_seq_num = seq_num_qc + SeqNum(1);
+
+        let proposer_builder =
+            |txns: FullTransactionList,
+             hash: Hash,
+             last_round_tc: Option<TimeoutCertificate<SCT>>| {
+                let mut header = ExecutionArtifacts::zero();
+                header.state_root = hash;
+                let b = Block::new(
+                    node_id,
+                    round,
+                    &Payload {
+                        txns,
+                        header,
+                        seq_num: proposed_seq_num,
+                        beneficiary: self.get_beneficiary(),
+                        randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
+                            round,
+                            self.get_cert_keypair(),
+                        ),
+                    },
+                    &high_qc,
+                );
+
+                let p = ProposalMessage {
+                    block: UnverifiedBlock(b),
+                    last_round_tc,
+                };
+
+                vec![ConsensusCommand::Publish {
+                    target: RouterTarget::Broadcast,
+                    message: ConsensusMessage::Proposal(p),
+                }]
+            };
+
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
             ConsensusAction::Propose(h, pending_blocktree_txs) => {
                 inc_count!(creating_proposal);
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
-                vec![ConsensusCommand::FetchTxs(FetchTxsCriteria {
-                    max_txs: self.config.proposal_txn_limit,
-                    block_gas_limit: self.config.proposal_gas_limit,
-                    ignore_txs: pending_blocktree_txs,
-                    proposal_params: FetchTxParams {
-                        node_id,
-                        round,
-                        seq_num: proposed_seq_num,
-                        state_root_hash: h,
-                        high_qc,
-                        last_round_tc,
-                    },
-                })]
+
+                let txns = txpool.create_proposal(
+                    self.config.proposal_txn_limit,
+                    self.config.proposal_gas_limit,
+                    pending_blocktree_txs,
+                );
+
+                proposer_builder(txns, h, last_round_tc)
             }
             ConsensusAction::Abstain => {
                 inc_count!(abstain_proposal);
@@ -845,19 +773,10 @@ where
                 inc_count!(creating_empty_block_proposal);
                 debug!("Creating Empty Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
-                vec![ConsensusCommand::FetchTxs(FetchTxsCriteria {
-                    max_txs: 0,
-                    block_gas_limit: 0,
-                    ignore_txs: vec![],
-                    proposal_params: FetchTxParams {
-                        node_id,
-                        round,
-                        seq_num: proposed_seq_num,
-                        state_root_hash: Hash([0; 32]),
-                        high_qc,
-                        last_round_tc,
-                    },
-                })]
+
+                let txns = FullTransactionList::empty();
+                // TODO: should empty blocks have their own special hash?
+                proposer_builder(txns, INITIAL_DELAY_STATE_ROOT_HASH, last_round_tc)
             }
         }
     }
@@ -901,6 +820,95 @@ where
             vec![]
         }
     }
+
+    #[must_use]
+    fn state_root_hash_validation(&mut self, p: &ProposalMessage<SCT>) -> bool {
+        // TODO: this should also check that the payload header state root hash is the
+        // the empty hash (0x0)
+        if p.block.0.payload.txns == FullTransactionList::empty() {
+            debug!("Received empty block: block={:?}", p.block);
+            inc_count!(rx_empty_block);
+            return true;
+        }
+        match self.state_root_validator.validate(
+            p.block.0.payload.seq_num,
+            p.block.0.payload.header.state_root,
+        ) {
+            // TODO-1 execution lagging too far behind should be a trigger for something
+            // to try and catch up faster. For now, just wait
+            StateRootResult::OutOfRange => {
+                inc_count!(rx_execution_lagging);
+                false
+            }
+            // Don't vote and locally timeout if the proposed state root does not match
+            // or if state root is missing
+            StateRootResult::Missing | StateRootResult::Mismatch => {
+                inc_count!(rx_bad_state_root);
+                false
+            }
+            StateRootResult::Success => {
+                debug!("Received Proposal Message with valid state root hash");
+                inc_count!(rx_proposal);
+                true
+            }
+        }
+    }
+
+    #[must_use]
+    fn proposal_certificate_handling<VT: ValidatorSetType>(
+        &mut self,
+        p: &ProposalMessage<SCT>,
+        epoch_manager: &mut EpochManager,
+        validators: &VT,
+    ) -> Vec<ConsensusCommand<SCT>> {
+        let mut cmds = vec![];
+
+        let process_certificate_cmds =
+            self.process_certificate_qc(&p.block.0.qc, epoch_manager, validators);
+        cmds.extend(process_certificate_cmds);
+
+        if let Some(last_round_tc) = p.last_round_tc.as_ref() {
+            debug!("Handled proposal with TC: {:?}", last_round_tc);
+            inc_count!(proposal_with_tc);
+            let advance_round_cmds = self
+                .pacemaker
+                .advance_round_tc(last_round_tc)
+                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
+                .into_iter();
+            cmds.extend(advance_round_cmds);
+        }
+
+        cmds
+    }
+
+    #[must_use]
+    fn randao_validation<VT: ValidatorSetType>(
+        &self,
+        p: &ProposalMessage<SCT>,
+        author: NodeId,
+        epoch: Epoch,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+    ) -> bool {
+        let author_pubkey = val_epoch_map
+            .get_cert_pubkeys(&epoch)
+            .expect("proposal message was verified")
+            .map
+            .get(&author)
+            .expect("proposal author exists in validator_mapping");
+
+        if let Err(e) = p
+            .block
+            .0
+            .payload
+            .randao_reveal
+            .verify::<SCT::SignatureType>(p.block.0.get_round(), author_pubkey)
+        {
+            warn!("Invalid randao_reveal signature, reason: {:?}", e);
+            inc_count!(failed_verify_randao_reveal_signature);
+            return false;
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -916,17 +924,18 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{Block, BlockType, UnverifiedFullBlock},
+        block::{Block, BlockType, UnverifiedBlock},
         block_validator::MockValidator,
         certificate_signature::CertificateKeyPair,
         ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{
-            Bloom, ExecutionArtifacts, FullTransactionList, Gas, NopStateRoot, StateRoot,
-            StateRootValidator, TransactionHashList,
+            Bloom, ExecutionArtifacts, FullTransactionList, Gas, MissingNextStateRoot,
+            NopStateRoot, StateRoot, StateRootValidator,
         },
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
+        txpool::{EthTxPool, TxPool},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
@@ -954,6 +963,17 @@ mod test {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<NopSignature>;
     type StateRootValidatorType = NopStateRoot;
+
+    macro_rules! assert_counter {
+        ($cnt_name:tt, $val:tt) => {
+            logs_assert(|lines: &[&str]| {
+                match lines.iter().filter(|line| line.contains($cnt_name)).count() {
+                    $val => Ok(()),
+                    n => Err(format!("Expected count 1 got {}", n)),
+                }
+            });
+        };
+    }
 
     fn setup<SCT: SignatureCollection, SVT: StateRootValidator>(
         num_states: u32,
@@ -1025,6 +1045,37 @@ mod test {
         )
     }
 
+    fn extract_vote_msgs<SCT: SignatureCollection>(
+        cmds: Vec<ConsensusCommand<SCT>>,
+    ) -> Vec<VoteMessage<SCT>> {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::PointToPoint(_),
+                    message: ConsensusMessage::Vote(vote),
+                } => Some(vote),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn extract_proposal_broadcast<SCT: SignatureCollection>(
+        cmds: Vec<ConsensusCommand<SCT>>,
+    ) -> ProposalMessage<SCT> {
+        cmds.into_iter()
+            .filter_map(|c| match c {
+                ConsensusCommand::Publish {
+                    target: RouterTarget::Broadcast,
+                    message: ConsensusMessage::Proposal(p),
+                } => Some(p),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .first()
+            .expect("proposal should have been broadcast")
+            .clone()
+    }
+
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[traced_test]
     #[test]
@@ -1032,6 +1083,7 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
+        let mut empty_txpool = EthTxPool::new();
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.get_round(), Round(0));
@@ -1061,6 +1113,7 @@ mod test {
         state.handle_vote_message(
             *v1.author(),
             *v1,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1068,6 +1121,7 @@ mod test {
         state.handle_vote_message(
             *v2.author(),
             *v2,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1079,22 +1133,13 @@ mod test {
         state.handle_vote_message(
             *v3.author(),
             *v3,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
         assert_eq!(state.high_qc.get_round(), expected_qc_high_round);
-
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains("monotonic_counter.vote_received"))
-                .count()
-            {
-                3 => Ok(()),
-                n => Err(format!("Expected count 3 got {}", n)),
-            }
-        });
+        assert_counter!("monotonic_counter.vote_received", 3);
     }
 
     // When a node locally timesout on a round, it no longer produces votes in that round
@@ -1111,7 +1156,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
@@ -1124,10 +1169,9 @@ mod test {
         // check no vote commands result from receiving the proposal for round 1
 
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1159,14 +1203,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1190,14 +1233,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1222,7 +1264,7 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
         }
@@ -1232,14 +1274,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p7.destructure();
-        state.handle_proposal_message_full(
+        state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1262,14 +1303,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.clone().destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1287,10 +1327,9 @@ mod test {
 
         // send duplicate of p1, expect it to be ignored and no output commands
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1321,14 +1360,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1353,14 +1391,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let cmds = state.handle_proposal_message_full(
+        let cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1386,7 +1423,7 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             ));
         }
@@ -1398,14 +1435,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_fut.destructure();
-        state.handle_proposal_message_full(
+        state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1418,10 +1454,9 @@ mod test {
         let mut cmds = Vec::new();
         for i in &perms {
             let (author, _, verified_message) = missing_proposals[*i].clone().destructure();
-            cmds.extend(state.handle_proposal_message_full(
+            cmds.extend(state.handle_proposal_message(
                 author,
                 verified_message,
-                FullTransactionList::empty(),
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -1457,10 +1492,9 @@ mod test {
                     target: RouterTarget::PointToPoint(_self_id),
                     message: ConsensusMessage::Proposal(m),
                 } => {
-                    proposals.extend(state.handle_proposal_message_full(
-                        m.block.author,
+                    proposals.extend(state.handle_proposal_message(
+                        m.block.0.author,
                         m.clone(),
-                        FullTransactionList::empty(),
                         &mut epoch_manager,
                         &val_epoch_map,
                         &election,
@@ -1480,14 +1514,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_last.destructure();
-        state.handle_proposal_message_full(
+        state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1517,30 +1550,19 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        let p1_cmds = state.handle_proposal_message_full(
+        let p1_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
 
-        let p1_votes = p1_cmds
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
+        let p1_votes = extract_vote_msgs(p1_cmds);
         assert!(p1_votes.len() == 1);
         assert!(p1_votes[0].vote.ledger_commit_info.is_commitable());
 
@@ -1551,14 +1573,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = state.handle_proposal_message_full(
+        let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1569,17 +1590,7 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)));
         assert!(lc.is_none());
 
-        let p2_votes = p2_cmds
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
+        let p2_votes = extract_vote_msgs(p2_cmds);
         assert!(p2_votes.len() == 1);
         // csh is some: the proposal and qc have consecutive rounds
         assert!(p2_votes[0].vote.ledger_commit_info.is_commitable());
@@ -1590,15 +1601,14 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p3.destructure();
 
-        let p2_cmds = state.handle_proposal_message_full(
+        let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1624,14 +1634,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        state.handle_proposal_message_full(
+        state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1644,30 +1653,19 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p2.destructure();
-        let p2_cmds = state.handle_proposal_message_full(
+        let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
 
-        let p2_votes = p2_cmds
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
+        let p2_votes = extract_vote_msgs(p2_cmds);
         assert!(p2_votes.len() == 1);
         assert!(p2_votes[0].vote.ledger_commit_info.is_commitable());
 
@@ -1699,32 +1697,21 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
-        assert_eq!(p3.block.qc.get_round(), Round(1));
-        assert_eq!(p3.block.round, Round(3));
+        assert_eq!(p3.block.0.qc.get_round(), Round(1));
+        assert_eq!(p3.block.0.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
-        let p3_cmds = state.handle_proposal_message_full(
+        let p3_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
 
-        let p3_votes = p3_cmds
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
+        let p3_votes = extract_vote_msgs(p3_cmds);
         assert!(p3_votes.len() == 1);
         // proposal and qc have non-consecutive rounds
         assert!(!p3_votes[0].vote.ledger_commit_info.is_commitable());
@@ -1738,6 +1725,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType>(4);
         let valset = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         let election = SimpleRoundRobin::new();
+        let mut empty_txpool = EthTxPool::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -1756,7 +1744,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let mp1 = mal_proposal_gen.next_proposal(
@@ -1765,91 +1753,48 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![5].into()),
+            FullTransactionList::new(vec![5].into()),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp1.destructure();
-        let block_1 = UnverifiedFullBlock {
-            block: verified_message.block.clone(),
-            full_txs: FullTransactionList::empty(),
-        };
-        let cmds1 = first_state.handle_proposal_message_full(
+        let block_1 = verified_message.block.clone();
+        let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
-        let p1_votes = cmds1
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>()[0];
+        let p1_votes = extract_vote_msgs(cmds1)[0];
 
-        let cmds3 = third_state.handle_proposal_message_full(
+        let cmds3 = third_state.handle_proposal_message(
             author,
             verified_message.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
-        let p3_votes = cmds3
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>()[0];
+        let p3_votes = extract_vote_msgs(cmds3)[0];
 
-        let cmds4 = fourth_state.handle_proposal_message_full(
+        let cmds4 = fourth_state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
-        let p4_votes = cmds4
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>()[0];
+        let p4_votes = extract_vote_msgs(cmds4)[0];
 
         let (author, _, verified_message) = mp1.destructure();
-        let cmds2 = second_state.handle_proposal_message_full(
+        let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
-        let p2_votes = cmds2
-            .into_iter()
-            .filter_map(|c| match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
-                _ => None,
-            })
-            .collect::<Vec<_>>()[0];
+        let p2_votes = extract_vote_msgs(cmds2)[0];
 
         assert_eq!(p1_votes.vote, p3_votes.vote);
         assert_eq!(p1_votes.vote, p4_votes.vote);
@@ -1866,6 +1811,7 @@ mod test {
             let cmds2 = second_state.handle_vote_message(
                 *v.author(),
                 *v,
+                &mut empty_txpool,
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -1888,7 +1834,7 @@ mod test {
                     _ => None,
                 }
                 .unwrap();
-                assert!(sync_bid == block_1.block.get_id());
+                assert!(sync_bid == block_1.0.get_id());
                 routing_target = target;
             }
         }
@@ -1905,28 +1851,23 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author_2, _, verified_message_2) = cp2.destructure();
-        let block_2 = UnverifiedFullBlock {
-            block: verified_message_2.block.clone(),
-            full_txs: FullTransactionList::empty(),
-        };
-        second_state.handle_proposal_message_full(
+        let block_2 = verified_message_2.block.clone();
+        second_state.handle_proposal_message(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
 
         // first_state has the correct block in its blocktree, so it should not request anything
-        let cmds1 = first_state.handle_proposal_message_full(
+        let cmds1 = first_state.handle_proposal_message(
             author_2,
             verified_message_2.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1949,27 +1890,22 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp3.destructure();
-        let block_3 = UnverifiedFullBlock {
-            block: verified_message.block.clone(),
-            full_txs: FullTransactionList::empty(),
-        };
+        let block_3 = verified_message.block.clone();
 
-        let cmds2 = second_state.handle_proposal_message_full(
+        let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
         );
-        let cmds1 = first_state.handle_proposal_message_full(
+        let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2001,14 +1937,13 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp4.destructure();
-        let cmds2 = second_state.handle_proposal_message_full(
+        let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2025,10 +1960,9 @@ mod test {
         });
         assert!(res.is_none());
 
-        let cmds1 = first_state.handle_proposal_message_full(
+        let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message.clone(),
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2051,10 +1985,9 @@ mod test {
         // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
         // feeding third_state with a proposal from round 4 should trigger a recursive behaviour to ask for blocks
 
-        let cmds3 = third_state.handle_proposal_message_full(
+        let cmds3 = third_state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2074,7 +2007,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let mal_sync = BlockSyncResponseMessage::NotAvailable(block_2.block.get_id());
+        let mal_sync = BlockSyncResponseMessage::NotAvailable(block_2.0.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
         let cmds3 = third_state.handle_block_sync(author_2, mal_sync, valset);
 
@@ -2127,10 +2060,9 @@ mod test {
         assert!(res.is_none());
 
         //arrival of proposal should also prevent block_sync_request from modifying the tree
-        let cmds2 = third_state.handle_proposal_message_full(
+        let cmds2 = third_state.handle_proposal_message(
             author_2,
             verified_message_2,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2180,30 +2112,34 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = p1.destructure();
 
-        let cmds = state.handle_proposal_message(author, verified_message);
-        let result = cmds
-            .iter()
-            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
-        assert!(result.is_some());
-
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains("monotonic_counter.rx_empty_block"))
-                .count()
-            {
-                1 => Ok(()),
-                n => Err(format!("Expected count 1 got {}", n)),
-            }
+        let cmds = state.handle_proposal_message(
+            author,
+            verified_message,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
+        let result = cmds.iter().find(|&c| {
+            matches!(
+                c,
+                ConsensusCommand::Publish {
+                    target: _,
+                    message: _
+                }
+            )
         });
+        assert!(result.is_some());
+        assert_counter!("monotonic_counter.rx_empty_block", 1);
     }
 
+    /// Test the behaviour of consensus when execution is lagging. This is tested
+    /// by handling a non-empty proposal which is missing the state root hash (lagging execution)
     #[traced_test]
     #[test]
     fn test_lagging_execution() {
@@ -2220,7 +2156,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![0xaa].into()),
+            FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts::zero(),
         );
 
@@ -2230,27 +2166,106 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![0xaa].into()),
+            FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = p1.destructure();
-        let cmds = state.handle_proposal_message(author, verified_message);
-        let result = cmds
-            .iter()
-            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
-        assert!(result.is_none());
+        let cmds = state.handle_proposal_message(
+            author,
+            verified_message,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
+        assert!(cmds.is_empty());
+        assert_counter!("monotonic_counter.rx_execution_lagging", 1);
+    }
 
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains("monotonic_counter.rx_execution_lagging"))
-                .count()
-            {
-                1 => Ok(()),
-                n => Err(format!("Expected count 1 got {}", n)),
+    /// Test consensus behaviour of a leader who is supposed to propose
+    /// the next round but does not have a recent enough state root hash
+    #[traced_test]
+    #[test]
+    fn test_unavailable_state_root_during_proposal() {
+        // MissingNextStateRoot forces the proposer's state root hash
+        // to be unavailable
+        let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureCollectionType, MissingNextStateRoot>(4);
+        let election = SimpleRoundRobin::new();
+        let mut empty_txpool = EthTxPool::new();
+        let (first_state, xs) = states.split_first_mut().unwrap();
+        let (second_state, xs) = xs.split_first_mut().unwrap();
+        let (third_state, xs) = xs.split_first_mut().unwrap();
+        let fourth_state = &mut xs[0];
+
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
+        let p1 = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = p1.destructure();
+        let cmds1 = first_state.handle_proposal_message(
+            author,
+            verified_message.clone(),
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
+        let p1_votes = extract_vote_msgs(cmds1)[0];
+
+        let cmds2 = second_state.handle_proposal_message(
+            author,
+            verified_message.clone(),
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
+        let p2_votes = extract_vote_msgs(cmds2)[0];
+
+        let cmds3 = third_state.handle_proposal_message(
+            author,
+            verified_message.clone(),
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
+        let p3_votes = extract_vote_msgs(cmds3)[0];
+
+        let cmds4 = fourth_state.handle_proposal_message(
+            author,
+            verified_message,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+        );
+        let p4_votes = extract_vote_msgs(cmds4)[0];
+
+        let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
+        for i in 0..4 {
+            let v = Verified::<NopSignature, VoteMessage<_>>::new(votes[i], &keys[i]);
+            let cmds = third_state.handle_vote_message(
+                *v.author(),
+                *v,
+                &mut empty_txpool,
+                &mut epoch_manager,
+                &val_epoch_map,
+                &election,
+            );
+
+            // after 2f + 1 votes, we expect that an empty proposal is created
+            if i == 2 {
+                let p = extract_proposal_broadcast(cmds);
+                assert_eq!(p.block.0.payload.txns, FullTransactionList::empty());
+                assert_eq!(p.block.0.payload.header.state_root, Hash([0; 32]));
+                assert_counter!("creating_empty_block_proposal", 1);
             }
-        });
+        }
     }
 
     #[test]
@@ -2269,22 +2284,16 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p0.destructure();
         // p0 should have seqnum 1 and therefore only require state_root 0
         // the state_root 0's hash should be Hash([0x00; 32])
         state.handle_state_root_update(SeqNum(0), Hash([0x00; 32]));
-        let cmds = state.handle_proposal_message(author, verified_message.clone());
-        let result = cmds
-            .iter()
-            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
-        assert!(result.is_some());
-        state.handle_proposal_message_full(
+        let _ = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2296,7 +2305,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![0xaa].into()),
+            FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0x99; 32]),
@@ -2309,16 +2318,9 @@ mod test {
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
         state.handle_state_root_update(SeqNum(1), Hash([0x99; 32]));
-        let cmds = state.handle_proposal_message(author, verified_message.clone());
-        let result = cmds
-            .iter()
-            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
-        assert!(result.is_some());
-
-        state.handle_proposal_message_full(
+        let _ = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2332,7 +2334,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![0xaa].into()),
+            FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0xbb; 32]),
@@ -2345,16 +2347,9 @@ mod test {
 
         let (author, _, verified_message) = p2.destructure();
         state.handle_state_root_update(SeqNum(2), Hash([0xbb; 32]));
-        let cmds = state.handle_proposal_message(author, verified_message.clone());
-        let result = cmds
-            .iter()
-            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
-        assert!(result.is_some());
-
-        let p2_cmds = state.handle_proposal_message_full(
+        let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2370,7 +2365,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![0xaa].into()),
+            FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: Hash([0xcc; 32]),
@@ -2383,16 +2378,9 @@ mod test {
 
         let (author, _, verified_message) = p3.destructure();
         state.handle_state_root_update(SeqNum(3), Hash([0xcc; 32]));
-        let cmds = state.handle_proposal_message(author, verified_message.clone());
-        let result = cmds
-            .iter()
-            .find(|&c| matches!(c, ConsensusCommand::FetchFullTxs { 0: _, 1: _ }));
-        assert!(result.is_some());
-
-        let p3_cmds = state.handle_proposal_message_full(
+        let p3_cmds = state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2433,23 +2421,19 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp1.destructure();
-        let block_1 = UnverifiedFullBlock {
-            block: verified_message.block.clone(),
-            full_txs: FullTransactionList::empty(),
-        };
-        let bid_correct = block_1.block.get_id();
+        let block_1 = verified_message.block.clone();
+        let bid_correct = block_1.0.get_id();
         // requesting a block that's doesn't exists should yield None
         assert_eq!(first_state.fetch_uncommitted_block(&bid_correct), None);
         // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
-        first_state.handle_proposal_message_full(
+        first_state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2464,22 +2448,18 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(vec![13, 32].into()),
+            FullTransactionList::new(vec![13, 32].into()),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = bp1.destructure();
-        let block_1 = UnverifiedFullBlock {
-            block: verified_message.block.clone(),
-            full_txs: FullTransactionList::empty(),
-        };
-        let bid_branch = block_1.block.get_id();
+        let block_1 = verified_message.block.clone();
+        let bid_branch = block_1.0.get_id();
         assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
 
-        first_state.handle_proposal_message_full(
+        first_state.handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2496,24 +2476,20 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
-            let block = UnverifiedFullBlock {
-                block: verified_message.block.clone(),
-                full_txs: FullTransactionList::empty(),
-            };
-            let bid = block.block.get_id();
+            let block = verified_message.block.clone();
+            let bid = block.0.get_id();
             // requesting a block that's doesn't exists should yield None
             assert_eq!(first_state.fetch_uncommitted_block(&bid), None);
             // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
 
-            let cmds = first_state.handle_proposal_message_full(
+            let cmds = first_state.handle_proposal_message(
                 author,
                 verified_message,
-                FullTransactionList::empty(),
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -2527,12 +2503,8 @@ mod test {
             let full_block = first_state.fetch_uncommitted_block(&bid).unwrap();
             assert_eq!(full_block.get_id(), bid);
         }
-        assert!(ledger_blocks
-            .iter()
-            .any(|x| x.get_block().get_id() == bid_correct));
-        assert!(ledger_blocks
-            .iter()
-            .all(|x| x.get_block().get_id() != bid_branch));
+        assert!(ledger_blocks.iter().any(|x| x.get_id() == bid_correct));
+        assert!(ledger_blocks.iter().all(|x| x.get_id() != bid_branch));
     }
 
     #[test_case(4; "4 participants")]
@@ -2546,6 +2518,7 @@ mod test {
             setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
 
         let election = SimpleRoundRobin::new();
+        let mut empty_txpool = EthTxPool::new();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         for i in 0..8 {
@@ -2555,16 +2528,15 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for state in states.iter_mut() {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     &mut epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -2595,17 +2567,16 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = cp.destructure();
         let mut votes = vec![];
         for (i, state) in states.iter_mut().enumerate() {
             if state.nodeid != next_leader {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     &mut epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -2637,6 +2608,7 @@ mod test {
             let cmds = states[leader_index].handle_vote_message(
                 *author,
                 *v,
+                &mut empty_txpool,
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -2650,7 +2622,7 @@ mod test {
                     })
                     .collect();
                 assert_eq!(req.len(), 1);
-                assert_eq!(req[0].1, verified_message.block.get_id());
+                assert_eq!(req[0].1, verified_message.block.0.get_id());
             } else {
                 let req: Vec<_> = cmds
                     .into_iter()
@@ -2670,6 +2642,7 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
         let election = SimpleRoundRobin::new();
+        let mut empty_txpool = EthTxPool::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -2679,16 +2652,15 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for state in states.iter_mut().skip(1) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     &mut epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -2725,6 +2697,7 @@ mod test {
         let cmds = states[0].handle_timeout_message(
             author,
             timeout_msg,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2738,7 +2711,7 @@ mod test {
             })
             .collect();
         assert_eq!(req.len(), 1);
-        assert_eq!(req[0].1, blocks[2].get_id());
+        assert_eq!(req[0].1, blocks[2].0.get_id());
     }
 
     #[test]
@@ -2756,7 +2729,7 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
@@ -2769,15 +2742,14 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds = states[1].handle_proposal_message_full(
+        let cmds = states[1].handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2790,7 +2762,7 @@ mod test {
             })
             .collect();
         assert_eq!(req.len(), 1);
-        assert_eq!(req[0].1, blocks[3].get_id());
+        assert_eq!(req[0].1, blocks[3].0.get_id());
     }
 
     /// This test asserts that proposal not from the round leader is not added
@@ -2818,16 +2790,15 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (_, _, p1) = verified_p1.destructure();
 
-        states[0].handle_proposal_message_full(
-            p1.block.author,
+        states[0].handle_proposal_message(
+            p1.block.0.author,
             p1,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2840,7 +2811,7 @@ mod test {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
@@ -2848,22 +2819,21 @@ mod test {
 
         let invalid_author = election.get_leader(Round(4), &epoch_manager, &val_epoch_map);
         assert!(invalid_author != NodeId(states[0].get_keypair().pubkey()));
-        assert!(invalid_author != p2.block.author);
+        assert!(invalid_author != p2.block.0.author);
         let invalid_b2 = Block::new(
             invalid_author,
-            p2.block.round,
-            &p2.block.payload,
-            &p2.block.qc,
+            p2.block.0.round,
+            &p2.block.0.payload,
+            &p2.block.0.qc,
         );
         let invalid_p2 = ProposalMessage {
-            block: invalid_b2,
+            block: UnverifiedBlock(invalid_b2),
             last_round_tc: None,
         };
 
-        states[0].handle_proposal_message_full(
-            invalid_p2.block.author,
+        states[0].handle_proposal_message(
+            invalid_p2.block.0.author,
             invalid_p2,
-            FullTransactionList::empty(),
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2872,16 +2842,7 @@ mod test {
         // p2 is not added because author is not the round leader
         assert_eq!(states[0].blocktree().size(), 1);
 
-        logs_assert(|lines: &[&str]| {
-            match lines
-                .iter()
-                .filter(|line| line.contains("monotonic_counter.invalid_proposal_round_leader"))
-                .count()
-            {
-                1 => Ok(()),
-                n => Err(format!("Expected count 1 got {}", n)),
-            }
-        });
+        assert_counter!("monotonic_counter.invalid_proposal_round_leader", 1);
     }
 
     #[test]
@@ -2907,16 +2868,15 @@ mod test {
                 &epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -2971,16 +2931,15 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3028,16 +2987,15 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3069,16 +3027,15 @@ mod test {
             &propgen_epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp.destructure();
         // observe QC to advance round and epoch
-        states[0].handle_proposal_message_full(
+        states[0].handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_managers[0],
             &val_epoch_map,
             &election,
@@ -3111,16 +3068,15 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3180,16 +3136,15 @@ mod test {
             &propgen_epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp.destructure();
         // observe TC to advance round and epoch
-        states[0].handle_proposal_message_full(
+        states[0].handle_proposal_message(
             author,
             verified_message,
-            FullTransactionList::empty(),
             &mut epoch_managers[0],
             &val_epoch_map,
             &election,
@@ -3206,6 +3161,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();
+        let mut empty_txpool = EthTxPool::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3222,17 +3178,16 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
                 let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
-                    .handle_proposal_message_full(
+                    .handle_proposal_message(
                         author,
                         verified_message.clone(),
-                        FullTransactionList::empty(),
                         epoch_manager,
                         &val_epoch_map,
                         &election,
@@ -3280,16 +3235,15 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3328,6 +3282,7 @@ mod test {
             states[0].handle_timeout_message(
                 author,
                 tm,
+                &mut empty_txpool,
                 &mut epoch_managers[0],
                 &val_epoch_map,
                 &election,
@@ -3362,17 +3317,16 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
                 let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
-                    .handle_proposal_message_full(
+                    .handle_proposal_message(
                         author,
                         verified_message.clone(),
-                        FullTransactionList::empty(),
                         epoch_manager,
                         &val_epoch_map,
                         &election,
@@ -3405,17 +3359,16 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
 
             let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_1
-                .handle_proposal_message_full(
+                .handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager_1,
                     &val_epoch_map,
                     &election,
@@ -3470,20 +3423,18 @@ mod test {
             &propgen_epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2
-            .handle_proposal_message_full(
-                author,
-                verified_message.clone(),
-                FullTransactionList::empty(),
-                epoch_manager_2,
-                &val_epoch_map,
-                &election,
-            );
+        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2.handle_proposal_message(
+            author,
+            verified_message.clone(),
+            epoch_manager_2,
+            &val_epoch_map,
+            &election,
+        );
         // state 2 should request blocksync
         let bsync_cmds: Vec<_> = cmds
             .iter()
@@ -3498,11 +3449,7 @@ mod test {
 
         let val_set = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         for block in block_sync_blocks.into_iter().rev() {
-            let unverified_block = UnverifiedFullBlock {
-                block,
-                full_txs: FullTransactionList::empty(),
-            };
-            let msg = BlockSyncResponseMessage::BlockFound(unverified_block);
+            let msg = BlockSyncResponseMessage::BlockFound(block);
             // blocksync response for state 2
             let _ = state_2.handle_block_sync(state_1.nodeid, msg, val_set);
         }
@@ -3527,20 +3474,18 @@ mod test {
             &propgen_epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2
-            .handle_proposal_message_full(
-                author,
-                verified_message,
-                FullTransactionList::empty(),
-                epoch_manager_2,
-                &val_epoch_map,
-                &election,
-            );
+        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2.handle_proposal_message(
+            author,
+            verified_message,
+            epoch_manager_2,
+            &val_epoch_map,
+            &election,
+        );
         // state 2 should not request blocksync
         let bsync_cmds: Vec<_> = cmds
             .iter()
@@ -3591,16 +3536,15 @@ mod test {
                 &propgen_epoch_manager,
                 &val_epoch_map,
                 &election,
-                TransactionHashList::empty(),
+                FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             );
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds = state.handle_proposal_message_full(
+                let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
-                    FullTransactionList::empty(),
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3644,7 +3588,7 @@ mod test {
             &propgen_epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
@@ -3655,16 +3599,15 @@ mod test {
             &propgen_epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::empty(),
+            FullTransactionList::empty(),
             ExecutionArtifacts::zero(),
         );
 
         let (author, _, verified_message) = cp.destructure();
         for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-            let cmds = state.handle_proposal_message_full(
+            let cmds = state.handle_proposal_message(
                 author,
                 verified_message.clone(),
-                FullTransactionList::empty(),
                 epoch_manager,
                 &val_epoch_map,
                 &election,

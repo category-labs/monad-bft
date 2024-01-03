@@ -1,5 +1,5 @@
 use monad_consensus_types::{
-    block::{Block, BlockType, UnverifiedFullBlock},
+    block::{BlockType, UnverifiedBlock},
     certificate_signature::CertificateSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
@@ -79,7 +79,7 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
 /// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalMessage<T> {
-    pub block: Block<T>,
+    pub block: UnverifiedBlock<T>,
     pub last_round_tc: Option<TimeoutCertificate<T>>,
 }
 
@@ -108,14 +108,14 @@ impl Hashable for RequestBlockSyncMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockSyncResponseMessage<T> {
-    BlockFound(UnverifiedFullBlock<T>),
+    BlockFound(UnverifiedBlock<T>),
     NotAvailable(BlockId),
 }
 
 impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
     pub fn get_block_id(&self) -> BlockId {
         match self {
-            BlockSyncResponseMessage::BlockFound(b) => b.block.get_id(),
+            BlockSyncResponseMessage::BlockFound(b) => b.0.get_id(),
             BlockSyncResponseMessage::NotAvailable(bid) => *bid,
         }
     }

@@ -10,11 +10,11 @@ use monad_consensus::{
     validation::signing::{Validated, Verified},
 };
 use monad_consensus_types::{
-    block::UnverifiedFullBlock,
+    block::UnverifiedBlock,
     certificate_signature::CertificateSignature,
     ledger::CommitResult,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, FullTransactionList, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -282,13 +282,13 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         NodeId(author_keypair.pubkey()),
         Round(233),
         Round(232),
-        TransactionHashList::new(vec![1, 2, 3, 4].into()),
+        FullTransactionList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         validator_mapping,
     );
     let proposal: ConsensusMessage<SCT> = ConsensusMessage::Proposal(ProposalMessage {
-        block: blk,
+        block: UnverifiedBlock(blk),
         last_round_tc: None,
     });
     let verified_msg =
@@ -330,7 +330,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         NodeId(author_keypair.pubkey()),
         Round(233),
         Round(231),
-        TransactionHashList::new(vec![1, 2, 3, 4].into()),
+        FullTransactionList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         validator_mapping,
@@ -350,7 +350,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     );
 
     let proposal_msg = ConsensusMessage::Proposal(ProposalMessage {
-        block: blk,
+        block: UnverifiedBlock(blk),
         last_round_tc: Some(tc),
     });
     let verified_msg =
@@ -448,16 +448,13 @@ test_all_combination!(test_block_sync_response_found, |num_keys| {
         NodeId(author_keypair.pubkey()),
         Round(233),
         Round(232),
-        TransactionHashList::new(Bytes::from_static(&[1, 2, 3, 4])),
+        FullTransactionList::new(Bytes::from_static(&[1, 2, 3, 4])),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
         validator_mapping,
     );
 
-    let full_blk = UnverifiedFullBlock::new(
-        blk,
-        FullTransactionList::new(Bytes::from_static(&[1, 2, 3, 4])),
-    );
+    let full_blk = UnverifiedBlock::new(blk);
 
     let block_sync_msg = BlockSyncResponseMessage::BlockFound(full_blk);
 

@@ -11,10 +11,8 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::{FullBlock, UnverifiedFullBlock},
-    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
+    block::{Block, UnverifiedBlock},
     message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
     validator_data::ValidatorData,
 };
@@ -47,18 +45,6 @@ pub enum TimerCommand<E> {
     ScheduleReset(TimeoutVariant),
 }
 
-// MempoolCommand should not be replayed
-pub enum MempoolCommand<SCT> {
-    FetchTxs(FetchTxsCriteria<SCT>),
-    FetchFullTxs(
-        /// Transaction hashes of the Full transaction to be fetched
-        TransactionHashList,
-        /// params of the proposal of this fetch
-        FetchFullTxParams<SCT>,
-    ),
-    DrainTxs(Vec<TransactionHashList>),
-}
-
 pub enum LedgerCommand<B, E> {
     LedgerCommit(Vec<B>),
     // LedgerFetch should not be replayed
@@ -70,7 +56,7 @@ pub enum LedgerCommand<B, E> {
 }
 
 pub enum ExecutionLedgerCommand<SCT> {
-    LedgerCommit(Vec<FullBlock<SCT>>),
+    LedgerCommit(Vec<Block<SCT>>),
 }
 
 pub enum CheckpointCommand<C> {
@@ -85,7 +71,6 @@ pub enum Command<E, OM, B, C, SCT> {
     RouterCommand(RouterCommand<OM>),
     TimerCommand(TimerCommand<E>),
 
-    MempoolCommand(MempoolCommand<SCT>),
     LedgerCommand(LedgerCommand<B, E>),
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
@@ -98,7 +83,6 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
     ) -> (
         Vec<RouterCommand<OM>>,
         Vec<TimerCommand<E>>,
-        Vec<MempoolCommand<SCT>>,
         Vec<LedgerCommand<B, E>>,
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
@@ -106,7 +90,6 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
-        let mut mempool_cmds = Vec::new();
         let mut ledger_cmds = Vec::new();
         let mut execution_ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
@@ -116,7 +99,6 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
             match command {
                 Command::RouterCommand(cmd) => router_cmds.push(cmd),
                 Command::TimerCommand(cmd) => timer_cmds.push(cmd),
-                Command::MempoolCommand(cmd) => mempool_cmds.push(cmd),
                 Command::LedgerCommand(cmd) => ledger_cmds.push(cmd),
                 Command::ExecutionLedgerCommand(cmd) => execution_ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
@@ -126,7 +108,6 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
         (
             router_cmds,
             timer_cmds,
-            mempool_cmds,
             ledger_cmds,
             execution_ledger_cmds,
             checkpoint_cmds,
@@ -142,8 +123,6 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
-    FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
-    FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
     StateUpdate((SeqNum, ConsensusHash)),
     BlockSyncResponse {
         sender: PubKey,
@@ -163,18 +142,6 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
-            ConsensusEvent::FetchedTxs(p, t) => {
-                f.debug_tuple("FetchedTxs")
-                    .field(p)
-                    // .field(t)
-                    .finish()
-            }
-            ConsensusEvent::FetchedFullTxs(p, _) => f
-                .debug_struct("FetchedFullTxs")
-                .field("author", &p.author)
-                .field("proposal block", &p.p_block)
-                .field("proposal tc", &p.p_last_round_tc)
-                .finish(),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
             ConsensusEvent::BlockSyncResponse {
                 sender,
@@ -201,7 +168,7 @@ pub struct FetchedBlock<SCT> {
     /// FetchedBlock results should only be used to send block data to nodes
     /// over the network so we should unverify it before sending to consensus
     /// to prevent it from being used for anything else
-    pub unverified_full_block: Option<UnverifiedFullBlock<SCT>>,
+    pub unverified_block: Option<UnverifiedBlock<SCT>>,
 }
 
 /// BlockSync related events

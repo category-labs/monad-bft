@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use monad_consensus_types::block_validator::MockValidator;
-use monad_mock_swarm::{
-    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
-};
+use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{GenericTransformer, LatencyTransformer};
@@ -29,7 +27,6 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],

@@ -3,9 +3,7 @@ use std::{collections::HashSet, env, time::Duration};
 
 use monad_consensus_types::{block_validator::MockValidator, multi_sig::MultiSig};
 use monad_crypto::NopSignature;
-use monad_mock_swarm::{
-    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
-};
+use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{get_configs, run_nodes_until};
 use monad_transformer::{
@@ -69,7 +67,6 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_peers)),

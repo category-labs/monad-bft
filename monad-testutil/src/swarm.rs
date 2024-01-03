@@ -139,7 +139,6 @@ pub fn create_and_run_nodes<S, R, T>(
     tvt: S::TransactionValidator,
     router_scheduler_config: R,
     logger_config: S::LoggerConfig,
-    mock_mempool_config: S::MempoolConfig,
     pipeline: S::Pipeline,
     terminator: T,
     swarm_config: SwarmTestConfig,
@@ -167,7 +166,6 @@ where
         state_configs,
         router_scheduler_config,
         logger_config,
-        mock_mempool_config,
         pipeline,
         swarm_config.parallelize,
         terminator,
@@ -181,7 +179,6 @@ pub fn run_nodes_until<S, R, T>(
     state_configs: Vec<MonadConfig<S::SignatureCollectionType, S::TransactionValidator>>,
     router_scheduler_config: R,
     logger_config: S::LoggerConfig,
-    mock_mempool_config: S::MempoolConfig,
     pipeline: S::Pipeline,
     parallelize: bool,
 
@@ -211,7 +208,6 @@ where
                         pubkeys.iter().copied().map(NodeId).collect(),
                         NodeId(pubkey),
                     ),
-                    mock_mempool_config,
                     pipeline.clone(),
                     seed,
                 )

@@ -23,7 +23,7 @@ use iced::{
 };
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::{BlockType, FullBlock},
+    block::{Block, BlockType},
     block_validator::MockValidator,
     multi_sig::MultiSig,
     payload::StateRoot,
@@ -31,10 +31,7 @@ use monad_consensus_types::{
 use monad_crypto::NopSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
-use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
-    swarm_relation::SwarmRelation,
-};
+use monad_mock_swarm::{mock_txpool::MockTxPool, swarm_relation::SwarmRelation};
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{
@@ -68,6 +65,7 @@ impl SwarmRelation for VizSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -78,9 +76,6 @@ impl SwarmRelation for VizSwarm {
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
@@ -276,7 +271,7 @@ impl Application for Viz {
 
 fn draw_ledger(
     frame: &mut Frame,
-    ledger: &Vec<FullBlock<MultiSig<NopSignature>>>,
+    ledger: &Vec<Block<MultiSig<NopSignature>>>,
     idx: usize,
     x: &f32,
     y: &f32,

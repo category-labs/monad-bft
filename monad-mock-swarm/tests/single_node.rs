@@ -5,9 +5,7 @@ use std::time::{Duration, Instant};
 use common::QuicSwarm;
 use monad_consensus_types::block_validator::MockValidator;
 use monad_gossip::mock::MockGossipConfig;
-use monad_mock_swarm::{
-    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
-};
+use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
@@ -24,7 +22,6 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
@@ -59,7 +56,6 @@ fn two_nodes_quic() {
             gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![BytesTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
@@ -95,7 +91,6 @@ fn two_nodes_quic_bw() {
             gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![
             BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             BytesTransformer::Bw(BwTransformer::new(8, Duration::from_secs(1))),
@@ -117,7 +112,7 @@ fn two_nodes_quic_bw() {
     logs_assert(|lines| {
         if lines
             .iter()
-            .filter(|line| line.contains("monotonic_counter.bwtransfomer_dropped_msg"))
+            .filter(|line| line.contains("monotonic_counter.bwtransformer_dropped_msg"))
             .count()
             > 0
         {

@@ -15,7 +15,7 @@ impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
         ProtoFetchedBlock {
             requester: Some((&value.requester).into()),
             block_id: Some((&value.block_id).into()),
-            unverified_full_block: value.unverified_full_block.as_ref().map(|b| b.into()),
+            unverified_block: value.unverified_block.as_ref().map(|b| b.into()),
         }
     }
 }
@@ -37,11 +37,11 @@ impl<SCT: SignatureCollection> TryFrom<ProtoFetchedBlock> for FetchedBlock<SCT> 
                     "FetchedBlock.requester".to_owned(),
                 ))?
                 .try_into()?,
-            unverified_full_block: Some(
+            unverified_block: Some(
                 value
-                    .unverified_full_block
+                    .unverified_block
                     .ok_or(ProtoError::MissingRequiredField(
-                        "FetchedBlock.unverified_full_block".to_owned(),
+                        "FetchedBlock.unverified_block".to_owned(),
                     ))?
                     .try_into()?,
             ),

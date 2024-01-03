@@ -3,9 +3,9 @@ use monad_consensus::{
     validation::signing::Unvalidated,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, UnverifiedBlock},
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     validation::Error,
     voting::{ValidatorMapping, Vote, VoteInfo},
@@ -33,8 +33,8 @@ fn setup_block(
     block_round: Round,
     qc_round: Round,
     signers: &[PubKey],
-) -> Block<MockSignatures> {
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
+) -> UnverifiedBlock<MockSignatures> {
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: qc_round,
@@ -52,7 +52,7 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    Block::<MockSignatures>::new(
+    let b = Block::<MockSignatures>::new(
         author,
         block_round,
         &Payload {
@@ -63,7 +63,8 @@ fn setup_block(
             randao_reveal: RandaoReveal::default(),
         },
         &qc,
-    )
+    );
+    UnverifiedBlock(b)
 }
 
 #[test]

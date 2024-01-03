@@ -14,10 +14,9 @@ use rand_chacha::ChaChaRng;
 
 use crate::twin_reader::{TwinsNodeConfig, TwinsTestCase};
 
-pub fn run_twins_test<S, L, R, M>(
+pub fn run_twins_test<S, L, R>(
     get_logger_config: L,
     get_router_cfg: R,
-    get_mempool_cfg: M,
     seed: u64,
     test_case: TwinsTestCase<S>,
 ) where
@@ -26,7 +25,6 @@ pub fn run_twins_test<S, L, R, M>(
     Node<S>: Send,
     L: Fn(&ID, &Vec<ID>) -> S::LoggerConfig,
     R: Fn(&ID, &Vec<ID>) -> S::RouterSchedulerConfig,
-    M: Fn(&ID, &Vec<ID>) -> S::MempoolConfig,
 {
     let TwinsTestCase {
         description: _,
@@ -60,20 +58,8 @@ pub fn run_twins_test<S, L, R, M>(
             MonadMessageTransformer::Twins(twins_transformer),
             MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(rng.gen(), delta)),
         ];
-        let (lgr_cfg, router_cfg, mempool_cfg) = (
-            get_logger_config(&id, &ids),
-            get_router_cfg(&id, &ids),
-            get_mempool_cfg(&id, &ids),
-        );
-        swarm.add_state((
-            id,
-            state_config,
-            lgr_cfg,
-            router_cfg,
-            mempool_cfg,
-            pipeline,
-            seed,
-        ));
+        let (lgr_cfg, router_cfg) = (get_logger_config(&id, &ids), get_router_cfg(&id, &ids));
+        swarm.add_state((id, state_config, lgr_cfg, router_cfg, pipeline, seed));
     }
 
     while swarm.step_until(&terminator).is_some() {}

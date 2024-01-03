@@ -9,7 +9,6 @@ mod test {
     use monad_consensus_types::{block_validator::MockValidator, multi_sig::MultiSig};
     use monad_crypto::NopSignature;
     use monad_mock_swarm::{
-        mock::MockMempoolConfig,
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm, SwarmRelation},
         transformer::{FilterTransformer, MonadMessageTransformer},
@@ -70,7 +69,6 @@ mod test {
                         NoSerRouterConfig {
                             all_peers: pubkeys.iter().copied().map(NodeId).collect(),
                         },
-                        MockMempoolConfig::default(),
                         pipeline.clone(),
                         1,
                     )
@@ -171,7 +169,6 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            MockMempoolConfig::default(),
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)),
@@ -217,7 +214,6 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            MockMempoolConfig::default(),
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)),
@@ -279,7 +275,6 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            MockMempoolConfig::default(),
             vec![
                 GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)),

@@ -10,10 +10,11 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
+    block::UnverifiedBlock,
     certificate_signature::CertificateSignature,
     ledger::CommitResult,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
     timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -73,7 +74,7 @@ impl MonadEventBencher {
 }
 
 fn bench_proposal(c: &mut Criterion) {
-    let txns = TransactionHashList::new(vec![0x23_u8; 32 * 10000].into());
+    let txns = FullTransactionList::new(vec![0x23_u8; 32 * 10000].into());
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
         create_keys_w_validators::<MultiSig<SecpSignature>>(1);
     let author_keypair = &keypairs[0];
@@ -89,7 +90,7 @@ fn bench_proposal(c: &mut Criterion) {
     );
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
-        block: blk,
+        block: UnverifiedBlock(blk),
         last_round_tc: None,
     });
     let proposal_hash = HasherType::hash_object(&proposal);

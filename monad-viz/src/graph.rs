@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+    message_signature::MessageSignature, signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::secp256k1::PubKey;
 use monad_executor::State;
@@ -71,7 +71,6 @@ where
         <S::State as State>::Config,
         S::LoggerConfig,
         S::RouterSchedulerConfig,
-        S::MempoolConfig,
         S::Pipeline,
         u64,
     )>;
@@ -89,10 +88,10 @@ where
     current_tick: Duration,
 }
 
-impl<S, C, CT, ST, SCT, VT, LT> NodesSimulation<S, C>
+impl<S, C, CT, ST, SCT, VT, LT, TT> NodesSimulation<S, C>
 where
     S: SwarmRelation<
-        State = MonadState<CT, ST, SCT, VT, LT>,
+        State = MonadState<CT, ST, SCT, VT, LT, TT>,
         TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
@@ -102,6 +101,7 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    TT: TxPool,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
@@ -132,10 +132,10 @@ where
     }
 }
 
-impl<S, C, CT, ST, SCT, VT, LT> Graph for NodesSimulation<S, C>
+impl<S, C, CT, ST, SCT, VT, LT, TT> Graph for NodesSimulation<S, C>
 where
     S: SwarmRelation<
-        State = MonadState<CT, ST, SCT, VT, LT>,
+        State = MonadState<CT, ST, SCT, VT, LT, TT>,
         TransportMessage = <S as SwarmRelation>::OutboundMessage,
     >,
     C: SimulationConfig<S>,
@@ -145,6 +145,7 @@ where
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    TT: TxPool,
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,

@@ -32,29 +32,10 @@ message ProtoScheduleTimeout {
   }
 }
 
-message ProtoFetchedTxs {
-  monad_proto.basic.ProtoNodeId node_id = 1;
-  monad_proto.basic.ProtoRound round = 2;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 3;
-
-  optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 4;
-
-  bytes tx_hashes = 5;
-  monad_proto.basic.ProtoSeqNum seq_num = 6;
-  monad_proto.basic.ProtoHash state_root_hash = 7;
-}
-
-message ProtoFetchedFullTxs {
-  monad_proto.basic.ProtoNodeId author = 1;
-  monad_proto.block.ProtoBlock p_block = 2;
-  optional monad_proto.timeout.ProtoTimeoutCertificate p_last_round_tc = 3;
-  bytes full_txs = 4;
-}
-
 message ProtoFetchedBlock {
   monad_proto.basic.ProtoNodeId requester = 1;
   monad_proto.basic.ProtoBlockId block_id = 2;
-  optional monad_proto.block.ProtoUnverifiedFullBlock unverified_full_block = 3;
+  optional monad_proto.block.ProtoUnverifiedBlock unverified_block = 3;
 }
 
 message ProtoUpdateValidatorsEvent {
@@ -82,10 +63,8 @@ message ProtoConsensusEvent {
   oneof event {
     ProtoMessageWithSender message = 1;
     ProtoScheduleTimeout timeout = 2;
-    ProtoFetchedTxs fetched_txs = 3;
-    ProtoFetchedFullTxs fetched_full_txs = 4;
-    ProtoStateUpdateEvent state_update = 5;
-    ProtoBlockSyncResponseWithSender block_sync_resp = 6;
+    ProtoStateUpdateEvent state_update = 3;
+    ProtoBlockSyncResponseWithSender block_sync_resp = 4;
   }
 }
 

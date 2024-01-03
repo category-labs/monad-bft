@@ -8,47 +8,23 @@ use std::{
     time::Duration,
 };
 
-use futures::{FutureExt, Stream, StreamExt};
-use monad_consensus_types::{
-    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
-    message_signature::MessageSignature,
-    payload::{FullTransactionList, TransactionHashList},
-    signature_collection::SignatureCollection,
-    validator_data::ValidatorData,
-};
+use futures::{Stream, StreamExt};
+use monad_consensus_types::validator_data::ValidatorData;
 use monad_executor::{Executor, State};
-use monad_executor_glue::{
-    Command, ExecutionLedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand,
-    TimerCommand,
-};
+use monad_executor_glue::{Command, ExecutionLedgerCommand, Message, RouterCommand, TimerCommand};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{NodeId, SeqNum, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockableStateRootHash,
 };
 use priority_queue::PriorityQueue;
-use rand::{Rng, RngCore};
-use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 use crate::swarm_relation::SwarmRelation;
-
-pub trait MockableExecutor:
-    Executor<Command = MempoolCommand<Self::SignatureCollection>> + Stream<Item = Self::Event> + Unpin
-{
-    type Config: Copy;
-    type Event;
-    type SignatureCollection;
-
-    fn new(config: Self::Config) -> Self;
-
-    fn ready(&self) -> bool;
-}
 
 pub struct MockExecutor<S>
 where
     S: SwarmRelation,
 {
-    mempool: S::MempoolExecutor,
     ledger: MockLedger<<S::State as State>::Block, <S::State as State>::Event>,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
@@ -127,7 +103,6 @@ enum ExecutorEventType {
     Router,
     Ledger,
     Timer,
-    Mempool,
     StateRootHash,
 }
 
@@ -137,7 +112,6 @@ where
 {
     pub fn new(
         router: S::RouterScheduler,
-        mempool_config: <S::MempoolExecutor as MockableExecutor>::Config,
         genesis_validator_data: ValidatorData<S::SignatureCollectionType>,
         val_set_update_interval: SeqNum,
         tick: Duration,
@@ -146,7 +120,6 @@ where
             checkpoint: Default::default(),
             ledger: Default::default(),
             execution_ledger: Default::default(),
-            mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
             state_root_hash: <S::StateRootHashExecutor as MockableStateRootHash>::new(
                 genesis_validator_data,
                 val_set_update_interval,
@@ -176,11 +149,6 @@ where
 
     fn peek_event(&self) -> Option<(Duration, ExecutorEventType)> {
         std::iter::empty()
-            .chain(
-                self.mempool
-                    .ready()
-                    .then_some((self.tick, ExecutorEventType::Mempool)),
-            )
             .chain(
                 self.router
                     .peek_tick()
@@ -225,7 +193,6 @@ where
         let (
             router_cmds,
             timer_cmds,
-            mempool_cmds,
             ledger_cmds,
             execution_ledger_cmds,
             checkpoint_cmds,
@@ -250,7 +217,6 @@ where
             }
         }
 
-        self.mempool.replay(mempool_cmds);
         self.ledger.replay(ledger_cmds);
         self.execution_ledger.replay(execution_ledger_cmds);
         self.checkpoint.replay(checkpoint_cmds);
@@ -268,7 +234,6 @@ where
         let (
             router_cmds,
             timer_cmds,
-            mempool_cmds,
             ledger_cmds,
             execution_ledger_cmds,
             checkpoint_cmds,
@@ -293,7 +258,6 @@ where
             }
         }
 
-        self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
@@ -344,12 +308,6 @@ where
                 ExecutorEventType::Timer => {
                     MockExecutorEvent::Event(self.timer.pop().unwrap().0.callback.unwrap())
                 }
-                ExecutorEventType::Mempool => match self.mempool.next().now_or_never() {
-                    Some(e) => {
-                        return e.map(MockExecutorEvent::Event);
-                    }
-                    None => continue,
-                },
                 ExecutorEventType::Ledger => {
                     return futures::executor::block_on(self.ledger.next())
                         .map(MockExecutorEvent::Event)
@@ -449,250 +407,6 @@ where
     }
 }
 
-const MOCK_DEFAULT_SEED: u64 = 1;
-
-pub struct MockMempool<ST, SCT> {
-    fetch_txs_state: Option<FetchTxParams<SCT>>,
-    num_fetch_txs: usize,
-    fetch_full_txs_state: Option<FetchFullTxParams<SCT>>,
-    waker: Option<Waker>,
-    rng: ChaCha20Rng,
-    phantom: PhantomData<ST>,
-}
-
-impl<ST, SCT> Default for MockMempool<ST, SCT> {
-    fn default() -> Self {
-        Self {
-            fetch_txs_state: None,
-            num_fetch_txs: 0,
-            fetch_full_txs_state: None,
-            waker: None,
-            rng: ChaCha20Rng::seed_from_u64(MOCK_DEFAULT_SEED),
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<ST, SCT> Executor for MockMempool<ST, SCT> {
-    type Command = MempoolCommand<SCT>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            MempoolCommand::FetchTxs(..) => false,
-            MempoolCommand::FetchFullTxs(..) => false,
-            MempoolCommand::DrainTxs(..) => false,
-        });
-        self.exec(commands)
-    }
-
-    fn exec(&mut self, commands: Vec<Self::Command>) {
-        let mut wake = false;
-
-        for command in commands {
-            match command {
-                MempoolCommand::FetchTxs(criteria) => {
-                    let FetchTxsCriteria {
-                        max_txs,
-                        block_gas_limit: _,
-                        ignore_txs: _,
-                        proposal_params: cb,
-                    } = criteria;
-                    self.fetch_txs_state = Some(cb);
-                    self.num_fetch_txs = max_txs;
-                    wake = true;
-                }
-                MempoolCommand::FetchFullTxs(_, cb) => {
-                    self.fetch_full_txs_state = Some(cb);
-                    wake = true;
-                }
-                MempoolCommand::DrainTxs(_) => {}
-            }
-        }
-
-        if wake {
-            if let Some(waker) = self.waker.take() {
-                waker.wake();
-            }
-        }
-    }
-}
-
-impl<ST, SCT> MockMempool<ST, SCT> {
-    fn get_fetched_txs_list(&mut self) -> TransactionHashList {
-        if self.num_fetch_txs == 0 {
-            TransactionHashList::empty()
-        } else {
-            // Random non-empty value with size = num_fetch_txs * hash_size
-            let mut buf = Vec::with_capacity(self.num_fetch_txs * 32);
-            buf.resize(self.num_fetch_txs * 32, 0);
-            self.rng.fill_bytes(buf.as_mut_slice());
-            TransactionHashList::new(buf.into())
-        }
-    }
-}
-
-impl<ST, SCT> Stream for MockMempool<ST, SCT>
-where
-    Self: Unpin,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-{
-    type Item = MonadEvent<ST, SCT>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut _mempool_poll_span = tracing::info_span!("mempool_poll_span").entered();
-
-        let this = self.deref_mut();
-
-        if let Some(s) = this.fetch_txs_state.take() {
-            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::FetchedTxs(s, self.get_fetched_txs_list()),
-            )));
-        }
-
-        if let Some(s) = this.fetch_full_txs_state.take() {
-            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::FetchedFullTxs(
-                    s,
-                    Some(FullTransactionList::empty()),
-                ),
-            )));
-        }
-
-        self.waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct MockMempoolConfig(pub u64);
-
-impl Default for MockMempoolConfig {
-    fn default() -> Self {
-        Self(MOCK_DEFAULT_SEED)
-    }
-}
-
-impl<ST, SCT> MockableExecutor for MockMempool<ST, SCT>
-where
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
-{
-    type Event = MonadEvent<ST, SCT>;
-    type SignatureCollection = SCT;
-    type Config = MockMempoolConfig;
-
-    fn new(config: Self::Config) -> Self {
-        Self {
-            rng: ChaCha20Rng::seed_from_u64(config.0),
-            ..Default::default()
-        }
-    }
-
-    fn ready(&self) -> bool {
-        self.fetch_txs_state.is_some() || self.fetch_full_txs_state.is_some()
-    }
-}
-
-pub struct MockMempoolRandFail<ST, SCT> {
-    mpool: MockMempool<ST, SCT>,
-    fail_rate: f32,
-    rng: ChaCha20Rng,
-}
-
-impl<ST, SCT> MockMempoolRandFail<ST, SCT> {
-    pub fn new(seed: u64, fail_rate: f32) -> Self {
-        MockMempoolRandFail {
-            mpool: Default::default(),
-            fail_rate,
-            rng: ChaChaRng::seed_from_u64(seed),
-        }
-    }
-}
-
-impl<ST, SCT> Executor for MockMempoolRandFail<ST, SCT> {
-    type Command = MempoolCommand<SCT>;
-
-    fn replay(&mut self, commands: Vec<Self::Command>) {
-        self.mpool.replay(commands)
-    }
-
-    fn exec(&mut self, commands: Vec<Self::Command>) {
-        self.mpool.exec(commands)
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct MockMempoolRandFailConfig {
-    pub fail_rate: f32,
-    pub seed: u64,
-}
-
-impl<ST, SCT> MockableExecutor for MockMempoolRandFail<ST, SCT>
-where
-    ST: MessageSignature + Unpin,
-    SCT: SignatureCollection + Unpin,
-{
-    type Event = MonadEvent<ST, SCT>;
-    type SignatureCollection = SCT;
-    type Config = MockMempoolRandFailConfig;
-
-    fn new(config: Self::Config) -> Self {
-        MockMempoolRandFail {
-            mpool: Default::default(),
-            fail_rate: config.fail_rate,
-            rng: ChaChaRng::seed_from_u64(config.seed),
-        }
-    }
-
-    fn ready(&self) -> bool {
-        self.mpool.ready()
-    }
-}
-
-impl<ST, SCT> Stream for MockMempoolRandFail<ST, SCT>
-where
-    Self: Unpin,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-{
-    type Item = MonadEvent<ST, SCT>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.deref_mut();
-
-        if let Some(s) = this.mpool.fetch_txs_state.take() {
-            if self.rng.gen_range(0.0..1.0) < self.fail_rate {
-                return Poll::Pending;
-            }
-
-            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::FetchedTxs(
-                    s,
-                    self.mpool.get_fetched_txs_list(),
-                ),
-            )));
-        }
-
-        if let Some(s) = this.mpool.fetch_full_txs_state.take() {
-            if self.rng.gen_range(0.0..1.0) < self.fail_rate {
-                return Poll::Pending;
-            }
-
-            return Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::FetchedFullTxs(
-                    s,
-                    Some(FullTransactionList::empty()),
-                ),
-            )));
-        }
-
-        self.mpool.waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
-}
-
 pub struct MockExecutionLedger<SCT> {
     phantom: PhantomData<SCT>,
 }
@@ -725,25 +439,12 @@ mod tests {
     use std::{collections::HashSet, time::Duration};
 
     use futures::{FutureExt, StreamExt};
-    use monad_consensus_types::{multi_sig::MultiSig, quorum_certificate::QuorumCertificate};
-    use monad_crypto::{hasher::Hash, NopSignature};
+    use monad_crypto::hasher::Hash;
     use monad_executor::Executor;
-    use monad_executor_glue::{ConsensusEvent, TimerCommand};
-    use monad_testutil::signing::node_id;
-    use monad_types::{BlockId, Round, SeqNum};
+    use monad_executor_glue::TimerCommand;
+    use monad_types::BlockId;
 
     use super::*;
-
-    fn dont_care_fetched_tx_param<S: SignatureCollection>() -> FetchTxParams<S> {
-        FetchTxParams {
-            node_id: node_id(),
-            round: Round(0),
-            seq_num: SeqNum(0),
-            state_root_hash: Default::default(),
-            high_qc: QuorumCertificate::genesis_qc(),
-            last_round_tc: None,
-        }
-    }
 
     fn get_bids() -> [BlockId; 10] {
         [
@@ -1025,111 +726,5 @@ mod tests {
         }
 
         assert_eq!(mock_timer.next().now_or_never(), None);
-    }
-    #[test]
-    fn test_fetch() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 0,
-            block_gas_limit: 0,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        assert!(futures::executor::block_on(mempool.next()).is_some());
-        assert!(!mempool.ready());
-    }
-
-    #[test]
-    fn test_double_fetch() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 0,
-            block_gas_limit: 0,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 0,
-            block_gas_limit: 0,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        assert!(futures::executor::block_on(mempool.next()).is_some());
-        assert!(!mempool.ready());
-    }
-    #[test]
-    fn test_seeded_fetch() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 10,
-            block_gas_limit: 10,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        let res = futures::executor::block_on(mempool.next());
-        assert!(res.is_some());
-        assert!(!mempool.ready());
-        let txs_list_1 = match res.unwrap() {
-            MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(_, txs_list)) => txs_list,
-            _ => {
-                panic!("wrong event returned")
-            }
-        };
-
-        let mut mempool =
-            MockMempool::<NopSignature, MultiSig<NopSignature>>::new(MockMempoolConfig(100));
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 10,
-            block_gas_limit: 10,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        let res = futures::executor::block_on(mempool.next());
-        assert!(res.is_some());
-        assert!(!mempool.ready());
-        let txs_list_2 = match res.unwrap() {
-            MonadEvent::ConsensusEvent(ConsensusEvent::FetchedTxs(_, txs_list)) => txs_list,
-            _ => {
-                panic!("wrong event returned")
-            }
-        };
-        assert_eq!(txs_list_2.bytes().len(), 10 * 32);
-        assert_eq!(txs_list_2.bytes().len(), txs_list_1.bytes().len());
-        assert_ne!(txs_list_2, txs_list_1);
-    }
-
-    #[test]
-    fn test_inline_double_fetch() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![
-            MempoolCommand::FetchTxs(FetchTxsCriteria {
-                max_txs: 0,
-                block_gas_limit: 0,
-                ignore_txs: vec![],
-                proposal_params: dont_care_fetched_tx_param(),
-            }),
-            MempoolCommand::FetchTxs(FetchTxsCriteria {
-                max_txs: 0,
-                block_gas_limit: 0,
-                ignore_txs: vec![],
-                proposal_params: dont_care_fetched_tx_param(),
-            }),
-        ]);
-        assert!(futures::executor::block_on(mempool.next()).is_some());
-        assert!(!mempool.ready());
-    }
-
-    #[test]
-    fn test_noop_exec() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 0,
-            block_gas_limit: 0,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        mempool.exec(Vec::new());
-        assert!(futures::executor::block_on(mempool.next()).is_some());
-        assert!(!mempool.ready());
     }
 }

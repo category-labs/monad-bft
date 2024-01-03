@@ -7,17 +7,16 @@ use std::{
 use futures::{FutureExt, Stream, StreamExt};
 use monad_executor::Executor;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ExecutionLedgerCommand, LedgerCommand, MempoolCommand,
-    RouterCommand, StateRootHashCommand, TimerCommand,
+    CheckpointCommand, Command, ExecutionLedgerCommand, LedgerCommand, RouterCommand,
+    StateRootHashCommand, TimerCommand,
 };
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, M, L, EL, C, S> {
+pub struct ParentExecutor<R, T, L, EL, C, S> {
     pub router: R,
     pub timer: T,
-    pub mempool: M,
     pub ledger: L,
     pub execution_ledger: EL,
     pub checkpoint: C,
@@ -25,8 +24,7 @@ pub struct ParentExecutor<R, T, M, L, EL, C, S> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, ME, LE, EL, CE, SE, E, OM, B, C, S> Executor
-    for ParentExecutor<RE, TE, ME, LE, EL, CE, SE>
+impl<RE, TE, LE, EL, CE, SE, E, OM, B, C, S> Executor for ParentExecutor<RE, TE, LE, EL, CE, SE>
 where
     RE: Executor<Command = RouterCommand<OM>>,
     TE: Executor<Command = TimerCommand<E>>,
@@ -34,7 +32,6 @@ where
     CE: Executor<Command = CheckpointCommand<C>>,
     LE: Executor<Command = LedgerCommand<B, E>>,
     EL: Executor<Command = ExecutionLedgerCommand<S>>,
-    ME: Executor<Command = MempoolCommand<S>>,
     SE: Executor<Command = StateRootHashCommand<B>>,
 {
     type Command = Command<E, OM, B, C, S>;
@@ -44,7 +41,6 @@ where
         let (
             router_cmds,
             timer_cmds,
-            mempool_cmds,
             ledger_cmds,
             execution_ledger_cmds,
             checkpoint_cmds,
@@ -53,7 +49,6 @@ where
 
         self.router.replay(router_cmds);
         self.timer.replay(timer_cmds);
-        self.mempool.replay(mempool_cmds);
         self.ledger.replay(ledger_cmds);
         self.execution_ledger.replay(execution_ledger_cmds);
         self.checkpoint.replay(checkpoint_cmds);
@@ -64,7 +59,6 @@ where
         let (
             router_cmds,
             timer_cmds,
-            mempool_cmds,
             ledger_cmds,
             execution_ledger_cmds,
             checkpoint_cmds,
@@ -73,7 +67,6 @@ where
 
         self.router.exec(router_cmds);
         self.timer.exec(timer_cmds);
-        self.mempool.exec(mempool_cmds);
         self.ledger.exec(ledger_cmds);
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
@@ -81,11 +74,10 @@ where
     }
 }
 
-impl<E, R, T, M, L, EL, C, S> Stream for ParentExecutor<R, T, M, L, EL, C, S>
+impl<E, R, T, L, EL, C, S> Stream for ParentExecutor<R, T, L, EL, C, S>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
-    M: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
     S: Stream<Item = E> + Unpin,
     Self: Unpin,
@@ -96,7 +88,6 @@ where
 
         futures::future::select_all(vec![
             this.timer.next().boxed_local(),
-            this.mempool.next().boxed_local(),
             this.ledger.next().boxed_local(),
             this.router.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
@@ -106,7 +97,7 @@ where
     }
 }
 
-impl<R, T, M, L, EL, C, S> ParentExecutor<R, T, M, L, EL, C, S> {
+impl<R, T, L, EL, C, S> ParentExecutor<R, T, L, EL, C, S> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

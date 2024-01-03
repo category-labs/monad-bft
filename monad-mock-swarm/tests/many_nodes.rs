@@ -4,9 +4,7 @@ use std::time::{Duration, Instant};
 use common::QuicSwarm;
 use monad_consensus_types::block_validator::MockValidator;
 use monad_gossip::mock::MockGossipConfig;
-use monad_mock_swarm::{
-    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
-};
+use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
@@ -22,7 +20,6 @@ fn many_nodes_noser() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
@@ -57,7 +54,6 @@ fn many_nodes_quic() {
             gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![BytesTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],
@@ -109,7 +105,6 @@ fn many_nodes_quic_bw() {
             gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         xfmrs,
         UntilTerminator::new().until_tick(Duration::from_secs(100)),
         swarm_config,

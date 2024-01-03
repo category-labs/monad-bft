@@ -1,5 +1,5 @@
 use monad_consensus_types::{
-    block::{Block as MonadBlock, FullBlock as MonadFullBlock},
+    block::Block as MonadBlock,
     payload::{ExecutionArtifacts, FullTransactionList},
     signature_collection::SignatureCollection,
 };
@@ -9,14 +9,14 @@ use reth_primitives::{keccak256, BlockBody, Bloom, Bytes, Header, H256, U256};
 use reth_rlp::Encodable;
 
 /// Create an RLP encoded Ethereum block from a Monad consensus block
-pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SCT>) -> Vec<u8> {
-    let (monad_block, monad_full_txs) = full_block.split();
+pub fn encode_full_block<SCT: SignatureCollection>(block: MonadBlock<SCT>) -> Vec<u8> {
+    // let (monad_block, monad_full_txs) = block.split();
 
     // use the full transactions to create the eth block body
-    let block_body = generate_block_body(monad_full_txs);
+    let block_body = generate_block_body(&block.payload.txns);
 
     // the payload inside the monad block will be used to generate the eth header
-    let header = generate_header(monad_block, &block_body);
+    let header = generate_header(block, &block_body);
 
     let mut header_bytes = Vec::default();
     header.encode(&mut header_bytes);
@@ -33,7 +33,7 @@ pub fn encode_full_block<SCT: SignatureCollection>(full_block: MonadFullBlock<SC
 }
 
 /// Produce the body of an Ethereum Block from a list of full transactions
-fn generate_block_body(monad_full_txs: FullTransactionList) -> BlockBody {
+fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
     let transactions = EthFullTransactionList::rlp_decode(monad_full_txs.bytes().clone())
         .unwrap()
         .0
@@ -93,14 +93,10 @@ fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) ->
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block, FullBlock as MonadFullBlock},
-        block_validator::MockValidator,
+        block::Block,
         ledger::CommitResult,
         multi_sig::MultiSig,
-        payload::{
-            Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
-            TransactionHashList,
-        },
+        payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
@@ -114,46 +110,41 @@ mod test {
     fn encode_full_block_header_hash() {
         let pubkey = KeyPair::from_bytes(&mut [127; 32]).unwrap().pubkey();
 
-        let full_block = MonadFullBlock::<MultiSig<NopSignature>>::from_block(
-            Block::new(
-                NodeId(pubkey),
-                Round(0),
-                &Payload {
-                    txns: TransactionHashList::new(vec![EMPTY_RLP_TX_LIST].into()),
-                    header: ExecutionArtifacts {
-                        parent_hash: Hash::default(),
-                        state_root: Hash::default(),
-                        transactions_root: Hash::default(),
-                        receipts_root: Hash::default(),
-                        logs_bloom: Bloom::zero(),
-                        gas_used: Gas::default(),
-                    },
-                    seq_num: SeqNum(0),
-                    beneficiary: EthAddress::default(),
-                    randao_reveal: RandaoReveal::default(),
+        let block = Block::<MultiSig<NopSignature>>::new(
+            NodeId(pubkey),
+            Round(0),
+            &Payload {
+                txns: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),
+                header: ExecutionArtifacts {
+                    parent_hash: Hash::default(),
+                    state_root: Hash::default(),
+                    transactions_root: Hash::default(),
+                    receipts_root: Hash::default(),
+                    logs_bloom: Bloom::zero(),
+                    gas_used: Gas::default(),
                 },
-                &QuorumCertificate::new(
-                    QcInfo {
-                        vote: Vote {
-                            vote_info: VoteInfo {
-                                id: BlockId(Hash([0x00_u8; 32])),
-                                round: Round(0),
-                                parent_id: BlockId(Hash([0x00_u8; 32])),
-                                parent_round: Round(0),
-                                seq_num: SeqNum(0),
-                            },
-                            ledger_commit_info: CommitResult::NoCommit,
+                seq_num: SeqNum(0),
+                beneficiary: EthAddress::default(),
+                randao_reveal: RandaoReveal::default(),
+            },
+            &QuorumCertificate::new(
+                QcInfo {
+                    vote: Vote {
+                        vote_info: VoteInfo {
+                            id: BlockId(Hash([0x00_u8; 32])),
+                            round: Round(0),
+                            parent_id: BlockId(Hash([0x00_u8; 32])),
+                            parent_round: Round(0),
+                            seq_num: SeqNum(0),
                         },
+                        ledger_commit_info: CommitResult::NoCommit,
                     },
-                    MultiSig::default(),
-                ),
+                },
+                MultiSig::default(),
             ),
-            FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),
-            &MockValidator::default(),
-        )
-        .unwrap();
+        );
 
-        let bytes = encode_full_block(full_block);
+        let bytes = encode_full_block(block);
 
         // Check that encode_full_block starts with keccak header hash
         assert!(bytes.starts_with(&[

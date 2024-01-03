@@ -19,7 +19,7 @@ message ProtoTransactionList {
 }
 
 message ProtoPayload {
-  ProtoTransactionList txns = 1;
+  bytes txns = 1;
   ProtoExecutionArtifacts header = 2;
   monad_proto.basic.ProtoSeqNum seq_num = 3;
   bytes beneficiary = 4;
@@ -33,7 +33,6 @@ message ProtoBlock {
   monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 4;
 }
 
-message ProtoUnverifiedFullBlock {
+message ProtoUnverifiedBlock {
   ProtoBlock block = 1;
-  bytes full_txs = 2;
 }

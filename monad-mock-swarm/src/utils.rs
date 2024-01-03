@@ -14,11 +14,11 @@ pub mod test_tool {
         validation::signing::Validated,
     };
     use monad_consensus_types::{
-        block::Block,
+        block::{Block, UnverifiedBlock},
         certificate_signature::CertificateSignature,
         ledger::CommitResult,
         multi_sig::MultiSig,
-        payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
+        payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         timeout::{Timeout, TimeoutInfo},
         voting::{Vote, VoteInfo},
@@ -71,7 +71,7 @@ pub mod test_tool {
 
     pub fn fake_block(round: Round) -> Block<SC> {
         let payload = Payload {
-            txns: TransactionHashList::empty(),
+            txns: FullTransactionList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -83,7 +83,7 @@ pub mod test_tool {
 
     pub fn fake_proposal_message(kp: &KeyPair, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = ProposalMessage {
-            block: fake_block(round),
+            block: UnverifiedBlock(fake_block(round)),
             last_round_tc: None,
         };
         ConsensusMessage::Proposal(internal_msg).sign(kp).into()

@@ -2,9 +2,7 @@ use std::{collections::HashSet, time::Duration};
 
 use monad_consensus_types::{block_validator::MockValidator, multi_sig::MultiSig};
 use monad_crypto::NopSignature;
-use monad_mock_swarm::{
-    mock::MockMempoolConfig, mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm,
-};
+use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};
 use monad_transformer::{
@@ -23,7 +21,6 @@ fn random_latency_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![GenericTransformer::RandLatency(
             RandLatencyTransformer::new(seed, 330),
         )],
@@ -71,7 +68,6 @@ fn delayed_message_test(seed: u64) {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![
             GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_peers)),

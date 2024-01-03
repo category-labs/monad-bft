@@ -3,7 +3,7 @@ use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::ConsensusMessage;
 use monad_consensus_types::{
     bls::BlsSignatureCollection,
-    payload::{ExecutionArtifacts, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList},
     voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::SecpSignature;
@@ -26,9 +26,9 @@ static PEAK_ALLOC: PeakAlloc = PeakAlloc;
 fn main() {
     // created a serialized proposal message
     // transaction hashes follow a random distribution
-    let mut transaction_hashes = [0x00_u8; 32 * 5000];
+    let mut transactions = [0x00_u8; 400 * 5000];
     let mut rng = rand_chacha::ChaCha8Rng::from_entropy();
-    rng.fill_bytes(&mut transaction_hashes);
+    rng.fill_bytes(&mut transactions);
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
 
@@ -52,7 +52,7 @@ fn main() {
             &epoch_manager,
             &val_epoch_map,
             &election,
-            TransactionHashList::new(transaction_hashes.to_vec().into()),
+            FullTransactionList::new(transactions.to_vec().into()),
             ExecutionArtifacts::zero(),
         )
         .destructure()
@@ -63,7 +63,7 @@ fn main() {
         .find(|k| {
             k.pubkey()
                 == election
-                    .get_leader(proposal.block.round, &epoch_manager, &val_epoch_map)
+                    .get_leader(proposal.block.0.round, &epoch_manager, &val_epoch_map)
                     .0
         })
         .expect("key in valset");

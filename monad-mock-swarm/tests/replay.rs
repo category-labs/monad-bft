@@ -8,8 +8,8 @@ use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
     mock_swarm::{Nodes, UntilTerminator},
+    mock_txpool::MockTxPool,
     swarm_relation::SwarmRelation,
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
@@ -42,6 +42,7 @@ impl SwarmRelation for ReplaySwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -52,9 +53,6 @@ impl SwarmRelation for ReplaySwarm {
     type LoggerConfig = WALoggerConfig;
     type Logger =
         WALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
@@ -115,7 +113,6 @@ pub fn recover_nodes_msg_delays(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
-                MockMempoolConfig::default(),
                 vec![GenericTransformer::XorLatency(XorLatencyTransformer(
                     Duration::from_millis(u8::MAX as u64),
                 ))],
@@ -175,7 +172,6 @@ pub fn recover_nodes_msg_delays(
                 NoSerRouterConfig {
                     all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
                 },
-                MockMempoolConfig::default(),
                 vec![GenericTransformer::Latency(LatencyTransformer(
                     Duration::from_millis(1),
                 ))],

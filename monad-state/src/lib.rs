@@ -5,7 +5,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage},
+        message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
@@ -14,12 +14,12 @@ use monad_consensus_state::{
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
-    block::{Block, FullBlock},
+    block::Block,
     message_signature::MessageSignature,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal},
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
+    txpool::TxPool,
     validation,
     validator_data::ValidatorData,
     voting::ValidatorMapping,
@@ -29,8 +29,8 @@ use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand,
-    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
-    TimerCommand, ValidatorEvent,
+    LedgerCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
+    ValidatorEvent,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
@@ -44,7 +44,7 @@ use crate::blocksync::BlockSyncResponder;
 pub mod blocksync;
 pub mod convert;
 
-pub struct MonadState<CT, ST, SCT, VT, LT>
+pub struct MonadState<CT, ST, SCT, VT, LT, TT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
@@ -61,16 +61,19 @@ where
     epoch_manager: EpochManager,
     /// Maps the epoch number to validator stakes and certificate pubkeys
     val_epoch_map: ValidatorsEpochMapping<VT, SCT>,
+    /// Transaction pool is the source of Proposals
+    txpool: TT,
 
     _pd: PhantomData<ST>,
 }
 
-impl<CT, ST, SCT, VT, LT> MonadState<CT, ST, SCT, VT, LT>
+impl<CT, ST, SCT, VT, LT, TT> MonadState<CT, ST, SCT, VT, LT, TT>
 where
     CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
+    TT: TxPool,
 {
     pub fn consensus(&self) -> &CT {
         &self.consensus
@@ -250,19 +253,20 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
     pub consensus_config: ConsensusConfig,
 }
 
-impl<CT, ST, SCT, VT, LT> State for MonadState<CT, ST, SCT, VT, LT>
+impl<CT, ST, SCT, VT, LT, TT> State for MonadState<CT, ST, SCT, VT, LT, TT>
 where
     CT: ConsensusProcess<SCT>,
     ST: MessageSignature,
     SCT: SignatureCollection,
     VT: ValidatorSetType,
     LT: LeaderElection,
+    TT: TxPool,
 {
     type Config = MonadConfig<SCT, CT::BlockValidatorType>;
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
-    type Block = FullBlock<SCT>;
+    type Block = Block<SCT>;
     type Checkpoint = Checkpoint<SCT>;
     type SignatureCollection = SCT;
 
@@ -301,7 +305,7 @@ where
 
         let election = LT::new();
 
-        let mut monad_state: MonadState<CT, ST, SCT, VT, LT> = Self {
+        let mut monad_state: MonadState<CT, ST, SCT, VT, LT, TT> = Self {
             epoch_manager: EpochManager::new(
                 config.val_set_update_interval,
                 config.epoch_start_delay,
@@ -317,6 +321,7 @@ where
                 config.certkey,
             ),
             block_sync_respond: BlockSyncResponder {},
+            txpool: TT::new(),
 
             _pd: PhantomData,
         };
@@ -368,65 +373,6 @@ where
                             self.consensus.handle_block_sync_tmo(bid, val_set)
                         }
                     },
-
-                    ConsensusEvent::FetchedTxs(fetched, txns) => {
-                        assert_eq!(fetched.node_id, self.consensus.get_nodeid());
-
-                        let mut cmds = Vec::new();
-
-                        // make sure we're still in same round
-                        if fetched.round == self.consensus.get_current_round() {
-                            let mut header = ExecutionArtifacts::zero();
-                            header.state_root = fetched.state_root_hash;
-                            let b = Block::new(
-                                fetched.node_id,
-                                fetched.round,
-                                &Payload {
-                                    txns,
-                                    header,
-                                    seq_num: fetched.seq_num,
-                                    beneficiary: self.consensus.get_beneficiary(),
-                                    randao_reveal: RandaoReveal::new::<SCT::SignatureType>(
-                                        fetched.round,
-                                        self.consensus.get_cert_keypair(),
-                                    ),
-                                },
-                                &fetched.high_qc,
-                            );
-
-                            let p = ProposalMessage {
-                                block: b,
-                                last_round_tc: fetched.last_round_tc,
-                            };
-
-                            cmds.push(ConsensusCommand::Publish {
-                                target: RouterTarget::Broadcast,
-                                message: ConsensusMessage::Proposal(p),
-                            });
-                        }
-
-                        cmds
-                    }
-                    ConsensusEvent::FetchedFullTxs(fetched_txs, txns) => {
-                        let mut cmds = Vec::new();
-
-                        if let Some(txns) = txns {
-                            let proposal_msg = ProposalMessage {
-                                block: fetched_txs.p_block,
-                                last_round_tc: fetched_txs.p_last_round_tc,
-                            };
-                            cmds.extend(self.consensus.handle_proposal_message_full(
-                                fetched_txs.author,
-                                proposal_msg,
-                                txns,
-                                &mut self.epoch_manager,
-                                &self.val_epoch_map,
-                                &self.leader_election,
-                            ));
-                        }
-
-                        cmds
-                    }
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
@@ -462,11 +408,18 @@ where
 
                         match validated_mesage {
                             ConsensusMessage::Proposal(msg) => {
-                                self.consensus.handle_proposal_message(author, msg)
+                                self.consensus.handle_proposal_message(
+                                    author,
+                                    msg,
+                                    &mut self.epoch_manager,
+                                    &self.val_epoch_map,
+                                    &self.leader_election,
+                                )
                             }
                             ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
                                 author,
                                 msg,
+                                &mut self.txpool,
                                 &mut self.epoch_manager,
                                 &self.val_epoch_map,
                                 &self.leader_election,
@@ -475,6 +428,7 @@ where
                                 self.consensus.handle_timeout_message(
                                     author,
                                     msg,
+                                    &mut self.txpool,
                                     &mut self.epoch_manager,
                                     &self.val_epoch_map,
                                     &self.leader_election,
@@ -549,19 +503,6 @@ where
                         ConsensusCommand::ScheduleReset(on_timeout) => cmds.push(
                             Command::TimerCommand(TimerCommand::ScheduleReset(on_timeout)),
                         ),
-                        ConsensusCommand::FetchTxs(fetch_criteria) => cmds.push(
-                            Command::MempoolCommand(MempoolCommand::FetchTxs(fetch_criteria)),
-                        ),
-                        ConsensusCommand::FetchFullTxs(txs, fetch_params) => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullTxs(
-                                txs,
-                                fetch_params,
-                            )))
-                        }
-                        ConsensusCommand::DrainTxs(txs) => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::DrainTxs(txs)))
-                        }
-
                         ConsensusCommand::RequestSync { peer, block_id } => {
                             cmds.push(Command::RouterCommand(RouterCommand::Publish {
                                 target: RouterTarget::PointToPoint(peer),
@@ -618,7 +559,7 @@ where
                     vec![Command::RouterCommand(RouterCommand::Publish {
                         target: RouterTarget::PointToPoint(NodeId(fetched_block.requester.0)),
                         message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
-                            match fetched_block.unverified_full_block {
+                            match fetched_block.unverified_block {
                                 Some(b) => BlockSyncResponseMessage::BlockFound(b),
                                 None => {
                                     BlockSyncResponseMessage::NotAvailable(fetched_block.block_id)

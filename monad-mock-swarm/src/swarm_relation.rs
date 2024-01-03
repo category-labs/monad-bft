@@ -1,6 +1,6 @@
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::FullBlock,
+    block::Block,
     block_validator::{BlockValidator, MockValidator},
     message_signature::MessageSignature,
     multi_sig::MultiSig,
@@ -20,10 +20,7 @@ use monad_wal::{
     PersistenceLogger,
 };
 
-use crate::{
-    mock::{MockMempool, MockMempoolConfig, MockableExecutor},
-    transformer::MonadMessageTransformerPipeline,
-};
+use crate::{mock_txpool::MockTxPool, transformer::MonadMessageTransformerPipeline};
 
 pub trait SwarmRelation {
     type SignatureType: MessageSignature + Unpin;
@@ -36,7 +33,7 @@ pub trait SwarmRelation {
     type TransactionValidator: BlockValidator + Clone;
 
     type State: State<
-        Block = FullBlock<Self::SignatureCollectionType>,
+        Block = Block<Self::SignatureCollectionType>,
         Config = MonadConfig<Self::SignatureCollectionType, Self::TransactionValidator>,
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         SignatureCollection = Self::SignatureCollectionType,
@@ -58,13 +55,6 @@ pub trait SwarmRelation {
     type Logger: PersistenceLogger<
         Config = Self::LoggerConfig,
         Event = TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
-    >;
-
-    type MempoolConfig: Copy;
-    type MempoolExecutor: MockableExecutor<
-        Config = Self::MempoolConfig,
-        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-        SignatureCollection = Self::SignatureCollectionType,
     >;
 
     type StateRootHashExecutor: MockableStateRootHash<
@@ -92,6 +82,7 @@ impl SwarmRelation for NoSerSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -102,9 +93,6 @@ impl SwarmRelation for NoSerSwarm {
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
@@ -130,6 +118,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -140,9 +129,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,

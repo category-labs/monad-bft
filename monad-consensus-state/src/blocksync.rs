@@ -13,7 +13,7 @@ use std::{collections::HashMap, time::Duration};
 
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::FullBlock, block_validator::BlockValidator, quorum_certificate::QuorumCertificate,
+    block::Block, block_validator::BlockValidator, quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
@@ -43,7 +43,7 @@ struct InFlightRequest<SCT> {
 /// the reply to a request
 pub enum BlockSyncResult<SCT: SignatureCollection> {
     /// retrieved and validated
-    Success(FullBlock<SCT>),
+    Success(Block<SCT>),
 
     /// unable to retrieve
     Failed(Vec<ConsensusCommand<SCT>>),
@@ -189,10 +189,10 @@ where
         if let Some(pending_req) = self.requests.remove(&bid) {
             match msg {
                 BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
-                    if let Some(full_block) =
-                        FullBlock::try_from_unverified(unverified_full_block, transaction_validator)
+                    if let Some(block) =
+                        Block::try_from_unverified(unverified_full_block, transaction_validator)
                     {
-                        return BlockSyncResult::Success(full_block);
+                        return BlockSyncResult::Success(block);
                     }
                 }
                 BlockSyncResponseMessage::NotAvailable(_) => {}
@@ -250,12 +250,10 @@ mod test {
     use std::time::Duration;
 
     use monad_consensus_types::{
-        block::{Block, BlockType, UnverifiedFullBlock},
+        block::{Block, BlockType, UnverifiedBlock},
         block_validator::MockValidator,
         ledger::CommitResult,
-        payload::{
-            ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal, TransactionHashList,
-        },
+        payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
         voting::{Vote, VoteInfo},
@@ -365,7 +363,7 @@ mod test {
         let transaction_validator = TV::default();
 
         let payload = Payload {
-            txns: TransactionHashList::empty(),
+            txns: FullTransactionList::empty(),
             header: ExecutionArtifacts::zero(),
             seq_num: SeqNum(0),
             beneficiary: EthAddress::default(),
@@ -521,24 +519,18 @@ mod test {
 
         let msg_no_block_1 = BlockSyncResponseMessage::<SC>::NotAvailable(block_1.get_id());
 
-        let msg_with_block_1 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
-            block: block_1.clone(),
-            full_txs: FullTransactionList::empty(),
-        });
+        let msg_with_block_1 =
+            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block_1.clone()));
 
         let msg_no_block_2 = BlockSyncResponseMessage::<SC>::NotAvailable(block_2.get_id());
 
-        let msg_with_block_2 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
-            block: block_2.clone(),
-            full_txs: FullTransactionList::empty(),
-        });
+        let msg_with_block_2 =
+            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block_2.clone()));
 
         let msg_no_block_3 = BlockSyncResponseMessage::<SC>::NotAvailable(block_3.get_id());
 
-        let msg_with_block_3 = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
-            block: block_3.clone(),
-            full_txs: FullTransactionList::empty(),
-        });
+        let msg_with_block_3 =
+            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block_3.clone()));
 
         // arbitrary response should be rejected
         let BlockSyncResult::<SC>::UnexpectedResponse = manager.handle_response(
@@ -598,7 +590,7 @@ mod test {
             panic!("request sync not found")
         };
 
-        assert!(b.get_block() == &block_1);
+        assert!(b == block_1);
 
         let BlockSyncResult::<SC>::Failed(retry_command) =
             manager.handle_response(peer_2, msg_no_block_2, &valset, &transaction_validator)
@@ -620,7 +612,7 @@ mod test {
             panic!("illegal response is processed");
         };
 
-        assert!(b.get_block() == &block_3);
+        assert!(b == block_3);
 
         let BlockSyncResult::<SC>::Success(b) =
             manager.handle_response(peer_2, msg_with_block_2, &valset, &transaction_validator)
@@ -628,7 +620,7 @@ mod test {
             panic!("illegal response is processed");
         };
 
-        assert!(b.get_block() == &block_2);
+        assert!(b == block_2);
     }
 
     #[test]
@@ -707,7 +699,7 @@ mod test {
 
         let block = {
             let payload = Payload {
-                txns: TransactionHashList::empty(),
+                txns: FullTransactionList::empty(),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
@@ -838,10 +830,8 @@ mod test {
 
         // if somehow we sync up on the block, timeout should be ignored
 
-        let msg_with_block = BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedFullBlock {
-            block: block.clone(),
-            full_txs: FullTransactionList::empty(),
-        });
+        let msg_with_block =
+            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block.clone()));
 
         let BlockSyncResult::<SC>::Success(b) =
             manager.handle_response(&peer, msg_with_block, &valset, &transaction_validator)
@@ -849,7 +839,7 @@ mod test {
             panic!("illegal response is processed");
         };
 
-        assert_eq!(b.get_block(), &block);
+        assert_eq!(b, block);
 
         // this should return nothing, except the regular reset
         let retry_command = manager.handle_timeout(bid, &valset);

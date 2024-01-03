@@ -8,9 +8,7 @@ use monad_crypto::secp256k1::SecpSignature;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::{MockMempool, MockMempoolConfig},
-    mock_swarm::UntilTerminator,
-    swarm_relation::SwarmRelation,
+    mock_swarm::UntilTerminator, mock_txpool::MockTxPool, swarm_relation::SwarmRelation,
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
@@ -38,6 +36,7 @@ impl SwarmRelation for BLSSwarm {
         Self::SignatureCollectionType,
         ValidatorSet,
         SimpleRoundRobin,
+        MockTxPool,
     >;
 
     type RouterSchedulerConfig = NoSerRouterConfig;
@@ -48,9 +47,6 @@ impl SwarmRelation for BLSSwarm {
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
-
-    type MempoolConfig = MockMempoolConfig;
-    type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         <Self::State as State>::Block,
@@ -69,7 +65,6 @@ fn two_nodes_bls() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        MockMempoolConfig::default(),
         vec![GenericTransformer::Latency(LatencyTransformer(
             Duration::from_millis(1),
         ))],

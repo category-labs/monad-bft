@@ -79,7 +79,7 @@ where
 
     pub fn get_round(&self) -> Round {
         match self {
-            ConsensusMessage::Proposal(p) => p.block.round,
+            ConsensusMessage::Proposal(p) => p.block.0.round,
             ConsensusMessage::Vote(v) => v.vote.vote_info.round,
             ConsensusMessage::Timeout(t) => t.timeout.tminfo.round,
         }

@@ -6,7 +6,7 @@ use monad_consensus_types::{
     bls::BlsSignatureCollection,
     ledger::CommitResult,
     multi_sig::MultiSig,
-    payload::{ExecutionArtifacts, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList},
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
@@ -101,7 +101,7 @@ fn test_consensus_message_event_proposal_bls() {
         &epoch_manager,
         &val_epoch_map,
         &election,
-        TransactionHashList::empty(),
+        FullTransactionList::empty(),
         ExecutionArtifacts::zero(),
     );
 

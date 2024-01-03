@@ -5,9 +5,7 @@ use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    block_validator::BlockValidator,
-    payload::{FullTransactionList, Payload},
-    quorum_certificate::QuorumCertificate,
+    block_validator::BlockValidator, payload::Payload, quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 
@@ -101,6 +99,17 @@ impl<T: SignatureCollection> Block<T> {
             },
         }
     }
+
+    /// Try to create a Block from an UnverifiedBlock, verifying
+    /// with the TransactionValidator
+    pub fn try_from_unverified(
+        unverified: UnverifiedBlock<T>,
+        validator: &impl BlockValidator,
+    ) -> Option<Self> {
+        validator
+            .validate(&unverified.0.payload.txns)
+            .then_some(unverified.0)
+    }
 }
 
 impl<T: SignatureCollection> BlockType for Block<T> {
@@ -132,112 +141,22 @@ impl<T: SignatureCollection> BlockType for Block<T> {
 /// A block alongside the list of RLP encoded full transactions
 /// The transactions have not been verified
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnverifiedFullBlock<T> {
-    pub block: Block<T>,
-    pub full_txs: FullTransactionList,
-}
+pub struct UnverifiedBlock<T>(pub Block<T>);
 
-impl<T> UnverifiedFullBlock<T> {
-    pub fn new(block: Block<T>, full_txs: FullTransactionList) -> Self {
-        Self { block, full_txs }
+impl<T> UnverifiedBlock<T> {
+    pub fn new(block: Block<T>) -> Self {
+        Self(block)
     }
 }
 
-impl<T> From<FullBlock<T>> for UnverifiedFullBlock<T> {
-    fn from(value: FullBlock<T>) -> Self {
-        Self {
-            block: value.block,
-            full_txs: value.full_txs,
-        }
+impl<T> From<Block<T>> for UnverifiedBlock<T> {
+    fn from(value: Block<T>) -> Self {
+        Self(value)
     }
 }
 
-impl<T: SignatureCollection> Hashable for UnverifiedFullBlock<T> {
+impl<T: SignatureCollection> Hashable for UnverifiedBlock<T> {
     fn hash(&self, state: &mut impl Hasher) {
-        self.block.hash(state);
-        state.update(self.full_txs.bytes());
-    }
-}
-
-/// A block alongside the list of RLP encoded full transactions
-/// The transaction are verified on creation
-#[derive(Clone, PartialEq, Eq)]
-pub struct FullBlock<T> {
-    block: Block<T>,
-    full_txs: FullTransactionList,
-}
-
-impl<T: Debug> Debug for FullBlock<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FullBlock")
-            .field("block", &self.block)
-            .field("full_txs_len", &self.full_txs.bytes().len())
-            .finish()
-    }
-}
-
-impl<T> FullBlock<T> {
-    /// Create a FullBlock from a Block and list of full transactions
-    /// takes in a TransactionValidator to validate the list of transactions
-    pub fn from_block(
-        block: Block<T>,
-        full_txs: FullTransactionList,
-        validator: &impl BlockValidator,
-    ) -> Option<Self> {
-        validator
-            .validate(&block.payload.txns, &full_txs)
-            .then_some(Self { block, full_txs })
-    }
-
-    /// Try to create a FullBlock from an UnverifiedFullBlock, verifying
-    /// with the TransactionValidator
-    pub fn try_from_unverified(
-        unverified: UnverifiedFullBlock<T>,
-        validator: &impl BlockValidator,
-    ) -> Option<Self> {
-        validator
-            .validate(&unverified.block.payload.txns, &unverified.full_txs)
-            .then_some(Self {
-                block: unverified.block,
-                full_txs: unverified.full_txs,
-            })
-    }
-
-    pub fn get_block(&self) -> &Block<T> {
-        &self.block
-    }
-
-    pub fn get_full_txs(&self) -> &FullTransactionList {
-        &self.full_txs
-    }
-
-    pub fn split(self) -> (Block<T>, FullTransactionList) {
-        (self.block, self.full_txs)
-    }
-}
-
-impl<T: SignatureCollection> BlockType for FullBlock<T> {
-    fn get_id(&self) -> BlockId {
-        self.block.get_id()
-    }
-
-    fn get_round(&self) -> Round {
-        self.block.get_round()
-    }
-
-    fn get_author(&self) -> NodeId {
-        self.block.get_author()
-    }
-
-    fn get_parent_id(&self) -> BlockId {
-        self.block.get_parent_id()
-    }
-
-    fn get_parent_round(&self) -> Round {
-        self.block.get_parent_round()
-    }
-
-    fn get_seq_num(&self) -> SeqNum {
-        self.block.get_seq_num()
+        self.0.hash(state);
     }
 }

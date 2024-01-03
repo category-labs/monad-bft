@@ -1,7 +1,7 @@
 use monad_consensus_types::{
     block::Block,
     ledger::CommitResult,
-    payload::{ExecutionArtifacts, Payload, RandaoReveal, TransactionHashList},
+    payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     voting::{Vote, VoteInfo},
 };
@@ -12,7 +12,7 @@ use monad_types::*;
 
 #[test]
 fn block_hash_id() {
-    let txns = TransactionHashList::new(vec![1, 2, 3, 4].into());
+    let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let author = node_id();
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures>::new(

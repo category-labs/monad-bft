@@ -12,8 +12,8 @@ mod test {
     use monad_executor::{timed_event::TimedEvent, State};
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
-        mock::{MockMempool, MockMempoolConfig},
         mock_swarm::{Node, Nodes, UntilTerminator},
+        mock_txpool::MockTxPool,
         swarm_relation::{NoSerSwarm, SwarmRelation},
     };
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
@@ -47,6 +47,7 @@ mod test {
             Self::SignatureCollectionType,
             ValidatorSet,
             SimpleRoundRobin,
+            MockTxPool,
         >;
 
         type RouterSchedulerConfig = NoSerRouterConfig;
@@ -58,9 +59,6 @@ mod test {
         type Logger = MockWALogger<
             TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
         >;
-
-        type MempoolConfig = MockMempoolConfig;
-        type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
 
         type StateRootHashExecutor = MockStateRootHashSwap<
             <Self::State as State>::Block,
@@ -96,9 +94,9 @@ mod test {
                 .ledger()
                 .get_blocks()
                 .iter()
-                .find(|b| b.get_block().payload.seq_num == update_block_num)
+                .find(|b| b.payload.seq_num == update_block_num)
                 .unwrap();
-            let update_block_round = update_block.get_block().round;
+            let update_block_round = update_block.round;
             let epoch_manager = node.state.epoch_manager();
             let epoch_start_round = update_block_round + epoch_manager.epoch_start_delay;
 
@@ -151,7 +149,6 @@ mod test {
                         NoSerRouterConfig {
                             all_peers: pubkeys.iter().copied().map(NodeId).collect(),
                         },
-                        MockMempoolConfig::default(),
                         vec![GenericTransformer::Latency(LatencyTransformer(
                             Duration::from_millis(1),
                         ))],
@@ -225,7 +222,6 @@ mod test {
                         NoSerRouterConfig {
                             all_peers: pubkeys.iter().copied().map(NodeId).collect(),
                         },
-                        MockMempoolConfig::default(),
                         regular_pipeline.clone(),
                         1,
                     )
@@ -300,7 +296,6 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            MockMempoolConfig::default(),
             vec![GenericTransformer::Latency(LatencyTransformer(
                 Duration::from_millis(1),
             ))],

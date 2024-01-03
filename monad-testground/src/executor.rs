@@ -1,22 +1,22 @@
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::FullBlock,
+    block::Block,
     block_validator::MockValidator,
     certificate_signature::{CertificateKeyPair, CertificateSignature},
     message_signature::MessageSignature,
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
+    txpool::EthTxPool,
     validator_data::ValidatorData,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor, State};
 use monad_executor_glue::{
-    Command, ExecutionLedgerCommand, MempoolCommand, MonadEvent, RouterCommand,
-    StateRootHashCommand,
+    Command, ExecutionLedgerCommand, MonadEvent, RouterCommand, StateRootHashCommand,
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
-use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
+use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::{Round, SeqNum, Stake};
@@ -94,20 +94,15 @@ pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
         MonadEvent<MessageSignatureType, SignatureCollectionType>,
     >,
     TokioTimer<MonadEvent<MessageSignatureType, SignatureCollectionType>>,
-    BoxUpdater<
-        'static,
-        MempoolCommand<SignatureCollectionType>,
-        MonadEvent<MessageSignatureType, SignatureCollectionType>,
-    >,
     MockLedger<
-        FullBlock<SignatureCollectionType>,
+        Block<SignatureCollectionType>,
         MonadEvent<MessageSignatureType, SignatureCollectionType>,
     >,
     BoxExecutor<'static, ExecutionLedgerCommand<SignatureCollectionType>>,
     MockCheckpoint<Checkpoint<SignatureCollectionType>>,
     BoxUpdater<
         'static,
-        StateRootHashCommand<FullBlock<SignatureCollectionType>>,
+        StateRootHashCommand<Block<SignatureCollectionType>>,
         MonadEvent<MessageSignatureType, SignatureCollectionType>,
     >,
 >
@@ -138,9 +133,6 @@ where
             RouterConfig::Local(router) => Updater::boxed(router),
         },
         timer: TokioTimer::default(),
-        mempool: match config.mempool_config {
-            MempoolConfig::Mock => Updater::boxed(MockMempool::default()),
-        },
         ledger: MockLedger::default(),
         execution_ledger: match config.execution_ledger_config {
             ExecutionLedgerConfig::Mock => Executor::boxed(MockExecutionLedger::default()),
@@ -165,6 +157,7 @@ type MonadStateType<MessageSignatureType, SignatureCollectionType> = MonadState<
     SignatureCollectionType,
     ValidatorSet,
     SimpleRoundRobin,
+    EthTxPool,
 >;
 
 pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
@@ -191,7 +184,7 @@ pub fn make_monad_state<MessageSignatureType, SignatureCollectionType>(
         Command<
             MonadEvent<MessageSignatureType, SignatureCollectionType>,
             VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
-            FullBlock<SignatureCollectionType>,
+            Block<SignatureCollectionType>,
             Checkpoint<SignatureCollectionType>,
             SignatureCollectionType,
         >,

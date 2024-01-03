@@ -21,7 +21,7 @@ message ProtoRequestBlockSyncMessage {
 
 message ProtoBlockSyncMessage {
   oneof OneofMessage {
-    monad_proto.block.ProtoUnverifiedFullBlock block_found = 1;
+    monad_proto.block.ProtoUnverifiedBlock block_found = 1;
     monad_proto.basic.ProtoBlockId not_available = 2;
   }
 }
@@ -32,7 +32,7 @@ message ProtoTimeoutMessage {
 }
 
 message ProtoProposalMessage {
-  monad_proto.block.ProtoBlock block = 1;
+  monad_proto.block.ProtoUnverifiedBlock block = 1;
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
 }
 
