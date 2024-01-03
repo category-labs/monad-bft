@@ -18,6 +18,8 @@ pub struct NodeBootstrapPeerConfig {
 
     pub port: u16,
 
+    pub mempool_port: u16,
+
     #[serde(deserialize_with = "deserialize_secp256k1_pubkey")]
     pub secp256k1_pubkey: PubKey,
 }

@@ -15,6 +15,7 @@ use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_mempool_controller::ControllerConfig;
+use monad_mempool_messenger::MessengerConfig;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, SeqNum};
@@ -80,13 +81,26 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
     >(
-        node_state.node_config.network,
+        node_state.node_config.network.clone(),
         &node_state.secp256k1_identity,
         &node_state.node_config.bootstrap.peers,
     )
     .await;
 
-    let mut mempool_controller_config = ControllerConfig::default();
+    let mut mempool_controller_config = ControllerConfig::default().with_messenger_config(
+        MessengerConfig::default()
+            .with_address(node_state.node_config.network.bind_address_host)
+            .with_port(node_state.node_config.network.bind_address_mempool_port)
+            .with_bootstrap_peers(
+                node_state
+                    .node_config
+                    .bootstrap
+                    .peers
+                    .iter()
+                    .map(|peer| (peer.ip, peer.mempool_port))
+                    .collect(),
+            ),
+    );
 
     if let Some(mempool_ipc_path) = node_state.mempool_ipc_path {
         mempool_controller_config =

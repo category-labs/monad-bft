@@ -58,7 +58,7 @@ enum ControllerTaskResult {
 }
 
 pub struct MonadMempool<ST, SCT> {
-    controller_task: JoinHandle<Result<(), ControllerTaskError>>,
+    controller_task: JoinHandle<()>,
     controller_task_tx: mpsc::Sender<ControllerTaskCommand>,
     controller_task_rx: mpsc::Receiver<ControllerTaskResult>,
 
@@ -87,7 +87,11 @@ where
         let (controller_task_tx, rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
         let (tx, controller_task_rx) = mpsc::channel(DEFAULT_MEMPOOL_CONTROLLER_CHANNEL_SIZE);
 
-        let controller_task = tokio::spawn(Self::controller_task(tx, rx, controller_config));
+        let controller_task = tokio::spawn(async move {
+            Self::controller_task(tx, rx, controller_config)
+                .await
+                .unwrap_or_else(|err| panic!("controller_task shouldn't exit: {:?}", err))
+        });
 
         Self {
             controller_task,

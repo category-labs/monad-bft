@@ -82,7 +82,6 @@ enum GossipArgs {
 
 enum MempoolArgs {
     Mock,
-    LibP2P,
 }
 
 pub enum ExecutionLedgerArgs {
@@ -298,7 +297,6 @@ where
                     },
                     mempool_config: match args.mempool {
                         MempoolArgs::Mock => MempoolConfig::Mock,
-                        MempoolArgs::LibP2P => MempoolConfig::LibP2P,
                     },
                     execution_ledger_config: match args.execution_ledger {
                         ExecutionLedgerArgs::Mock => ExecutionLedgerConfig::Mock,

@@ -22,8 +22,7 @@ use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::Stake;
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    local_router::LocalPeerRouter, mempool::MonadMempool, parent::ParentExecutor,
-    timer::TokioTimer, BoxUpdater, Updater,
+    local_router::LocalPeerRouter, parent::ParentExecutor, timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
@@ -57,7 +56,6 @@ pub enum ExecutionLedgerConfig {
 
 pub enum MempoolConfig {
     Mock,
-    LibP2P,
 }
 
 pub struct ExecutorConfig<MessageSignatureType, SignatureCollectionType>
@@ -120,7 +118,6 @@ where
         timer: TokioTimer::default(),
         mempool: match config.mempool_config {
             MempoolConfig::Mock => Updater::boxed(MockMempool::default()),
-            MempoolConfig::LibP2P => Updater::boxed(MonadMempool::default()),
         },
         ledger: MockLedger::default(),
         execution_ledger: match config.execution_ledger_config {

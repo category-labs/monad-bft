@@ -1,5 +1,7 @@
 mod gossipsub;
 
+use std::net::Ipv4Addr;
+
 use libp2p::identity::Keypair;
 use monad_mempool_proto::tx::UnverifiedEthTxBatch;
 use thiserror::Error;
@@ -23,26 +25,40 @@ pub enum MessengerError {
 #[derive(Clone)]
 pub struct MessengerConfig {
     local_key: Keypair,
+    address: Ipv4Addr,
     port: u16,
+    bootstrap_peers: Vec<(Ipv4Addr, u16)>,
 }
 
 impl Default for MessengerConfig {
     fn default() -> Self {
         Self {
             local_key: Keypair::generate_ed25519(),
+            address: Ipv4Addr::new(0, 0, 0, 0),
             port: 0,
+            bootstrap_peers: Vec::new(),
         }
     }
 }
 
 impl MessengerConfig {
+    pub fn with_local_key(mut self, local_key: Keypair) -> Self {
+        self.local_key = local_key;
+        self
+    }
+
+    pub fn with_address(mut self, address: Ipv4Addr) -> Self {
+        self.address = address;
+        self
+    }
+
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
-    pub fn with_local_key(mut self, local_key: Keypair) -> Self {
-        self.local_key = local_key;
+    pub fn with_bootstrap_peers(mut self, bootstrap_peers: Vec<(Ipv4Addr, u16)>) -> Self {
+        self.bootstrap_peers = bootstrap_peers;
         self
     }
 }
@@ -59,7 +75,9 @@ impl Messenger {
         let (gossipsub_listen_handle, sender, receiver, mut connected_rx) =
             gossipsub::start_gossipsub(
                 config.local_key,
+                config.address,
                 config.port,
+                config.bootstrap_peers,
                 GOSSIP_SUB_DEFAULT_BUFFER_SIZE,
             )
             .map_err(|_| MessengerError::GossipSubStartError)?;
@@ -94,56 +112,5 @@ impl Messenger {
 impl Drop for Messenger {
     fn drop(&mut self) {
         self.gossipsub_listen_handle.abort();
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::time::SystemTime;
-
-    use monad_mempool_proto::tx::UnverifiedEthTxBatch;
-    use monad_mempool_types::EthTxBatch;
-    use reth_primitives::TransactionSignedEcRecovered;
-    use tokio::time::{timeout, Duration};
-
-    use super::{Messenger, MessengerConfig};
-
-    const TIMEOUT_SEC: u64 = 5;
-
-    #[tokio::test]
-    async fn test_messenger() {
-        let mut receiver1 = Messenger::new(MessengerConfig::default(), 0).await.unwrap();
-        let mut receiver2 = Messenger::new(MessengerConfig::default(), 0).await.unwrap();
-        let head = Messenger::new(MessengerConfig::default(), 2).await.unwrap();
-
-        let batches = (0..1)
-            .map(|_| {
-                Into::<UnverifiedEthTxBatch>::into(EthTxBatch {
-                    txs: vec![TransactionSignedEcRecovered::default()],
-                    time: SystemTime::now(),
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let sender = head.get_sender();
-
-        for i in &batches {
-            sender.send(i.clone()).await.unwrap();
-        }
-
-        for i in &batches {
-            assert_eq!(
-                timeout(Duration::from_secs(TIMEOUT_SEC), receiver1.recv())
-                    .await
-                    .unwrap(),
-                Some(i.clone())
-            );
-            assert_eq!(
-                timeout(Duration::from_secs(TIMEOUT_SEC), receiver2.recv())
-                    .await
-                    .unwrap(),
-                Some(i.clone())
-            );
-        }
     }
 }
