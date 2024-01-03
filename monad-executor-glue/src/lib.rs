@@ -11,8 +11,8 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::FullBlock,
-    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria, FetchedBlock},
+    block::{FullBlock, UnverifiedFullBlock},
+    command::{FetchFullTxParams, FetchTxParams, FetchTxsCriteria},
     message_signature::MessageSignature,
     payload::{FullTransactionList, TransactionHashList},
     signature_collection::SignatureCollection,
@@ -147,14 +147,9 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Timeout(TimeoutVariant),
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
-    FetchedBlock(FetchedBlock<SCT>),
     LoadEpoch(Epoch, ValidatorData<SCT>, ValidatorData<SCT>),
     AdvanceEpoch(Option<ValidatorData<SCT>>),
     StateUpdate((SeqNum, ConsensusHash)),
-    BlockSyncRequest {
-        sender: PubKey,
-        unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
-    },
     BlockSyncResponse {
         sender: PubKey,
         unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
@@ -185,21 +180,9 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("proposal block", &p.p_block)
                 .field("proposal tc", &p.p_last_round_tc)
                 .finish(),
-            ConsensusEvent::FetchedBlock(b) => f
-                .debug_struct("FetchedBlock")
-                .field("unverified_full_block", &b.unverified_full_block)
-                .finish(),
             ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
             ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
-            ConsensusEvent::BlockSyncRequest {
-                sender,
-                unvalidated_request,
-            } => f
-                .debug_struct("BlockSyncRequest")
-                .field("sender", &sender)
-                .field("request", &unvalidated_request)
-                .finish(),
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
@@ -212,13 +195,64 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
     }
 }
 
+/// FetchedBlock is a consensus block fetched from the consensus ledger. It's
+/// used to respond to a block sync request
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedBlock<SCT> {
+    /// The node that requested this block
+    pub requester: NodeId,
+
+    /// id of the requested block
+    pub block_id: BlockId,
+
+    /// FetchedBlock results should only be used to send block data to nodes
+    /// over the network so we should unverify it before sending to consensus
+    /// to prevent it from being used for anything else
+    pub unverified_full_block: Option<UnverifiedFullBlock<SCT>>,
+}
+
+/// BlockSync related events
+#[derive(Clone, PartialEq, Eq)]
+pub enum BlockSyncEvent<SCT: SignatureCollection> {
+    /// A peer requesting for a missing block
+    BlockSyncRequest {
+        sender: PubKey,
+        unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
+    },
+    /// Fetched full block from the consensus ledger
+    ///
+    /// BlockSyncResponder issues a fetch to consensus ledger if the block is
+    /// not found in the block tree
+    FetchedBlock(FetchedBlock<SCT>),
+}
+
+impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BlockSyncRequest {
+                sender,
+                unvalidated_request,
+            } => f
+                .debug_struct("BlockSyncRequest")
+                .field("sender", &sender)
+                .field("unvalidated_request", &unvalidated_request)
+                .finish(),
+            Self::FetchedBlock(fetched_block) => fetched_block.fmt(f),
+        }
+    }
+}
+
+/// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
 where
     ST: MessageSignature,
     SCT: SignatureCollection,
 {
+    /// Events for consensus state
     ConsensusEvent(ConsensusEvent<ST, SCT>),
+    /// Events for block sync responder
+    BlockSyncEvent(BlockSyncEvent<SCT>),
 }
 
 impl monad_types::Deserializable<[u8]>

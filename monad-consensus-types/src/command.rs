@@ -1,10 +1,8 @@
 use monad_crypto::hasher::Hash;
-use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_types::{NodeId, Round, SeqNum};
 
 use crate::{
-    block::{Block, UnverifiedFullBlock},
-    payload::TransactionHashList,
-    quorum_certificate::QuorumCertificate,
+    block::Block, payload::TransactionHashList, quorum_certificate::QuorumCertificate,
     timeout::TimeoutCertificate,
 };
 
@@ -42,20 +40,4 @@ pub struct FetchFullTxParams<SCT> {
     pub author: NodeId,
     pub p_block: Block<SCT>,
     pub p_last_round_tc: Option<TimeoutCertificate<SCT>>,
-}
-
-/// FetchedBlock is used to respond to BlockSync requests from other
-/// nodes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedBlock<SCT> {
-    /// The node that requested this block
-    pub requester: NodeId,
-
-    /// id of the requested block
-    pub block_id: BlockId,
-
-    /// FetchedBlock results should only be used to send block data to nodes
-    /// over the network so we should unverify it before sending to consensus
-    /// to prevent it from being used for anything else
-    pub unverified_full_block: Option<UnverifiedFullBlock<SCT>>,
 }

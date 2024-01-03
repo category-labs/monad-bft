@@ -10,7 +10,7 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
 use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand, PublishMessage},
+    command::{Checkpoint, ConsensusCommand},
     ConsensusConfig, ConsensusProcess,
 };
 use monad_consensus_types::{
@@ -28,8 +28,9 @@ use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand,
-    MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
+    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand,
+    LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
+    TimerCommand,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, RouterTarget, Stake, TimeoutVariant};
@@ -236,8 +237,9 @@ where
                 sender: from.0,
                 unverified_message: msg,
             }),
+
             MonadMessage::BlockSyncRequest(msg) => {
-                MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncRequest {
+                MonadEvent::BlockSyncEvent(BlockSyncEvent::BlockSyncRequest {
                     sender: from.0,
                     unvalidated_request: msg,
                 })
@@ -348,6 +350,7 @@ where
         >,
     > {
         let _event_span = tracing::info_span!("event_span", ?event).entered();
+
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
                 let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
@@ -400,9 +403,7 @@ where
 
                             cmds.push(ConsensusCommand::Publish {
                                 target: RouterTarget::Broadcast,
-                                message: PublishMessage::ConsensusMessage(
-                                    ConsensusMessage::Proposal(p),
-                                ),
+                                message: ConsensusMessage::Proposal(p),
                             });
                         }
 
@@ -428,25 +429,7 @@ where
 
                         cmds
                     }
-                    ConsensusEvent::FetchedBlock(fetched_b) => {
-                        vec![
-                            ConsensusCommand::LedgerFetchReset(
-                                fetched_b.requester,
-                                fetched_b.block_id,
-                            ),
-                            ConsensusCommand::Publish {
-                                target: RouterTarget::PointToPoint(NodeId(fetched_b.requester.0)),
-                                message: PublishMessage::BlockSyncResponse(
-                                    match fetched_b.unverified_full_block {
-                                        Some(b) => BlockSyncResponseMessage::BlockFound(b),
-                                        None => BlockSyncResponseMessage::NotAvailable(
-                                            fetched_b.block_id,
-                                        ),
-                                    },
-                                ),
-                            },
-                        ]
-                    }
+
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
@@ -511,34 +494,7 @@ where
                         self.consensus.handle_state_root_update(seq_num, root_hash);
                         Vec::new()
                     }
-                    ConsensusEvent::BlockSyncRequest {
-                        sender,
-                        unvalidated_request,
-                    } => {
-                        let validated_request = match unvalidated_request.validate() {
-                            Ok(req) => req,
-                            Err(e) => todo!("{e:?}"),
-                        }
-                        .into_inner();
-                        if let Some(block) = self
-                            .consensus
-                            .fetch_uncommitted_block(&validated_request.block_id)
-                        {
-                            // retrieve if currently cached in pending block tree
-                            vec![ConsensusCommand::Publish {
-                                target: RouterTarget::PointToPoint(NodeId(sender)),
-                                message: PublishMessage::BlockSyncResponse(
-                                    BlockSyncResponseMessage::BlockFound(block.clone().into()),
-                                ),
-                            }]
-                        } else {
-                            // else ask ledger
-                            self.block_sync_respond.handle_request_block_sync_message(
-                                NodeId(sender),
-                                validated_request,
-                            )
-                        }
-                    }
+
                     ConsensusEvent::BlockSyncResponse {
                         sender,
                         unvalidated_response,
@@ -560,18 +516,14 @@ where
                 };
 
                 let prepare_router_message =
-                    |target: RouterTarget, message: PublishMessage<SCT>| {
-                        let message = match message {
-                            PublishMessage::ConsensusMessage(msg) => {
-                                VerifiedMonadMessage::Consensus(
-                                    msg.sign::<ST>(self.consensus.get_keypair()),
-                                )
-                            }
-                            PublishMessage::BlockSyncResponse(msg) => {
-                                VerifiedMonadMessage::BlockSyncResponse(Validated::new(msg))
-                            }
-                        };
-                        Command::RouterCommand(RouterCommand::Publish { target, message })
+                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
+                        let signed_message = VerifiedMonadMessage::Consensus(
+                            message.sign::<ST>(self.consensus.get_keypair()),
+                        );
+                        Command::RouterCommand(RouterCommand::Publish {
+                            target,
+                            message: signed_message,
+                        })
                     };
 
                 let mut cmds = Vec::new();
@@ -628,17 +580,7 @@ where
                                 ExecutionLedgerCommand::LedgerCommit(block),
                             ))
                         }
-                        ConsensusCommand::LedgerFetch(n_id, b_id, cb) => {
-                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetch(
-                                n_id,
-                                b_id,
-                                Box::new(|full_block: Option<FullBlock<_>>| {
-                                    Self::Event::ConsensusEvent(ConsensusEvent::FetchedBlock(cb(
-                                        full_block.map(|b| b.into()),
-                                    )))
-                                }),
-                            )))
-                        }
+
                         ConsensusCommand::LedgerFetchReset(node_id, block_id) => {
                             cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetchReset(
                                 node_id, block_id,
@@ -657,6 +599,49 @@ where
 
                 cmds
             }
+
+            MonadEvent::BlockSyncEvent(block_sync_event) => match block_sync_event {
+                BlockSyncEvent::BlockSyncRequest {
+                    sender,
+                    unvalidated_request,
+                } => {
+                    let validated_request = match unvalidated_request.validate() {
+                        Ok(req) => req,
+                        Err(e) => {
+                            Self::handle_validation_error(e);
+                            // TODO-2: collect evidence
+                            let evidence_cmds = vec![];
+                            return evidence_cmds;
+                        }
+                    }
+                    .into_inner();
+                    let block_id = validated_request.block_id;
+                    self.block_sync_respond.handle_request_block_sync_message(
+                        NodeId(sender),
+                        validated_request,
+                        self.consensus.fetch_uncommitted_block(&block_id),
+                    )
+                }
+                BlockSyncEvent::FetchedBlock(fetched_block) => {
+                    vec![
+                        Command::LedgerCommand(LedgerCommand::LedgerFetchReset(
+                            fetched_block.requester,
+                            fetched_block.block_id,
+                        )),
+                        Command::RouterCommand(RouterCommand::Publish {
+                            target: RouterTarget::PointToPoint(NodeId(fetched_block.requester.0)),
+                            message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
+                                match fetched_block.unverified_full_block {
+                                    Some(b) => BlockSyncResponseMessage::BlockFound(b),
+                                    None => BlockSyncResponseMessage::NotAvailable(
+                                        fetched_block.block_id,
+                                    ),
+                                },
+                            )),
+                        }),
+                    ]
+                }
+            },
         }
     }
 }

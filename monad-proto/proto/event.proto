@@ -91,15 +91,21 @@ message ProtoConsensusEvent {
     ProtoFetchedFullTxs fetched_full_txs = 4;
     ProtoAdvanceEpochEvent advance_epoch = 5;
     ProtoLoadEpochEvent load_epoch = 6;
-    ProtoFetchedBlock fetched_block = 7;
-    ProtoStateUpdateEvent state_update = 8;
-    ProtoBlockSyncRequestWithSender block_sync_req = 9;
-    ProtoBlockSyncResponseWithSender block_sync_resp = 10;
+    ProtoStateUpdateEvent state_update = 7;
+    ProtoBlockSyncResponseWithSender block_sync_resp = 8;
+  }
+}
+
+message ProtoBlockSyncEvent {
+  oneof event {
+    ProtoBlockSyncRequestWithSender block_sync_req = 1;
+    ProtoFetchedBlock fetched_block = 2;
   }
 }
 
 message ProtoMonadEvent{
   oneof event {
-    ProtoConsensusEvent consensus_event = 2;
+    ProtoConsensusEvent consensus_event = 1;
+    ProtoBlockSyncEvent block_sync_event = 2;
   }
 }

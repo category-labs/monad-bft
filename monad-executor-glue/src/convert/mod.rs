@@ -10,7 +10,7 @@ use monad_proto::{
 };
 use monad_types::TimeoutVariant;
 
-use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams, FetchedBlock};
+use crate::{ConsensusEvent, FetchFullTxParams, FetchTxParams};
 
 pub mod event;
 pub mod interface;
@@ -70,16 +70,7 @@ where
                         .unwrap_or_default(),
                 })
             }
-            ConsensusEvent::FetchedBlock(fetched_block) => {
-                proto_consensus_event::Event::FetchedBlock(ProtoFetchedBlock {
-                    requester: Some((&fetched_block.requester).into()),
-                    block_id: Some((&fetched_block.block_id).into()),
-                    unverified_full_block: fetched_block
-                        .unverified_full_block
-                        .as_ref()
-                        .map(|b| b.into()),
-                })
-            }
+
             ConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
                 proto_consensus_event::Event::LoadEpoch(ProtoLoadEpochEvent {
                     epoch: Some(epoch.into()),
@@ -98,13 +89,6 @@ where
                     state_root_hash: Some(hash.into()),
                 })
             }
-            ConsensusEvent::BlockSyncRequest {
-                sender,
-                unvalidated_request,
-            } => proto_consensus_event::Event::BlockSyncReq(ProtoBlockSyncRequestWithSender {
-                sender: Some(sender.into()),
-                request: Some(unvalidated_request.into()),
-            }),
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
@@ -222,30 +206,6 @@ where
                     Some(FullTransactionList::new(fetched_full_txs.full_txs)),
                 )
             }
-            Some(proto_consensus_event::Event::FetchedBlock(fetched_block)) => {
-                ConsensusEvent::FetchedBlock(FetchedBlock {
-                    requester: fetched_block
-                        .requester
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_block.requester".to_owned(),
-                        ))?
-                        .try_into()?,
-                    block_id: fetched_block
-                        .block_id
-                        .ok_or(ProtoError::MissingRequiredField(
-                            "ConsensusEvent::fetched_block.requester".to_owned(),
-                        ))?
-                        .try_into()?,
-                    unverified_full_block: Some(
-                        fetched_block
-                            .unverified_full_block
-                            .ok_or(ProtoError::MissingRequiredField(
-                                "ConsensusEvent::fetched_block.unverified_full_block".to_owned(),
-                            ))?
-                            .try_into()?,
-                    ),
-                })
-            }
             Some(proto_consensus_event::Event::LoadEpoch(epoch_event)) => {
                 let e = epoch_event
                     .epoch
@@ -292,28 +252,6 @@ where
 
                 ConsensusEvent::StateUpdate((s, h))
             }
-
-            Some(proto_consensus_event::Event::BlockSyncReq(event)) => {
-                let sender = event
-                    .sender
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::BlockSyncReq::sender".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                let unvalidated_request = event
-                    .request
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::BlockSyncReq::request".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                ConsensusEvent::BlockSyncRequest {
-                    sender,
-                    unvalidated_request,
-                }
-            }
-
             Some(proto_consensus_event::Event::BlockSyncResp(event)) => {
                 let sender = event
                     .sender
