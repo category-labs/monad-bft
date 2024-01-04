@@ -3,7 +3,7 @@ pub mod convert;
 use std::{
     error::Error,
     io,
-    ops::{Add, AddAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
 };
 
 use monad_crypto::{
@@ -109,6 +109,22 @@ impl Sub for SeqNum {
 impl AddAssign for SeqNum {
     fn add_assign(&mut self, other: Self) {
         self.0 += other.0
+    }
+}
+
+impl Div for SeqNum {
+    type Output = SeqNum;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        SeqNum(self.0 / rhs.0)
+    }
+}
+
+impl Rem for SeqNum {
+    type Output = SeqNum;
+
+    fn rem(self, rhs: Self) -> Self::Output {
+        SeqNum(self.0 % rhs.0)
     }
 }
 

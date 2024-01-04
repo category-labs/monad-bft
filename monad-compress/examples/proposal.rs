@@ -4,14 +4,18 @@ use monad_consensus::messages::consensus_message::ConsensusMessage;
 use monad_consensus_types::{
     bls::BlsSignatureCollection,
     payload::{ExecutionArtifacts, TransactionHashList},
+    voting::ValidatorMapping,
 };
 use monad_crypto::secp256k1::SecpSignature;
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
-use monad_types::Serializable;
+use monad_types::{Epoch, Round, SeqNum, Serializable};
 use monad_validator::{
-    leader_election::LeaderElection, simple_round_robin::SimpleRoundRobin,
-    validator_set::ValidatorSetType,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetType},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use peak_alloc::PeakAlloc;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
@@ -27,6 +31,17 @@ fn main() {
     rng.fill_bytes(&mut transaction_hashes);
 
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
+
+    let validator_stakes = Vec::from_iter(valset.get_members().clone());
+
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(
+        Epoch(1),
+        ValidatorSet::new(validator_stakes)
+            .expect("ValidatorData should not have duplicates or invalid entries"),
+        ValidatorMapping::new(valmap),
+    );
     let election = SimpleRoundRobin::new();
     let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
 
@@ -34,9 +49,9 @@ fn main() {
         .next_proposal(
             &keys,
             cert_keys.as_slice(),
-            &valset,
+            &epoch_manager,
+            &val_epoch_map,
             &election,
-            &valmap,
             TransactionHashList::new(transaction_hashes.to_vec().into()),
             ExecutionArtifacts::zero(),
         )
@@ -48,7 +63,7 @@ fn main() {
         .find(|k| {
             k.pubkey()
                 == election
-                    .get_leader(proposal.block.round, valset.get_list())
+                    .get_leader(proposal.block.round, &epoch_manager, &val_epoch_map)
                     .0
         })
         .expect("key in valset");

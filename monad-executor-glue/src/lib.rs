@@ -147,8 +147,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Timeout(TimeoutVariant),
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
-    LoadEpoch(Epoch, ValidatorData<SCT>, ValidatorData<SCT>),
-    AdvanceEpoch(Option<ValidatorData<SCT>>),
+    UpdateValidators((ValidatorData<SCT>, Epoch)),
     StateUpdate((SeqNum, ConsensusHash)),
     BlockSyncResponse {
         sender: PubKey,
@@ -180,8 +179,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("proposal block", &p.p_block)
                 .field("proposal tc", &p.p_last_round_tc)
                 .finish(),
-            ConsensusEvent::LoadEpoch(e, _, _) => e.fmt(f),
-            ConsensusEvent::AdvanceEpoch(e) => e.fmt(f),
+            ConsensusEvent::UpdateValidators(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
             ConsensusEvent::BlockSyncResponse {
                 sender,

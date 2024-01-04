@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
 monad-types = { path = "../monad-types" }
 
 tracing = { workspace = true }

@@ -57,7 +57,10 @@ impl ValidatorSetType for ValidatorSet {
             if *entry != stake {
                 return Err(ValidatorSetError::DuplicateValidator(node_id));
             }
-            vlist.push(node_id);
+
+            if stake != Stake(0) {
+                vlist.push(node_id);
+            }
         }
 
         vlist.sort();

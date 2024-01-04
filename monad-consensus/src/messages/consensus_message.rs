@@ -7,7 +7,7 @@ use monad_crypto::{
     hasher::{Hashable, Hasher},
     secp256k1::KeyPair,
 };
-use monad_types::EnumDiscriminant;
+use monad_types::{EnumDiscriminant, Round};
 
 use crate::{
     messages::message::{ProposalMessage, TimeoutMessage, VoteMessage},
@@ -75,5 +75,13 @@ where
         keypair: &KeyPair,
     ) -> Verified<ST, Validated<ConsensusMessage<SCT>>> {
         Verified::new(Validated::new(self), keypair)
+    }
+
+    pub fn get_round(&self) -> Round {
+        match self {
+            ConsensusMessage::Proposal(p) => p.block.round,
+            ConsensusMessage::Vote(v) => v.vote.vote_info.round,
+            ConsensusMessage::Timeout(t) => t.timeout.tminfo.round,
+        }
     }
 }

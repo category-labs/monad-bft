@@ -17,7 +17,7 @@ use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
-use monad_types::{NodeId, SeqNum};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
@@ -53,10 +53,12 @@ struct Args {
 }
 
 struct TestgroundArgs {
-    state_root_delay: u64,    // default 0
-    simulation_length_s: u64, // default 10
-    delta_ms: u64,            // default 1000
-    proposal_size: usize,     // default 5000
+    state_root_delay: u64,        // default 0
+    simulation_length_s: u64,     // default 10
+    delta_ms: u64,                // default 1000
+    proposal_size: usize,         // default 5000
+    val_set_update_interval: u64, // default 2000
+    epoch_start_delay: u64,       // default 50
 
     router: RouterArgs,
     mempool: MempoolArgs,
@@ -140,6 +142,8 @@ async fn main() {
         simulation_length_s: 10,
         delta_ms: 75,
         proposal_size: 5_000,
+        val_set_update_interval: 2_000,
+        epoch_start_delay: 50,
 
         router: RouterArgs::MonadP2P {
             max_rtt_ms: 150,
@@ -306,6 +310,8 @@ where
                 state_config: StateConfig {
                     key: keypair,
                     cert_key: cert_keypair,
+                    val_set_update_interval: SeqNum(args.val_set_update_interval),
+                    epoch_start_delay: Round(args.epoch_start_delay),
                     genesis_peers: genesis_peers.clone(),
                     consensus_config: ConsensusConfig {
                         proposal_txn_limit: args.proposal_size,

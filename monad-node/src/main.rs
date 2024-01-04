@@ -18,7 +18,7 @@ use monad_mempool_controller::ControllerConfig;
 use monad_mempool_messenger::MessengerConfig;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_types::{NodeId, SeqNum};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
     mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
@@ -139,6 +139,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             .collect(),
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
+        val_set_update_interval: SeqNum(2000),
+        epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 5000,

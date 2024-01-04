@@ -6,7 +6,7 @@ use monad_consensus_types::{
 };
 use monad_proto::{
     error::ProtoError,
-    proto::{basic::ProtoPubkey, event::*, validator_set::ProtoValidatorSetData},
+    proto::{basic::ProtoPubkey, event::*, validator_data::ProtoValidatorData},
 };
 use monad_types::TimeoutVariant;
 
@@ -70,17 +70,10 @@ where
                         .unwrap_or_default(),
                 })
             }
-
-            ConsensusEvent::LoadEpoch(epoch, valset, upcoming_valset) => {
-                proto_consensus_event::Event::LoadEpoch(ProtoLoadEpochEvent {
+            ConsensusEvent::UpdateValidators((validator_data, epoch)) => {
+                proto_consensus_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
+                    validator_data: Some(validator_data.into()),
                     epoch: Some(epoch.into()),
-                    validator_set: Some(valset.into()),
-                    upcoming_validator_set: Some(upcoming_valset.into()),
-                })
-            }
-            ConsensusEvent::AdvanceEpoch(validator_set) => {
-                proto_consensus_event::Event::AdvanceEpoch(ProtoAdvanceEpochEvent {
-                    validator_set: validator_set.as_ref().map(|x| x.into()),
                 })
             }
             ConsensusEvent::StateUpdate((seq_num, hash)) => {
@@ -104,7 +97,7 @@ where
 impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
     for ConsensusEvent<S, SCT>
 where
-    ValidatorData<SCT>: TryFrom<ProtoValidatorSetData, Error = ProtoError>,
+    ValidatorData<SCT>: TryFrom<ProtoValidatorData, Error = ProtoError>,
 {
     type Error = ProtoError;
 
@@ -206,35 +199,21 @@ where
                     Some(FullTransactionList::new(fetched_full_txs.full_txs)),
                 )
             }
-            Some(proto_consensus_event::Event::LoadEpoch(epoch_event)) => {
-                let e = epoch_event
+            Some(proto_consensus_event::Event::UpdateValidators(val_event)) => {
+                let vs = val_event
+                    .validator_data
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::UpdateValidators::validator_data".to_owned(),
+                    ))?
+                    .try_into()?;
+                let e = val_event
                     .epoch
                     .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::LoadEpoch::epoch".to_owned(),
+                        "ConsensusEvent::UpdateValidators::epoch".to_owned(),
                     ))?
                     .try_into()?;
-                let vset = epoch_event
-                    .validator_set
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::LoadEpoch::validator_set".to_owned(),
-                    ))?
-                    .try_into()?;
-                let uvset = epoch_event
-                    .upcoming_validator_set
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::LoadEpoch::upcoming_validator_set".to_owned(),
-                    ))?
-                    .try_into()?;
-                ConsensusEvent::LoadEpoch(e, vset, uvset)
-            }
-            Some(proto_consensus_event::Event::AdvanceEpoch(epoch_event)) => {
-                match epoch_event.validator_set {
-                    None => ConsensusEvent::AdvanceEpoch(None),
-                    Some(vs) => {
-                        let a = vs.try_into()?;
-                        ConsensusEvent::AdvanceEpoch(Some(a))
-                    }
-                }
+
+                ConsensusEvent::UpdateValidators((vs, e))
             }
             Some(proto_consensus_event::Event::StateUpdate(event)) => {
                 let h = event

@@ -20,7 +20,10 @@ use monad_proto::proto::message::{
     ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
-use monad_validator::validator_set::ValidatorSetType;
+use monad_validator::{
+    epoch_manager::EpochManager, validator_set::ValidatorSetType,
+    validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 use crate::{
     convert::message::UnverifiedConsensusMessage,
@@ -132,16 +135,24 @@ impl<S, M> From<Verified<S, Validated<M>>> for Unverified<S, Unvalidated<M>> {
     }
 }
 
-impl<S: MessageSignature, M: Hashable> Unverified<S, M> {
+impl<S: MessageSignature, SCT: SignatureCollection>
+    Unverified<S, Unvalidated<ConsensusMessage<SCT>>>
+{
     pub fn verify<VT: ValidatorSetType>(
         self,
-        validators: &VT,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         sender: &PubKey,
-    ) -> Result<Verified<S, M>, Error> {
+    ) -> Result<Verified<S, Unvalidated<ConsensusMessage<SCT>>>, Error> {
         let msg = HasherType::hash_object(&self.obj);
 
+        let epoch = epoch_manager.get_epoch(self.obj.obj.get_round());
+        let validator_set = val_epoch_map
+            .get_val_set(&epoch)
+            .ok_or(Error::ValidatorDataUnavailable)?;
+
         let author = verify_author(
-            validators.get_members(),
+            validator_set.get_members(),
             sender,
             &msg,
             &self.author_signature,
@@ -219,12 +230,12 @@ impl<M: Hashable> Hashable for Unvalidated<M> {
 impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
     pub fn validate<VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     ) -> Result<Validated<ConsensusMessage<SCT>>, Error> {
         Ok(match self.obj {
             ConsensusMessage::Proposal(m) => {
-                let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
+                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
                 Validated {
                     message: Unvalidated::new(ConsensusMessage::Proposal(validated.into_inner())),
                 }
@@ -236,7 +247,7 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
                 }
             }
             ConsensusMessage::Timeout(m) => {
-                let validated = Unvalidated::new(m).validate(validators, validator_mapping)?;
+                let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
                 Validated {
                     message: Unvalidated::new(ConsensusMessage::Timeout(validated.into_inner())),
                 }
@@ -250,13 +261,13 @@ impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     // signatures for the present TC or QC
     pub fn validate<VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     ) -> Result<Validated<ProposalMessage<SCT>>, Error> {
         self.well_formed_proposal()?;
         verify_certificates(
-            validators,
-            validator_mapping,
+            epoch_manager,
+            val_epoch_map,
             &self.obj.last_round_tc,
             &self.obj.block.qc,
         )?;
@@ -310,14 +321,14 @@ impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
     /// A valid timeout message is well-formed, and carries valid QC/TC
     pub fn validate<VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     ) -> Result<Validated<TimeoutMessage<SCT>>, Error> {
         self.well_formed_timeout()?;
 
         verify_certificates(
-            validators,
-            validator_mapping,
+            epoch_manager,
+            val_epoch_map,
             &self.obj.timeout.last_round_tc,
             &self.obj.timeout.tminfo.high_qc,
         )?;
@@ -346,11 +357,11 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
     /// If the block sync response message carries a full block, the certificates on it need to be valid
     pub fn validate<VT: ValidatorSetType>(
         self,
-        validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     ) -> Result<Validated<BlockSyncResponseMessage<SCT>>, Error> {
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates(validators, validator_mapping, &(None), &b.block.qc)?;
+            verify_certificates(epoch_manager, val_epoch_map, &(None), &b.block.qc)?;
         }
 
         Ok(Validated { message: self })
@@ -358,8 +369,8 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
 }
 
 fn verify_certificates<SCT, VT>(
-    validators: &VT,
-    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    epoch_manager: &EpochManager,
+    val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
     tc: &Option<TimeoutCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
@@ -368,10 +379,24 @@ where
     VT: ValidatorSetType,
 {
     if let Some(tc) = tc {
-        verify_tc(validators, validator_mapping, tc)?;
+        let tc_epoch = epoch_manager.get_epoch(tc.round);
+        let validator_set = val_epoch_map
+            .get_val_set(&tc_epoch)
+            .ok_or(Error::ValidatorDataUnavailable)?;
+        let validator_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&tc_epoch)
+            .ok_or(Error::ValidatorDataUnavailable)?;
+        verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
 
-    verify_qc(validators, validator_mapping, qc)?;
+    let qc_epoch = epoch_manager.get_epoch(qc.get_round());
+    let validator_set = val_epoch_map
+        .get_val_set(&qc_epoch)
+        .ok_or(Error::ValidatorDataUnavailable)?;
+    let validator_cert_pubkeys = val_epoch_map
+        .get_cert_pubkeys(&qc_epoch)
+        .ok_or(Error::ValidatorDataUnavailable)?;
+    verify_qc(validator_set, validator_cert_pubkeys, qc)?;
 
     Ok(())
 }
@@ -564,8 +589,12 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
+    use monad_validator::{
+        epoch_manager::EpochManager,
+        validator_set::{ValidatorSet, ValidatorSetType},
+        validators_epoch_mapping::ValidatorsEpochMapping,
+    };
     use test_case::test_case;
 
     use super::{verify_qc, verify_tc, Verified};
@@ -815,7 +844,11 @@ mod test {
             &certkeys[0],
         ));
 
-        let err = unvalidated_tmo_msg.validate(&vset, &vmap);
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let mut val_epoch_map = ValidatorsEpochMapping::default();
+        val_epoch_map.insert(Epoch(1), vset, vmap);
+
+        let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map);
 
         assert!(matches!(err, Err(Error::InsufficientStake)));
     }
@@ -868,7 +901,11 @@ mod test {
             SignatureCollectionType,
         >::new(tmo, &certkeys[0]));
 
-        let err = unvalidated_byzantine_tmo_msg.validate(&vset, &vmap);
+        let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+        let mut val_epoch_map = ValidatorsEpochMapping::default();
+        val_epoch_map.insert(Epoch(1), vset, vmap);
+
+        let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map);
         assert!(matches!(err, Err(Error::NotWellFormed)));
     }
 

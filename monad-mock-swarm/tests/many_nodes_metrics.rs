@@ -12,6 +12,7 @@ use monad_tracing_counter::{
     counter_status,
 };
 use monad_transformer::{GenericTransformer, LatencyTransformer};
+use monad_types::{Round, SeqNum};
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};
@@ -50,6 +51,8 @@ fn many_nodes_metrics() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            val_set_update_interval: SeqNum(2000),
+            epoch_start_delay: Round(50),
         },
     );
 

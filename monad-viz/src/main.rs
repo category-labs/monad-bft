@@ -41,6 +41,7 @@ use monad_transformer::{
     GenericTransformer, GenericTransformerPipeline, LatencyTransformer, XorLatencyTransformer, ID,
 };
 use monad_types::NodeId;
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
@@ -80,6 +81,12 @@ impl SwarmRelation for VizSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 type NS<'a> =

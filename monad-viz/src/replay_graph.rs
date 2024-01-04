@@ -8,7 +8,7 @@ use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
 use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_state::MonadConfig;
 use monad_testutil::validators::create_keys_w_validators;
-use monad_types::{NodeId, SeqNum, Stake};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 
 use crate::{
     graph::{Graph, NodeEvent, NodeState, ReplayConfig},
@@ -38,6 +38,8 @@ impl ReplayConfig<MS> for RepConfig {
                 transaction_validator: MockValidator,
                 key,
                 certkey,
+                val_set_update_interval: SeqNum(2000),
+                epoch_start_delay: Round(50),
                 beneficiary: EthAddress::default(),
                 validators: validator_mapping
                     .map

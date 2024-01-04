@@ -5,7 +5,7 @@ use monad_consensus_types::{
     block_validator::MockValidator, bls::BlsSignatureCollection, payload::StateRoot,
 };
 use monad_crypto::secp256k1::SecpSignature;
-use monad_executor::timed_event::TimedEvent;
+use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig},
@@ -16,6 +16,8 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
+use monad_types::{Round, SeqNum};
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -49,6 +51,12 @@ impl SwarmRelation for BLSSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 #[test]
@@ -74,6 +82,8 @@ fn two_nodes_bls() {
             state_root_delay: 4,
             seed: 1,
             proposal_size: 0,
+            val_set_update_interval: SeqNum(2000),
+            epoch_start_delay: Round(50),
         },
     );
 }

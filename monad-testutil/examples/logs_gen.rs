@@ -5,7 +5,7 @@ use monad_consensus_types::{
     block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
 };
 use monad_crypto::NopSignature;
-use monad_executor::timed_event::TimedEvent;
+use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::{MockMempool, MockMempoolConfig},
@@ -16,7 +16,8 @@ use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::get_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
-use monad_types::NodeId;
+use monad_types::{NodeId, Round, SeqNum};
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
@@ -51,6 +52,12 @@ impl SwarmRelation for LogSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 pub fn generate_log(
@@ -59,6 +66,8 @@ pub fn generate_log(
     delta: Duration,
     state_root_delay: u64,
     proposal_size: usize,
+    val_set_update_interval: SeqNum,
+    epoch_start_delay: Round,
 ) {
     let (pubkeys, state_configs) = get_configs::<
         <LogSwarm as SwarmRelation>::SignatureType,
@@ -70,6 +79,8 @@ pub fn generate_log(
         delta,
         state_root_delay,
         proposal_size,
+        val_set_update_interval,
+        epoch_start_delay,
     );
     let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
@@ -105,6 +116,14 @@ pub fn generate_log(
 }
 
 fn main() {
-    generate_log(4, 10, Duration::from_millis(101), 4, 0);
+    generate_log(
+        4,
+        10,
+        Duration::from_millis(101),
+        4,
+        0,
+        SeqNum(2000),
+        Round(50),
+    );
     println!("Logs Generated!");
 }

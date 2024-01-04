@@ -13,6 +13,7 @@ use monad_executor_glue::{Message, MonadEvent};
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
+use monad_updaters::state_root_hash::{MockStateRootHashNop, MockableStateRootHash};
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
@@ -65,6 +66,12 @@ pub trait SwarmRelation {
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         SignatureCollection = Self::SignatureCollectionType,
     >;
+
+    type StateRootHashExecutor: MockableStateRootHash<
+        Block = <Self::State as State>::Block,
+        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        SignatureCollection = Self::SignatureCollectionType,
+    >;
 }
 
 // default swarm relation impl
@@ -98,6 +105,12 @@ impl SwarmRelation for NoSerSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -130,4 +143,10 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }

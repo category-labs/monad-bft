@@ -29,7 +29,10 @@ use monad_state::{
     MonadMessage, VerifiedMonadMessage,
 };
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
-use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
+use monad_validator::{
+    epoch_manager::EpochManager, validators_epoch_mapping::ValidatorsEpochMapping,
+};
 
 fn make_tc<SCT: SignatureCollection>(
     tc_round: Round,
@@ -128,6 +131,10 @@ macro_rules! test_all_combination {
 test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: Round(2),
@@ -159,11 +166,11 @@ test_all_combination!(test_vote_message, |num_keys| {
 
     if let MonadMessage::Consensus(rx_vote) = rx_msg {
         let rx_vote = rx_vote
-            .verify(&validators, &author_keypair.pubkey())
+            .verify(&epoch_manager, &val_epoch_map, &author_keypair.pubkey())
             .unwrap()
             .destructure()
             .2
-            .validate(&validators, &validator_mapping)
+            .validate(&epoch_manager, &val_epoch_map)
             .unwrap()
             .into_inner();
         assert_eq!(rx_vote, votemsg);
@@ -175,6 +182,10 @@ test_all_combination!(test_vote_message, |num_keys| {
 test_all_combination!(test_timeout_message, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
     let author_cert_key = &cert_keys[0];
@@ -205,7 +216,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
         sigs.push((node_id, sig));
     }
 
-    let sigcol = SCT::new(sigs, &validator_mapping, qcinfo_hash.as_ref()).unwrap();
+    let sigcol = SCT::new(sigs, validator_mapping, qcinfo_hash.as_ref()).unwrap();
 
     let qc = QuorumCertificate::new(qcinfo, sigcol);
 
@@ -217,7 +228,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
         HighQcRound { qc_round: Round(1) },
         keypairs.as_slice(),
         cert_keys.as_slice(),
-        &validator_mapping,
+        validator_mapping,
     );
 
     let tmo_info = TimeoutInfo {
@@ -245,11 +256,11 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     if let MonadMessage::Consensus(rx_tmo) = rx_msg {
         let rx_tmo = rx_tmo
-            .verify(&validators, &author_keypair.pubkey())
+            .verify(&epoch_manager, &val_epoch_map, &author_keypair.pubkey())
             .unwrap()
             .destructure()
             .2
-            .validate(&validators, &validator_mapping)
+            .validate(&epoch_manager, &val_epoch_map)
             .unwrap()
             .into_inner();
         assert_eq!(tmo_message, rx_tmo);
@@ -261,6 +272,10 @@ test_all_combination!(test_timeout_message, |num_keys| {
 test_all_combination!(test_proposal_qc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
     let blk = setup_block(
@@ -270,7 +285,7 @@ test_all_combination!(test_proposal_qc, |num_keys| {
         TransactionHashList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_mapping,
+        validator_mapping,
     );
     let proposal: ConsensusMessage<SCT> = ConsensusMessage::Proposal(ProposalMessage {
         block: blk,
@@ -289,11 +304,11 @@ test_all_combination!(test_proposal_qc, |num_keys| {
 
     if let MonadMessage::Consensus(rx_prop) = rx_msg {
         let rx_prop = rx_prop
-            .verify(&validators, &author_keypair.pubkey())
+            .verify(&epoch_manager, &val_epoch_map, &author_keypair.pubkey())
             .unwrap()
             .destructure()
             .2
-            .validate(&validators, &validator_mapping)
+            .validate(&epoch_manager, &val_epoch_map)
             .unwrap()
             .into_inner();
         assert_eq!(proposal, rx_prop);
@@ -305,6 +320,10 @@ test_all_combination!(test_proposal_qc, |num_keys| {
 test_all_combination!(test_proposal_tc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
     let blk = setup_block::<SCT>(
@@ -314,7 +333,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         TransactionHashList::new(vec![1, 2, 3, 4].into()),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_mapping,
+        validator_mapping,
     );
 
     let tc_round = Round(232);
@@ -327,7 +346,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
         high_qc_round,
         keypairs.as_slice(),
         cert_keys.as_slice(),
-        &validator_mapping,
+        validator_mapping,
     );
 
     let proposal_msg = ConsensusMessage::Proposal(ProposalMessage {
@@ -348,11 +367,11 @@ test_all_combination!(test_proposal_tc, |num_keys| {
 
     if let MonadMessage::Consensus(rx_prop) = rx_msg {
         let rx_prop = rx_prop
-            .verify(&validators, &author_keypair.pubkey())
+            .verify(&epoch_manager, &val_epoch_map, &author_keypair.pubkey())
             .unwrap()
             .destructure()
             .2
-            .validate(&validators, &validator_mapping)
+            .validate(&epoch_manager, &val_epoch_map)
             .unwrap()
             .into_inner();
         assert_eq!(proposal_msg, rx_prop);
@@ -386,6 +405,9 @@ test_all_combination!(test_block_sync_request, |_| {
 test_all_combination!(test_block_sync_response_not_available, |num_keys| {
     let (_keypairs, _cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
 
     let bid = BlockId(Hash([0x01_u8; 32]));
     let block_sync_msg = BlockSyncResponseMessage::NotAvailable(bid);
@@ -403,7 +425,7 @@ test_all_combination!(test_block_sync_response_not_available, |num_keys| {
 
     if let MonadMessage::BlockSyncResponse(resp) = rx_msg {
         let validated = resp
-            .validate(&validators, &validator_mapping)
+            .validate(&epoch_manager, &val_epoch_map)
             .unwrap()
             .into_inner();
 
@@ -416,6 +438,10 @@ test_all_combination!(test_block_sync_response_not_available, |num_keys| {
 test_all_combination!(test_block_sync_response_found, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
         create_keys_w_validators::<SCT>(num_keys);
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map = ValidatorsEpochMapping::default();
+    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
     let blk = setup_block::<SCT>(
@@ -425,7 +451,7 @@ test_all_combination!(test_block_sync_response_found, |num_keys| {
         TransactionHashList::new(Bytes::from_static(&[1, 2, 3, 4])),
         ExecutionArtifacts::zero(),
         cert_keys.as_slice(),
-        &validator_mapping,
+        validator_mapping,
     );
 
     let full_blk = UnverifiedFullBlock::new(
@@ -448,7 +474,7 @@ test_all_combination!(test_block_sync_response_found, |num_keys| {
 
     if let MonadMessage::BlockSyncResponse(rx_blk) = rx_msg {
         let validated = rx_blk
-            .validate(&validators, &validator_mapping)
+            .validate(&epoch_manager, &val_epoch_map)
             .unwrap()
             .into_inner();
 

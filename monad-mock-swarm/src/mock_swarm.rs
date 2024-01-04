@@ -8,12 +8,13 @@ use itertools::Itertools;
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
     message_signature::MessageSignature, signature_collection::SignatureCollection,
+    validator_data::ValidatorData,
 };
 use monad_executor::{timed_event::TimedEvent, Executor, State};
 use monad_router_scheduler::RouterScheduler;
 use monad_state::MonadState;
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_types::Round;
+use monad_types::{NodeId, Round};
 use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
@@ -500,9 +501,18 @@ where
         // if nodes only want to run with unique ids
         assert!(!self.no_duplicate_peers || id.is_unique());
 
+        let val_data = state_config
+            .validators
+            .iter()
+            .map(|(pubkey, stake, cert_pubkey)| (NodeId(*pubkey), *stake, *cert_pubkey))
+            .collect();
+        let val_data = ValidatorData(val_data);
+
         let mut executor: MockExecutor<S> = MockExecutor::new(
             <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
             mock_mempool_config,
+            val_data,
+            state_config.val_set_update_interval,
             self.tick,
         );
         let (wal, replay_events) = S::Logger::new(logger_config).unwrap();

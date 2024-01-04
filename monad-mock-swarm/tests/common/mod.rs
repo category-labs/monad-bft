@@ -4,7 +4,7 @@ use monad_consensus_types::{
     block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
 };
 use monad_crypto::NopSignature;
-use monad_executor::timed_event::TimedEvent;
+use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::MockGossip;
 use monad_mock_swarm::{
@@ -14,6 +14,7 @@ use monad_mock_swarm::{
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::BytesTransformerPipeline;
+use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
@@ -49,4 +50,10 @@ impl SwarmRelation for QuicSwarm {
 
     type MempoolConfig = MockMempoolConfig;
     type MempoolExecutor = MockMempool<Self::SignatureType, Self::SignatureCollectionType>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        <Self::State as State>::Block,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
 }
