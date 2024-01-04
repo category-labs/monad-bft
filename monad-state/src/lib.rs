@@ -500,7 +500,12 @@ where
                             .validate(&self.epoch_manager, &self.val_epoch_map)
                         {
                             Ok(req) => req,
-                            Err(e) => todo!("{e:?}"),
+                            Err(e) => {
+                                Self::handle_validation_error(e);
+                                // TODO-2: collect evidence
+                                let evidence_cmds = vec![];
+                                return evidence_cmds;
+                            }
                         }
                         .into_inner();
 
