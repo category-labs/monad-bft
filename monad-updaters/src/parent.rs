@@ -15,18 +15,20 @@ use monad_executor_glue::{
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, L, EL, C, S> {
+pub struct ParentExecutor<R, T, L, EL, C, S, IPC> {
     pub router: R,
     pub timer: T,
     pub ledger: L,
     pub execution_ledger: EL,
     pub checkpoint: C,
     pub state_root_hash: S,
+    /// ipc is a Stream, not an executor
+    pub ipc: IPC,
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, EL, CE, SE, E, OM, B, C, SCT: SignatureCollection> Executor
-    for ParentExecutor<RE, TE, LE, EL, CE, SE>
+impl<RE, TE, LE, EL, CE, SE, IPCE, E, OM, B, C, SCT: SignatureCollection> Executor
+    for ParentExecutor<RE, TE, LE, EL, CE, SE, IPCE>
 where
     RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
@@ -76,12 +78,13 @@ where
     }
 }
 
-impl<E, R, T, L, EL, C, S> Stream for ParentExecutor<R, T, L, EL, C, S>
+impl<E, R, T, L, EL, C, S, IPC> Stream for ParentExecutor<R, T, L, EL, C, S, IPC>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
     S: Stream<Item = E> + Unpin,
+    IPC: Stream<Item = E> + Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -93,13 +96,14 @@ where
             this.ledger.next().boxed_local(),
             this.router.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
+            this.ipc.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)
         .poll_unpin(cx)
     }
 }
 
-impl<R, T, L, EL, C, S> ParentExecutor<R, T, L, EL, C, S> {
+impl<R, T, L, EL, C, S, IPC> ParentExecutor<R, T, L, EL, C, S, IPC> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

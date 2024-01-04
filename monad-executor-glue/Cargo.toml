@@ -14,8 +14,13 @@ bench = false
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
+
+[dev-dependencies]
+reth-primitives = { workspace = true }

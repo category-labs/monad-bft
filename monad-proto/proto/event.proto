@@ -50,8 +50,7 @@ message ProtoStateUpdateEvent {
 
 message ProtoBlockSyncRequestWithSender {
   monad_proto.basic.ProtoPubkey sender = 1;
-  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;
-
+  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;  
 }
 
 message ProtoBlockSyncResponseWithSender {
@@ -81,10 +80,21 @@ message ProtoValidatorEvent {
   }
 }
 
+message ProtoUserTx {
+  bytes tx = 1;
+}
+
+message ProtoMempoolEvent {
+  oneof event {
+    ProtoUserTx usertx = 1;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
+    ProtoMempoolEvent mempool_event = 4;
   }
 }

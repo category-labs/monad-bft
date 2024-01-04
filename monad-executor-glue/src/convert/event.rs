@@ -1,9 +1,12 @@
+use alloy_rlp::Decodable;
+use bytes::BytesMut;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_eth_types::EthTransaction;
 use monad_proto::{error::ProtoError, proto::event::*};
 use monad_types::convert::{proto_to_pubkey, pubkey_to_proto};
 
-use crate::{BlockSyncEvent, FetchedBlock, MonadEvent, ValidatorEvent};
+use crate::{BlockSyncEvent, FetchedBlock, MempoolEvent, MonadEvent, ValidatorEvent};
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
     fn from(value: &FetchedBlock<SCT>) -> Self {
@@ -58,6 +61,7 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
             MonadEvent::ValidatorEvent(event) => {
                 proto_monad_event::Event::ValidatorEvent(event.into())
             }
+            MonadEvent::MempoolEvent(event) => proto_monad_event::Event::MempoolEvent(event.into()),
         };
         Self { event: Some(event) }
     }
@@ -77,6 +81,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::ValidatorEvent(event)) => {
                 MonadEvent::ValidatorEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::MempoolEvent(event)) => {
+                MonadEvent::MempoolEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -179,5 +186,72 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
         };
 
         Ok(event)
+    }
+}
+
+impl From<&MempoolEvent> for ProtoMempoolEvent {
+    fn from(value: &MempoolEvent) -> Self {
+        let event = match value {
+            MempoolEvent::UserTx(tx) => {
+                let mut buf = BytesMut::new();
+                tx.encode_enveloped(&mut buf);
+                proto_mempool_event::Event::Usertx(ProtoUserTx { tx: buf.into() })
+            }
+        };
+        Self { event: Some(event) }
+    }
+}
+
+impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
+        let event = match value.event {
+            Some(proto_mempool_event::Event::Usertx(tx)) => {
+                let eth_tx = EthTransaction::decode(&mut tx.tx.as_ref())
+                    .map_err(|e| ProtoError::DeserializeError(format!("{:?}", e)))?;
+
+                MempoolEvent::UserTx(eth_tx)
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "MempoolEvent.event".to_owned(),
+            ))?,
+        };
+
+        Ok(event)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use bytes::Bytes;
+    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_crypto::NopSignature;
+    use monad_types::{Deserializable, Serializable};
+    use reth_primitives::hex_literal::hex;
+
+    use super::*;
+
+    type MessageSignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<NopSignature>;
+
+    #[test]
+    fn test_mempool_event_roundtrip() {
+        // https://etherscan.io/tx/0xc97438c9ac71f94040abec76967bcaf16445ff747bcdeb383e5b94033cbed201
+        let raw_tx = hex!("02f871018302877a8085070adf56b2825208948880bb98e7747f73b52a9cfa34dab9a4a06afa3887eecbb1ada2fad280c080a0d5e6f03b507cc86b59bed88c201f98c9ca6514dc5825f41aa923769cf0402839a0563f21850c0c212ce6f402f140acdcebbb541c9bb6a051070851efec99e4dd8d");
+
+        let eth_tx = EthTransaction::decode(&mut &raw_tx[..]).unwrap();
+
+        let mempool_event =
+            MonadEvent::<MessageSignatureType, SignatureCollectionType>::MempoolEvent(
+                MempoolEvent::UserTx(eth_tx),
+            );
+
+        let mempool_event_bytes: Bytes = mempool_event.serialize();
+        assert_eq!(
+            mempool_event_bytes,
+            <MonadEvent::<MessageSignatureType, SignatureCollectionType> as Serializable<Bytes>>::serialize(&MonadEvent::<MessageSignatureType,SignatureCollectionType>::deserialize(mempool_event_bytes.as_ref()).expect("deserialization to succeed")
+        )
+        )
     }
 }

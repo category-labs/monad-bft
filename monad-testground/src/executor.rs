@@ -19,6 +19,7 @@ use monad_types::{Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
     execution_ledger::MonadFileLedger,
+    ipc::MockIpcReceiver,
     ledger::MockLedger,
     local_router::LocalPeerRouter,
     parent::ParentExecutor,
@@ -86,6 +87,7 @@ pub async fn make_monad_executor<ST, SCT>(
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
     MockCheckpoint<Checkpoint<SCT>>,
     BoxUpdater<'static, StateRootHashCommand<Block<SCT>>, MonadEvent<ST, SCT>>,
+    MockIpcReceiver<ST, SCT>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -124,6 +126,7 @@ where
                 val_set_update_interval,
             )),
         },
+        ipc: MockIpcReceiver::default(),
     }
 }
 

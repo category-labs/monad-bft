@@ -19,6 +19,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignatureRecoverable, PubKey},
     hasher::Hash as ConsensusHash,
 };
+use monad_eth_types::EthTransaction;
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
 #[derive(Clone)]
@@ -213,6 +214,11 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
     UpdateValidators((ValidatorData<SCT>, Epoch)),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MempoolEvent {
+    UserTx(EthTransaction),
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -226,6 +232,8 @@ where
     BlockSyncEvent(BlockSyncEvent<SCT>),
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
+    /// Events to mempool
+    MempoolEvent(MempoolEvent),
 }
 
 impl monad_types::Deserializable<[u8]>

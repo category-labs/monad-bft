@@ -3167,13 +3167,16 @@ dependencies = [
 name = "monad-executor-glue"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
  "monad-proto",
  "monad-types",
  "prost",
+ "reth-primitives",
 ]
 
 [[package]]
@@ -3499,6 +3502,8 @@ dependencies = [
 name = "monad-updaters"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
+ "clap 4.4.10",
  "futures",
  "monad-consensus-types",
  "monad-crypto",
@@ -3511,11 +3516,14 @@ dependencies = [
  "ntest",
  "rand",
  "rand_chacha",
+ "reth-primitives",
  "tempfile",
  "test-case",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

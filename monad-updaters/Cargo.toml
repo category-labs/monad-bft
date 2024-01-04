@@ -22,13 +22,27 @@ monad-types = { path = "../monad-types" }
 futures = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+reth-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time"], optional = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "net",
+    "rt",
+    "time",
+], optional = true }
+tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
 
+clap = { workspace = true, features = ["derive"] }
 ntest = { workspace = true }
 test-case = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+
+[[example]]
+name = "ipc_receiver"

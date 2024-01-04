@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    BlockSyncEvent, Command, ConsensusEvent, Message, MonadEvent, ValidatorEvent,
+    BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message, MonadEvent, ValidatorEvent,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, Round, SeqNum, Stake, TimeoutVariant};
@@ -391,6 +391,12 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
+
+            MonadEvent::MempoolEvent(mempool_event) => match mempool_event {
+                MempoolEvent::UserTx(_tx) => {
+                    todo!()
+                }
+            },
         }
     }
 }

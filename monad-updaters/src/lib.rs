@@ -5,6 +5,7 @@ use monad_executor::Executor;
 
 pub mod checkpoint;
 pub mod execution_ledger;
+pub mod ipc;
 pub mod ledger;
 pub mod parent;
 pub mod state_root_hash;

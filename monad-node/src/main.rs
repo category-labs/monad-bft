@@ -25,6 +25,7 @@ use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
     execution_ledger::MonadFileLedger,
+    ipc::MockIpcReceiver,
     ledger::MockLedger,
     parent::ParentExecutor,
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
@@ -122,6 +123,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             ValidatorData::new(validators.clone()),
             val_set_update_interval,
         ),
+        ipc: MockIpcReceiver::default(),
     };
 
     let Ok((mut wal, wal_events)) = WALogger::new(WALoggerConfig {
