@@ -57,8 +57,8 @@ where
         // if woken up, there should be a ValidatorData object
         assert!(this.validator_data.is_some());
 
-        Poll::Ready(Some(MonadEvent::ConsensusEvent(
-            monad_executor_glue::ConsensusEvent::UpdateValidators((
+        Poll::Ready(Some(MonadEvent::ValidatorEvent(
+            monad_executor_glue::ValidatorEvent::UpdateValidators((
                 this.validator_data
                     .take()
                     .expect("there should be a ValidatorData object"),

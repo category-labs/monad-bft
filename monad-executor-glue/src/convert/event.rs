@@ -1,13 +1,14 @@
 use monad_consensus_types::{
     message_signature::MessageSignature,
     signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
+    validator_data::ValidatorData,
 };
 use monad_proto::{
     error::ProtoError,
-    proto::{basic::ProtoPubkey, event::*},
+    proto::{basic::ProtoPubkey, event::*, validator_data::ProtoValidatorData},
 };
 
-use crate::{BlockSyncEvent, FetchedBlock, MonadEvent};
+use crate::{BlockSyncEvent, FetchedBlock, MonadEvent, ValidatorEvent};
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
     fn from(value: &FetchedBlock<SCT>) -> Self {
@@ -54,8 +55,15 @@ where
 {
     fn from(value: &MonadEvent<S, SCT>) -> Self {
         let event = match value {
-            MonadEvent::ConsensusEvent(msg) => proto_monad_event::Event::ConsensusEvent(msg.into()),
-            MonadEvent::BlockSyncEvent(msg) => proto_monad_event::Event::BlockSyncEvent(msg.into()),
+            MonadEvent::ConsensusEvent(event) => {
+                proto_monad_event::Event::ConsensusEvent(event.into())
+            }
+            MonadEvent::BlockSyncEvent(event) => {
+                proto_monad_event::Event::BlockSyncEvent(event.into())
+            }
+            MonadEvent::ValidatorEvent(event) => {
+                proto_monad_event::Event::ValidatorEvent(event.into())
+            }
         };
         Self { event: Some(event) }
     }
@@ -73,6 +81,9 @@ where
             }
             Some(proto_monad_event::Event::BlockSyncEvent(event)) => {
                 MonadEvent::BlockSyncEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::ValidatorEvent(event)) => {
+                MonadEvent::ValidatorEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -130,6 +141,55 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
             },
             None => Err(ProtoError::MissingRequiredField(
                 "BlockSyncEvent.event".to_owned(),
+            ))?,
+        };
+
+        Ok(event)
+    }
+}
+
+impl<SCT: SignatureCollection> From<&ValidatorEvent<SCT>> for ProtoValidatorEvent
+where
+    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
+{
+    fn from(value: &ValidatorEvent<SCT>) -> Self {
+        let event = match value {
+            ValidatorEvent::UpdateValidators((validator_data, epoch)) => {
+                proto_validator_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
+                    validator_data: Some(validator_data.into()),
+                    epoch: Some(epoch.into()),
+                })
+            }
+        };
+        Self { event: Some(event) }
+    }
+}
+
+impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<SCT>
+where
+    ValidatorData<SCT>: TryFrom<ProtoValidatorData, Error = ProtoError>,
+{
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoValidatorEvent) -> Result<Self, Self::Error> {
+        let event = match value.event {
+            Some(proto_validator_event::Event::UpdateValidators(event)) => {
+                let vs = event
+                    .validator_data
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ValidatorEvent::update_validators::validator_data".to_owned(),
+                    ))?
+                    .try_into()?;
+                let e = event
+                    .epoch
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ValidatorEvent::update_validators::epoch".to_owned(),
+                    ))?
+                    .try_into()?;
+                ValidatorEvent::UpdateValidators((vs, e))
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "ValidatorEvent.event".to_owned(),
             ))?,
         };
 

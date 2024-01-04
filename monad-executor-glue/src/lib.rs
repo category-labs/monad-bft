@@ -147,7 +147,6 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Timeout(TimeoutVariant),
     FetchedTxs(FetchTxParams<SCT>, TransactionHashList),
     FetchedFullTxs(FetchFullTxParams<SCT>, Option<FullTransactionList>),
-    UpdateValidators((ValidatorData<SCT>, Epoch)),
     StateUpdate((SeqNum, ConsensusHash)),
     BlockSyncResponse {
         sender: PubKey,
@@ -179,7 +178,6 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("proposal block", &p.p_block)
                 .field("proposal tc", &p.p_last_round_tc)
                 .finish(),
-            ConsensusEvent::UpdateValidators(e) => e.fmt(f),
             ConsensusEvent::StateUpdate(e) => e.fmt(f),
             ConsensusEvent::BlockSyncResponse {
                 sender,
@@ -240,6 +238,11 @@ impl<SCT: SignatureCollection> Debug for BlockSyncEvent<SCT> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidatorEvent<SCT: SignatureCollection> {
+    UpdateValidators((ValidatorData<SCT>, Epoch)),
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -251,6 +254,8 @@ where
     ConsensusEvent(ConsensusEvent<ST, SCT>),
     /// Events for block sync responder
     BlockSyncEvent(BlockSyncEvent<SCT>),
+    /// Events to update validator set
+    ValidatorEvent(ValidatorEvent<SCT>),
 }
 
 impl monad_types::Deserializable<[u8]>

@@ -132,8 +132,8 @@ where
                 monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate((seqnum, hash)),
             )))
         } else if let Some(next_val_data) = this.next_val_data.take() {
-            Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::<ST, SCT>::UpdateValidators((
+            Poll::Ready(Some(MonadEvent::ValidatorEvent(
+                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
                     next_val_data,
                     this.epoch,
                 )),
@@ -271,8 +271,8 @@ where
                 monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate((seqnum, hash)),
             )))
         } else if let Some(next_val_data) = this.next_val_data.take() {
-            Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::<ST, SCT>::UpdateValidators((
+            Poll::Ready(Some(MonadEvent::ValidatorEvent(
+                monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
                     next_val_data,
                     this.epoch,
                 )),

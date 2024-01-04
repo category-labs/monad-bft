@@ -70,12 +70,6 @@ where
                         .unwrap_or_default(),
                 })
             }
-            ConsensusEvent::UpdateValidators((validator_data, epoch)) => {
-                proto_consensus_event::Event::UpdateValidators(ProtoUpdateValidatorsEvent {
-                    validator_data: Some(validator_data.into()),
-                    epoch: Some(epoch.into()),
-                })
-            }
             ConsensusEvent::StateUpdate((seq_num, hash)) => {
                 proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
                     seq_num: Some(seq_num.into()),
@@ -198,22 +192,6 @@ where
                     },
                     Some(FullTransactionList::new(fetched_full_txs.full_txs)),
                 )
-            }
-            Some(proto_consensus_event::Event::UpdateValidators(val_event)) => {
-                let vs = val_event
-                    .validator_data
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::UpdateValidators::validator_data".to_owned(),
-                    ))?
-                    .try_into()?;
-                let e = val_event
-                    .epoch
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::UpdateValidators::epoch".to_owned(),
-                    ))?
-                    .try_into()?;
-
-                ConsensusEvent::UpdateValidators((vs, e))
             }
             Some(proto_consensus_event::Event::StateUpdate(event)) => {
                 let h = event

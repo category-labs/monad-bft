@@ -84,9 +84,8 @@ message ProtoConsensusEvent {
     ProtoScheduleTimeout timeout = 2;
     ProtoFetchedTxs fetched_txs = 3;
     ProtoFetchedFullTxs fetched_full_txs = 4;
-    ProtoUpdateValidatorsEvent update_validators = 5;
-    ProtoStateUpdateEvent state_update = 6;
-    ProtoBlockSyncResponseWithSender block_sync_resp = 7;
+    ProtoStateUpdateEvent state_update = 5;
+    ProtoBlockSyncResponseWithSender block_sync_resp = 6;
   }
 }
 
@@ -97,9 +96,16 @@ message ProtoBlockSyncEvent {
   }
 }
 
+message ProtoValidatorEvent {
+  oneof event {
+    ProtoUpdateValidatorsEvent update_validators = 1;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
     ProtoBlockSyncEvent block_sync_event = 2;
+    ProtoValidatorEvent validator_event = 3;
   }
 }

@@ -30,7 +30,7 @@ use monad_executor::State;
 use monad_executor_glue::{
     BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand,
     LedgerCommand, MempoolCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand,
-    TimerCommand,
+    TimerCommand, ValidatorEvent,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
@@ -483,10 +483,6 @@ where
                             }
                         }
                     }
-                    ConsensusEvent::UpdateValidators((val_data, epoch)) => {
-                        self.update_next_val_set(val_data, epoch);
-                        Vec::new()
-                    }
                     ConsensusEvent::StateUpdate((seq_num, root_hash)) => {
                         self.consensus.handle_state_root_update(seq_num, root_hash);
                         Vec::new()
@@ -649,6 +645,13 @@ where
                             )),
                         }),
                     ]
+                }
+            },
+
+            MonadEvent::ValidatorEvent(validator_event) => match validator_event {
+                ValidatorEvent::UpdateValidators((val_data, epoch)) => {
+                    self.update_next_val_set(val_data, epoch);
+                    Vec::new()
                 }
             },
         }
