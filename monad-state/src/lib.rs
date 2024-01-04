@@ -1,6 +1,9 @@
 use std::{fmt::Debug, marker::PhantomData};
 
+use blocksync::BlockSyncChildState;
 use bytes::Bytes;
+use consensus::ConsensusChildState;
+use epoch::EpochChildState;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
@@ -9,10 +12,7 @@ use monad_consensus::{
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{
-    command::{Checkpoint, ConsensusCommand},
-    ConsensusConfig, ConsensusProcess,
-};
+use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusProcess};
 use monad_consensus_types::{
     block::Block,
     signature_collection::{
@@ -21,7 +21,6 @@ use monad_consensus_types::{
     txpool::TxPool,
     validation,
     validator_data::ValidatorData,
-    voting::ValidatorMapping,
 };
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -29,12 +28,10 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
-    BlockSyncEvent, CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand,
-    LedgerCommand, Message, MonadEvent, RouterCommand, StateRootHashCommand, TimerCommand,
-    ValidatorEvent,
+    BlockSyncEvent, Command, ConsensusEvent, Message, MonadEvent, ValidatorEvent,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
+use monad_types::{Epoch, NodeId, Round, SeqNum, Stake, TimeoutVariant};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
     validators_epoch_mapping::ValidatorsEpochMapping,
@@ -42,8 +39,42 @@ use monad_validator::{
 
 use crate::blocksync::BlockSyncResponder;
 
-pub mod blocksync;
+mod blocksync;
+mod consensus;
 pub mod convert;
+mod epoch;
+
+pub(crate) fn handle_validation_error(e: validation::Error) {
+    match e {
+        validation::Error::InvalidAuthor => {
+            inc_count!(invalid_author)
+        }
+        validation::Error::NotWellFormed => {
+            inc_count!(not_well_formed_sig)
+        }
+        validation::Error::InvalidSignature => {
+            inc_count!(invalid_signature)
+        }
+        validation::Error::AuthorNotSender => {
+            inc_count!(author_not_sender)
+        }
+        validation::Error::InvalidTcRound => {
+            inc_count!(invalid_tc_round)
+        }
+        validation::Error::InsufficientStake => {
+            inc_count!(insufficient_stake)
+        }
+        validation::Error::InvalidSeqNum => {
+            inc_count!(invalid_seq_num)
+        }
+        validation::Error::ValidatorDataUnavailable => {
+            inc_count!(val_data_unavailable)
+        }
+        validation::Error::InvalidVoteMessage => {
+            inc_count!(invalid_vote_message)
+        }
+    };
+}
 
 pub struct MonadState<CT, ST, SCT, VT, LT, TT>
 where
@@ -54,7 +85,7 @@ where
     /// Core consensus algorithm state machine
     consensus: CT,
     /// Handle responses to block sync requests from other nodes
-    block_sync_respond: BlockSyncResponder,
+    block_sync_responder: BlockSyncResponder,
 
     /// Algorithm for choosing leaders for the consensus algorithm
     leader_election: LT,
@@ -90,47 +121,6 @@ where
 
     pub fn blocktree(&self) -> &BlockTree<SCT> {
         self.consensus.blocktree()
-    }
-
-    fn update_next_val_set(&mut self, val_data: ValidatorData<SCT>, epoch: Epoch) {
-        self.val_epoch_map.insert(
-            epoch,
-            VT::new(val_data.get_stakes())
-                .expect("ValidatorData should not have duplicates or invalid entries"),
-            ValidatorMapping::new(val_data.get_cert_pubkeys()),
-        );
-    }
-
-    fn handle_validation_error(e: validation::Error) {
-        match e {
-            validation::Error::InvalidAuthor => {
-                inc_count!(invalid_author)
-            }
-            validation::Error::NotWellFormed => {
-                inc_count!(not_well_formed_sig)
-            }
-            validation::Error::InvalidSignature => {
-                inc_count!(invalid_signature)
-            }
-            validation::Error::AuthorNotSender => {
-                inc_count!(author_not_sender)
-            }
-            validation::Error::InvalidTcRound => {
-                inc_count!(invalid_tc_round)
-            }
-            validation::Error::InsufficientStake => {
-                inc_count!(insufficient_stake)
-            }
-            validation::Error::InvalidSeqNum => {
-                inc_count!(invalid_seq_num)
-            }
-            validation::Error::ValidatorDataUnavailable => {
-                inc_count!(val_data_unavailable)
-            }
-            validation::Error::InvalidVoteMessage => {
-                inc_count!(invalid_vote_message)
-            }
-        };
     }
 }
 
@@ -263,12 +253,12 @@ where
     }
 }
 
-pub struct MonadConfig<ST, SCT, TV>
+pub struct MonadConfig<ST, SCT, BV>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub transaction_validator: TV,
+    pub block_validator: BV,
     pub validators: Vec<(SCT::NodeIdPubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
@@ -311,26 +301,26 @@ where
             >,
         >,
     ) {
-        let staking_list = config
-            .validators
-            .iter()
-            .map(|(pubkey, stake, _)| (NodeId::new(*pubkey), *stake))
-            .collect::<Vec<_>>();
+        let validator_data = ValidatorData(
+            config
+                .validators
+                .into_iter()
+                .map(|(pubkey, stake, certpubkey)| (NodeId::new(pubkey), stake, certpubkey))
+                .collect::<Vec<_>>(),
+        );
 
-        let voting_identities = config
-            .validators
-            .into_iter()
-            .map(|(pubkey, _, certpubkey)| (NodeId::new(pubkey), certpubkey))
-            .collect::<Vec<_>>();
-
-        // create the initial validator set
-        let val_set_1 = VT::new(staking_list).expect("failed to create first validator set");
-        let val_cert_pubkeys_1 = ValidatorMapping::new(voting_identities);
-
-        let mut val_epoch_map = ValidatorsEpochMapping::default();
-        val_epoch_map.insert(Epoch(1), val_set_1, val_cert_pubkeys_1);
+        let val_epoch_map = ValidatorsEpochMapping::default();
 
         let election = LT::new();
+
+        let consensus_process = CT::new(
+            config.block_validator,
+            config.key.pubkey(),
+            config.consensus_config,
+            config.beneficiary,
+            config.key,
+            config.certkey,
+        );
 
         let mut monad_state: MonadState<CT, ST, SCT, VT, LT, TT> = Self {
             epoch_manager: EpochManager::new(
@@ -339,23 +329,23 @@ where
             ),
             val_epoch_map,
             leader_election: election,
-            consensus: CT::new(
-                config.transaction_validator,
-                config.key.pubkey(),
-                config.consensus_config,
-                config.beneficiary,
-                config.key,
-                config.certkey,
-            ),
-            block_sync_respond: BlockSyncResponder {},
+            consensus: consensus_process,
+            block_sync_responder: BlockSyncResponder {},
             txpool: TT::new(),
 
             _pd: PhantomData,
         };
 
-        let init_cmds = monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
-            TimeoutVariant::Pacemaker,
+        let mut init_cmds = Vec::new();
+        init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
+            ValidatorEvent::UpdateValidators((validator_data, Epoch(1))),
         )));
+
+        init_cmds.extend(
+            monad_state.update(MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(
+                TimeoutVariant::Pacemaker,
+            ))),
+        );
 
         (monad_state, init_cmds)
     }
@@ -376,233 +366,31 @@ where
 
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {
-                let consensus_commands: Vec<ConsensusCommand<SCT>> = match consensus_event {
-                    ConsensusEvent::Timeout(tmo_event) => match tmo_event {
-                        TimeoutVariant::Pacemaker => self
-                            .consensus
-                            .handle_timeout_expiry()
-                            .into_iter()
-                            .map(|cmd| {
-                                ConsensusCommand::from_pacemaker_command(
-                                    self.consensus.get_cert_keypair(),
-                                    cmd,
-                                )
-                            })
-                            .collect(),
-                        TimeoutVariant::BlockSync(bid) => {
-                            let current_epoch = self
-                                .epoch_manager
-                                .get_epoch(self.consensus.get_current_round());
-                            let val_set = self
-                                .val_epoch_map
-                                .get_val_set(&current_epoch)
-                                .expect("current validator set should be in the map");
-                            self.consensus.handle_block_sync_tmo(bid, val_set)
-                        }
-                    },
-                    ConsensusEvent::Message {
-                        sender,
-                        unverified_message,
-                    } => {
-                        // Verify the author signature on the message and sender is author
-                        let verified_message = match unverified_message.verify(
-                            &self.epoch_manager,
-                            &self.val_epoch_map,
-                            &sender,
-                        ) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                Self::handle_validation_error(e);
-                                // TODO-2: collect evidence
-                                let evidence_cmds = vec![];
-                                return evidence_cmds;
-                            }
-                        };
+                let consensus_cmds = ConsensusChildState::new(self).update(consensus_event);
 
-                        let (author, _, verified_message) = verified_message.destructure();
-                        // Validated message according to consensus protocol spec
-                        let validated_mesage = match verified_message
-                            .validate(&self.epoch_manager, &self.val_epoch_map)
-                        {
-                            Ok(m) => m.into_inner(),
-                            Err(e) => {
-                                Self::handle_validation_error(e);
-                                // TODO-2: collect evidence
-                                let evidence_cmds = vec![];
-                                return evidence_cmds;
-                            }
-                        };
-
-                        match validated_mesage {
-                            ConsensusMessage::Proposal(msg) => {
-                                self.consensus.handle_proposal_message(
-                                    author,
-                                    msg,
-                                    &mut self.epoch_manager,
-                                    &self.val_epoch_map,
-                                    &self.leader_election,
-                                )
-                            }
-                            ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
-                                author,
-                                msg,
-                                &mut self.txpool,
-                                &mut self.epoch_manager,
-                                &self.val_epoch_map,
-                                &self.leader_election,
-                            ),
-                            ConsensusMessage::Timeout(msg) => {
-                                self.consensus.handle_timeout_message(
-                                    author,
-                                    msg,
-                                    &mut self.txpool,
-                                    &mut self.epoch_manager,
-                                    &self.val_epoch_map,
-                                    &self.leader_election,
-                                )
-                            }
-                        }
-                    }
-                    ConsensusEvent::StateUpdate((seq_num, root_hash)) => {
-                        self.consensus.handle_state_root_update(seq_num, root_hash);
-                        Vec::new()
-                    }
-
-                    ConsensusEvent::BlockSyncResponse {
-                        sender,
-                        unvalidated_response,
-                    } => {
-                        let validated_response = match unvalidated_response
-                            .validate(&self.epoch_manager, &self.val_epoch_map)
-                        {
-                            Ok(req) => req,
-                            Err(e) => {
-                                Self::handle_validation_error(e);
-                                // TODO-2: collect evidence
-                                let evidence_cmds = vec![];
-                                return evidence_cmds;
-                            }
-                        }
-                        .into_inner();
-
-                        let current_epoch = self
-                            .epoch_manager
-                            .get_epoch(self.consensus.get_current_round());
-                        let val_set = self
-                            .val_epoch_map
-                            .get_val_set(&current_epoch)
-                            .expect("current validator set should be in the map");
-                        self.consensus.handle_block_sync(
-                            NodeId::new(sender),
-                            validated_response,
-                            val_set,
-                        )
-                    }
-                };
-
-                let prepare_router_message =
-                    |target: RouterTarget<_>, message: ConsensusMessage<SCT>| {
-                        let signed_message = VerifiedMonadMessage::Consensus(
-                            message.sign::<ST>(self.consensus.get_keypair()),
-                        );
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target,
-                            message: signed_message,
-                        })
-                    };
-
-                let mut cmds = Vec::new();
-                for consensus_command in consensus_commands {
-                    match consensus_command {
-                        ConsensusCommand::Publish { target, message } => {
-                            cmds.push(prepare_router_message(target, message));
-                        }
-                        ConsensusCommand::Schedule {
-                            duration,
-                            on_timeout,
-                        } => cmds.push(Command::TimerCommand(TimerCommand::Schedule {
-                            duration,
-                            variant: on_timeout,
-                            on_timeout: Self::Event::ConsensusEvent(ConsensusEvent::Timeout(
-                                on_timeout,
-                            )),
-                        })),
-                        ConsensusCommand::ScheduleReset(on_timeout) => cmds.push(
-                            Command::TimerCommand(TimerCommand::ScheduleReset(on_timeout)),
-                        ),
-                        ConsensusCommand::RequestSync { peer, block_id } => {
-                            cmds.push(Command::RouterCommand(RouterCommand::Publish {
-                                target: RouterTarget::PointToPoint(peer),
-                                message: VerifiedMonadMessage::BlockSyncRequest(Validated::new(
-                                    RequestBlockSyncMessage { block_id },
-                                )),
-                            }));
-                        }
-                        ConsensusCommand::LedgerCommit(block) => {
-                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerCommit(
-                                block.clone(),
-                            )));
-                            cmds.push(Command::ExecutionLedgerCommand(
-                                ExecutionLedgerCommand::LedgerCommit(block),
-                            ))
-                        }
-                        ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
-                            Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
-                        ),
-                        ConsensusCommand::StateRootHash(full_block) => {
-                            cmds.push(Command::StateRootHashCommand(
-                                StateRootHashCommand::LedgerCommit(full_block),
-                            ))
-                        }
-                    }
-                }
-
-                cmds
+                consensus_cmds
+                    .into_iter()
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .collect::<Vec<_>>()
             }
 
-            MonadEvent::BlockSyncEvent(block_sync_event) => match block_sync_event {
-                BlockSyncEvent::BlockSyncRequest {
-                    sender,
-                    unvalidated_request,
-                } => {
-                    let validated_request = match unvalidated_request.validate() {
-                        Ok(req) => req,
-                        Err(e) => {
-                            Self::handle_validation_error(e);
-                            // TODO-2: collect evidence
-                            let evidence_cmds = vec![];
-                            return evidence_cmds;
-                        }
-                    }
-                    .into_inner();
-                    let block_id = validated_request.block_id;
-                    self.block_sync_respond.handle_request_block_sync_message(
-                        NodeId::new(sender),
-                        validated_request,
-                        self.consensus.fetch_uncommitted_block(&block_id),
-                    )
-                }
-                BlockSyncEvent::FetchedBlock(fetched_block) => {
-                    vec![Command::RouterCommand(RouterCommand::Publish {
-                        target: RouterTarget::PointToPoint(fetched_block.requester),
-                        message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
-                            match fetched_block.unverified_block {
-                                Some(b) => BlockSyncResponseMessage::BlockFound(b),
-                                None => {
-                                    BlockSyncResponseMessage::NotAvailable(fetched_block.block_id)
-                                }
-                            },
-                        )),
-                    })]
-                }
-            },
+            MonadEvent::BlockSyncEvent(block_sync_event) => {
+                let block_sync_cmds = BlockSyncChildState::new(self).update(block_sync_event);
 
-            MonadEvent::ValidatorEvent(validator_event) => match validator_event {
-                ValidatorEvent::UpdateValidators((val_data, epoch)) => {
-                    self.update_next_val_set(val_data, epoch);
-                    Vec::new()
-                }
-            },
+                block_sync_cmds
+                    .into_iter()
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .collect::<Vec<_>>()
+            }
+
+            MonadEvent::ValidatorEvent(validator_event) => {
+                let validator_cmds = EpochChildState::new(self).update(validator_event);
+
+                validator_cmds
+                    .into_iter()
+                    .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
+                    .collect::<Vec<_>>()
+            }
         }
     }
 }

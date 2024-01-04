@@ -175,7 +175,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     MonadStateType::init(MonadConfig {
-        transaction_validator: MockValidator {},
+        block_validator: MockValidator {},
         validators: config.genesis_peers,
         key: config.key,
         certkey: config.cert_key,

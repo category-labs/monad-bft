@@ -96,7 +96,7 @@ where
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection;
@@ -110,7 +110,7 @@ where
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection,
@@ -125,7 +125,7 @@ where
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection,
@@ -137,7 +137,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>;
 
@@ -146,7 +146,7 @@ where
         &mut self,
         bid: BlockId,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>;
 
@@ -187,7 +187,7 @@ where
     /// Policy for validating incoming proposals
     block_validator: BV,
     /// State machine used to request missing blocks from previous rounds
-    block_sync_requester: BlockSyncRequester<SCT>,
+    block_sync_requester: BlockSyncRequester<ST, SCT>,
     /// Destination address for proposal payments
     beneficiary: EthAddress,
 
@@ -327,7 +327,7 @@ where
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection,
@@ -409,7 +409,7 @@ where
             let next_leader = election.get_leader(round + Round(1), epoch_manager, val_epoch_map);
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(next_leader),
-                message: ConsensusMessage::Vote(vote_msg),
+                message: ConsensusMessage::Vote(vote_msg).sign(&self.keypair),
             };
             debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
             inc_count!(created_vote);
@@ -430,7 +430,7 @@ where
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection,
@@ -485,7 +485,7 @@ where
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
         LT: LeaderElection,
@@ -518,7 +518,9 @@ where
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
-                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+                })
                 .into_iter();
             cmds.extend(advance_round_cmds);
         }
@@ -532,19 +534,15 @@ where
             tmo_msg,
         );
 
-        cmds.extend(
-            remote_timeout_cmds
-                .into_iter()
-                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd)),
-        );
+        cmds.extend(remote_timeout_cmds.into_iter().map(|cmd| {
+            ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+        }));
         if let Some(tc) = tc {
             debug!("Created TC: {:?}", tc);
             inc_count!(created_tc);
-            let advance_round_cmds = self
-                .pacemaker
-                .advance_round_tc(&tc)
-                .into_iter()
-                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd));
+            let advance_round_cmds = self.pacemaker.advance_round_tc(&tc).into_iter().map(|cmd| {
+                ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+            });
             cmds.extend(advance_round_cmds);
 
             if self.nodeid
@@ -574,7 +572,7 @@ where
         author: NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
@@ -617,7 +615,7 @@ where
         &mut self,
         bid: BlockId,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
@@ -682,7 +680,7 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
             inc_count!(process_old_qc);
             return Vec::new();
@@ -719,7 +717,7 @@ where
                         .iter()
                         .map(|b| ConsensusCommand::StateRootHash(b.clone())),
                 );
-                cmds.push(ConsensusCommand::<SCT>::LedgerCommit(blocks_to_commit));
+                cmds.push(ConsensusCommand::<ST, SCT>::LedgerCommit(blocks_to_commit));
             }
         }
         cmds
@@ -731,18 +729,16 @@ where
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc, epoch_manager));
 
-        cmds.extend(
-            self.pacemaker
-                .advance_round_qc(qc)
-                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd)),
-        );
+        cmds.extend(self.pacemaker.advance_round_qc(qc).map(|cmd| {
+            ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+        }));
 
         // if the qc points to a block that is missing from the blocktree, we need
         // to request it.
@@ -757,7 +753,7 @@ where
         &mut self,
         txpool: &mut TT,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT>> {
         self.vote_state
             .start_new_round(self.pacemaker.get_current_round());
 
@@ -798,7 +794,7 @@ where
 
                 vec![ConsensusCommand::Publish {
                     target: RouterTarget::Broadcast,
-                    message: ConsensusMessage::Proposal(p),
+                    message: ConsensusMessage::Proposal(p).sign(&self.keypair),
                 }]
             };
 
@@ -867,7 +863,7 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
@@ -917,7 +913,7 @@ where
         p: &ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>
+    ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
@@ -933,7 +929,9 @@ where
             let advance_round_cmds = self
                 .pacemaker
                 .advance_round_tc(last_round_tc)
-                .map(|cmd| ConsensusCommand::from_pacemaker_command(&self.cert_keypair, cmd))
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+                })
                 .into_iter();
             cmds.extend(advance_round_cmds);
         }
@@ -974,7 +972,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::{ops::Deref, time::Duration};
 
     use itertools::Itertools;
     use monad_consensus::{
@@ -1116,35 +1114,58 @@ mod test {
         )
     }
 
-    fn extract_vote_msgs<SCT: SignatureCollection>(
-        cmds: Vec<ConsensusCommand<SCT>>,
-    ) -> Vec<VoteMessage<SCT>> {
+    fn extract_vote_msgs<ST, SCT>(cmds: Vec<ConsensusCommand<ST, SCT>>) -> Vec<VoteMessage<SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         cmds.into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(vote),
-                } => Some(vote),
+                    message,
+                } => match message.deref().deref() {
+                    ConsensusMessage::Vote(vote) => Some(*vote),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect::<Vec<_>>()
     }
 
-    fn extract_proposal_broadcast<SCT: SignatureCollection>(
-        cmds: Vec<ConsensusCommand<SCT>>,
-    ) -> ProposalMessage<SCT> {
+    fn extract_proposal_broadcast<ST, SCT>(
+        cmds: Vec<ConsensusCommand<ST, SCT>>,
+    ) -> ProposalMessage<SCT>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         cmds.into_iter()
-            .filter_map(|c| match c {
+            .find_map(|c| match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::Broadcast,
-                    message: ConsensusMessage::Proposal(p),
-                } => Some(p),
+                    message,
+                } => match message.deref().deref() {
+                    ConsensusMessage::Proposal(p) => Some(p.clone()),
+                    _ => None,
+                },
                 _ => None,
             })
-            .collect::<Vec<_>>()
-            .first()
-            .expect("proposal should have been broadcast")
-            .clone()
+            .expect("proposal")
+
+        // cmds.into_iter()
+        //     .filter_map(|c| match c {
+        //         ConsensusCommand::Publish {
+        //             target: RouterTarget::Broadcast,
+        //             message,
+        //         } => match message.into_inner() {
+        //             ConsensusMessage::Proposal(proposal) => Some(proposal),
+        //             _ => None,
+        //         },
+        //         _ => None,
+        //     })
+        //     .collect::<Vec<_>>()
+        //     .remove(0)
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
@@ -1247,14 +1268,12 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Publish { target, message } => {
+                matches!(target, RouterTarget::PointToPoint(_))
+                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
+            }
+            _ => false,
         });
 
         assert!(result.is_none());
@@ -1285,14 +1304,12 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Publish { target, message } => {
+                matches!(target, RouterTarget::PointToPoint(_))
+                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
+            }
+            _ => false,
         });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
@@ -1315,14 +1332,12 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Publish { target, message } => {
+                matches!(target, RouterTarget::PointToPoint(_))
+                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
+            }
+            _ => false,
         });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
@@ -1385,14 +1400,12 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Publish { target, message } => {
+                matches!(target, RouterTarget::PointToPoint(_))
+                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
+            }
+            _ => false,
         });
         assert!(result.is_some());
 
@@ -1442,14 +1455,12 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Publish { target, message } => {
+                matches!(target, RouterTarget::PointToPoint(_))
+                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
+            }
+            _ => false,
         });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
@@ -1473,14 +1484,12 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let result = cmds.iter().find(|&c| {
-            matches!(
-                c,
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_),
-                    message: ConsensusMessage::Vote(_),
-                }
-            )
+        let result = cmds.iter().find(|&c| match c {
+            ConsensusCommand::Publish { target, message } => {
+                matches!(target, RouterTarget::PointToPoint(_))
+                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
+            }
+            _ => false,
         });
 
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
@@ -1537,17 +1546,16 @@ mod test {
         let _self_id = state.nodeid;
         let mut more_proposals = true;
 
+        // FIXME: revisit this block: unicast proposal doesn't make sense
         while more_proposals {
             cmds = cmds
                 .into_iter()
-                .filter(|m| {
-                    matches!(
-                        m,
-                        ConsensusCommand::Publish {
-                            target: RouterTarget::PointToPoint(_),
-                            message: ConsensusMessage::Proposal(_),
-                        }
-                    )
+                .filter(|m| match m {
+                    ConsensusCommand::Publish { target, message } => {
+                        matches!(target, RouterTarget::PointToPoint(_))
+                            && matches!(message.deref().deref(), ConsensusMessage::Proposal(_))
+                    }
+                    _ => false,
                 })
                 .collect::<Vec<_>>();
 
@@ -1561,15 +1569,19 @@ mod test {
             match c {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_self_id),
-                    message: ConsensusMessage::Proposal(m),
+                    message,
                 } => {
-                    proposals.extend(state.handle_proposal_message(
-                        m.block.0.author,
-                        m.clone(),
-                        &mut epoch_manager,
-                        &val_epoch_map,
-                        &election,
-                    ));
+                    if let ConsensusMessage::Proposal(m) = message.deref().deref() {
+                        proposals.extend(state.handle_proposal_message(
+                            m.block.0.author,
+                            m.clone(),
+                            &mut epoch_manager,
+                            &val_epoch_map,
+                            &election,
+                        ));
+                    } else {
+                        more_proposals = false;
+                    }
                 }
                 _ => more_proposals = false,
             }
@@ -2634,14 +2646,17 @@ mod test {
                     .filter_map(|c| match c {
                         ConsensusCommand::Publish {
                             target: RouterTarget::PointToPoint(peer),
-                            message: ConsensusMessage::Vote(vote),
-                        } => {
-                            if peer == next_leader {
-                                Some(vote)
-                            } else {
-                                None
+                            message,
+                        } => match message.deref().deref() {
+                            ConsensusMessage::Vote(vote) => {
+                                if peer == next_leader {
+                                    Some(*vote)
+                                } else {
+                                    None
+                                }
                             }
-                        }
+                            _ => None,
+                        },
                         _ => None,
                     })
                     .collect();
@@ -3239,7 +3254,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state
+                let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> = state
                     .handle_proposal_message(
                         author,
                         verified_message.clone(),
@@ -3380,7 +3395,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state
+                let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> = state
                     .handle_proposal_message(
                         author,
                         verified_message.clone(),
@@ -3422,7 +3437,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
 
-            let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state_1
+            let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> = state_1
                 .handle_proposal_message(
                     author,
                     verified_message.clone(),
@@ -3485,13 +3500,14 @@ mod test {
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state_2.handle_proposal_message(
-            author,
-            verified_message.clone(),
-            epoch_manager_2,
-            &val_epoch_map,
-            &election,
-        );
+        let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> = state_2
+            .handle_proposal_message(
+                author,
+                verified_message.clone(),
+                epoch_manager_2,
+                &val_epoch_map,
+                &election,
+            );
         // state 2 should request blocksync
         let bsync_cmds: Vec<_> = cmds
             .iter()
@@ -3536,13 +3552,14 @@ mod test {
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state_2.handle_proposal_message(
-            author,
-            verified_message,
-            epoch_manager_2,
-            &val_epoch_map,
-            &election,
-        );
+        let cmds: Vec<ConsensusCommand<SignatureType, MultiSig<SignatureType>>> = state_2
+            .handle_proposal_message(
+                author,
+                verified_message,
+                epoch_manager_2,
+                &val_epoch_map,
+                &election,
+            );
         // state 2 should not request blocksync
         let bsync_cmds: Vec<_> = cmds
             .iter()

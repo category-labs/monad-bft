@@ -86,7 +86,7 @@ where
         Self {
             id: self.id,
             state_config: MonadConfig {
-                transaction_validator: self.state_config.transaction_validator.clone(),
+                block_validator: self.state_config.block_validator.clone(),
                 validators: self.state_config.validators.clone(),
                 key: CertificateKeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
                 certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(

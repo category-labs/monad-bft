@@ -3,22 +3,30 @@ use std::time::Duration;
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::TimeoutMessage},
     pacemaker::PacemakerCommand,
+    validation::signing::{Validated, Verified},
     vote_state::VoteStateCommand,
 };
 use monad_consensus_types::{
     block::Block,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
-pub enum ConsensusCommand<SCT: SignatureCollection> {
+pub enum ConsensusCommand<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     /// Attempt to send a message to RouterTarget
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
     Publish {
         target: RouterTarget<SCT::NodeIdPubKey>,
-        message: ConsensusMessage<SCT>,
+        message: Verified<ST, Validated<ConsensusMessage<SCT>>>,
     },
     /// Schedule a timeout event to be emitted in `duration`
     Schedule {
@@ -45,15 +53,21 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     // - to handle this command, we need to call message_state.set_round()
 }
 
-impl<SCT: SignatureCollection> ConsensusCommand<SCT> {
+impl<ST, SCT> ConsensusCommand<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub fn from_pacemaker_command(
+        keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
         cmd: PacemakerCommand<SCT>,
     ) -> Self {
         match cmd {
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
-                message: ConsensusMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
+                message: ConsensusMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair))
+                    .sign(keypair),
             },
             PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
                 duration,
@@ -66,7 +80,11 @@ impl<SCT: SignatureCollection> ConsensusCommand<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> From<VoteStateCommand> for ConsensusCommand<SCT> {
+impl<ST, SCT> From<VoteStateCommand> for ConsensusCommand<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn from(value: VoteStateCommand) -> Self {
         //TODO-3 VoteStateCommand used for evidence collection
         todo!()

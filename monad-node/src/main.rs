@@ -137,7 +137,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {
-        transaction_validator: MockValidator {},
+        block_validator: MockValidator {},
         validators,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,

@@ -73,7 +73,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
             .into_iter()
             .zip(cert_keys)
             .map(|(key, certkey)| MonadConfig {
-                transaction_validator: MockValidator,
+                block_validator: MockValidator,
                 key,
                 certkey,
                 val_set_update_interval: SeqNum(2000),

@@ -98,7 +98,7 @@ where
         .into_iter()
         .zip(cert_keys)
         .map(|(key, certkey)| MonadConfig {
-            transaction_validator: tvt.clone(),
+            block_validator: tvt.clone(),
             key,
             certkey,
             val_set_update_interval,

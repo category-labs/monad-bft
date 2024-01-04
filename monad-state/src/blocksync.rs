@@ -1,7 +1,10 @@
+use std::marker::PhantomData;
+
 use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
     validation::signing::Validated,
 };
+use monad_consensus_state::{command::Checkpoint, ConsensusProcess};
 use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -9,50 +12,164 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     BlockSyncEvent, Command, FetchedBlock, LedgerCommand, MonadEvent, RouterCommand,
 };
-use monad_types::{NodeId, RouterTarget};
+use monad_types::{BlockId, NodeId, RouterTarget};
+use monad_validator::validator_set::ValidatorSetType;
 
-use crate::VerifiedMonadMessage;
+use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
 /// Responds to BlockSync requests from other nodes
 #[derive(Debug)]
 pub(crate) struct BlockSyncResponder {}
 
+pub(crate) enum BlockSyncCommand<SCT: SignatureCollection> {
+    /// Fetch the block from consensus ledger
+    FetchBlock {
+        requester: NodeId<SCT::NodeIdPubKey>,
+        block_id: BlockId,
+    },
+    /// Respond to the block sync request
+    BlockSyncResponse {
+        requester: NodeId<SCT::NodeIdPubKey>,
+        block_id: BlockId,
+        response: Validated<BlockSyncResponseMessage<SCT>>,
+    },
+}
+
 impl BlockSyncResponder {
     /// Send a command to Ledger to fetch the block to respond with
-    pub(crate) fn handle_request_block_sync_message<ST, SCT, C>(
-        &mut self,
-        author: NodeId<SCT::NodeIdPubKey>,
+    pub(crate) fn handle_request_block_sync_message<SCT: SignatureCollection>(
+        &self,
+        requester: NodeId<SCT::NodeIdPubKey>,
         s: RequestBlockSyncMessage,
         consensus_cached_block: Option<&Block<SCT>>,
-    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, C, SCT>>
-    where
-        ST: CertificateSignatureRecoverable,
-        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    {
+    ) -> Vec<BlockSyncCommand<SCT>> {
         if let Some(block) = consensus_cached_block {
             // use retrieved block if currently cached in pending block tree
-            vec![Command::RouterCommand(RouterCommand::Publish {
-                target: RouterTarget::PointToPoint(author),
-                message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
-                    BlockSyncResponseMessage::BlockFound(block.clone().into()),
+            vec![BlockSyncCommand::BlockSyncResponse {
+                requester,
+                block_id: s.block_id,
+                response: Validated::new(BlockSyncResponseMessage::BlockFound(
+                    block.clone().into(),
                 )),
-            })]
+            }]
         } else {
             // else ask ledger
-            vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(
-                author,
-                s.block_id,
-                Box::new(move |block: Option<Block<SCT>>| {
-                    let requester = author;
-                    let block_id = s.block_id;
+            vec![BlockSyncCommand::FetchBlock {
+                requester,
+                block_id: s.block_id,
+            }]
+        }
+    }
+}
 
+pub(super) struct BlockSyncChildState<'a, CP, ST, SCT, VT, LT, TT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType,
+{
+    block_sync_responder: &'a BlockSyncResponder,
+
+    /// BlockSyncResponder queries consensus first when receiving
+    /// BlockSyncRequest
+    consensus: &'a CP,
+
+    _phantom: PhantomData<(ST, SCT, VT, LT, TT)>,
+}
+
+impl<'a, CP, ST, SCT, VT, LT, TT> BlockSyncChildState<'a, CP, ST, SCT, VT, LT, TT>
+where
+    CP: ConsensusProcess<ST, SCT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+{
+    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VT, LT, TT>) -> Self {
+        Self {
+            block_sync_responder: &monad_state.block_sync_responder,
+            consensus: &monad_state.consensus,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub(super) fn update(&mut self, event: BlockSyncEvent<SCT>) -> Vec<BlockSyncCommand<SCT>> {
+        let cmds = match event {
+            BlockSyncEvent::BlockSyncRequest {
+                sender,
+                unvalidated_request,
+            } => {
+                let validated_request = match unvalidated_request.validate() {
+                    Ok(req) => req,
+                    Err(e) => {
+                        handle_validation_error(e);
+                        // TODO-2: collect evidence
+                        let evidence_cmds = vec![];
+                        return evidence_cmds;
+                    }
+                }
+                .into_inner();
+                let block_id = validated_request.block_id;
+                self.block_sync_responder.handle_request_block_sync_message(
+                    NodeId::new(sender),
+                    validated_request,
+                    self.consensus.fetch_uncommitted_block(&block_id),
+                )
+            }
+            BlockSyncEvent::FetchedBlock(fetched_block) => {
+                vec![BlockSyncCommand::BlockSyncResponse {
+                    requester: fetched_block.requester,
+                    block_id: fetched_block.block_id,
+                    response: Validated::new(match fetched_block.unverified_block {
+                        Some(b) => BlockSyncResponseMessage::BlockFound(b),
+                        None => BlockSyncResponseMessage::NotAvailable(fetched_block.block_id),
+                    }),
+                }]
+            }
+        };
+        cmds
+    }
+}
+
+impl<ST, SCT> From<BlockSyncCommand<SCT>>
+    for Vec<
+        Command<
+            MonadEvent<ST, SCT>,
+            VerifiedMonadMessage<ST, SCT>,
+            Block<SCT>,
+            Checkpoint<SCT>,
+            SCT,
+        >,
+    >
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn from(cmd: BlockSyncCommand<SCT>) -> Self {
+        match cmd {
+            BlockSyncCommand::BlockSyncResponse {
+                requester: author,
+                block_id,
+                response,
+            } => {
+                vec![Command::RouterCommand(RouterCommand::Publish {
+                    target: RouterTarget::PointToPoint(author),
+                    message: VerifiedMonadMessage::BlockSyncResponse(response),
+                })]
+            }
+            BlockSyncCommand::FetchBlock {
+                requester,
+                block_id,
+            } => vec![Command::LedgerCommand(LedgerCommand::LedgerFetch(
+                requester,
+                block_id,
+                Box::new(move |block: Option<Block<_>>| {
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::FetchedBlock(FetchedBlock {
                         requester,
                         block_id,
                         unverified_block: block.map(|b| b.into()),
                     }))
                 }),
-            ))]
+            ))],
         }
     }
 }
