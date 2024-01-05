@@ -23,8 +23,9 @@ use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
 #[derive(Clone)]
 pub enum RouterCommand<OM> {
-    // TODO-2 add a RouterCommand for setting peer set for broadcast
+    // Publish should not be replayed
     Publish { target: RouterTarget, message: OM },
+    // TODO-2 add a RouterCommand for setting peer set for broadcast
 }
 
 pub trait Message: Clone {
@@ -46,30 +47,26 @@ pub enum TimerCommand<E> {
     ScheduleReset(TimeoutVariant),
 }
 
+// MempoolCommand should not be replayed
 pub enum MempoolCommand<SCT> {
-    /// FetchReset should ALMOST ALWAYS be emitted by the state machine after handling E
-    /// This is to prevent E from firing twice on replay
-    // TODO-2 create test to demonstrate faulty behavior if written improperly
     FetchTxs(FetchTxsCriteria<SCT>),
-    FetchReset,
     FetchFullTxs(
         /// Transaction hashes of the Full transaction to be fetched
         TransactionHashList,
         /// params of the proposal of this fetch
         FetchFullTxParams<SCT>,
     ),
-    FetchFullReset,
     DrainTxs(Vec<TransactionHashList>),
 }
 
 pub enum LedgerCommand<B, E> {
     LedgerCommit(Vec<B>),
+    // LedgerFetch should not be replayed
     LedgerFetch(
         NodeId,
         BlockId,
         Box<dyn (FnOnce(Option<B>) -> E) + Send + Sync>,
     ),
-    LedgerFetchReset(NodeId, BlockId),
 }
 
 pub enum ExecutionLedgerCommand<SCT> {

@@ -31,14 +31,8 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     ScheduleReset(TimeoutVariant),
     /// Fetch transaction hashes for inclusion in proposal (as proposer)
     FetchTxs(FetchTxsCriteria<SCT>),
-    /// Cancel any in-progress FetchTxs commands
-    /// This is only necessary to not double-emit events on replay
-    FetchTxsReset,
     /// Fetch full transactions from hash list
     FetchFullTxs(TransactionHashList, FetchFullTxParams<SCT>),
-    /// Cancel any in-progress FetchFullTxs commands
-    /// This is only necessary to not double-emit events on replay
-    FetchFullTxsReset,
     /// Drain done transactions from the mempool given hash list
     DrainTxs(Vec<TransactionHashList>),
     /// Commit blocks to ledger
@@ -47,9 +41,6 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Gets converted to a RouterCommand::Publish
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
     RequestSync { peer: NodeId, block_id: BlockId },
-    /// Cancel any in-progress LedgerCommit commands
-    /// This is only necessary to not double-emit events on replay
-    LedgerFetchReset(NodeId, BlockId),
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),

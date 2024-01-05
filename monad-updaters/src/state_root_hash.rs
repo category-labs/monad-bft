@@ -83,6 +83,15 @@ where
     SCT: SignatureCollection,
 {
     type Command = StateRootHashCommand<B>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            StateRootHashCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -220,6 +229,15 @@ where
     SCT: SignatureCollection,
 {
     type Command = StateRootHashCommand<B>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            StateRootHashCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 

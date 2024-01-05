@@ -38,6 +38,15 @@ impl<O: BlockType, E> Default for MockLedger<O, E> {
 impl<O: BlockType, E> Executor for MockLedger<O, E> {
     type Command = LedgerCommand<O, E>;
 
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            LedgerCommand::LedgerFetch(..) => false,
+            LedgerCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {
@@ -59,9 +68,6 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
                             node_id, block_id
                         );
                     }
-                }
-                LedgerCommand::LedgerFetchReset(node_id, block_id) => {
-                    self.ledger_fetches.remove(&(node_id, block_id));
                 }
             }
         }
@@ -365,14 +371,6 @@ mod tests {
                         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(id, bid, callback)]);
                         *callback_map.entry((id, bid)).or_insert(0) = 1;
                     }
-                    LedgerCommand::LedgerFetchReset(id, bid) => {
-                        mock_ledger.exec(vec![LedgerCommand::LedgerFetchReset(id, bid)]);
-                        if let Entry::Occupied(mut entry) = callback_map.entry((id, bid)) {
-                            *entry.get_mut() = 0;
-                        } else {
-                            panic!("requesting a block that was not planed")
-                        }
-                    }
                     LedgerCommand::LedgerCommit(blocks) => {
                         for b in blocks.iter() {
                             inserted_block.insert(b.block_id);
@@ -388,14 +386,11 @@ mod tests {
                 if result.block.is_none() {
                     assert!(!inserted_block.contains(&block_id))
                 }
-                // now also insert the fetch reset
-                if requests.is_empty() {
-                    requests.push(LedgerCommand::LedgerFetchReset(requester, block_id))
+
+                if let Entry::Occupied(mut entry) = callback_map.entry((requester, block_id)) {
+                    *entry.get_mut() = 0;
                 } else {
-                    requests.insert(
-                        rng.gen_range(0..requests.len()),
-                        LedgerCommand::LedgerFetchReset(requester, block_id),
-                    )
+                    panic!("requesting a block that was not planed")
                 }
             }
         }

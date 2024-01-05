@@ -2,6 +2,7 @@
 .dockerignore
 
 /docker/devnet/monad
+/docker/devnet/wal
 
 **/.git
 **/target

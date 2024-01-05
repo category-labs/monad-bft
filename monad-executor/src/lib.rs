@@ -10,6 +10,8 @@ use monad_executor_glue::{Command, Message};
 /// Commands generally are output by State
 pub trait Executor {
     type Command;
+
+    fn replay(&mut self, commands: Vec<Self::Command>);
     fn exec(&mut self, commands: Vec<Self::Command>);
 
     fn boxed<'a>(self) -> BoxExecutor<'a, Self::Command>
@@ -23,6 +25,10 @@ pub trait Executor {
 impl<E: Executor + ?Sized> Executor for Box<E> {
     type Command = E::Command;
 
+    fn replay(&mut self, commands: Vec<Self::Command>) {
+        (**self).replay(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         (**self).exec(commands)
     }
@@ -34,6 +40,10 @@ where
     P::Target: Executor + Unpin,
 {
     type Command = <P::Target as Executor>::Command;
+
+    fn replay(&mut self, commands: Vec<Self::Command>) {
+        Pin::get_mut(Pin::as_mut(self)).replay(commands)
+    }
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
         Pin::get_mut(Pin::as_mut(self)).exec(commands)

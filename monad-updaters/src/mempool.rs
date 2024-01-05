@@ -174,6 +174,16 @@ where
 impl<ST, SCT> Executor for MonadMempool<ST, SCT> {
     type Command = MempoolCommand<SCT>;
 
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            MempoolCommand::FetchTxs(..) => false,
+            MempoolCommand::FetchFullTxs(..) => false,
+            MempoolCommand::DrainTxs(..) => false,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut fetch_txs_command = None;
         let mut fetch_full_txs_command = None;
@@ -195,17 +205,9 @@ impl<ST, SCT> Executor for MonadMempool<ST, SCT> {
                         ignore_txs,
                     ));
                 }
-                MempoolCommand::FetchReset => {
-                    self.fetch_txs_state = None;
-                    fetch_txs_command = None;
-                }
                 MempoolCommand::FetchFullTxs(txs, s) => {
                     self.fetch_full_txs_state = Some(s);
                     fetch_full_txs_command = Some(ControllerTaskCommand::FetchFullTxs(txs));
-                }
-                MempoolCommand::FetchFullReset => {
-                    self.fetch_full_txs_state = None;
-                    fetch_full_txs_command = None;
                 }
                 MempoolCommand::DrainTxs(drain_txs) => {
                     drain_txs_command = Some(ControllerTaskCommand::DrainTxs(drain_txs));
@@ -233,7 +235,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        if let Poll::Ready(item) = this.controller_task_rx.poll_recv(cx) {
+        while let Poll::Ready(item) = this.controller_task_rx.poll_recv(cx) {
             let result = if let Some(result) = item {
                 result
             } else {

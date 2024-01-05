@@ -511,13 +511,14 @@ where
             self.tick,
         );
         let (wal, replay_events) = S::Logger::new(logger_config).unwrap();
-        let (mut state, mut init_commands) = S::State::init(state_config);
-
-        for event in replay_events {
-            init_commands.extend(state.update(event.event));
-        }
+        let (mut state, init_commands) = S::State::init(state_config);
 
         executor.exec(init_commands);
+
+        for event in replay_events {
+            executor.replay(state.update(event.event));
+        }
+
         let mut rng = ChaChaRng::seed_from_u64(seed);
 
         self.states.insert(

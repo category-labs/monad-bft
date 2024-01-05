@@ -372,7 +372,7 @@ where
                     ConsensusEvent::FetchedTxs(fetched, txns) => {
                         assert_eq!(fetched.node_id, self.consensus.get_nodeid());
 
-                        let mut cmds = vec![ConsensusCommand::FetchTxsReset];
+                        let mut cmds = Vec::new();
 
                         // make sure we're still in same round
                         if fetched.round == self.consensus.get_current_round() {
@@ -408,7 +408,7 @@ where
                         cmds
                     }
                     ConsensusEvent::FetchedFullTxs(fetched_txs, txns) => {
-                        let mut cmds = vec![ConsensusCommand::FetchFullTxsReset];
+                        let mut cmds = Vec::new();
 
                         if let Some(txns) = txns {
                             let proposal_msg = ProposalMessage {
@@ -427,7 +427,6 @@ where
 
                         cmds
                     }
-
                     ConsensusEvent::Message {
                         sender,
                         unverified_message,
@@ -553,17 +552,11 @@ where
                         ConsensusCommand::FetchTxs(fetch_criteria) => cmds.push(
                             Command::MempoolCommand(MempoolCommand::FetchTxs(fetch_criteria)),
                         ),
-                        ConsensusCommand::FetchTxsReset => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchReset))
-                        }
                         ConsensusCommand::FetchFullTxs(txs, fetch_params) => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullTxs(
                                 txs,
                                 fetch_params,
                             )))
-                        }
-                        ConsensusCommand::FetchFullTxsReset => {
-                            cmds.push(Command::MempoolCommand(MempoolCommand::FetchFullReset))
                         }
                         ConsensusCommand::DrainTxs(txs) => {
                             cmds.push(Command::MempoolCommand(MempoolCommand::DrainTxs(txs)))
@@ -584,12 +577,6 @@ where
                             cmds.push(Command::ExecutionLedgerCommand(
                                 ExecutionLedgerCommand::LedgerCommit(block),
                             ))
-                        }
-
-                        ConsensusCommand::LedgerFetchReset(node_id, block_id) => {
-                            cmds.push(Command::LedgerCommand(LedgerCommand::LedgerFetchReset(
-                                node_id, block_id,
-                            )))
                         }
                         ConsensusCommand::CheckpointSave(checkpoint) => cmds.push(
                             Command::CheckpointCommand(CheckpointCommand::Save(checkpoint)),
@@ -628,23 +615,17 @@ where
                     )
                 }
                 BlockSyncEvent::FetchedBlock(fetched_block) => {
-                    vec![
-                        Command::LedgerCommand(LedgerCommand::LedgerFetchReset(
-                            fetched_block.requester,
-                            fetched_block.block_id,
+                    vec![Command::RouterCommand(RouterCommand::Publish {
+                        target: RouterTarget::PointToPoint(NodeId(fetched_block.requester.0)),
+                        message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
+                            match fetched_block.unverified_full_block {
+                                Some(b) => BlockSyncResponseMessage::BlockFound(b),
+                                None => {
+                                    BlockSyncResponseMessage::NotAvailable(fetched_block.block_id)
+                                }
+                            },
                         )),
-                        Command::RouterCommand(RouterCommand::Publish {
-                            target: RouterTarget::PointToPoint(NodeId(fetched_block.requester.0)),
-                            message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
-                                match fetched_block.unverified_full_block {
-                                    Some(b) => BlockSyncResponseMessage::BlockFound(b),
-                                    None => BlockSyncResponseMessage::NotAvailable(
-                                        fetched_block.block_id,
-                                    ),
-                                },
-                            )),
-                        }),
-                    ]
+                    })]
                 }
             },
 

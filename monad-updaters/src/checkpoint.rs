@@ -13,6 +13,15 @@ impl<C> Default for MockCheckpoint<C> {
 
 impl<C> Executor for MockCheckpoint<C> {
     type Command = CheckpointCommand<C>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            CheckpointCommand::Save(..) => true,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         for command in commands {
             match command {

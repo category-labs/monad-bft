@@ -165,6 +165,14 @@ where
 {
     type Command = RouterCommand<OM>;
 
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            RouterCommand::Publish { .. } => false,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let time = self.zero_instant.elapsed();
 

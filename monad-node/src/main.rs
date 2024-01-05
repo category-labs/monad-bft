@@ -186,7 +186,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     for wal_event in wal_events {
         let cmds = state.update(wal_event);
-        executor.exec(cmds);
+        executor.replay(cmds);
     }
 
     let total_start = Instant::now();

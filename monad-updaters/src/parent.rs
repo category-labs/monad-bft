@@ -38,6 +38,27 @@ where
     SE: Executor<Command = StateRootHashCommand<B>>,
 {
     type Command = Command<E, OM, B, C, S>;
+
+    fn replay(&mut self, commands: Vec<Self::Command>) {
+        let _exec_span = tracing::info_span!("replay_span", num_cmds = commands.len()).entered();
+        let (
+            router_cmds,
+            timer_cmds,
+            mempool_cmds,
+            ledger_cmds,
+            execution_ledger_cmds,
+            checkpoint_cmds,
+            _state_root_hash_cmds,
+        ) = Command::split_commands(commands);
+
+        self.router.replay(router_cmds);
+        self.timer.replay(timer_cmds);
+        self.mempool.replay(mempool_cmds);
+        self.ledger.replay(ledger_cmds);
+        self.execution_ledger.replay(execution_ledger_cmds);
+        self.checkpoint.replay(checkpoint_cmds);
+    }
+
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
         let _exec_span = tracing::info_span!("exec_span", num_cmds = commands.len()).entered();
         let (

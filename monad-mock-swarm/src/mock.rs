@@ -220,6 +220,50 @@ where
         <S::State as State>::Checkpoint,
         <S::State as State>::SignatureCollection,
     >;
+
+    fn replay(&mut self, commands: Vec<Self::Command>) {
+        let (
+            router_cmds,
+            timer_cmds,
+            mempool_cmds,
+            ledger_cmds,
+            execution_ledger_cmds,
+            checkpoint_cmds,
+            state_root_hash_cmds,
+        ) = Self::Command::split_commands(commands);
+
+        for command in timer_cmds {
+            match command {
+                TimerCommand::ScheduleReset(variant) => {
+                    self.timer.remove(&TimerEvent::new(variant));
+                }
+                TimerCommand::Schedule {
+                    duration,
+                    variant,
+                    on_timeout,
+                } => {
+                    self.timer.push(
+                        TimerEvent::new(variant).with_call_back(on_timeout),
+                        Reverse(self.tick + duration),
+                    );
+                }
+            }
+        }
+
+        self.mempool.replay(mempool_cmds);
+        self.ledger.replay(ledger_cmds);
+        self.execution_ledger.replay(execution_ledger_cmds);
+        self.checkpoint.replay(checkpoint_cmds);
+        self.state_root_hash.replay(state_root_hash_cmds);
+
+        for command in router_cmds {
+            match command {
+                // we match on all commands to be explicit
+                RouterCommand::Publish { .. } => {}
+            }
+        }
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let (
             router_cmds,
@@ -350,6 +394,16 @@ where
     E: PartialEq + Eq,
 {
     type Command = TimerCommand<E>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            TimerCommand::Schedule { .. } => true,
+            TimerCommand::ScheduleReset(..) => true,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<TimerCommand<E>>) {
         let mut wake = false;
         for command in commands {
@@ -422,6 +476,16 @@ impl<ST, SCT> Default for MockMempool<ST, SCT> {
 impl<ST, SCT> Executor for MockMempool<ST, SCT> {
     type Command = MempoolCommand<SCT>;
 
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            MempoolCommand::FetchTxs(..) => false,
+            MempoolCommand::FetchFullTxs(..) => false,
+            MempoolCommand::DrainTxs(..) => false,
+        });
+        self.exec(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -438,18 +502,9 @@ impl<ST, SCT> Executor for MockMempool<ST, SCT> {
                     self.num_fetch_txs = max_txs;
                     wake = true;
                 }
-                MempoolCommand::FetchReset => {
-                    self.fetch_txs_state = None;
-                    self.num_fetch_txs = 0;
-                    wake = self.fetch_full_txs_state.is_some();
-                }
                 MempoolCommand::FetchFullTxs(_, cb) => {
                     self.fetch_full_txs_state = Some(cb);
                     wake = true;
-                }
-                MempoolCommand::FetchFullReset => {
-                    self.fetch_full_txs_state = None;
-                    wake = self.fetch_txs_state.is_some();
                 }
                 MempoolCommand::DrainTxs(_) => {}
             }
@@ -559,6 +614,10 @@ impl<ST, SCT> MockMempoolRandFail<ST, SCT> {
 impl<ST, SCT> Executor for MockMempoolRandFail<ST, SCT> {
     type Command = MempoolCommand<SCT>;
 
+    fn replay(&mut self, commands: Vec<Self::Command>) {
+        self.mpool.replay(commands)
+    }
+
     fn exec(&mut self, commands: Vec<Self::Command>) {
         self.mpool.exec(commands)
     }
@@ -640,6 +699,14 @@ pub struct MockExecutionLedger<SCT> {
 
 impl<SCT> Executor for MockExecutionLedger<SCT> {
     type Command = ExecutionLedgerCommand<SCT>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            ExecutionLedgerCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands);
+    }
 
     fn exec(&mut self, _: Vec<Self::Command>) {}
 }
@@ -1030,18 +1097,6 @@ mod tests {
         assert_eq!(txs_list_2.bytes().len(), txs_list_1.bytes().len());
         assert_ne!(txs_list_2, txs_list_1);
     }
-    #[test]
-    fn test_reset() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![MempoolCommand::FetchTxs(FetchTxsCriteria {
-            max_txs: 0,
-            block_gas_limit: 0,
-            ignore_txs: vec![],
-            proposal_params: dont_care_fetched_tx_param(),
-        })]);
-        mempool.exec(vec![MempoolCommand::FetchReset]);
-        assert!(!mempool.ready());
-    }
 
     #[test]
     fn test_inline_double_fetch() {
@@ -1053,37 +1108,6 @@ mod tests {
                 ignore_txs: vec![],
                 proposal_params: dont_care_fetched_tx_param(),
             }),
-            MempoolCommand::FetchTxs(FetchTxsCriteria {
-                max_txs: 0,
-                block_gas_limit: 0,
-                ignore_txs: vec![],
-                proposal_params: dont_care_fetched_tx_param(),
-            }),
-        ]);
-        assert!(futures::executor::block_on(mempool.next()).is_some());
-        assert!(!mempool.ready());
-    }
-
-    #[test]
-    fn test_inline_reset() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![
-            MempoolCommand::FetchTxs(FetchTxsCriteria {
-                max_txs: 0,
-                block_gas_limit: 0,
-                ignore_txs: vec![],
-                proposal_params: dont_care_fetched_tx_param(),
-            }),
-            MempoolCommand::FetchReset,
-        ]);
-        assert!(!mempool.ready());
-    }
-
-    #[test]
-    fn test_inline_reset_fetch() {
-        let mut mempool = MockMempool::<NopSignature, MultiSig<NopSignature>>::default();
-        mempool.exec(vec![
-            MempoolCommand::FetchReset,
             MempoolCommand::FetchTxs(FetchTxsCriteria {
                 max_txs: 0,
                 block_gas_limit: 0,

@@ -1,2 +1,3 @@
 /target
 /docker/devnet/monad/ledger
+/docker/devnet/monad/wal
