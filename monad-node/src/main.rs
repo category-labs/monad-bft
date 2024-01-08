@@ -9,8 +9,12 @@ use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block_validator::MockValidator, bls::BlsSignatureCollection, payload::NopStateRoot,
+    validator_data::ValidatorData,
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::{
+    bls12_381::BlsPubKey,
+    secp256k1::{KeyPair, PubKey, SecpSignature},
+};
 use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
@@ -18,10 +22,15 @@ use monad_mempool_controller::ControllerConfig;
 use monad_mempool_messenger::MessengerConfig;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    mempool::MonadMempool, parent::ParentExecutor, timer::TokioTimer,
+    checkpoint::MockCheckpoint,
+    execution_ledger::MonadFileLedger,
+    ledger::MockLedger,
+    mempool::MonadMempool,
+    parent::ParentExecutor,
+    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
+    timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use tokio::signal;
@@ -120,6 +129,14 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             mempool_controller_config.with_mempool_ipc_path(mempool_ipc_path);
     }
 
+    let validators: Vec<(PubKey, Stake, BlsPubKey)> = node_state
+        .genesis_config
+        .validators
+        .into_iter()
+        .map(|peer| (peer.secp256k1_pubkey, peer.stake, peer.bls12_381_pubkey))
+        .collect();
+    let val_set_update_interval = SeqNum(2000);
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -127,19 +144,18 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
+        state_root_hash: MockStateRootHashNop::new(
+            ValidatorData::new(validators.clone()),
+            val_set_update_interval,
+        ),
     };
 
     let (mut state, init_commands) = MonadState::init(MonadConfig {
         transaction_validator: MockValidator {},
-        validators: node_state
-            .genesis_config
-            .validators
-            .into_iter()
-            .map(|peer| (peer.secp256k1_pubkey, peer.stake, peer.bls12_381_pubkey))
-            .collect(),
+        validators,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
-        val_set_update_interval: SeqNum(2000),
+        val_set_update_interval,
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
         consensus_config: ConsensusConfig {

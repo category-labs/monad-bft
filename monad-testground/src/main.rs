@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::Parser;
-use executor::MonadP2PGossipConfig;
+use executor::{MonadP2PGossipConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
@@ -12,12 +12,13 @@ use monad_consensus_types::{
     message_signature::MessageSignature,
     multi_sig::MultiSig,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    validator_data::ValidatorData,
 };
 use monad_crypto::secp256k1::{KeyPair, SecpSignature};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
@@ -221,7 +222,7 @@ where
 
     let genesis_peers = configs
         .iter()
-        .map(|(keypair, cert_keypair)| (keypair.pubkey(), cert_keypair.pubkey()))
+        .map(|(keypair, cert_keypair)| (keypair.pubkey(), Stake(1), cert_keypair.pubkey()))
         .collect::<Vec<_>>();
 
     let mut maybe_local_routers = match args.router {
@@ -231,7 +232,7 @@ where
             let local_routers = LocalRouterConfig {
                 all_peers: genesis_peers
                     .iter()
-                    .map(|(peer_id, _)| NodeId(*peer_id))
+                    .map(|(peer_id, _, _)| NodeId(*peer_id))
                     .collect(),
                 external_latency: Duration::from_millis(external_latency_ms),
             }
@@ -280,7 +281,7 @@ where
                                     MonadP2PGossipConfig::Simple(MockGossipConfig {
                                         all_peers: genesis_peers
                                             .iter()
-                                            .map(|(pubkey, _)| NodeId(*pubkey))
+                                            .map(|(pubkey, _, _)| NodeId(*pubkey))
                                             .collect(),
                                         me,
                                     })
@@ -291,7 +292,7 @@ where
                                         me,
                                         all_peers: genesis_peers
                                             .iter()
-                                            .map(|(pubkey, _)| NodeId(*pubkey))
+                                            .map(|(pubkey, _, _)| NodeId(*pubkey))
                                             .collect(),
                                         fanout: *fanout,
                                     })
@@ -305,6 +306,10 @@ where
                     execution_ledger_config: match args.execution_ledger {
                         ExecutionLedgerArgs::Mock => ExecutionLedgerConfig::Mock,
                         ExecutionLedgerArgs::File => ExecutionLedgerConfig::File,
+                    },
+                    state_root_hash_config: StateRootHashConfig::Mock {
+                        genesis_validator_data: ValidatorData::new(genesis_peers.clone()),
+                        val_set_update_interval: SeqNum(args.val_set_update_interval),
                     },
                 },
                 state_config: StateConfig {

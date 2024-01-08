@@ -138,7 +138,7 @@ where
     pub fn new(
         router: S::RouterScheduler,
         mempool_config: <S::MempoolExecutor as MockableExecutor>::Config,
-        peers: ValidatorData<S::SignatureCollectionType>,
+        genesis_validator_data: ValidatorData<S::SignatureCollectionType>,
         val_set_update_interval: SeqNum,
         tick: Duration,
     ) -> Self {
@@ -148,7 +148,7 @@ where
             execution_ledger: Default::default(),
             mempool: <S::MempoolExecutor as MockableExecutor>::new(mempool_config),
             state_root_hash: <S::StateRootHashExecutor as MockableStateRootHash>::new(
-                peers,
+                genesis_validator_data,
                 val_set_update_interval,
             ),
 

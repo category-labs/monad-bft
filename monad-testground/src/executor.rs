@@ -6,12 +6,14 @@ use monad_consensus_types::{
     message_signature::MessageSignature,
     payload::NopStateRoot,
     signature_collection::SignatureCollection,
+    validator_data::ValidatorData,
 };
 use monad_crypto::secp256k1::{KeyPair, PubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor, State};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MempoolCommand, MonadEvent, RouterCommand,
+    StateRootHashCommand,
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
 use monad_mock_swarm::mock::{MockExecutionLedger, MockMempool};
@@ -19,8 +21,14 @@ use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::{Round, SeqNum, Stake};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, execution_ledger::MonadFileLedger, ledger::MockLedger,
-    local_router::LocalPeerRouter, parent::ParentExecutor, timer::TokioTimer, BoxUpdater, Updater,
+    checkpoint::MockCheckpoint,
+    execution_ledger::MonadFileLedger,
+    ledger::MockLedger,
+    local_router::LocalPeerRouter,
+    parent::ParentExecutor,
+    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
+    timer::TokioTimer,
+    BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
@@ -56,6 +64,16 @@ pub enum MempoolConfig {
     Mock,
 }
 
+pub enum StateRootHashConfig<SignatureCollectionType>
+where
+    SignatureCollectionType: SignatureCollection,
+{
+    Mock {
+        genesis_validator_data: ValidatorData<SignatureCollectionType>,
+        val_set_update_interval: SeqNum,
+    },
+}
+
 pub struct ExecutorConfig<MessageSignatureType, SignatureCollectionType>
 where
     MessageSignatureType: MessageSignature,
@@ -64,6 +82,7 @@ where
     pub router_config: RouterConfig<MessageSignatureType, SignatureCollectionType>,
     pub mempool_config: MempoolConfig,
     pub execution_ledger_config: ExecutionLedgerConfig,
+    pub state_root_hash_config: StateRootHashConfig<SignatureCollectionType>,
 }
 
 pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
@@ -86,6 +105,11 @@ pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
     >,
     BoxExecutor<'static, ExecutionLedgerCommand<SignatureCollectionType>>,
     MockCheckpoint<Checkpoint<SignatureCollectionType>>,
+    BoxUpdater<
+        'static,
+        StateRootHashCommand<FullBlock<SignatureCollectionType>>,
+        MonadEvent<MessageSignatureType, SignatureCollectionType>,
+    >,
 >
 where
     MessageSignatureType: MessageSignature + Unpin,
@@ -123,6 +147,15 @@ where
             ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::default()),
         },
         checkpoint: MockCheckpoint::default(),
+        state_root_hash: match config.state_root_hash_config {
+            StateRootHashConfig::Mock {
+                genesis_validator_data,
+                val_set_update_interval,
+            } => Updater::boxed(MockStateRootHashNop::new(
+                genesis_validator_data,
+                val_set_update_interval,
+            )),
+        },
     }
 }
 
@@ -144,6 +177,7 @@ pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
 
     pub genesis_peers: Vec<(
         PubKey,
+        Stake,
         <<SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
     )>,
     pub consensus_config: ConsensusConfig,
@@ -169,11 +203,7 @@ where
 {
     MonadStateType::init(MonadConfig {
         transaction_validator: MockValidator {},
-        validators: config
-            .genesis_peers
-            .into_iter()
-            .map(|(pk, cert_pk)| (pk, Stake(1), cert_pk))
-            .collect(),
+        validators: config.genesis_peers,
         key: config.key,
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,

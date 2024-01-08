@@ -1,3 +1,4 @@
+use monad_crypto::secp256k1::PubKey;
 use monad_proto::{
     error::ProtoError,
     proto::{
@@ -17,6 +18,15 @@ pub struct ValidatorData<SCT: SignatureCollection>(
 );
 
 impl<SCT: SignatureCollection> ValidatorData<SCT> {
+    pub fn new(validators: Vec<(PubKey, Stake, SignatureCollectionPubKeyType<SCT>)>) -> Self {
+        Self(
+            validators
+                .into_iter()
+                .map(|(pubkey, stake, cert_pubkey)| (NodeId(pubkey), stake, cert_pubkey))
+                .collect(),
+        )
+    }
+
     pub fn get_stakes(&self) -> Vec<(NodeId, Stake)> {
         self.0
             .iter()

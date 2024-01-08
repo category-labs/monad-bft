@@ -8,23 +8,25 @@ use futures::{FutureExt, Stream, StreamExt};
 use monad_executor::Executor;
 use monad_executor_glue::{
     CheckpointCommand, Command, ExecutionLedgerCommand, LedgerCommand, MempoolCommand,
-    RouterCommand, TimerCommand,
+    RouterCommand, StateRootHashCommand, TimerCommand,
 };
 
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
-pub struct ParentExecutor<R, T, M, L, EL, C> {
+pub struct ParentExecutor<R, T, M, L, EL, C, S> {
     pub router: R,
     pub timer: T,
     pub mempool: M,
     pub ledger: L,
     pub execution_ledger: EL,
     pub checkpoint: C,
+    pub state_root_hash: S,
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, ME, LE, EL, CE, E, OM, B, C, S> Executor for ParentExecutor<RE, TE, ME, LE, EL, CE>
+impl<RE, TE, ME, LE, EL, CE, SE, E, OM, B, C, S> Executor
+    for ParentExecutor<RE, TE, ME, LE, EL, CE, SE>
 where
     RE: Executor<Command = RouterCommand<OM>>,
     TE: Executor<Command = TimerCommand<E>>,
@@ -33,6 +35,7 @@ where
     LE: Executor<Command = LedgerCommand<B, E>>,
     EL: Executor<Command = ExecutionLedgerCommand<S>>,
     ME: Executor<Command = MempoolCommand<S>>,
+    SE: Executor<Command = StateRootHashCommand<B>>,
 {
     type Command = Command<E, OM, B, C, S>;
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
@@ -44,7 +47,7 @@ where
             ledger_cmds,
             execution_ledger_cmds,
             checkpoint_cmds,
-            _state_root_hash_cmds,
+            state_root_hash_cmds,
         ) = Command::split_commands(commands);
 
         self.router.exec(router_cmds);
@@ -53,15 +56,17 @@ where
         self.ledger.exec(ledger_cmds);
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
+        self.state_root_hash.exec(state_root_hash_cmds);
     }
 }
 
-impl<E, R, T, M, L, EL, C> Stream for ParentExecutor<R, T, M, L, EL, C>
+impl<E, R, T, M, L, EL, C, S> Stream for ParentExecutor<R, T, M, L, EL, C, S>
 where
     R: Stream<Item = E> + Unpin,
     T: Stream<Item = E> + Unpin,
     M: Stream<Item = E> + Unpin,
     L: Stream<Item = E> + Unpin,
+    S: Stream<Item = E> + Unpin,
     Self: Unpin,
 {
     type Item = E;
@@ -73,13 +78,14 @@ where
             this.mempool.next().boxed_local(),
             this.ledger.next().boxed_local(),
             this.router.next().boxed_local(),
+            this.state_root_hash.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)
         .poll_unpin(cx)
     }
 }
 
-impl<R, T, M, L, EL, C> ParentExecutor<R, T, M, L, EL, C> {
+impl<R, T, M, L, EL, C, S> ParentExecutor<R, T, M, L, EL, C, S> {
     pub fn ledger(&self) -> &L {
         &self.ledger
     }

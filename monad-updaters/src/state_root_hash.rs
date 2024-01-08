@@ -25,7 +25,7 @@ pub trait MockableStateRootHash:
     type SignatureCollection: SignatureCollection;
 
     fn new(
-        init_val_data: ValidatorData<Self::SignatureCollection>,
+        genesis_validator_data: ValidatorData<Self::SignatureCollection>,
         val_set_update_interval: SeqNum,
     ) -> Self;
     fn ready(&self) -> bool;
@@ -37,34 +37,34 @@ pub trait MockableStateRootHash:
 /// Goal is to mimic the behaviour of execution receiving a commit
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
-pub struct MockStateRootHashNop<O, ST, SCT: SignatureCollection> {
+pub struct MockStateRootHashNop<B, ST, SCT: SignatureCollection> {
     state_root_update: Option<(SeqNum, Hash)>,
 
     // validator set updates
     epoch: Epoch,
-    init_val_data: ValidatorData<SCT>,
+    genesis_validator_data: ValidatorData<SCT>,
     next_val_data: Option<ValidatorData<SCT>>,
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
-    phantom: PhantomData<(O, ST)>,
+    phantom: PhantomData<(B, ST)>,
 }
 
-impl<O, ST, SCT> MockableStateRootHash for MockStateRootHashNop<O, ST, SCT>
+impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashNop<B, ST, SCT>
 where
-    O: BlockType + Unpin,
+    B: BlockType + Unpin,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Block = O;
+    type Block = B;
     type Event = MonadEvent<ST, SCT>;
     type SignatureCollection = SCT;
 
-    fn new(init_val_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
+    fn new(genesis_validator_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
         Self {
             epoch: Epoch(1),
             state_root_update: None,
-            init_val_data,
+            genesis_validator_data,
             next_val_data: None,
             val_set_update_interval,
             waker: None,
@@ -77,12 +77,12 @@ where
     }
 }
 
-impl<O, ST, SCT> Executor for MockStateRootHashNop<O, ST, SCT>
+impl<B, ST, SCT> Executor for MockStateRootHashNop<B, ST, SCT>
 where
-    O: BlockType,
+    B: BlockType,
     SCT: SignatureCollection,
 {
-    type Command = StateRootHashCommand<O>;
+    type Command = StateRootHashCommand<B>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -99,7 +99,7 @@ where
                     self.state_root_update = Some((seq_num, hash));
 
                     if block.get_seq_num() % self.val_set_update_interval == SeqNum(0) {
-                        self.next_val_data = Some(self.init_val_data.clone());
+                        self.next_val_data = Some(self.genesis_validator_data.clone());
                         self.epoch = self.epoch + Epoch(1);
                     }
 
@@ -115,10 +115,10 @@ where
     }
 }
 
-impl<O, ST, SCT> Stream for MockStateRootHashNop<O, ST, SCT>
+impl<B, ST, SCT> Stream for MockStateRootHashNop<B, ST, SCT>
 where
     Self: Unpin,
-    O: BlockType + Unpin,
+    B: BlockType + Unpin,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 {
@@ -157,7 +157,7 @@ where
 /// An updater that works the same as MockStateRootHashNop but switches
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
-pub struct MockStateRootHashSwap<O, ST, SCT: SignatureCollection> {
+pub struct MockStateRootHashSwap<B, ST, SCT: SignatureCollection> {
     state_root_update: Option<(SeqNum, Hash)>,
 
     // validator set updates
@@ -168,22 +168,22 @@ pub struct MockStateRootHashSwap<O, ST, SCT: SignatureCollection> {
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
-    phantom: PhantomData<(O, ST)>,
+    phantom: PhantomData<(B, ST)>,
 }
 
-impl<O, ST, SCT> MockableStateRootHash for MockStateRootHashSwap<O, ST, SCT>
+impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashSwap<B, ST, SCT>
 where
-    O: BlockType + Unpin,
+    B: BlockType + Unpin,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 {
-    type Block = O;
+    type Block = B;
     type Event = MonadEvent<ST, SCT>;
     type SignatureCollection = SCT;
 
-    fn new(init_val_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
-        let num_validators = init_val_data.0.len();
-        let mut val_data_1 = init_val_data.0;
+    fn new(genesis_validator_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
+        let num_validators = genesis_validator_data.0.len();
+        let mut val_data_1 = genesis_validator_data.0;
         let mut val_data_2 = val_data_1.clone();
 
         for validator in val_data_1.iter_mut().take(num_validators / 2) {
@@ -214,12 +214,12 @@ where
     }
 }
 
-impl<O, ST, SCT> Executor for MockStateRootHashSwap<O, ST, SCT>
+impl<B, ST, SCT> Executor for MockStateRootHashSwap<B, ST, SCT>
 where
-    O: BlockType,
+    B: BlockType,
     SCT: SignatureCollection,
 {
-    type Command = StateRootHashCommand<O>;
+    type Command = StateRootHashCommand<B>;
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
 
@@ -254,10 +254,10 @@ where
     }
 }
 
-impl<O, ST, SCT> Stream for MockStateRootHashSwap<O, ST, SCT>
+impl<B, ST, SCT> Stream for MockStateRootHashSwap<B, ST, SCT>
 where
     Self: Unpin,
-    O: BlockType + Unpin,
+    B: BlockType + Unpin,
     ST: MessageSignature + Unpin,
     SCT: SignatureCollection + Unpin,
 {
