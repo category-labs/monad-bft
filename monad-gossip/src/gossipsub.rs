@@ -1,10 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     time::Duration,
 };
 
 use bytes::Buf;
-use bytes_utils::SegmentedBuf;
 use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
     secp256k1::PubKey,
@@ -30,7 +29,6 @@ impl UnsafeGossipsubConfig {
             rng: ChaCha20Rng::from_seed(self.seed),
             config: self,
 
-            connections: Default::default(),
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
 
@@ -39,25 +37,10 @@ impl UnsafeGossipsubConfig {
     }
 }
 
-struct Connection {
-    buffer_status: BufferStatus,
-    buffer: SegmentedBuf<GossipMessage>,
-}
-
-impl Connection {
-    fn new() -> Self {
-        Self {
-            buffer_status: BufferStatus::None,
-            buffer: SegmentedBuf::new(),
-        }
-    }
-}
-
 pub struct UnsafeGossipsub {
     config: UnsafeGossipsubConfig,
     rng: ChaCha20Rng,
 
-    connections: HashMap<NodeId, Connection>,
     events: VecDeque<GossipEvent>,
     current_tick: Duration,
 
@@ -76,36 +59,22 @@ struct MessageHeader {
     message_len: u32,
 }
 
-type MessageHeaderLenType = u32;
-const MESSAGE_HEADER_LEN_LEN: usize = std::mem::size_of::<MessageHeaderLenType>();
-
-enum BufferStatus {
-    None,
-    HeaderLen(MessageHeaderLenType),
-    Header(MessageHeader),
-}
-impl Default for BufferStatus {
-    fn default() -> Self {
-        Self::None
-    }
-}
+#[derive(Serialize, Deserialize)]
+struct OuterHeader(u32);
+const OUTER_HEADER_SIZE: usize = std::mem::size_of::<OuterHeader>();
 
 impl UnsafeGossipsub {
     /// to must not be self
     fn send_message(&mut self, to: NodeId, header: MessageHeader, message: AppMessage) {
-        if self.connections.contains_key(&to) {
-            assert_eq!(header.message_len, message.len() as u32);
-            let header = bincode::serialize(&header).unwrap();
-            let gossip_message = std::iter::once(
-                Vec::from((header.len() as MessageHeaderLenType).to_le_bytes()).into(),
-            )
+        assert_eq!(header.message_len, message.len() as u32);
+        let header = bincode::serialize(&header).unwrap();
+        let outer_header = bincode::serialize(&OuterHeader(header.len() as u32)).unwrap();
+        let gossip_message = std::iter::empty()
+            .chain(std::iter::once(outer_header.into()))
             .chain(std::iter::once(header.into()))
-            .chain(std::iter::once(message));
-            self.events
-                .extend(gossip_message.map(|gossip_message| GossipEvent::Send(to, gossip_message)));
-        } else {
-            self.events.push_back(GossipEvent::RequestConnect(to));
-        }
+            .chain(std::iter::once(message))
+            .collect();
+        self.events.push_back(GossipEvent::Send(to, gossip_message));
     }
 
     fn handle_message(&mut self, from: NodeId, header: MessageHeader, message: AppMessage) {
@@ -134,22 +103,6 @@ impl UnsafeGossipsub {
 }
 
 impl Gossip for UnsafeGossipsub {
-    fn connected(&mut self, time: Duration, peer: NodeId) {
-        self.current_tick = time;
-        let removed = self.connections.insert(peer, Connection::new());
-        assert!(removed.is_none());
-    }
-
-    fn disconnected(&mut self, time: Duration, peer: NodeId) {
-        self.current_tick = time;
-        let removed = self.connections.remove(&peer);
-        assert!(removed.is_some());
-
-        // remove all pending sends to the disconnected peer
-        self.events
-            .retain(|event| !matches!(event, GossipEvent::Send(to, _) if to == &peer))
-    }
-
     fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
         match to {
@@ -195,56 +148,19 @@ impl Gossip for UnsafeGossipsub {
         &mut self,
         time: Duration,
         from: NodeId,
-        gossip_message: GossipMessage,
+        mut gossip_message: GossipMessage,
     ) {
+        let outer_header: OuterHeader =
+            bincode::deserialize(&gossip_message.copy_to_bytes(OUTER_HEADER_SIZE)).unwrap();
+        let message_header: MessageHeader =
+            bincode::deserialize(&gossip_message.copy_to_bytes(outer_header.0 as usize)).unwrap();
+        assert_eq!(
+            gossip_message.remaining() as u32,
+            message_header.message_len
+        );
+        let message = gossip_message.copy_to_bytes(gossip_message.remaining());
         self.current_tick = time;
-        let connection = self
-            .connections
-            .get_mut(&from)
-            .expect("invariant: Gossip::connected must have been called before");
-        connection.buffer.push(gossip_message);
-        loop {
-            let connection = self
-                .connections
-                .get_mut(&from)
-                .expect("invariant: Gossip::connected must have been called before");
-            match &connection.buffer_status {
-                BufferStatus::None => {
-                    if connection.buffer.remaining() >= MESSAGE_HEADER_LEN_LEN {
-                        connection.buffer_status =
-                            BufferStatus::HeaderLen(MessageHeaderLenType::from_le_bytes(
-                                connection
-                                    .buffer
-                                    .copy_to_bytes(MESSAGE_HEADER_LEN_LEN)
-                                    .to_vec()
-                                    .try_into()
-                                    .unwrap(),
-                            ));
-                        continue;
-                    }
-                }
-                BufferStatus::HeaderLen(header_len) => {
-                    let header_len = *header_len as usize;
-                    if connection.buffer.remaining() >= header_len {
-                        connection.buffer_status = BufferStatus::Header(
-                            bincode::deserialize(&connection.buffer.copy_to_bytes(header_len))
-                                .unwrap(),
-                        );
-                        continue;
-                    }
-                }
-                BufferStatus::Header(header) => {
-                    if connection.buffer.remaining() >= header.message_len as usize {
-                        let message = connection.buffer.copy_to_bytes(header.message_len as usize);
-                        let header = header.clone();
-                        connection.buffer_status = BufferStatus::None;
-                        self.handle_message(from, header, message);
-                        continue;
-                    }
-                }
-            };
-            break;
-        }
+        self.handle_message(from, message_header, message);
     }
 
     fn peek_tick(&self) -> Option<Duration> {

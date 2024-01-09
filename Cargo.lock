@@ -3824,6 +3824,7 @@ dependencies = [
  "rand_chacha",
  "serde",
  "test-case",
+ "tracing",
 ]
 
 [[package]]

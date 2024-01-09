@@ -1,14 +1,18 @@
 use std::{ops::DerefMut, pin::Pin, time::Duration};
 
 use bytes::Bytes;
+use bytes_utils::SegmentedBuf;
 use monad_types::{NodeId, RouterTarget};
 
 pub mod broadcasttree;
+mod connection_manager;
+pub use connection_manager::{ConnectionManager, ConnectionManagerEvent};
 pub mod gossipsub;
 pub mod mock;
 pub mod testutil;
 
 type GossipMessage = Bytes;
+type FragmentedGossipMessage = SegmentedBuf<Bytes>;
 /// We don't use a more sophisticated `impl Buf` type here, because prost anyway only supports
 /// zero-copy deserialization on Bytes
 ///
@@ -21,16 +25,11 @@ type AppMessage = Bytes;
 pub enum GossipEvent {
     /// Send gossip_message to peer
     /// Delivery is not guaranteed (connection may sever at any point)
-    /// Ordering is guaranteed within a connected/disconnected lifecycle
-    Send(NodeId, GossipMessage),
+    /// Framing of each individual message is guaranteed
+    Send(NodeId, FragmentedGossipMessage),
 
     /// Emit app_message to executor (NOTE: not gossip_message)
     Emit(NodeId, AppMessage),
-
-    /// Ask executor to connect to given node
-    /// Executor must call Gossip::connect after conection complete
-    /// RequestConnect is idempotent
-    RequestConnect(NodeId),
 }
 
 /// Gossip describes WHAT gossip messages get delivered (given application-level messages)
@@ -43,11 +42,6 @@ pub enum GossipEvent {
 /// `message` and `gossip_message` are both typed as bytes intentionally, because that's the atomic
 /// unit of transfer.
 pub trait Gossip {
-    /// Tell Gossip implementation that a connection to a peer has been opened
-    fn connected(&mut self, time: Duration, peer: NodeId);
-    /// Tell Gossip implementation that the given peer has been disconnected
-    fn disconnected(&mut self, time: Duration, peer: NodeId);
-
     /// Ask Gossip implementation to send given application message
     /// There are no delivery guarantees; the message may be dropped
     /// - for example, if the Gossip implementation can't find a valid Gossip::connected() path to
@@ -75,14 +69,6 @@ pub trait Gossip {
 }
 
 impl<G: Gossip + ?Sized> Gossip for Box<G> {
-    fn connected(&mut self, time: Duration, peer: NodeId) {
-        (**self).connected(time, peer)
-    }
-
-    fn disconnected(&mut self, time: Duration, peer: NodeId) {
-        (**self).disconnected(time, peer)
-    }
-
     fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         (**self).send(time, to, message)
     }
@@ -110,14 +96,6 @@ where
     P: DerefMut,
     P::Target: Gossip + Unpin,
 {
-    fn connected(&mut self, time: Duration, peer: NodeId) {
-        Pin::get_mut(Pin::as_mut(self)).connected(time, peer)
-    }
-
-    fn disconnected(&mut self, time: Duration, peer: NodeId) {
-        Pin::get_mut(Pin::as_mut(self)).disconnected(time, peer)
-    }
-
     fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
         Pin::get_mut(Pin::as_mut(self)).send(time, to, message)
     }

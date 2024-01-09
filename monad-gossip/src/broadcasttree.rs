@@ -4,7 +4,6 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use bytes_utils::SegmentedBuf;
 use monad_crypto::{
     hasher::{Hasher, HasherType},
     secp256k1::PubKey,
@@ -15,7 +14,7 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use super::{Gossip, GossipEvent};
-use crate::{AppMessage, GossipMessage};
+use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
 
 type MsgId = [u8; 32];
 type PartIndex = u16;
@@ -49,23 +48,8 @@ impl BroadcastTreeConfig {
             config: self,
             msg_cache: HashMap::new(),
             completed_msgs: HashSet::new(),
-            connections: Default::default(),
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
-        }
-    }
-}
-
-struct Connection {
-    buffer_status: BufferStatus,
-    buffer: SegmentedBuf<GossipMessage>,
-}
-
-impl Connection {
-    fn new() -> Self {
-        Self {
-            buffer_status: BufferStatus::None,
-            buffer: SegmentedBuf::new(),
         }
     }
 }
@@ -84,20 +68,8 @@ pub struct BroadcastTree {
     // TODO garbage collect complete_msgs
     completed_msgs: HashSet<MsgId>,
 
-    connections: HashMap<NodeId, Connection>,
     events: VecDeque<GossipEvent>,
     current_tick: Duration,
-}
-
-enum BufferStatus {
-    None,
-    OuterHeader(OuterHeader),
-    Header(Header),
-}
-impl Default for BufferStatus {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl BroadcastTree {
@@ -147,20 +119,6 @@ impl BroadcastTree {
         result
     }
 
-    fn attempt_send_gossip_messages(
-        &mut self,
-        to: &NodeId,
-        gossip_messages: impl Iterator<Item = GossipMessage>,
-    ) {
-        if self.connections.contains_key(to) {
-            self.events.extend(
-                gossip_messages.map(|gossip_message| GossipEvent::Send(*to, gossip_message)),
-            )
-        } else {
-            self.events.push_back(GossipEvent::RequestConnect(*to))
-        }
-    }
-
     fn handle_message_part(
         &mut self,
         from: NodeId,
@@ -188,7 +146,8 @@ impl BroadcastTree {
         let children = &routes[route_idx];
         for node in children {
             let gossip_messages = Self::create_gossip_message(&message_header, &message_part);
-            self.attempt_send_gossip_messages(node, gossip_messages)
+            self.events
+                .push_back(GossipEvent::Send(*node, gossip_messages));
         }
 
         if !self.completed_msgs.contains(&message_header.id) {
@@ -219,10 +178,7 @@ impl BroadcastTree {
         }
     }
 
-    fn create_gossip_message(
-        header: &Header,
-        message: &GossipMessage,
-    ) -> impl Iterator<Item = GossipMessage> + Clone {
+    fn create_gossip_message(header: &Header, message: &GossipMessage) -> FragmentedGossipMessage {
         let mut inner_header_buf = BytesMut::new().writer();
         bincode::serialize_into(&mut inner_header_buf, header)
             .expect("serializing gossip header should succeed");
@@ -237,6 +193,7 @@ impl BroadcastTree {
         std::iter::once(outer_header_buf)
             .chain(std::iter::once(inner_header_buf))
             .chain(std::iter::once(message.clone()))
+            .collect()
     }
 
     fn create_gossip_chunk(
@@ -246,7 +203,7 @@ impl BroadcastTree {
         root: Vec<u8>,
         part: PartIndex,
         direct: bool,
-    ) -> impl Iterator<Item = GossipMessage> + Clone {
+    ) -> FragmentedGossipMessage {
         let header = Header {
             message_len: message.len() as u32,
             id: msgid,
@@ -263,7 +220,7 @@ impl BroadcastTree {
         msgid: MsgId,
         root_id: Vec<u8>,
         mut message: AppMessage,
-    ) -> Vec<impl Iterator<Item = GossipMessage> + Clone> {
+    ) -> Vec<FragmentedGossipMessage> {
         let chunk_size = message.len().div_ceil(self.config.num_routes);
 
         let mut chunks = Vec::new();
@@ -283,7 +240,7 @@ impl BroadcastTree {
     // msgid
     fn send_broadcast_gossip_messages(
         &mut self,
-        gossip_messages: Vec<impl Iterator<Item = GossipMessage> + Clone>,
+        gossip_messages: Vec<FragmentedGossipMessage>,
         root: NodeId,
         msgid: MsgId,
     ) {
@@ -292,7 +249,8 @@ impl BroadcastTree {
         assert_eq!(routes.len(), gossip_messages.len());
         for (route, gossip_message) in routes.iter().zip(gossip_messages.into_iter()) {
             for child in route {
-                self.attempt_send_gossip_messages(child, gossip_message.clone());
+                self.events
+                    .push_back(GossipEvent::Send(*child, gossip_message.clone()));
             }
         }
     }
@@ -302,22 +260,6 @@ impl BroadcastTree {
 // if we break a message into parts, need to have a msg_id and part index
 // also, need to know the root sender of a message so we can figure out the correct root bcast tree to use
 impl Gossip for BroadcastTree {
-    fn connected(&mut self, time: Duration, peer: NodeId) {
-        self.current_tick = time;
-        let removed = self.connections.insert(peer, Connection::new());
-        assert!(removed.is_none());
-    }
-
-    fn disconnected(&mut self, time: Duration, peer: NodeId) {
-        self.current_tick = time;
-        let removed = self.connections.remove(&peer);
-        assert!(removed.is_some());
-
-        // remove all pending sends to the disconnected peer
-        self.events
-            .retain(|event| !matches!(event, GossipEvent::Send(to, _) if to == &peer))
-    }
-
     fn send(&mut self, time: std::time::Duration, to: RouterTarget, message: AppMessage) {
         self.current_tick = time;
 
@@ -343,9 +285,9 @@ impl Gossip for BroadcastTree {
                     self.events
                         .push_back(GossipEvent::Emit(self.config.my_id, message))
                 } else {
-                    let gossip_messages =
+                    let gossip_message =
                         self.create_gossip_chunk(message, msgid, root_id_bytes, 0, true);
-                    self.attempt_send_gossip_messages(&to, gossip_messages)
+                    self.events.push_back(GossipEvent::Send(to, gossip_message));
                 }
             }
         }
@@ -354,61 +296,20 @@ impl Gossip for BroadcastTree {
     // raw data is a stream of bytes and is not guaranteed to end on the boundary of a
     // gossip message, so we have to parse through the stream to find a gossip message
     // and store any leftover bytes
-    fn handle_gossip_message(&mut self, time: Duration, from: NodeId, raw_data: GossipMessage) {
+    fn handle_gossip_message(
+        &mut self,
+        time: Duration,
+        from: NodeId,
+        mut gossip_message: GossipMessage,
+    ) {
         self.current_tick = time;
-        let connection = self
-            .connections
-            .get_mut(&from)
-            .expect("invariant: Gossip::connected must have been called before");
-        connection.buffer.push(raw_data);
 
-        loop {
-            let connection = self
-                .connections
-                .get_mut(&from)
-                .expect("invariant: Gossip::connected must have been called before");
-
-            match &connection.buffer_status {
-                BufferStatus::None => {
-                    if connection.buffer.remaining() >= OUTER_HEADER_SIZE {
-                        let outer_header: OuterHeader = match bincode::deserialize(
-                            &connection.buffer.copy_to_bytes(OUTER_HEADER_SIZE),
-                        ) {
-                            Ok(b) => b,
-                            Err(e) => todo!(),
-                        };
-                        connection.buffer_status = BufferStatus::OuterHeader(outer_header);
-                        continue;
-                    }
-                }
-                BufferStatus::OuterHeader(OuterHeader(header_len)) => {
-                    if connection.buffer.remaining() >= *header_len as usize {
-                        let header: Header = match bincode::deserialize(
-                            &connection.buffer.copy_to_bytes(*header_len as usize),
-                        ) {
-                            Ok(b) => b,
-                            Err(e) => todo!(),
-                        };
-                        connection.buffer_status = BufferStatus::Header(header);
-                        continue;
-                    }
-                }
-                BufferStatus::Header(header) => {
-                    if connection.buffer.remaining() >= header.message_len as usize {
-                        let message_part =
-                            connection.buffer.copy_to_bytes(header.message_len as usize);
-
-                        // TODO verify gossip message header here before handling?
-
-                        let header = header.clone();
-                        connection.buffer_status = BufferStatus::None;
-                        self.handle_message_part(from, header, message_part);
-                        continue;
-                    }
-                }
-            };
-            break;
-        }
+        let outer_header: OuterHeader =
+            bincode::deserialize(&gossip_message.copy_to_bytes(OUTER_HEADER_SIZE)).unwrap();
+        let header: Header =
+            bincode::deserialize(&gossip_message.copy_to_bytes(outer_header.0 as usize)).unwrap();
+        let message_part = gossip_message.copy_to_bytes(header.message_len as usize);
+        self.handle_message_part(from, header, message_part)
     }
 
     fn peek_tick(&self) -> Option<Duration> {
@@ -429,7 +330,7 @@ impl Gossip for BroadcastTree {
 mod tests {
     use std::time::Duration;
 
-    use bytes::Bytes;
+    use bytes::{Buf, Bytes};
     use monad_crypto::{
         hasher::{Hasher, HasherType},
         secp256k1::KeyPair,
@@ -463,15 +364,13 @@ mod tests {
         }
         .build();
         let app_message = "appmessagepayload".into();
-        g.connected(Duration::ZERO, peers[1]);
         g.send(Duration::from_secs(1), RouterTarget::Broadcast, app_message);
 
         // with 2 nodes in the peerlist, peers[1] will always be a child of
         // peers[0] in the any broadcast tree route. There are 2 routes, so
-        // we expect 7 Send events to peers[1], 3 for each route and 1 emit
+        // we expect 3 Send events to peers[1], 1 for each route and 1 emit
         // to self
-        // (times 3 for 3 GossipEvent::Send per create_gossip_message)
-        assert_eq!(7, g.events.len());
+        assert_eq!(3, g.events.len());
         for e in g.events {
             match e {
                 GossipEvent::Send(p, _) => {
@@ -479,9 +378,6 @@ mod tests {
                 }
                 GossipEvent::Emit(p, _) => {
                     assert_eq!(p, peers[0])
-                }
-                GossipEvent::RequestConnect(_) => {
-                    unreachable!("connected ahead of time")
                 }
             }
         }
@@ -506,11 +402,9 @@ mod tests {
         }
         .build();
         let app_message = "appmessagepayload".into();
-        g.connected(Duration::ZERO, peers[1]);
         g.send(Duration::from_secs(1), RouterTarget::Broadcast, app_message);
-        // expecting num_routes * 3 number of sends plus 1 event for emit to self
-        // (times 3 for 3 GossipEvent::Send per create_gossip_message)
-        assert_eq!(num_routes * 3 + 1, g.events.len());
+        // expecting num_routes number of sends plus 1 event for emit to self
+        assert_eq!(num_routes + 1, g.events.len());
 
         let events = g.events.drain(..).collect::<Vec<_>>();
 
@@ -521,16 +415,16 @@ mod tests {
             num_routes,
         }
         .build();
-        receiver.connected(Duration::ZERO, peers[0]);
 
         for e in events {
             match e {
                 GossipEvent::Emit(_from, _msg) => continue,
-                GossipEvent::Send(_from, msg) => {
-                    receiver.handle_gossip_message(Duration::ZERO, g.config.my_id, msg);
-                }
-                GossipEvent::RequestConnect(_) => {
-                    unreachable!("connected ahead of time")
+                GossipEvent::Send(_from, mut msg) => {
+                    receiver.handle_gossip_message(
+                        Duration::ZERO,
+                        g.config.my_id,
+                        msg.copy_to_bytes(msg.remaining()),
+                    );
                 }
             }
         }
@@ -547,9 +441,6 @@ mod tests {
                     "appmessagepayload",
                     String::from_utf8(msg.to_vec()).expect("bytes cannot have been corrupted")
                 );
-            }
-            GossipEvent::RequestConnect(_) => {
-                unreachable!("connected ahead of time")
             }
         }
     }
@@ -580,7 +471,6 @@ mod tests {
             num_routes,
         }
         .build();
-        g.connected(Duration::ZERO, peers[1]);
         let app_messages = expected_messages
             .iter()
             .map(|s| s.as_bytes().into())
@@ -588,12 +478,8 @@ mod tests {
         for m in app_messages {
             g.send(Duration::ZERO, RouterTarget::Broadcast, m);
         }
-        // times 3 for 3 GossipEvent::Send per create_gossip_message
         // plus 1 for the emit to self
-        assert_eq!(
-            ((num_routes * 3) + 1) * expected_messages.len(),
-            g.events.len()
-        );
+        assert_eq!((num_routes + 1) * expected_messages.len(), g.events.len());
 
         let mut receiver = BroadcastTreeConfig {
             all_peers: peers.clone(),
@@ -602,17 +488,17 @@ mod tests {
             num_routes,
         }
         .build();
-        receiver.connected(Duration::ZERO, peers[0]);
 
         // handle each individual message part
         for e in g.events {
             match e {
                 GossipEvent::Emit(_from, _msg) => continue,
-                GossipEvent::Send(_from, msg) => {
-                    receiver.handle_gossip_message(Duration::ZERO, g.config.my_id, msg);
-                }
-                GossipEvent::RequestConnect(_) => {
-                    unreachable!("connected ahead of time")
+                GossipEvent::Send(_from, mut msg) => {
+                    receiver.handle_gossip_message(
+                        Duration::ZERO,
+                        g.config.my_id,
+                        msg.copy_to_bytes(msg.remaining()),
+                    );
                 }
             }
         }
@@ -629,9 +515,6 @@ mod tests {
                             .as_str()
                     ));
                     emit_cnt += 1;
-                }
-                GossipEvent::RequestConnect(_) => {
-                    unreachable!("connected ahead of time")
                 }
             }
         }
@@ -673,9 +556,6 @@ mod tests {
                     "appmessagepayload",
                     String::from_utf8(msg.to_vec()).expect("bytes cannot have been corrupted")
                 );
-            }
-            GossipEvent::RequestConnect(_) => {
-                unreachable!("connected ahead of time")
             }
         }
     }

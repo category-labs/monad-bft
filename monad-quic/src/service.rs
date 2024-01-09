@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, Stream, StreamExt};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_gossip::{Gossip, GossipEvent};
+use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
 use monad_types::{Deserializable, NodeId, Serializable};
 use quinn::Connecting;
 use quinn_proto::ClientConfig;
@@ -44,7 +44,7 @@ where
     known_addresses: HashMap<NodeId, SocketAddr>,
 
     /// The gossip implementation
-    gossip: G,
+    gossip: ConnectionManager<G>,
 
     /// The main entrypoint into Quinn's API
     endpoint: quinn::Endpoint,
@@ -134,7 +134,7 @@ where
             me: config.me,
             known_addresses: config.known_addresses,
 
-            gossip,
+            gossip: ConnectionManager::new(gossip),
 
             endpoint,
             quinn_config: config.quinn_config,
@@ -253,7 +253,7 @@ where
                     ConnectionEvent::InboundMessage(from, gossip_messages) => {
                         if let Some(connection) = this.canonical_connections.get(&from) {
                             for gossip_message in gossip_messages {
-                                this.gossip.handle_gossip_message(
+                                this.gossip.handle_unframed_gossip_message(
                                     time,
                                     connection.node_id,
                                     gossip_message,
@@ -372,10 +372,10 @@ where
     fn handle_gossip_event(
         &mut self,
         time: Duration,
-        gossip_event: GossipEvent,
+        gossip_event: ConnectionManagerEvent,
     ) -> Option<M::Event> {
         match gossip_event {
-            GossipEvent::RequestConnect(to) => {
+            ConnectionManagerEvent::RequestConnect(to) => {
                 if let Entry::Vacant(e) = self.node_connections.entry(to) {
                     let known_address = match self.known_addresses.get(&to) {
                         Some(address) => *address,
@@ -403,7 +403,7 @@ where
                 }
                 None
             }
-            GossipEvent::Send(to, gossip_message) => {
+            ConnectionManagerEvent::GossipEvent(GossipEvent::Send(to, gossip_message)) => {
                 let connection_id = self
                     .node_connections
                     .get(&to)
@@ -413,19 +413,22 @@ where
                 let connection = self.canonical_connections.get(&connection_id).expect(
                     "invariant broken: node_connections connection_id not in canonical_connections",
                 );
-                match connection.writer.try_send(gossip_message) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(_)) => {
-                        todo!("outbound message channel full! Consider raising CONNNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE={}?", CONNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE);
+                for gossip_message in gossip_message.into_inner() {
+                    match connection.writer.try_send(gossip_message) {
+                        Ok(()) => continue,
+                        Err(TrySendError::Full(_)) => {
+                            todo!("outbound message channel full! Consider raising CONNNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE={}?", CONNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE);
+                        }
+                        Err(TrySendError::Closed(_)) => {
+                            // this implies that the connection died
+                            self.disconnected(time, &connection_id)
+                        }
                     }
-                    Err(TrySendError::Closed(_)) => {
-                        // this implies that the connection died
-                        self.disconnected(time, &connection_id)
-                    }
-                };
+                    break;
+                }
                 None
             }
-            GossipEvent::Emit(from, app_message) => {
+            ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(from, app_message)) => {
                 let message = {
                     let mut _deser_span =
                         tracing::info_span!("deserialize_span", message_len = app_message.len())

@@ -8,7 +8,7 @@ use std::{
 
 use bytes::Bytes;
 use monad_crypto::{rustls::TlsVerifier, secp256k1::KeyPair};
-use monad_gossip::{Gossip, GossipEvent};
+use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
@@ -58,7 +58,7 @@ pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     peer_ids: HashMap<NodeId, SocketAddr>,
     addresses: HashMap<SocketAddr, NodeId>,
 
-    gossip: G,
+    gossip: ConnectionManager<G>,
 
     timeouts: TimeoutQueue,
 
@@ -143,7 +143,7 @@ where
             peer_ids,
             addresses,
 
-            gossip: config.gossip,
+            gossip: ConnectionManager::new(config.gossip),
 
             timeouts: Default::default(),
             pending_events: Default::default(),
@@ -400,7 +400,7 @@ where
                     10_000, // TODO ?
                 ) {
                     self.gossip
-                        .handle_gossip_message(time, *remote_peer_id, chunk.bytes);
+                        .handle_unframed_gossip_message(time, *remote_peer_id, chunk.bytes);
                 }
                 let _should_transmit = chunks.finalize();
             }
@@ -497,7 +497,7 @@ where
     fn poll_gossip(&mut self, time: Duration) {
         while let Some(event) = self.gossip.poll(time) {
             match event {
-                GossipEvent::RequestConnect(to) => {
+                ConnectionManagerEvent::RequestConnect(to) => {
                     if self.node_connections.contains_key(&to) {
                         // we already have an open connection, so we can ignore
                         continue;
@@ -520,7 +520,7 @@ where
                     self.node_connections.insert(to, connection_handle);
                     self.poll_connection(time, &connection_handle);
                 }
-                GossipEvent::Send(to, gossip_message) => {
+                ConnectionManagerEvent::GossipEvent(GossipEvent::Send(to, gossip_message)) => {
                     let connection_handle = *self
                         .node_connections
                         .get(&to)
@@ -528,11 +528,11 @@ where
                     if let Some(connection) = self.connections.get_mut(&connection_handle) {
                         connection
                             .pending_outbound_messages
-                            .push_back(gossip_message);
+                            .extend(gossip_message.into_inner());
                         self.poll_connection(time, &connection_handle);
                     }
                 }
-                GossipEvent::Emit(peer_id, message) => {
+                ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(peer_id, message)) => {
                     assert!(
                         time >= self
                             .pending_events

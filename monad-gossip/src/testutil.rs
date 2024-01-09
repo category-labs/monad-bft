@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Buf;
 use monad_crypto::{
     hasher::{Hasher, HasherType},
     secp256k1::KeyPair,
@@ -13,10 +14,10 @@ use monad_types::{NodeId, RouterTarget};
 use rand::Rng;
 
 use super::{Gossip, GossipEvent};
-use crate::AppMessage;
+use crate::{AppMessage, ConnectionManager, ConnectionManagerEvent};
 
 struct Node<G> {
-    gossip: G,
+    connection_manager: ConnectionManager<G>,
     pipeline: BytesTransformerPipeline,
 }
 
@@ -36,14 +37,22 @@ pub enum SwarmEventType {
 impl<G: Gossip> Swarm<G> {
     pub fn new(configs: impl Iterator<Item = (NodeId, G, BytesTransformerPipeline)>) -> Self {
         let mut nodes: BTreeMap<_, _> = configs
-            .map(|(peer_id, gossip, pipeline)| (peer_id, Node { gossip, pipeline }))
+            .map(|(peer_id, gossip, pipeline)| {
+                (
+                    peer_id,
+                    Node {
+                        connection_manager: ConnectionManager::new(gossip),
+                        pipeline,
+                    },
+                )
+            })
             .collect();
 
         let peers: Vec<NodeId> = nodes.keys().copied().collect();
 
         for (id, node) in &mut nodes {
             for (idx, peer) in peers.iter().filter(|peer| &id != peer).enumerate() {
-                node.gossip.connected(Duration::ZERO, *peer)
+                node.connection_manager.connected(Duration::ZERO, *peer)
             }
         }
 
@@ -59,7 +68,7 @@ impl<G: Gossip> Swarm<G> {
         self.nodes
             .get_mut(from)
             .expect("peer doesn't exist")
-            .gossip
+            .connection_manager
             .send(self.current_tick, to, message)
     }
 
@@ -67,7 +76,7 @@ impl<G: Gossip> Swarm<G> {
         self.nodes
             .iter()
             .filter_map(|(id, node)| {
-                node.gossip
+                node.connection_manager
                     .peek_tick()
                     .map(|tick| (tick, SwarmEventType::GossipEvent, *id))
             })
@@ -97,18 +106,24 @@ impl<G: Gossip> Swarm<G> {
             let event = match event_type {
                 SwarmEventType::GossipEvent => {
                     let node = self.nodes.get_mut(&id).expect("invariant broken");
-                    let gossip_event = node.gossip.poll(tick);
-                    match gossip_event {
+                    let connection_manager_event = node.connection_manager.poll(tick);
+                    match connection_manager_event {
                         None => continue,
-                        Some(GossipEvent::RequestConnect(to)) => {
+                        Some(ConnectionManagerEvent::RequestConnect(to)) => {
                             todo!("multiple connections not supported")
                         }
-                        Some(GossipEvent::Emit(from, message)) => (from, message),
-                        Some(GossipEvent::Send(to, bytes)) => {
+                        Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
+                            from,
+                            message,
+                        ))) => (from, message),
+                        Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(
+                            to,
+                            mut bytes,
+                        ))) => {
                             let scheduled_messages = node.pipeline.process(LinkMessage {
                                 from: ID::new(id),
                                 to: ID::new(to),
-                                message: bytes,
+                                message: bytes.copy_to_bytes(bytes.remaining()),
 
                                 from_tick: tick,
                             });
@@ -138,7 +153,7 @@ impl<G: Gossip> Swarm<G> {
                         .get_mut(gossip_message.to.get_peer_id())
                         .expect("invariant broken");
 
-                    to_node.gossip.handle_gossip_message(
+                    to_node.connection_manager.handle_unframed_gossip_message(
                         scheduled_tick,
                         *gossip_message.from.get_peer_id(),
                         gossip_message.message,
