@@ -12,13 +12,6 @@ members = [
     "monad-executor-glue",
     "monad-gossip",
     "monad-ledger",
-    "monad-mempool-controller",
-    "monad-mempool-ipc",
-    "monad-mempool-messenger",
-    "monad-mempool-proto",
-    "monad-mempool-testutil",
-    "monad-mempool-txpool",
-    "monad-mempool-types",
     "monad-mock-swarm",
     "monad-node",
     "monad-proto",
@@ -47,7 +40,6 @@ opt-level = 1
 debug = true
 
 [workspace.dependencies]
-libp2p = "0.52"
 reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
 

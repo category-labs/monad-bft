@@ -26,8 +26,8 @@ use tracing::{event, instrument::WithSubscriber, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::executor::{
-    make_monad_executor, make_monad_state, ExecutionLedgerConfig, ExecutorConfig, MempoolConfig,
-    RouterConfig, StateConfig,
+    make_monad_executor, make_monad_state, ExecutionLedgerConfig, ExecutorConfig, RouterConfig,
+    StateConfig,
 };
 
 mod executor;
@@ -62,7 +62,6 @@ struct TestgroundArgs {
     epoch_start_delay: u64,       // default 50
 
     router: RouterArgs,
-    mempool: MempoolArgs,
     execution_ledger: ExecutionLedgerArgs,
 }
 
@@ -81,10 +80,6 @@ enum RouterArgs {
 enum GossipArgs {
     Simple,
     Gossipsub { fanout: usize },
-}
-
-enum MempoolArgs {
-    Mock,
 }
 
 pub enum ExecutionLedgerArgs {
@@ -151,7 +146,6 @@ async fn main() {
             bandwidth_Mbps: 1_000,
             gossip: GossipArgs::Simple,
         },
-        mempool: MempoolArgs::Mock,
         execution_ledger: ExecutionLedgerArgs::Mock,
     };
 
@@ -299,9 +293,6 @@ where
                                 }
                             },
                         },
-                    },
-                    mempool_config: match args.mempool {
-                        MempoolArgs::Mock => MempoolConfig::Mock,
                     },
                     execution_ledger_config: match args.execution_ledger {
                         ExecutionLedgerArgs::Mock => ExecutionLedgerConfig::Mock,

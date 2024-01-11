@@ -1,8 +1,0 @@
-syntax = "proto3";
-package tx;
-
-import "google/protobuf/timestamp.proto";
-
-message UnverifiedEthTxBatch {
-    bytes txs = 1;
-}

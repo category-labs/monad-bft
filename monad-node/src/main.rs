@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs},
+    net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, Instant},
 };
 
@@ -18,8 +18,6 @@ use monad_crypto::{
 use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
-use monad_mempool_controller::ControllerConfig;
-use monad_mempool_messenger::MessengerConfig;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum, Stake};
@@ -99,39 +97,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         &node_state.node_config.bootstrap.peers,
     )
     .await;
-
-    let mut mempool_controller_config = ControllerConfig::default().with_messenger_config(
-        MessengerConfig::default()
-            .with_address(node_state.node_config.network.bind_address_host)
-            .with_port(node_state.node_config.network.bind_address_mempool_port)
-            .with_bootstrap_peers(
-                node_state
-                    .node_config
-                    .bootstrap
-                    .peers
-                    .iter()
-                    .map(|peer| {
-                        let address = peer
-                            .address
-                            .to_socket_addrs()
-                            .unwrap_or_else(|err| {
-                                panic!("unable to resolve address={}, err={:?}", peer.address, err)
-                            })
-                            .next()
-                            .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                        let IpAddr::V4(ip4) = address.ip() else {
-                            panic!("ip6 not supported")
-                        };
-                        (ip4, address.port())
-                    })
-                    .collect(),
-            ),
-    );
-
-    if let Some(mempool_ipc_path) = node_state.mempool_ipc_path {
-        mempool_controller_config =
-            mempool_controller_config.with_mempool_ipc_path(mempool_ipc_path);
-    }
 
     let validators: Vec<(PubKey, Stake, BlsPubKey)> = node_state
         .genesis_config

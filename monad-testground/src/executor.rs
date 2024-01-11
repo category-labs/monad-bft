@@ -60,10 +60,6 @@ pub enum ExecutionLedgerConfig {
     File,
 }
 
-pub enum MempoolConfig {
-    Mock,
-}
-
 pub enum StateRootHashConfig<SignatureCollectionType>
 where
     SignatureCollectionType: SignatureCollection,
@@ -80,7 +76,6 @@ where
     SignatureCollectionType: SignatureCollection,
 {
     pub router_config: RouterConfig<MessageSignatureType, SignatureCollectionType>,
-    pub mempool_config: MempoolConfig,
     pub execution_ledger_config: ExecutionLedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SignatureCollectionType>,
 }
