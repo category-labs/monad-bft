@@ -1,15 +1,11 @@
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::Block,
-    block_validator::MockValidator,
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
-    message_signature::MessageSignature,
-    payload::NopStateRoot,
-    signature_collection::SignatureCollection,
-    txpool::EthTxPool,
-    validator_data::ValidatorData,
+    block::Block, block_validator::MockValidator, payload::NopStateRoot,
+    signature_collection::SignatureCollection, txpool::EthTxPool, validator_data::ValidatorData,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::certificate_signature::{
+    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+};
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor, State};
 use monad_executor_glue::{
@@ -32,26 +28,23 @@ use monad_updaters::{
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 
-pub enum MonadP2PGossipConfig {
-    Simple(MockGossipConfig),
-    Gossipsub(UnsafeGossipsubConfig),
+pub enum MonadP2PGossipConfig<PT: PubKey> {
+    Simple(MockGossipConfig<PT>),
+    Gossipsub(UnsafeGossipsubConfig<PT>),
 }
 
-pub enum RouterConfig<MessageSignatureType, SignatureCollectionType>
+pub enum RouterConfig<ST, SCT>
 where
-    MessageSignatureType: MessageSignature,
-    SignatureCollectionType: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     Local(
         /// Must be passed ahead-of-time because they can't be instantiated individually
-        LocalPeerRouter<
-            MonadMessage<MessageSignatureType, SignatureCollectionType>,
-            VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
-        >,
+        LocalPeerRouter<MonadMessage<ST, SCT>, VerifiedMonadMessage<ST, SCT>>,
     ),
     MonadP2P {
-        config: ServiceConfig<SafeQuinnConfig>,
-        gossip_config: MonadP2PGossipConfig,
+        config: ServiceConfig<SafeQuinnConfig<ST>>,
+        gossip_config: MonadP2PGossipConfig<CertificateSignaturePubKey<ST>>,
     },
 }
 
@@ -60,63 +53,51 @@ pub enum ExecutionLedgerConfig {
     File,
 }
 
-pub enum StateRootHashConfig<SignatureCollectionType>
+pub enum StateRootHashConfig<SCT>
 where
-    SignatureCollectionType: SignatureCollection,
+    SCT: SignatureCollection,
 {
     Mock {
-        genesis_validator_data: ValidatorData<SignatureCollectionType>,
+        genesis_validator_data: ValidatorData<SCT>,
         val_set_update_interval: SeqNum,
     },
 }
 
-pub struct ExecutorConfig<MessageSignatureType, SignatureCollectionType>
+pub struct ExecutorConfig<ST, SCT>
 where
-    MessageSignatureType: MessageSignature,
-    SignatureCollectionType: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub router_config: RouterConfig<MessageSignatureType, SignatureCollectionType>,
+    pub router_config: RouterConfig<ST, SCT>,
     pub execution_ledger_config: ExecutionLedgerConfig,
-    pub state_root_hash_config: StateRootHashConfig<SignatureCollectionType>,
+    pub state_root_hash_config: StateRootHashConfig<SCT>,
 }
 
-pub async fn make_monad_executor<MessageSignatureType, SignatureCollectionType>(
-    config: ExecutorConfig<MessageSignatureType, SignatureCollectionType>,
+pub async fn make_monad_executor<ST, SCT>(
+    config: ExecutorConfig<ST, SCT>,
 ) -> ParentExecutor<
     BoxUpdater<
         'static,
-        RouterCommand<VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>>,
-        MonadEvent<MessageSignatureType, SignatureCollectionType>,
+        RouterCommand<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
+        MonadEvent<ST, SCT>,
     >,
-    TokioTimer<MonadEvent<MessageSignatureType, SignatureCollectionType>>,
-    MockLedger<
-        Block<SignatureCollectionType>,
-        MonadEvent<MessageSignatureType, SignatureCollectionType>,
-    >,
-    BoxExecutor<'static, ExecutionLedgerCommand<SignatureCollectionType>>,
-    MockCheckpoint<Checkpoint<SignatureCollectionType>>,
-    BoxUpdater<
-        'static,
-        StateRootHashCommand<Block<SignatureCollectionType>>,
-        MonadEvent<MessageSignatureType, SignatureCollectionType>,
-    >,
+    TokioTimer<MonadEvent<ST, SCT>>,
+    MockLedger<CertificateSignaturePubKey<ST>, Block<SCT>, MonadEvent<ST, SCT>>,
+    BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
+    MockCheckpoint<Checkpoint<SCT>>,
+    BoxUpdater<'static, StateRootHashCommand<Block<SCT>>, MonadEvent<ST, SCT>>,
 >
 where
-    MessageSignatureType: MessageSignature + Unpin,
-    SignatureCollectionType: SignatureCollection + Unpin,
-    <SignatureCollectionType as SignatureCollection>::SignatureType: Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
+    <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     ParentExecutor {
         router: match config.router_config {
             RouterConfig::MonadP2P {
                 config,
                 gossip_config,
-            } => Updater::boxed(Service::<
-                _,
-                _,
-                MonadMessage<MessageSignatureType, SignatureCollectionType>,
-                _,
-            >::new(
+            } => Updater::boxed(Service::<_, _, MonadMessage<ST, SCT>, _>::new(
                 config,
                 match gossip_config {
                     MonadP2PGossipConfig::Simple(mock_config) => Gossip::boxed(mock_config.build()),
@@ -146,48 +127,52 @@ where
     }
 }
 
-type MonadStateType<MessageSignatureType, SignatureCollectionType> = MonadState<
-    ConsensusState<SignatureCollectionType, MockValidator, NopStateRoot>,
-    MessageSignatureType,
-    SignatureCollectionType,
-    ValidatorSet,
+type MonadStateType<ST, SCT> = MonadState<
+    ConsensusState<ST, SCT, MockValidator, NopStateRoot>,
+    ST,
+    SCT,
+    ValidatorSet<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin,
     EthTxPool,
 >;
 
-pub struct StateConfig<SignatureCollectionType: SignatureCollection> {
-    pub key: KeyPair,
+pub struct StateConfig<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub key: ST::KeyPairType,
 
-    pub cert_key: <SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType,
+    pub cert_key: <SCT::SignatureType as CertificateSignature>::KeyPairType,
 
     pub val_set_update_interval: SeqNum,
     pub epoch_start_delay: Round,
 
     pub genesis_peers: Vec<(
-        PubKey,
+        SCT::NodeIdPubKey,
         Stake,
-        <<SignatureCollectionType::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
+        CertificateSignaturePubKey<SCT::SignatureType>,
     )>,
     pub consensus_config: ConsensusConfig,
 }
 
-pub fn make_monad_state<MessageSignatureType, SignatureCollectionType>(
-    config: StateConfig<SignatureCollectionType>,
+pub fn make_monad_state<ST, SCT>(
+    config: StateConfig<ST, SCT>,
 ) -> (
-    MonadStateType<MessageSignatureType, SignatureCollectionType>,
+    MonadStateType<ST, SCT>,
     Vec<
         Command<
-            MonadEvent<MessageSignatureType, SignatureCollectionType>,
-            VerifiedMonadMessage<MessageSignatureType, SignatureCollectionType>,
-            Block<SignatureCollectionType>,
-            Checkpoint<SignatureCollectionType>,
-            SignatureCollectionType,
+            MonadEvent<ST, SCT>,
+            VerifiedMonadMessage<ST, SCT>,
+            Block<SCT>,
+            Checkpoint<SCT>,
+            SCT,
         >,
     >,
 )
 where
-    MessageSignatureType: MessageSignature,
-    SignatureCollectionType: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     MonadStateType::init(MonadConfig {
         transaction_validator: MockValidator {},

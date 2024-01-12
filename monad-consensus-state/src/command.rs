@@ -17,7 +17,7 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Attempt to send a message to RouterTarget
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
     Publish {
-        target: RouterTarget,
+        target: RouterTarget<SCT::NodeIdPubKey>,
         message: ConsensusMessage<SCT>,
     },
     /// Schedule a timeout event to be emitted in `duration`
@@ -32,7 +32,10 @@ pub enum ConsensusCommand<SCT: SignatureCollection> {
     /// Requests BlockSync from given peer
     /// Gets converted to a RouterCommand::Publish
     /// Delivery is NOT guaranteed, retry must be handled at the state-machine level
-    RequestSync { peer: NodeId, block_id: BlockId },
+    RequestSync {
+        peer: NodeId<SCT::NodeIdPubKey>,
+        block_id: BlockId,
+    },
     /// Checkpoints periodically can upload/backup the ledger and garbage collect persisted events
     /// if necessary
     CheckpointSave(Checkpoint<SCT>),
@@ -71,7 +74,7 @@ impl<SCT: SignatureCollection> From<VoteStateCommand> for ConsensusCommand<SCT> 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checkpoint<SCT> {
+pub struct Checkpoint<SCT: SignatureCollection> {
     block: Block<SCT>,
     epoch: Epoch,
 }

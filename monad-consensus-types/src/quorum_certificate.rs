@@ -13,9 +13,9 @@ pub const GENESIS_QC_HASH: Hash = Hash([0xAA; 32]);
 
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq)]
-pub struct QuorumCertificate<T> {
+pub struct QuorumCertificate<SCT> {
     pub info: QcInfo,
-    pub signatures: T,
+    pub signatures: SCT,
     signature_hash: Hash,
 }
 
@@ -111,8 +111,11 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
 
     pub fn get_participants(
         &self,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    ) -> HashSet<NodeId> {
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+    ) -> HashSet<NodeId<SCT::NodeIdPubKey>> {
         // TODO-3, consider caching this qc_msg hash in qc for performance in future
         let qc_msg = HasherType::hash_object(&self.info.vote);
         self.signatures

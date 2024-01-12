@@ -1,8 +1,12 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    marker::PhantomData,
+};
 
 use bitvec::prelude::*;
 use monad_crypto::{
     bls12_381::{BlsAggregatePubKey, BlsAggregateSignature, BlsKeyPair, BlsSignature},
+    certificate_signature::PubKey,
     hasher::{Hash, Hashable, Hasher, HasherType},
 };
 use monad_proto::proto::signing::ProtoBlsSignatureCollection;
@@ -17,15 +21,15 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct AggregationTree {
-    nodes: Vec<BlsSignatureCollection>,
+struct AggregationTree<PT: PubKey> {
+    nodes: Vec<BlsSignatureCollection<PT>>,
 }
 
-impl AggregationTree {
+impl<PT: PubKey> AggregationTree<PT> {
     fn new(
-        sigs: &Vec<(NodeId, BlsSignature)>,
-        validator_mapping: &ValidatorMapping<BlsKeyPair>,
-        validator_index: &HashMap<NodeId, usize>,
+        sigs: &Vec<(NodeId<PT>, BlsSignature)>,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+        validator_index: &HashMap<NodeId<PT>, usize>,
     ) -> Self {
         // build the binary heap represented as vector
         if sigs.is_empty() {
@@ -66,9 +70,9 @@ impl AggregationTree {
 
     fn verify(
         &self,
-        validator_mapping: &ValidatorMapping<BlsKeyPair>,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
         msg: &[u8],
-    ) -> Result<BlsSignatureCollection, Vec<(NodeId, BlsSignature)>> {
+    ) -> Result<BlsSignatureCollection<PT>, Vec<(NodeId<PT>, BlsSignature)>> {
         // verify the certificate, if invalid, search the binary tree for invalid sig
         let mut unverified_certs = VecDeque::new();
         unverified_certs.push_back(0_usize);
@@ -108,13 +112,20 @@ impl AggregationTree {
     }
 }
 
-fn merge_nodes(n1: &BlsSignatureCollection, n2: &BlsSignatureCollection) -> BlsSignatureCollection {
+fn merge_nodes<PT: PubKey>(
+    n1: &BlsSignatureCollection<PT>,
+    n2: &BlsSignatureCollection<PT>,
+) -> BlsSignatureCollection<PT> {
     assert_eq!(n1.signers.len(), n2.signers.len());
 
     let signers = n1.signers.clone() | n2.signers.clone();
     let mut sig = n1.sig;
     sig.add_assign_aggregate(&n2.sig);
-    let cert = BlsSignatureCollection { signers, sig };
+    let cert = BlsSignatureCollection {
+        signers,
+        sig,
+        _phantom: PhantomData,
+    };
     // the signer sets should be disjoint
     assert_eq!(
         n1.num_signatures() + n2.num_signatures(),
@@ -125,12 +136,14 @@ fn merge_nodes(n1: &BlsSignatureCollection, n2: &BlsSignatureCollection) -> BlsS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlsSignatureCollection {
+pub struct BlsSignatureCollection<PT: PubKey> {
     pub signers: BitVec<usize, Lsb0>,
     pub sig: BlsAggregateSignature,
+
+    pub(crate) _phantom: PhantomData<PT>,
 }
 
-impl Hashable for BlsSignatureCollection {
+impl<PT: PubKey> Hashable for BlsSignatureCollection<PT> {
     fn hash(&self, state: &mut impl Hasher) {
         let bitvec_slice = self.signers.as_raw_slice();
         let mut u8_slice = Vec::new();
@@ -143,22 +156,27 @@ impl Hashable for BlsSignatureCollection {
     }
 }
 
-impl BlsSignatureCollection {
+impl<PT: PubKey> BlsSignatureCollection<PT> {
     fn with_capacity(n: usize) -> Self {
         let signers = bitvec![usize, Lsb0; 0; n];
         let sig = BlsAggregateSignature::infinity();
-        Self { signers, sig }
+        Self {
+            signers,
+            sig,
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl SignatureCollection for BlsSignatureCollection {
+impl<PT: PubKey> SignatureCollection for BlsSignatureCollection<PT> {
+    type NodeIdPubKey = PT;
     type SignatureType = BlsSignature;
 
     fn new(
-        sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        sigs: impl IntoIterator<Item = (NodeId<PT>, Self::SignatureType)>,
+        validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
-    ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+    ) -> Result<Self, SignatureCollectionError<PT, Self::SignatureType>> {
         let mut sigs_map = HashMap::new();
         let mut non_validator = Vec::new();
         let mut validator_index = HashMap::new();
@@ -199,9 +217,9 @@ impl SignatureCollection for BlsSignatureCollection {
 
     fn verify(
         &self,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
         msg: &[u8],
-    ) -> Result<Vec<NodeId>, SignatureCollectionError<Self::SignatureType>> {
+    ) -> Result<Vec<NodeId<PT>>, SignatureCollectionError<PT, Self::SignatureType>> {
         assert_eq!(self.signers.len(), validator_mapping.map.len());
 
         let mut aggpk = BlsAggregatePubKey::infinity();
@@ -228,9 +246,9 @@ impl SignatureCollection for BlsSignatureCollection {
 
     fn get_participants(
         &self,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        validator_mapping: &ValidatorMapping<PT, SignatureCollectionKeyPairType<Self>>,
         _msg: &[u8],
-    ) -> HashSet<NodeId> {
+    ) -> HashSet<NodeId<PT>> {
         assert_eq!(self.signers.len(), validator_mapping.map.len());
 
         let mut signers = HashSet::new();
@@ -251,7 +269,7 @@ impl SignatureCollection for BlsSignatureCollection {
         proto.encode_to_vec()
     }
 
-    fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+    fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<PT, Self::SignatureType>> {
         let bls = ProtoBlsSignatureCollection::decode(data)
             .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))?;
         bls.try_into()
@@ -263,31 +281,36 @@ impl SignatureCollection for BlsSignatureCollection {
 mod test {
     use std::collections::{HashMap, HashSet};
 
+    use monad_crypto::{
+        certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+        NopSignature,
+    };
     use monad_types::NodeId;
     use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
     use test_case::test_case;
 
     use super::{merge_nodes, AggregationTree, BlsSignatureCollection};
     use crate::{
-        certificate_signature::CertificateSignature,
         signature_collection::{
             SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
         },
         test_utils::setup_sigcol_test,
     };
 
-    type SignatureCollectionType = BlsSignatureCollection;
+    type SignatureType = NopSignature;
+    type PubKey = CertificateSignaturePubKey<SignatureType>;
+    type SignatureCollectionType = BlsSignatureCollection<PubKey>;
 
     fn get_sigs<'a>(
         msg: &[u8],
         iter: impl Iterator<
             Item = &'a (
-                NodeId,
+                NodeId<PubKey>,
                 SignatureCollectionKeyPairType<SignatureCollectionType>,
             ),
         >,
     ) -> Vec<(
-        NodeId,
+        NodeId<PubKey>,
         <SignatureCollectionType as SignatureCollection>::SignatureType,
     )> {
         crate::test_utils::get_sigs::<SignatureCollectionType>(msg, iter)
@@ -304,7 +327,7 @@ mod test {
         //     /  \          /   \         /   \
         //  (1)    (2)    (3)    (4)    (5)    (6)
 
-        let (voting_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(7);
+        let (voting_keys, valmap) = setup_sigcol_test::<SignatureType, SignatureCollectionType>(7);
 
         let mut validator_index = HashMap::new();
 
@@ -361,7 +384,8 @@ mod test {
     #[test_case(5,2; "5 signatures, 2-3 split")]
     fn test_merge_node(num_sigs: u32, first: usize) {
         assert!(num_sigs as usize >= first);
-        let (voting_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(num_sigs);
+        let (voting_keys, valmap) =
+            setup_sigcol_test::<SignatureType, SignatureCollectionType>(num_sigs);
 
         let msg = b"hello world";
 
@@ -391,7 +415,8 @@ mod test {
 
     fn test_creation_multiple_invalid(seed: u64, num_sigs: u32, num_invalid: u32) {
         assert!(num_invalid <= num_sigs);
-        let (voting_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(num_sigs);
+        let (voting_keys, valmap) =
+            setup_sigcol_test::<SignatureType, SignatureCollectionType>(num_sigs);
 
         let msg = b"hello world";
         let wrong_msg = b"bye world";
@@ -424,7 +449,7 @@ mod test {
 
     #[test]
     fn test_conflict_signatures() {
-        let (voting_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(5);
+        let (voting_keys, valmap) = setup_sigcol_test::<SignatureType, SignatureCollectionType>(5);
 
         let msg = b"hello world";
         let invalid_msg = b"bye world";

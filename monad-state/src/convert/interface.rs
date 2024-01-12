@@ -1,13 +1,17 @@
 use bytes::{Bytes, BytesMut};
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_proto::{error::ProtoError, proto::message::ProtoMonadMessage};
 use prost::Message;
 
 use crate::{MonadMessage, VerifiedMonadMessage};
 
-pub fn serialize_verified_monad_message<MS: MessageSignature, SCT: SignatureCollection>(
+pub fn serialize_verified_monad_message<
+    MS: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<MS>>,
+>(
     msg: &VerifiedMonadMessage<MS, SCT>,
 ) -> Bytes {
     let proto_msg: ProtoMonadMessage = {
@@ -23,9 +27,11 @@ pub fn serialize_verified_monad_message<MS: MessageSignature, SCT: SignatureColl
     buf.into()
 }
 
-pub fn deserialize_monad_message<MS: MessageSignature, SCT: SignatureCollection>(
-    data: Bytes,
-) -> Result<MonadMessage<MS, SCT>, ProtoError> {
+pub fn deserialize_monad_message<MS, SCT>(data: Bytes) -> Result<MonadMessage<MS, SCT>, ProtoError>
+where
+    MS: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<MS>>,
+{
     let message_len = data.len();
     let msg = {
         let mut _decode_span = tracing::info_span!("decode_span", ?message_len).entered();

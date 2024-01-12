@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{error::Error, marker::PhantomData, sync::Arc};
 
 pub use rustls::Certificate;
 use rustls::{
@@ -11,7 +11,7 @@ use rustls::{
 };
 use x509_parser::{oid_registry::Oid, prelude::X509Certificate, x509::SubjectPublicKeyInfo};
 
-use crate::secp256k1::{KeyPair, PubKey, SecpSignature};
+use crate::certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable};
 
 /// all TLS1.3 suites
 static CIPHER_SUITES: &[SupportedCipherSuite] = &[
@@ -32,19 +32,29 @@ static RCGEN_SIGNATURE_SCHEME: &rcgen::SignatureAlgorithm = &rcgen::PKCS_ED25519
 ///
 /// NOTE: THE USER OF TlsVerifier MUST MANUALLY VALIDATE THAT THE PUBKEY RECOVERED IS AS EXPECTED
 /// This should be done with `parse_cert` and `recover_node_pubkey`
-pub struct TlsVerifier;
+pub struct TlsVerifier<ST: CertificateSignatureRecoverable>(PhantomData<ST>);
 
-impl TlsVerifier {
+impl<ST: CertificateSignatureRecoverable> Default for TlsVerifier<ST> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> TlsVerifier<ST> {
     const OID_MONAD_EXTENSION: [u64; 6] = [0, 1, 2, 3, 4, 5];
+
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Generates a random certificate, and signs it with node_keypair
     fn make_certificate(
-        node_keypair: &KeyPair,
+        node_keypair: &ST::KeyPairType,
     ) -> Result<(Certificate, rustls::PrivateKey), Box<dyn Error>> {
         let rcgen_key = rcgen::KeyPair::generate(RCGEN_SIGNATURE_SCHEME)?;
         let rustls_key = rustls::PrivateKey(rcgen_key.serialize_der());
 
-        let tls_key_signature = node_keypair.sign(&rcgen_key.public_key_der());
+        let tls_key_signature = ST::sign(&rcgen_key.public_key_der(), node_keypair);
 
         let mut params = rcgen::CertificateParams::new(Vec::new());
         params.alg = RCGEN_SIGNATURE_SCHEME;
@@ -62,7 +72,7 @@ impl TlsVerifier {
     }
 
     /// Generates a random certificate, and signs it with node_keypair
-    pub fn make_server_config(node_keypair: &KeyPair) -> rustls::ServerConfig {
+    pub fn make_server_config(node_keypair: &ST::KeyPairType) -> rustls::ServerConfig {
         let (certificate, cert_keypair) =
             Self::make_certificate(node_keypair).expect("making certificate should always succeed");
         rustls::ServerConfig::builder()
@@ -70,13 +80,13 @@ impl TlsVerifier {
             .with_safe_default_kx_groups()
             .with_protocol_versions(PROTOCOL_VERSIONS)
             .expect("server config shouldn't fail")
-            .with_client_cert_verifier(Arc::new(Self))
+            .with_client_cert_verifier(Arc::new(Self::new()))
             .with_single_cert(vec![certificate], cert_keypair)
             .expect("building ServerConfig should always succed")
     }
 
     /// Passing in a `tls_ed25519_key` of None will cause a random one to be generated
-    pub fn make_client_config(node_keypair: &KeyPair) -> rustls::ClientConfig {
+    pub fn make_client_config(node_keypair: &ST::KeyPairType) -> rustls::ClientConfig {
         let (certificate, cert_keypair) =
             Self::make_certificate(node_keypair).expect("making certificate should always succeed");
         rustls::ClientConfig::builder()
@@ -84,7 +94,7 @@ impl TlsVerifier {
             .with_safe_default_kx_groups()
             .with_protocol_versions(PROTOCOL_VERSIONS)
             .expect("client config shouldn't fail")
-            .with_custom_certificate_verifier(Arc::new(Self))
+            .with_custom_certificate_verifier(Arc::new(Self::new()))
             .with_client_auth_cert(vec![certificate], cert_keypair)
             .expect("building ClientConfig should always succeed")
     }
@@ -127,7 +137,9 @@ impl TlsVerifier {
 
     /// Fetch the validator pubkey attached to the certificate
     /// Does not verify that this pubkey signs over the certificate
-    pub fn recover_node_pubkey(cert: &X509Certificate<'_>) -> Result<PubKey, rustls::Error> {
+    pub fn recover_node_pubkey(
+        cert: &X509Certificate<'_>,
+    ) -> Result<CertificateSignaturePubKey<ST>, rustls::Error> {
         // only 1 extension - the one containing the key is allowed
         if cert.extensions().len() != 1 {
             return Err(rustls::Error::InvalidCertificate(
@@ -143,7 +155,7 @@ impl TlsVerifier {
             ));
         }
 
-        let signature = SecpSignature::deserialize(extension.value).map_err(|_err| {
+        let signature = ST::deserialize(extension.value).map_err(|_err| {
             rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
         })?;
 
@@ -173,7 +185,7 @@ impl TlsVerifier {
     }
 }
 
-impl ClientCertVerifier for TlsVerifier {
+impl<ST: CertificateSignatureRecoverable> ClientCertVerifier for TlsVerifier<ST> {
     /// Certificates are self-signed, so this can be blank
     fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
         &[]
@@ -224,7 +236,7 @@ impl ClientCertVerifier for TlsVerifier {
     }
 }
 
-impl ServerCertVerifier for TlsVerifier {
+impl<ST: CertificateSignatureRecoverable> ServerCertVerifier for TlsVerifier<ST> {
     fn verify_server_cert(
         &self,
         end_entity: &Certificate,

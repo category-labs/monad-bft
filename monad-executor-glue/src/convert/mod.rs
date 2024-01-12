@@ -1,23 +1,18 @@
-use monad_consensus_types::{
-    message_signature::MessageSignature,
-    signature_collection::{SignatureCollection, SignatureCollectionPubKeyType},
-    validator_data::ValidatorData,
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_proto::{error::ProtoError, proto::event::*};
+use monad_types::{
+    convert::{proto_to_pubkey, pubkey_to_proto},
+    TimeoutVariant,
 };
-use monad_proto::{
-    error::ProtoError,
-    proto::{basic::ProtoPubkey, event::*, validator_data::ProtoValidatorData},
-};
-use monad_types::TimeoutVariant;
 
 use crate::ConsensusEvent;
 
 pub mod event;
 pub mod interface;
 
-impl<S: MessageSignature, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
+impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&ConsensusEvent<S, SCT>>
     for ProtoConsensusEvent
-where
-    for<'a> &'a SignatureCollectionPubKeyType<SCT>: Into<ProtoPubkey>,
 {
     fn from(value: &ConsensusEvent<S, SCT>) -> Self {
         let event = match value {
@@ -25,7 +20,7 @@ where
                 sender,
                 unverified_message,
             } => proto_consensus_event::Event::Message(ProtoMessageWithSender {
-                sender: Some(sender.into()),
+                sender: Some(pubkey_to_proto(sender)),
                 unverified_message: Some(unverified_message.into()),
             }),
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
@@ -56,7 +51,7 @@ where
                 sender,
                 unvalidated_response,
             } => proto_consensus_event::Event::BlockSyncResp(ProtoBlockSyncResponseWithSender {
-                sender: Some(sender.into()),
+                sender: Some(pubkey_to_proto(sender)),
                 response: Some(unvalidated_response.into()),
             }),
         };
@@ -64,22 +59,17 @@ where
     }
 }
 
-impl<S: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
+impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<ProtoConsensusEvent>
     for ConsensusEvent<S, SCT>
-where
-    ValidatorData<SCT>: TryFrom<ProtoValidatorData, Error = ProtoError>,
 {
     type Error = ProtoError;
 
     fn try_from(value: ProtoConsensusEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(proto_consensus_event::Event::Message(msg)) => ConsensusEvent::Message {
-                sender: msg
-                    .sender
-                    .ok_or(ProtoError::MissingRequiredField(
-                        "ConsensusEvent::message.sender".to_owned(),
-                    ))?
-                    .try_into()?,
+                sender: proto_to_pubkey(msg.sender.ok_or(ProtoError::MissingRequiredField(
+                    "ConsensusEvent::message.sender".to_owned(),
+                ))?)?,
                 unverified_message: msg
                     .unverified_message
                     .ok_or(ProtoError::MissingRequiredField(
@@ -122,12 +112,10 @@ where
                 ConsensusEvent::StateUpdate((s, h))
             }
             Some(proto_consensus_event::Event::BlockSyncResp(event)) => {
-                let sender = event
-                    .sender
-                    .ok_or(ProtoError::MissingRequiredField(
+                let sender =
+                    proto_to_pubkey(event.sender.ok_or(ProtoError::MissingRequiredField(
                         "ConsensusEvent::BlockSyncResp::sender".to_owned(),
-                    ))?
-                    .try_into()?;
+                    ))?)?;
 
                 let unvalidated_response = event
                     .response

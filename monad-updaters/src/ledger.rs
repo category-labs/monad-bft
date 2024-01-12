@@ -8,6 +8,7 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::block::BlockType;
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor::Executor;
 use monad_executor_glue::LedgerCommand;
 use monad_types::{BlockId, NodeId};
@@ -17,14 +18,14 @@ use tracing::warn;
 /// Purpose of the ledger is to have retrievable committed blocks to
 /// respond the BlockSync requests
 /// MockLedger stores the ledger in memory and is only expected to be used in testing
-pub struct MockLedger<O: BlockType, E> {
+pub struct MockLedger<PT: PubKey, O: BlockType, E> {
     blockchain: Vec<O>,
     block_index: HashMap<BlockId, usize>,
-    ledger_fetches: HashMap<(NodeId, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
+    ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
 }
 
-impl<O: BlockType, E> Default for MockLedger<O, E> {
+impl<PT: PubKey, O: BlockType, E> Default for MockLedger<PT, O, E> {
     fn default() -> Self {
         Self {
             blockchain: Vec::new(),
@@ -35,8 +36,8 @@ impl<O: BlockType, E> Default for MockLedger<O, E> {
     }
 }
 
-impl<O: BlockType, E> Executor for MockLedger<O, E> {
-    type Command = LedgerCommand<O, E>;
+impl<PT: PubKey, O: BlockType, E> Executor for MockLedger<PT, O, E> {
+    type Command = LedgerCommand<PT, O, E>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
@@ -79,7 +80,7 @@ impl<O: BlockType, E> Executor for MockLedger<O, E> {
     }
 }
 
-impl<O: BlockType, E> Stream for MockLedger<O, E>
+impl<PT: PubKey, O: BlockType, E> Stream for MockLedger<PT, O, E>
 where
     Self: Unpin,
 {
@@ -103,7 +104,7 @@ where
     }
 }
 
-impl<O: BlockType, E> MockLedger<O, E> {
+impl<PT: PubKey, O: BlockType, E> MockLedger<PT, O, E> {
     pub fn ready(&self) -> bool {
         !self.ledger_fetches.is_empty()
     }
@@ -120,7 +121,11 @@ mod tests {
     };
 
     use futures::{FutureExt, StreamExt};
-    use monad_crypto::hasher::Hash;
+    use monad_crypto::{
+        certificate_signature::{CertificateSignaturePubKey, PubKey},
+        hasher::Hash,
+        NopSignature,
+    };
     use monad_executor::Executor;
     use monad_executor_glue::LedgerCommand;
     use monad_testutil::{block::MockBlock, signing::get_key};
@@ -131,11 +136,14 @@ mod tests {
 
     use crate::ledger::MockLedger;
 
+    type SignatureType = NopSignature;
+    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+
     #[derive(Debug, PartialEq, Eq)]
-    struct MockLedgerEvent {
-        pub requester: NodeId,
+    struct MockLedgerEvent<PT: PubKey> {
+        pub requester: NodeId<PT>,
         pub bid: BlockId,
-        pub block: Option<MockBlock>,
+        pub block: Option<MockBlock<PT>>,
     }
 
     #[test]
@@ -166,20 +174,21 @@ mod tests {
 
     #[test]
     fn test_basic_stream_functionality() {
-        let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
+        let mut mock_ledger =
+            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
-        let block = MockBlock {
-            block_id: monad_types::BlockId(Hash([0x00_u8; 32])),
-            parent_block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
-        };
+        let block = MockBlock::<PubKeyType>::new(
+            monad_types::BlockId(Hash([0x00_u8; 32])),
+            monad_types::BlockId(Hash([0x01_u8; 32])),
+        );
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![block])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
-            monad_types::NodeId(get_key(0).pubkey()),
+            monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
             monad_types::BlockId(Hash([0x00_u8; 32])),
-            Box::new(|block: Option<MockBlock>| MockLedgerEvent {
-                requester: monad_types::NodeId(get_key(0).pubkey()),
+            Box::new(|block: Option<MockBlock<_>>| MockLedgerEvent {
+                requester: monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
                 bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
@@ -199,33 +208,34 @@ mod tests {
 
     #[test]
     fn test_seeking_exist() {
-        let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
+        let mut mock_ledger =
+            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x00_u8; 32])),
-            },
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
-            },
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
-            },
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x04_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
-            },
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x01_u8; 32])),
+                monad_types::BlockId(Hash([0x00_u8; 32])),
+            ),
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x02_u8; 32])),
+                monad_types::BlockId(Hash([0x01_u8; 32])),
+            ),
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x03_u8; 32])),
+                monad_types::BlockId(Hash([0x02_u8; 32])),
+            ),
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x04_u8; 32])),
+                monad_types::BlockId(Hash([0x03_u8; 32])),
+            ),
         ])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
-            monad_types::NodeId(get_key(0).pubkey()),
+            monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
             monad_types::BlockId(Hash([0x02_u8; 32])),
-            Box::new(|block: Option<MockBlock>| MockLedgerEvent {
-                requester: monad_types::NodeId(get_key(0).pubkey()),
+            Box::new(|block: Option<MockBlock<_>>| MockLedgerEvent {
+                requester: monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
                 bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
@@ -244,10 +254,10 @@ mod tests {
 
         // similarly, calling retrieve again always be viable
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
-            monad_types::NodeId(get_key(0).pubkey()),
+            monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
             monad_types::BlockId(Hash([0x02_u8; 32])),
-            Box::new(|block: Option<MockBlock>| MockLedgerEvent {
-                requester: monad_types::NodeId(get_key(0).pubkey()),
+            Box::new(|block: Option<MockBlock<_>>| MockLedgerEvent {
+                requester: monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
                 bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
@@ -266,34 +276,35 @@ mod tests {
     }
     #[test]
     fn test_seeking_non_exist() {
-        let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
+        let mut mock_ledger =
+            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
 
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x00_u8; 32])),
-            },
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x01_u8; 32])),
-            },
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x02_u8; 32])),
-            },
-            MockBlock {
-                block_id: monad_types::BlockId(Hash([0x04_u8; 32])),
-                parent_block_id: monad_types::BlockId(Hash([0x03_u8; 32])),
-            },
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x01_u8; 32])),
+                monad_types::BlockId(Hash([0x00_u8; 32])),
+            ),
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x02_u8; 32])),
+                monad_types::BlockId(Hash([0x01_u8; 32])),
+            ),
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x03_u8; 32])),
+                monad_types::BlockId(Hash([0x02_u8; 32])),
+            ),
+            MockBlock::new(
+                monad_types::BlockId(Hash([0x04_u8; 32])),
+                monad_types::BlockId(Hash([0x03_u8; 32])),
+            ),
         ])]);
         assert_eq!(mock_ledger.next().now_or_never(), None); // ledger commit shouldn't cause any event
 
         mock_ledger.exec(vec![LedgerCommand::LedgerFetch(
-            monad_types::NodeId(get_key(0).pubkey()),
+            monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
             monad_types::BlockId(Hash([0x10_u8; 32])),
-            Box::new(|block: Option<MockBlock>| MockLedgerEvent {
-                requester: monad_types::NodeId(get_key(0).pubkey()),
+            Box::new(|block: Option<MockBlock<_>>| MockLedgerEvent {
+                requester: monad_types::NodeId::new(get_key::<SignatureType>(0).pubkey()),
                 bid: monad_types::BlockId(Hash([0x00_u8; 32])),
                 block,
             }),
@@ -322,17 +333,22 @@ mod tests {
         assert!(node_req_range > 0);
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let poll_pref = rng.gen_range(0.0..1.0);
-        let mut mock_ledger = MockLedger::<MockBlock, MockLedgerEvent>::default();
+        let mut mock_ledger =
+            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
 
         let blocks: Vec<_> = (1..40_u8)
-            .map(|seed| MockBlock {
-                block_id: monad_types::BlockId(Hash([seed; 32])),
-                parent_block_id: monad_types::BlockId(Hash([seed - 1; 32])),
+            .map(|seed| {
+                MockBlock::<PubKeyType>::new(
+                    monad_types::BlockId(Hash([seed; 32])),
+                    monad_types::BlockId(Hash([seed - 1; 32])),
+                )
             })
             .collect();
 
-        let pub_keys: Vec<_> = (0..100).map(|i| get_key(i).pubkey()).collect();
+        let pub_keys: Vec<_> = (0..100)
+            .map(|i| get_key::<SignatureType>(i).pubkey())
+            .collect();
         let mut callback_map = HashMap::new();
         let mut inserted_block = HashSet::new();
         let mut requests = pub_keys.into_iter().fold(vec![], |mut reqs, key| {
@@ -341,11 +357,11 @@ mod tests {
                     .choose(&mut rng)
                     .expect("at least 1 element is within blocks")
                     .block_id;
-                let node_id = monad_types::NodeId(key);
+                let node_id = monad_types::NodeId::new(key);
                 reqs.push(LedgerCommand::LedgerFetch(
                     node_id,
                     bid,
-                    Box::new(move |block: Option<MockBlock>| MockLedgerEvent {
+                    Box::new(move |block: Option<MockBlock<_>>| MockLedgerEvent {
                         requester: node_id,
                         bid,
                         block,

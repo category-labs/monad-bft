@@ -50,7 +50,10 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
 
 // TODO-2: Review integration with execution team
 /// Use data from the MonadBlock to generate an Ethereum Header
-fn generate_header<SCT>(monad_block: MonadBlock<SCT>, block_body: &BlockBody) -> Header {
+fn generate_header<SCT: SignatureCollection>(
+    monad_block: MonadBlock<SCT>,
+    block_body: &BlockBody,
+) -> Header {
     let ExecutionArtifacts {
         parent_hash,
         state_root,
@@ -111,7 +114,7 @@ mod test {
         let pubkey = KeyPair::from_bytes(&mut [127; 32]).unwrap().pubkey();
 
         let block = Block::<MultiSig<NopSignature>>::new(
-            NodeId(pubkey),
+            NodeId::new(pubkey),
             Round(0),
             &Payload {
                 txns: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),

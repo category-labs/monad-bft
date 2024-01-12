@@ -6,8 +6,10 @@ use std::{
 
 use bytes::Buf;
 use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
     hasher::{Hasher, HasherType},
-    secp256k1::KeyPair,
 };
 use monad_transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
 use monad_types::{NodeId, RouterTarget};
@@ -16,15 +18,16 @@ use rand::Rng;
 use super::{Gossip, GossipEvent};
 use crate::{AppMessage, ConnectionManager, ConnectionManagerEvent};
 
-struct Node<G> {
+struct Node<G: Gossip> {
     connection_manager: ConnectionManager<G>,
-    pipeline: BytesTransformerPipeline,
+    pipeline: BytesTransformerPipeline<G::NodeIdPubKey>,
 }
 
-pub struct Swarm<G> {
+pub struct Swarm<G: Gossip> {
     current_tick: Duration,
-    nodes: BTreeMap<NodeId, Node<G>>,
-    pending_inbound_messages: BinaryHeap<Reverse<(Duration, usize, LinkMessage<AppMessage>)>>,
+    nodes: BTreeMap<NodeId<G::NodeIdPubKey>, Node<G>>,
+    pending_inbound_messages:
+        BinaryHeap<Reverse<(Duration, usize, LinkMessage<G::NodeIdPubKey, AppMessage>)>>,
     seq_no: usize,
 }
 
@@ -35,7 +38,15 @@ pub enum SwarmEventType {
 }
 
 impl<G: Gossip> Swarm<G> {
-    pub fn new(configs: impl Iterator<Item = (NodeId, G, BytesTransformerPipeline)>) -> Self {
+    pub fn new(
+        configs: impl Iterator<
+            Item = (
+                NodeId<G::NodeIdPubKey>,
+                G,
+                BytesTransformerPipeline<G::NodeIdPubKey>,
+            ),
+        >,
+    ) -> Self {
         let mut nodes: BTreeMap<_, _> = configs
             .map(|(peer_id, gossip, pipeline)| {
                 (
@@ -48,10 +59,10 @@ impl<G: Gossip> Swarm<G> {
             })
             .collect();
 
-        let peers: Vec<NodeId> = nodes.keys().copied().collect();
+        let peers: Vec<NodeId<_>> = nodes.keys().copied().collect();
 
         for (id, node) in &mut nodes {
-            for (idx, peer) in peers.iter().filter(|peer| &id != peer).enumerate() {
+            for peer in peers.iter().filter(|peer| &id != peer) {
                 node.connection_manager.connected(Duration::ZERO, *peer)
             }
         }
@@ -64,7 +75,12 @@ impl<G: Gossip> Swarm<G> {
         }
     }
 
-    pub fn send(&mut self, from: &NodeId, to: RouterTarget, message: AppMessage) {
+    pub fn send(
+        &mut self,
+        from: &NodeId<G::NodeIdPubKey>,
+        to: RouterTarget<G::NodeIdPubKey>,
+        message: AppMessage,
+    ) {
         self.nodes
             .get_mut(from)
             .expect("peer doesn't exist")
@@ -72,7 +88,7 @@ impl<G: Gossip> Swarm<G> {
             .send(self.current_tick, to, message)
     }
 
-    pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, NodeId)> {
+    pub fn peek_event(&self) -> Option<(Duration, SwarmEventType, NodeId<G::NodeIdPubKey>)> {
         self.nodes
             .iter()
             .filter_map(|(id, node)| {
@@ -97,7 +113,11 @@ impl<G: Gossip> Swarm<G> {
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<(Duration, NodeId, (NodeId, AppMessage))> {
+    ) -> Option<(
+        Duration,
+        NodeId<G::NodeIdPubKey>,
+        (NodeId<G::NodeIdPubKey>, AppMessage),
+    )> {
         while let Some((tick, event_type, id)) = self.peek_event() {
             if tick > until {
                 break;
@@ -109,7 +129,7 @@ impl<G: Gossip> Swarm<G> {
                     let connection_manager_event = node.connection_manager.poll(tick);
                     match connection_manager_event {
                         None => continue,
-                        Some(ConnectionManagerEvent::RequestConnect(to)) => {
+                        Some(ConnectionManagerEvent::RequestConnect(_to)) => {
                             todo!("multiple connections not supported")
                         }
                         Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
@@ -170,10 +190,16 @@ impl<G: Gossip> Swarm<G> {
     }
 }
 
-pub fn make_swarm<G: Gossip>(
+pub fn make_swarm<
+    ST: CertificateSignatureRecoverable,
+    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+>(
     num_nodes: u16,
-    make_gossip: impl Fn(&[NodeId], &NodeId) -> G,
-    make_transformer: impl Fn(&[NodeId], &NodeId) -> BytesTransformerPipeline,
+    make_gossip: impl Fn(&[NodeId<G::NodeIdPubKey>], &NodeId<G::NodeIdPubKey>) -> G,
+    make_transformer: impl Fn(
+        &[NodeId<G::NodeIdPubKey>],
+        &NodeId<G::NodeIdPubKey>,
+    ) -> BytesTransformerPipeline<G::NodeIdPubKey>,
 ) -> Swarm<G> {
     let peers: Vec<_> = (1_u32..)
         .take(num_nodes.into())
@@ -183,8 +209,8 @@ pub fn make_swarm<G: Gossip>(
                 hasher.update(idx.to_le_bytes());
                 hasher.hash().0
             };
-            let keypair = KeyPair::from_bytes(&mut secret).unwrap();
-            NodeId(keypair.pubkey())
+            let keypair = <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut secret).unwrap();
+            NodeId::new(keypair.pubkey())
         })
         .collect();
     Swarm::new(peers.iter().map(|node_id| {

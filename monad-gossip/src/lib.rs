@@ -2,6 +2,7 @@ use std::{ops::DerefMut, pin::Pin, time::Duration};
 
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
 
 pub mod broadcasttree;
@@ -22,14 +23,14 @@ type FragmentedGossipMessage = SegmentedBuf<Bytes>;
 type AppMessage = Bytes;
 
 #[derive(Debug)]
-pub enum GossipEvent {
+pub enum GossipEvent<PT: PubKey> {
     /// Send gossip_message to peer
     /// Delivery is not guaranteed (connection may sever at any point)
     /// Framing of each individual message is guaranteed
-    Send(NodeId, FragmentedGossipMessage),
+    Send(NodeId<PT>, FragmentedGossipMessage),
 
     /// Emit app_message to executor (NOTE: not gossip_message)
-    Emit(NodeId, AppMessage),
+    Emit(NodeId<PT>, AppMessage),
 }
 
 /// Gossip describes WHAT gossip messages get delivered (given application-level messages)
@@ -42,25 +43,27 @@ pub enum GossipEvent {
 /// `message` and `gossip_message` are both typed as bytes intentionally, because that's the atomic
 /// unit of transfer.
 pub trait Gossip {
+    type NodeIdPubKey: PubKey;
+
     /// Ask Gossip implementation to send given application message
     /// There are no delivery guarantees; the message may be dropped
     /// - for example, if the Gossip implementation can't find a valid Gossip::connected() path to
     ///   the recipient, this application_message will always be dropped, and a RequestConnect
     ///   event may be emitted
-    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage);
+    fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage);
 
     /// Handle gossip_message received from peer
     fn handle_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<Self::NodeIdPubKey>,
         gossip_message: GossipMessage,
     );
 
     fn peek_tick(&self) -> Option<Duration>;
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent>;
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>>;
 
-    fn boxed<'a>(self) -> BoxGossip<'a>
+    fn boxed<'a>(self) -> BoxGossip<'a, Self::NodeIdPubKey>
     where
         Self: Sized + Send + Unpin + 'a,
     {
@@ -69,14 +72,15 @@ pub trait Gossip {
 }
 
 impl<G: Gossip + ?Sized> Gossip for Box<G> {
-    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
+    type NodeIdPubKey = G::NodeIdPubKey;
+    fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         (**self).send(time, to, message)
     }
 
     fn handle_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<Self::NodeIdPubKey>,
         gossip_message: GossipMessage,
     ) {
         (**self).handle_gossip_message(time, from, gossip_message)
@@ -86,7 +90,7 @@ impl<G: Gossip + ?Sized> Gossip for Box<G> {
         (**self).peek_tick()
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
         (**self).poll(time)
     }
 }
@@ -96,14 +100,15 @@ where
     P: DerefMut,
     P::Target: Gossip + Unpin,
 {
-    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
+    type NodeIdPubKey = <P::Target as Gossip>::NodeIdPubKey;
+    fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         Pin::get_mut(Pin::as_mut(self)).send(time, to, message)
     }
 
     fn handle_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<Self::NodeIdPubKey>,
         gossip_message: GossipMessage,
     ) {
         Pin::get_mut(Pin::as_mut(self)).handle_gossip_message(time, from, gossip_message)
@@ -113,9 +118,9 @@ where
         Pin::get_ref(Pin::as_ref(self)).peek_tick()
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
         Pin::get_mut(Pin::as_mut(self)).poll(time)
     }
 }
 
-pub type BoxGossip<'a> = Pin<Box<dyn Gossip + Send + Unpin + 'a>>;
+pub type BoxGossip<'a, PT> = Pin<Box<dyn Gossip<NodeIdPubKey = PT> + Send + Unpin + 'a>>;

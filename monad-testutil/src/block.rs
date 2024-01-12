@@ -1,40 +1,63 @@
+use std::marker::PhantomData;
+
 use monad_consensus_types::{
     block::{Block, BlockType},
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::CommitResult,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
-use monad_crypto::hasher::{Hash, Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable, PubKey,
+    },
+    hasher::{Hash, Hasher, HasherType},
+};
 use monad_eth_types::EthAddress;
 use monad_types::{BlockId, NodeId, Round, SeqNum};
 
 // test utility if you only wish for simple block
 #[derive(Clone, PartialEq, Eq)]
-pub struct MockBlock {
+pub struct MockBlock<PT: PubKey> {
     pub block_id: BlockId,
     pub parent_block_id: BlockId,
+
+    _phantom: PhantomData<PT>,
 }
 
-impl Default for MockBlock {
-    fn default() -> Self {
-        MockBlock {
-            block_id: BlockId(Hash([0x00_u8; 32])),
-            parent_block_id: BlockId(Hash([0x01_u8; 32])),
+impl<PT: PubKey> MockBlock<PT> {
+    pub fn new(block_id: BlockId, parent_block_id: BlockId) -> Self {
+        Self {
+            block_id,
+            parent_block_id,
+
+            _phantom: PhantomData,
         }
     }
 }
 
-impl BlockType for MockBlock {
+impl<PT: PubKey> Default for MockBlock<PT> {
+    fn default() -> Self {
+        MockBlock {
+            block_id: BlockId(Hash([0x00_u8; 32])),
+            parent_block_id: BlockId(Hash([0x01_u8; 32])),
+
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<PT: PubKey> BlockType for MockBlock<PT> {
+    type NodeIdPubKey = PT;
     fn get_id(&self) -> BlockId {
         self.block_id
     }
     fn get_round(&self) -> Round {
         Round(1)
     }
-    fn get_author(&self) -> NodeId {
+    fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
         unimplemented!()
     }
 
@@ -50,21 +73,28 @@ impl BlockType for MockBlock {
     }
 }
 
-impl std::fmt::Debug for MockBlock {
+impl<PT: PubKey> std::fmt::Debug for MockBlock<PT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MockBlock").finish()
     }
 }
 
-pub fn setup_block<SCT: SignatureCollection>(
-    author: NodeId,
+pub fn setup_block<ST, SCT>(
+    author: NodeId<CertificateSignaturePubKey<ST>>,
     block_round: Round,
     qc_round: Round,
     txns: FullTransactionList,
     execution_header: ExecutionArtifacts,
     certkeys: &[SignatureCollectionKeyPairType<SCT>],
-    validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-) -> Block<SCT> {
+    validator_mapping: &ValidatorMapping<
+        CertificateSignaturePubKey<ST>,
+        SignatureCollectionKeyPairType<SCT>,
+    >,
+) -> Block<SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
         round: qc_round,

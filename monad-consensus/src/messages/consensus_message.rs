@@ -1,11 +1,9 @@
 use std::fmt::Debug;
 
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
-};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     hasher::{Hashable, Hasher},
-    secp256k1::KeyPair,
 };
 use monad_types::{EnumDiscriminant, Round};
 
@@ -70,10 +68,14 @@ impl<SCT> ConsensusMessage<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn sign<ST: MessageSignature>(
+    pub fn sign<ST>(
         self,
-        keypair: &KeyPair,
-    ) -> Verified<ST, Validated<ConsensusMessage<SCT>>> {
+        keypair: &ST::KeyPairType,
+    ) -> Verified<ST, Validated<ConsensusMessage<SCT>>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         Verified::new(Validated::new(self), keypair)
     }
 

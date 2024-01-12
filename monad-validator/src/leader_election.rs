@@ -14,7 +14,7 @@ pub trait LeaderElection {
         round: Round,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-    ) -> NodeId
+    ) -> NodeId<VT::NodeIdPubKey>
     where
         VT: ValidatorSetType,
         SCT: SignatureCollection;

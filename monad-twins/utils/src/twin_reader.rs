@@ -9,12 +9,13 @@ use std::{
 use itertools::{izip, Itertools};
 use monad_consensus_types::{
     block_validator::BlockValidator,
-    certificate_signature::CertificateKeyPair,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
 };
 use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
     hasher::{Hasher, HasherType},
-    secp256k1::KeyPair,
 };
 use monad_mock_swarm::{mock_swarm::ProgressTerminator, swarm_relation::SwarmRelation};
 use monad_state::MonadConfig;
@@ -56,15 +57,16 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<SCT, BVT>
+pub struct FullTwinsNodeConfig<ST, SCT, BVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
 {
-    id: ID,
-    state_config: MonadConfig<SCT, BVT>,
-    partition: BTreeMap<Round, Vec<ID>>,
-    default_partition: Vec<ID>,
+    id: ID<CertificateSignaturePubKey<ST>>,
+    state_config: MonadConfig<ST, SCT, BVT>,
+    partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
+    default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
     // some redundant info in case its useful for future
     key_secret: [u8; 32],
@@ -74,9 +76,10 @@ where
     is_honest: bool,
 }
 
-impl<SCT, BVT> Clone for FullTwinsNodeConfig<SCT, BVT>
+impl<ST, SCT, BVT> Clone for FullTwinsNodeConfig<ST, SCT, BVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
 {
     fn clone(&self) -> Self {
@@ -85,7 +88,7 @@ where
             state_config: MonadConfig {
                 transaction_validator: self.state_config.transaction_validator.clone(),
                 validators: self.state_config.validators.clone(),
-                key: KeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
+                key: CertificateKeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
                 certkey: SignatureCollectionKeyPairType::<SCT>::from_bytes(
                     &mut self.certkey_secret.clone(),
                 )
@@ -106,9 +109,10 @@ where
         }
     }
 }
-impl<SCT, BVT> Debug for FullTwinsNodeConfig<SCT, BVT>
+impl<ST, SCT, BVT> Debug for FullTwinsNodeConfig<ST, SCT, BVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -120,23 +124,25 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<SCT, BVT>
+pub struct TwinsNodeConfig<ST, SCT, BVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
 {
-    pub id: ID,
-    pub state_config: MonadConfig<SCT, BVT>,
-    pub partition: BTreeMap<Round, Vec<ID>>,
-    pub default_partition: Vec<ID>,
+    pub id: ID<CertificateSignaturePubKey<ST>>,
+    pub state_config: MonadConfig<ST, SCT, BVT>,
+    pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
+    pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<SCT, BVT> From<FullTwinsNodeConfig<SCT, BVT>> for TwinsNodeConfig<SCT, BVT>
+impl<ST, SCT, BVT> From<FullTwinsNodeConfig<ST, SCT, BVT>> for TwinsNodeConfig<ST, SCT, BVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
 {
-    fn from(value: FullTwinsNodeConfig<SCT, BVT>) -> Self {
+    fn from(value: FullTwinsNodeConfig<ST, SCT, BVT>) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -159,12 +165,15 @@ where
     S: SwarmRelation,
 {
     pub description: String,
-    pub terminator: ProgressTerminator,
+    pub terminator: ProgressTerminator<CertificateSignaturePubKey<S::SignatureType>>,
     pub delta: u64,
     pub allow_block_sync: bool,
     pub liveness: Option<usize>,
-    pub duplicates: BTreeMap<NodeId, Vec<usize>>,
-    pub nodes: BTreeMap<ID, TwinsNodeConfig<S::SignatureCollectionType, S::TransactionValidator>>,
+    pub duplicates: BTreeMap<NodeId<CertificateSignaturePubKey<S::SignatureType>>, Vec<usize>>,
+    pub nodes: BTreeMap<
+        ID<CertificateSignaturePubKey<S::SignatureType>>,
+        TwinsNodeConfig<S::SignatureType, S::SignatureCollectionType, S::TransactionValidator>,
+    >,
 }
 
 pub fn read_twins_test<S>(tvt: S::TransactionValidator, path: &str) -> TwinsTestCase<S>
@@ -199,7 +208,7 @@ where
     let keys = key_secrets
         .iter()
         .copied()
-        .map(|mut keypair| KeyPair::from_bytes(&mut keypair))
+        .map(|mut keypair| CertificateKeyPair::from_bytes(&mut keypair))
         .collect::<Result<Vec<_>, _>>()
         .expect("secp secret invalid");
     let certkeys: Vec<_> = certkey_secrets
@@ -209,8 +218,10 @@ where
         .collect::<Result<Vec<_>, _>>()
         .expect("secret is invalid when convert to cert-key");
 
-    let (_, validator_mapping) =
-        complete_keys_w_validators::<S::SignatureCollectionType>(&keys, &certkeys);
+    let (_, validator_mapping) = complete_keys_w_validators::<
+        S::SignatureType,
+        S::SignatureCollectionType,
+    >(&keys, &certkeys);
     let (pubkeys, state_configs) = complete_config::<S::SignatureType, S::SignatureCollectionType, _>(
         tvt,
         keys,
@@ -233,7 +244,7 @@ where
         certkey_secrets,
         state_configs
     ) {
-        let pid = NodeId(pubkey);
+        let pid = NodeId::new(pubkey);
         let id = ID::new(pid).as_non_unique(TWINS_DEFAULT_IDENTIFIER);
         let expected_block = *expected_block.get(name).unwrap_or(&expected_block_default);
         nodes.insert(

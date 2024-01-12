@@ -4,11 +4,12 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block::BlockType,
     block_validator::BlockValidator,
-    message_signature::MessageSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{
     mock::MockExecutor,
@@ -35,7 +36,11 @@ pub struct SwarmTestConfig {
     pub epoch_start_delay: Round,
 }
 
-pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, BVT: BlockValidator>(
+pub fn get_configs<
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BVT: BlockValidator,
+>(
     tvt: BVT,
     num_nodes: u16,
     delta: Duration,
@@ -43,9 +48,12 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, BVT: BlockVal
     proposal_size: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT, BVT>>) {
+) -> (
+    Vec<CertificateSignaturePubKey<ST>>,
+    Vec<MonadConfig<ST, SCT, BVT>>,
+) {
     let (keys, cert_keys, _validators, validator_mapping) =
-        create_keys_w_validators::<SCT>(num_nodes as u32);
+        create_keys_w_validators::<ST, SCT>(num_nodes as u32);
     complete_config::<ST, SCT, BVT>(
         tvt,
         keys,
@@ -59,22 +67,31 @@ pub fn get_configs<ST: MessageSignature, SCT: SignatureCollection, BVT: BlockVal
     )
 }
 
-pub fn complete_config<ST: MessageSignature, SCT: SignatureCollection, BVT: BlockValidator>(
+pub fn complete_config<ST, SCT, BVT>(
     tvt: BVT,
-    keys: Vec<KeyPair>,
+    keys: Vec<ST::KeyPairType>,
     cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
-    validator_mapping: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    validator_mapping: ValidatorMapping<
+        CertificateSignaturePubKey<ST>,
+        SignatureCollectionKeyPairType<SCT>,
+    >,
     delta: Duration,
     state_root_delay: u64,
     proposal_txn_limit: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
-) -> (Vec<PubKey>, Vec<MonadConfig<SCT, BVT>>) {
-    let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
-    let voting_keys = keys
+) -> (
+    Vec<CertificateSignaturePubKey<ST>>,
+    Vec<MonadConfig<ST, SCT, BVT>>,
+)
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BVT: BlockValidator,
+{
+    let pubkeys = keys
         .iter()
-        .map(|k| NodeId(k.pubkey()))
-        .zip(cert_keys.iter())
+        .map(CertificateKeyPair::pubkey)
         .collect::<Vec<_>>();
 
     let state_configs = keys
@@ -90,7 +107,7 @@ pub fn complete_config<ST: MessageSignature, SCT: SignatureCollection, BVT: Bloc
             validators: validator_mapping
                 .map
                 .iter()
-                .map(|(node_id, sctpubkey)| (node_id.0, Stake(1), *sctpubkey))
+                .map(|(node_id, sctpubkey)| (node_id.pubkey(), Stake(1), *sctpubkey))
                 .collect::<Vec<_>>(),
             consensus_config: ConsensusConfig {
                 proposal_txn_limit,
@@ -148,7 +165,10 @@ where
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
+    R: Fn(
+        Vec<NodeId<CertificateSignaturePubKey<S::SignatureType>>>,
+        NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+    ) -> S::RouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let (peers, state_configs) =
@@ -175,8 +195,10 @@ where
 }
 
 pub fn run_nodes_until<S, R, T>(
-    pubkeys: Vec<PubKey>,
-    state_configs: Vec<MonadConfig<S::SignatureCollectionType, S::TransactionValidator>>,
+    pubkeys: Vec<CertificateSignaturePubKey<S::SignatureType>>,
+    state_configs: Vec<
+        MonadConfig<S::SignatureType, S::SignatureCollectionType, S::TransactionValidator>,
+    >,
     router_scheduler_config: R,
     logger_config: S::LoggerConfig,
     pipeline: S::Pipeline,
@@ -191,7 +213,10 @@ where
 
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    R: Fn(Vec<NodeId>, NodeId) -> S::RouterSchedulerConfig,
+    R: Fn(
+        Vec<NodeId<CertificateSignaturePubKey<S::SignatureType>>>,
+        NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+    ) -> S::RouterSchedulerConfig,
     T: NodesTerminator<S>,
 {
     let mut nodes = Nodes::<S>::new(
@@ -201,12 +226,12 @@ where
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    ID::new(NodeId(pubkey)),
+                    ID::new(NodeId::new(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
-                        pubkeys.iter().copied().map(NodeId).collect(),
-                        NodeId(pubkey),
+                        pubkeys.iter().copied().map(NodeId::new).collect(),
+                        NodeId::new(pubkey),
                     ),
                     pipeline.clone(),
                     seed,

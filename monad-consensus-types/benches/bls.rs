@@ -2,17 +2,22 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use monad_consensus_types::{
     bls::BlsSignatureCollection, signature_collection::SignatureCollection,
 };
-use monad_crypto::hasher::{Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
+    hasher::{Hasher, HasherType},
+    NopSignature,
+};
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::NodeId;
 
 const N: u32 = 1000;
 
-type SignatureCollectionType = BlsSignatureCollection;
+type SignatureType = NopSignature;
+type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let (keys, certkeys, _, validator_mapping) =
-        create_keys_w_validators::<SignatureCollectionType>(N);
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(N);
     let mut hasher = HasherType::new();
     hasher.update(b"hello world");
     let data = hasher.hash();
@@ -21,7 +26,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("bls_sign", |b| b.iter(|| certkeys[0].sign(data.as_ref())));
 
     let mut sigs = Vec::new();
-    for (node_id, certkey) in keys.iter().map(|k| NodeId(k.pubkey())).zip(certkeys.iter()) {
+    for (node_id, certkey) in keys
+        .iter()
+        .map(|k| NodeId::new(k.pubkey()))
+        .zip(certkeys.iter())
+    {
         sigs.push((node_id, certkey.sign(data.as_ref())));
     }
 

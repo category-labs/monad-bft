@@ -88,9 +88,16 @@ pub struct TimeoutCertificate<SCT> {
 impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
     pub fn new(
         round: Round,
-        high_qc_round_sig_tuple: &[(NodeId, TimeoutInfo<SCT>, SCT::SignatureType)],
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    ) -> Result<Self, SignatureCollectionError<SCT::SignatureType>> {
+        high_qc_round_sig_tuple: &[(
+            NodeId<SCT::NodeIdPubKey>,
+            TimeoutInfo<SCT>,
+            SCT::SignatureType,
+        )],
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+    ) -> Result<Self, SignatureCollectionError<SCT::NodeIdPubKey, SCT::SignatureType>> {
         let mut sigs = HashMap::new();
         for (node_id, tmo_info, sig) in high_qc_round_sig_tuple {
             let high_qc_round = HighQcRound {

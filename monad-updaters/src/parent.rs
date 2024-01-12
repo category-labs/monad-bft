@@ -5,6 +5,7 @@ use std::{
 };
 
 use futures::{FutureExt, Stream, StreamExt};
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_executor::Executor;
 use monad_executor_glue::{
     CheckpointCommand, Command, ExecutionLedgerCommand, LedgerCommand, RouterCommand,
@@ -24,17 +25,18 @@ pub struct ParentExecutor<R, T, L, EL, C, S> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, EL, CE, SE, E, OM, B, C, S> Executor for ParentExecutor<RE, TE, LE, EL, CE, SE>
+impl<RE, TE, LE, EL, CE, SE, E, OM, B, C, SCT: SignatureCollection> Executor
+    for ParentExecutor<RE, TE, LE, EL, CE, SE>
 where
-    RE: Executor<Command = RouterCommand<OM>>,
+    RE: Executor<Command = RouterCommand<SCT::NodeIdPubKey, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
 
     CE: Executor<Command = CheckpointCommand<C>>,
-    LE: Executor<Command = LedgerCommand<B, E>>,
-    EL: Executor<Command = ExecutionLedgerCommand<S>>,
+    LE: Executor<Command = LedgerCommand<SCT::NodeIdPubKey, B, E>>,
+    EL: Executor<Command = ExecutionLedgerCommand<SCT>>,
     SE: Executor<Command = StateRootHashCommand<B>>,
 {
-    type Command = Command<E, OM, B, C, S>;
+    type Command = Command<E, OM, B, C, SCT>;
 
     fn replay(&mut self, commands: Vec<Self::Command>) {
         let _exec_span = tracing::info_span!("replay_span", num_cmds = commands.len()).entered();
@@ -54,7 +56,7 @@ where
         self.checkpoint.replay(checkpoint_cmds);
     }
 
-    fn exec(&mut self, commands: Vec<Command<E, OM, B, C, S>>) {
+    fn exec(&mut self, commands: Vec<Command<E, OM, B, C, SCT>>) {
         let _exec_span = tracing::info_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,

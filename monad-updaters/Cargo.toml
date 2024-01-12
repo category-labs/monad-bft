@@ -24,7 +24,7 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["time"], optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "time"], optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

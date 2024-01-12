@@ -8,7 +8,7 @@ mod test {
     use monad_consensus_types::{
         block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
     };
-    use monad_crypto::NopSignature;
+    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
     use monad_executor::{timed_event::TimedEvent, State};
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
@@ -42,18 +42,31 @@ mod test {
         type TransactionValidator = MockValidator;
 
         type State = MonadState<
-            ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+            ConsensusState<
+                Self::SignatureType,
+                Self::SignatureCollectionType,
+                Self::TransactionValidator,
+                StateRoot,
+            >,
             Self::SignatureType,
             Self::SignatureCollectionType,
-            ValidatorSet,
+            ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
             SimpleRoundRobin,
             MockTxPool,
         >;
 
-        type RouterSchedulerConfig = NoSerRouterConfig;
-        type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+        type RouterSchedulerConfig =
+            NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+        type RouterScheduler = NoSerRouterScheduler<
+            CertificateSignaturePubKey<Self::SignatureType>,
+            Self::InboundMessage,
+            Self::OutboundMessage,
+        >;
 
-        type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+        type Pipeline = GenericTransformerPipeline<
+            CertificateSignaturePubKey<Self::SignatureType>,
+            Self::TransportMessage,
+        >;
 
         type LoggerConfig = MockWALoggerConfig;
         type Logger = MockWALogger<
@@ -143,13 +156,13 @@ mod test {
                 .zip(state_configs)
                 .map(|(pubkey, state_config)| {
                     (
-                        ID::new(NodeId(pubkey)),
+                        ID::new(NodeId::new(pubkey)),
                         state_config,
                         MockWALoggerConfig,
                         NoSerRouterConfig {
-                            all_peers: pubkeys.iter().copied().map(NodeId).collect(),
+                            all_peers: pubkeys.iter().copied().map(NodeId::new).collect(),
                         },
-                        vec![GenericTransformer::Latency(LatencyTransformer(
+                        vec![GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(1),
                         ))],
                         1,
@@ -205,7 +218,7 @@ mod test {
             epoch_start_delay,
         );
 
-        let regular_pipeline = vec![GenericTransformer::Latency(LatencyTransformer(
+        let regular_pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))];
 
@@ -216,11 +229,11 @@ mod test {
                 .zip(state_configs)
                 .map(|(pubkey, state_config)| {
                     (
-                        ID::new(NodeId(pubkey)),
+                        ID::new(NodeId::new(pubkey)),
                         state_config,
                         MockWALoggerConfig,
                         NoSerRouterConfig {
-                            all_peers: pubkeys.iter().copied().map(NodeId).collect(),
+                            all_peers: pubkeys.iter().copied().map(NodeId::new).collect(),
                         },
                         regular_pipeline.clone(),
                         1,
@@ -241,9 +254,9 @@ mod test {
         let blackout_node_id = nodes.states().values().collect_vec().first().unwrap().id;
         let filter_one_node = HashSet::from([blackout_node_id]);
         let blackout_pipeline = vec![
-            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_one_node)),
-            GenericTransformer::Drop(DropTransformer()),
+            GenericTransformer::Drop(DropTransformer::new()),
         ];
         nodes.update_pipeline_for_all(blackout_pipeline);
 
@@ -296,7 +309,7 @@ mod test {
                 all_peers: all_peers.into_iter().collect(),
             },
             MockWALoggerConfig,
-            vec![GenericTransformer::Latency(LatencyTransformer(
+            vec![GenericTransformer::Latency(LatencyTransformer::new(
                 Duration::from_millis(1),
             ))],
             UntilTerminator::new().until_block(until_block),

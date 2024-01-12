@@ -3,7 +3,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::MockGossip;
@@ -28,19 +28,28 @@ impl SwarmRelation for QuicSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
-    type RouterScheduler =
-        QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig =
+        QuicRouterSchedulerConfig<MockGossip<CertificateSignaturePubKey<Self::SignatureType>>>;
+    type RouterScheduler = QuicRouterScheduler<
+        MockGossip<CertificateSignaturePubKey<Self::SignatureType>>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = BytesTransformerPipeline;
+    type Pipeline = BytesTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =

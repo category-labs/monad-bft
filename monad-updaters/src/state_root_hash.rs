@@ -7,10 +7,9 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    block::BlockType, message_signature::MessageSignature,
-    signature_collection::SignatureCollection, validator_data::ValidatorData,
+    block::BlockType, signature_collection::SignatureCollection, validator_data::ValidatorData,
 };
-use monad_crypto::hasher::Hash;
+use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::Executor;
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum, Stake};
@@ -53,7 +52,7 @@ pub struct MockStateRootHashNop<B, ST, SCT: SignatureCollection> {
 impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashNop<B, ST, SCT>
 where
     B: BlockType + Unpin,
-    ST: MessageSignature + Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
     type Block = B;
@@ -128,7 +127,7 @@ impl<B, ST, SCT> Stream for MockStateRootHashNop<B, ST, SCT>
 where
     Self: Unpin,
     B: BlockType + Unpin,
-    ST: MessageSignature + Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
     type Item = MonadEvent<ST, SCT>;
@@ -183,7 +182,7 @@ pub struct MockStateRootHashSwap<B, ST, SCT: SignatureCollection> {
 impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashSwap<B, ST, SCT>
 where
     B: BlockType + Unpin,
-    ST: MessageSignature + Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
     type Block = B;
@@ -276,7 +275,7 @@ impl<B, ST, SCT> Stream for MockStateRootHashSwap<B, ST, SCT>
 where
     Self: Unpin,
     B: BlockType + Unpin,
-    ST: MessageSignature + Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
     SCT: SignatureCollection + Unpin,
 {
     type Item = MonadEvent<ST, SCT>;

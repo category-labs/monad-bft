@@ -39,16 +39,16 @@ struct Root {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct BlockTree<T> {
+pub struct BlockTree<SCT: SignatureCollection> {
     /// The round and block_id of last committed block
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: HashMap<BlockId, Block<T>>,
+    tree: HashMap<BlockId, Block<SCT>>,
 }
 
-impl<T: SignatureCollection> BlockTree<T> {
-    pub fn new(root: QuorumCertificate<T>) -> Self {
+impl<SCT: SignatureCollection> BlockTree<SCT> {
+    pub fn new(root: QuorumCertificate<SCT>) -> Self {
         Self {
             root: Root {
                 round: root.info.get_round(),
@@ -79,9 +79,9 @@ impl<T: SignatureCollection> BlockTree<T> {
     /// - When prune is called on round `new_root` block, only round `n+1` block
     ///   is added (as `new_root`'s children) All the blocks that remains
     ///   shouldn't be pruned -> complete
-    pub fn prune(&mut self, new_root: &BlockId) -> Vec<Block<T>> {
+    pub fn prune(&mut self, new_root: &BlockId) -> Vec<Block<SCT>> {
         assert!(self.has_path_to_root(new_root));
-        let mut commit: Vec<Block<T>> = Vec::new();
+        let mut commit: Vec<Block<SCT>> = Vec::new();
 
         if new_root == &self.root.block_id {
             return commit;
@@ -125,7 +125,7 @@ impl<T: SignatureCollection> BlockTree<T> {
 
     /// Add a new block to the block tree if it's not in the tree and is higher
     /// than the root block's round number
-    pub fn add(&mut self, b: Block<T>) -> Result<()> {
+    pub fn add(&mut self, b: Block<SCT>) -> Result<()> {
         if !self.is_valid_to_insert(&b) {
             inc_count!(blocktree.add.duplicate);
             return Ok(());
@@ -138,7 +138,10 @@ impl<T: SignatureCollection> BlockTree<T> {
 
     /// Find the missing block along the path from `qc` to the tree root.
     /// Returns the QC certifying that block
-    pub fn get_missing_ancestor(&self, qc: &QuorumCertificate<T>) -> Option<QuorumCertificate<T>> {
+    pub fn get_missing_ancestor(
+        &self,
+        qc: &QuorumCertificate<SCT>,
+    ) -> Option<QuorumCertificate<SCT>> {
         if self.root.round >= qc.get_round() {
             return None;
         }
@@ -195,11 +198,11 @@ impl<T: SignatureCollection> BlockTree<T> {
 
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
-    pub fn is_valid_to_insert(&self, b: &Block<T>) -> bool {
+    pub fn is_valid_to_insert(&self, b: &Block<SCT>) -> bool {
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.round
     }
 
-    pub fn tree(&self) -> &HashMap<BlockId, Block<T>> {
+    pub fn tree(&self) -> &HashMap<BlockId, Block<SCT>> {
         &self.tree
     }
 
@@ -217,20 +220,32 @@ mod test {
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
-    use monad_crypto::{hasher::Hash, secp256k1::KeyPair};
+    use monad_crypto::{
+        certificate_signature::{
+            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        },
+        hasher::Hash,
+        NopSignature,
+    };
     use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     use super::BlockTree;
 
-    type Block = ConsensusBlock<MockSignatures>;
-    type QC = QuorumCertificate<MockSignatures>;
+    type SignatureType = NopSignature;
+    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+    type Block = ConsensusBlock<MockSignatures<PubKeyType>>;
+    type QC = QuorumCertificate<MockSignatures<PubKeyType>>;
 
-    fn node_id() -> NodeId {
+    fn node_id() -> NodeId<PubKeyType> {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-        NodeId(keypair.pubkey())
+        let keypair =
+            <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+                &mut privkey,
+            )
+            .unwrap();
+        NodeId::new(keypair.pubkey())
     }
 
     #[test]
@@ -413,7 +428,7 @@ mod test {
         //  b2    b5
         //        |
         //        b6
-        let mut blocktree = BlockTree::<MockSignatures>::new(QuorumCertificate::genesis_qc());
+        let mut blocktree = BlockTree::<MockSignatures<_>>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
 
         assert!(blocktree.add(b1.clone()).is_ok());

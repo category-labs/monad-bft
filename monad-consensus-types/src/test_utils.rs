@@ -1,9 +1,14 @@
-use monad_crypto::hasher::{Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
+    },
+    hasher::{Hasher, HasherType},
+};
 use monad_testutil::signing::create_keys;
 use monad_types::NodeId;
 
 use crate::{
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::ValidatorMapping,
 };
@@ -28,15 +33,21 @@ pub(crate) fn create_certificate_keys<SCT: SignatureCollection>(
     res
 }
 
-pub(crate) fn setup_sigcol_test<SCT: SignatureCollection>(
+pub(crate) fn setup_sigcol_test<
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+>(
     num: u32,
 ) -> (
-    Vec<(NodeId, SignatureCollectionKeyPairType<SCT>)>,
-    ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+    Vec<(
+        NodeId<SCT::NodeIdPubKey>,
+        SignatureCollectionKeyPairType<SCT>,
+    )>,
+    ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
 ) {
-    let node_ids = create_keys(num)
+    let node_ids = create_keys::<ST>(num)
         .into_iter()
-        .map(|k| NodeId(k.pubkey()))
+        .map(|k| NodeId::new(k.pubkey()))
         .collect::<Vec<_>>();
     let keys = create_certificate_keys::<SCT>(num);
 
@@ -54,8 +65,13 @@ pub(crate) fn setup_sigcol_test<SCT: SignatureCollection>(
 
 pub(crate) fn get_sigs<'a, SCT: SignatureCollection>(
     msg: &[u8],
-    iter: impl Iterator<Item = &'a (NodeId, SignatureCollectionKeyPairType<SCT>)>,
-) -> Vec<(NodeId, SCT::SignatureType)> {
+    iter: impl Iterator<
+        Item = &'a (
+            NodeId<SCT::NodeIdPubKey>,
+            SignatureCollectionKeyPairType<SCT>,
+        ),
+    >,
+) -> Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)> {
     let mut sigs = Vec::new();
     for (node_id, key) in iter {
         let sig = <SCT::SignatureType as CertificateSignature>::sign(msg, key);

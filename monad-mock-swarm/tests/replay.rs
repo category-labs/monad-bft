@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::BlockType, block_validator::MockValidator, multi_sig::MultiSig, payload::NopStateRoot,
 };
-use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, secp256k1::SecpSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
@@ -37,18 +37,30 @@ impl SwarmRelation for ReplaySwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, MockValidator, NopStateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            MockValidator,
+            NopStateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
+    >;
 
     type LoggerConfig = WALoggerConfig;
     type Logger =
@@ -107,13 +119,13 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs.clone())
         .map(|((a, b), c)| {
             (
-                ID::new(NodeId(a)),
+                ID::new(NodeId::new(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId::new(*pubkey)).collect(),
                 },
-                vec![GenericTransformer::XorLatency(XorLatencyTransformer(
+                vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
                     Duration::from_millis(u8::MAX as u64),
                 ))],
                 1,
@@ -166,13 +178,13 @@ pub fn recover_nodes_msg_delays(
         .zip(logger_configs)
         .map(|((a, b), c)| {
             (
-                ID::new(NodeId(a)),
+                ID::new(NodeId::new(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId::new(*pubkey)).collect(),
                 },
-                vec![GenericTransformer::Latency(LatencyTransformer(
+                vec![GenericTransformer::Latency(LatencyTransformer::new(
                     Duration::from_millis(1),
                 ))],
                 1,

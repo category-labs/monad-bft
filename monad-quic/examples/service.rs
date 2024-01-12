@@ -9,7 +9,9 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey, secp256k1::KeyPair, NopSignature,
+};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
@@ -35,6 +37,7 @@ pub fn main() {
         .unwrap();
     rt.block_on(service(args.addresses, 1, 5_000 * 32));
 }
+type SignatureType = NopSignature;
 
 async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
     assert!(
@@ -50,17 +53,18 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
         })
         .collect();
 
-    let peers: Vec<NodeId> = keys
+    let peers: Vec<NodeId<CertificateSignaturePubKey<SignatureType>>> = keys
         .iter()
-        .map(|keypair| NodeId(keypair.pubkey()))
+        .map(|keypair| NodeId::new(keypair.pubkey()))
         .collect();
 
-    let known_addresses: HashMap<NodeId, SocketAddr> = peers
-        .iter()
-        .copied()
-        .zip(addresses.into_iter())
-        .map(|(peer, address)| (peer, address.parse().unwrap()))
-        .collect();
+    let known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr> =
+        peers
+            .iter()
+            .copied()
+            .zip(addresses.into_iter())
+            .map(|(peer, address)| (peer, address.parse().unwrap()))
+            .collect();
 
     const MAX_RTT: Duration = Duration::from_millis(110);
     const BANDWIDTH_Mbps: u16 = 1_000;
@@ -68,14 +72,18 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     let mut services = keys
         .iter()
         .map(|key| {
-            let me = NodeId(key.pubkey());
+            let me = NodeId::new(key.pubkey());
             let server_address = *known_addresses.get(&me).unwrap();
             Service::new(
                 ServiceConfig {
                     me,
                     known_addresses: known_addresses.clone(),
                     server_address,
-                    quinn_config: SafeQuinnConfig::new(key, MAX_RTT, BANDWIDTH_Mbps),
+                    quinn_config: SafeQuinnConfig::<SignatureType>::new(
+                        key,
+                        MAX_RTT,
+                        BANDWIDTH_Mbps,
+                    ),
                 },
                 MockGossipConfig {
                     all_peers: peers.clone(),
@@ -84,7 +92,14 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                 .build(),
             )
         })
-        .collect::<Vec<Service<_, MockGossip, MockMessage, MockMessage>>>();
+        .collect::<Vec<
+            Service<
+                _,
+                MockGossip<CertificateSignaturePubKey<SignatureType>>,
+                MockMessage,
+                MockMessage,
+            >,
+        >>();
 
     // broadcast from first peer
     services[0].exec(vec![RouterCommand::Publish {
@@ -99,7 +114,7 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
         })
         .collect();
     // messages from first peer expected
-    let expected_messages: HashSet<(NodeId, u8)> = peers
+    let expected_messages: HashSet<(NodeId<CertificateSignaturePubKey<SignatureType>>, u8)> = peers
         .first()
         .iter()
         .copied()
@@ -184,9 +199,10 @@ impl MockMessage {
 }
 
 impl Message for MockMessage {
-    type Event = (NodeId, u8);
+    type NodeIdPubKey = CertificateSignaturePubKey<SignatureType>;
+    type Event = (NodeId<Self::NodeIdPubKey>, u8);
 
-    fn event(self, from: NodeId) -> Self::Event {
+    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
         (from, self.id)
     }
 }

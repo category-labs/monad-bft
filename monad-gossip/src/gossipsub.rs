@@ -5,8 +5,8 @@ use std::{
 
 use bytes::Buf;
 use monad_crypto::{
+    certificate_signature::PubKey,
     hasher::{Hash, Hasher, HasherType},
-    secp256k1::PubKey,
 };
 use monad_types::{NodeId, RouterTarget};
 use rand::{seq::IteratorRandom, SeedableRng};
@@ -16,15 +16,15 @@ use serde::{Deserialize, Serialize};
 use super::{Gossip, GossipEvent};
 use crate::{AppMessage, GossipMessage};
 
-pub struct UnsafeGossipsubConfig {
+pub struct UnsafeGossipsubConfig<PT: PubKey> {
     pub seed: [u8; 32],
-    pub me: NodeId,
-    pub all_peers: Vec<NodeId>,
+    pub me: NodeId<PT>,
+    pub all_peers: Vec<NodeId<PT>>,
     pub fanout: usize,
 }
 
-impl UnsafeGossipsubConfig {
-    pub fn build(self) -> UnsafeGossipsub {
+impl<PT: PubKey> UnsafeGossipsubConfig<PT> {
+    pub fn build(self) -> UnsafeGossipsub<PT> {
         UnsafeGossipsub {
             rng: ChaCha20Rng::from_seed(self.seed),
             config: self,
@@ -37,11 +37,11 @@ impl UnsafeGossipsubConfig {
     }
 }
 
-pub struct UnsafeGossipsub {
-    config: UnsafeGossipsubConfig,
+pub struct UnsafeGossipsub<PT: PubKey> {
+    config: UnsafeGossipsubConfig<PT>,
     rng: ChaCha20Rng,
 
-    events: VecDeque<GossipEvent>,
+    events: VecDeque<GossipEvent<PT>>,
     current_tick: Duration,
 
     /// Cache of received message_ids
@@ -63,9 +63,9 @@ struct MessageHeader {
 struct OuterHeader(u32);
 const OUTER_HEADER_SIZE: usize = std::mem::size_of::<OuterHeader>();
 
-impl UnsafeGossipsub {
+impl<PT: PubKey> UnsafeGossipsub<PT> {
     /// to must not be self
-    fn send_message(&mut self, to: NodeId, header: MessageHeader, message: AppMessage) {
+    fn send_message(&mut self, to: NodeId<PT>, header: MessageHeader, message: AppMessage) {
         assert_eq!(header.message_len, message.len() as u32);
         let header = bincode::serialize(&header).unwrap();
         let outer_header = bincode::serialize(&OuterHeader(header.len() as u32)).unwrap();
@@ -77,13 +77,13 @@ impl UnsafeGossipsub {
         self.events.push_back(GossipEvent::Send(to, gossip_message));
     }
 
-    fn handle_message(&mut self, from: NodeId, header: MessageHeader, message: AppMessage) {
+    fn handle_message(&mut self, from: NodeId<PT>, header: MessageHeader, message: AppMessage) {
         if self.message_cache.contains(&Hash(header.id)) {
             return;
         }
         self.message_cache.insert(Hash(header.id));
-        let creator = NodeId(
-            PubKey::from_slice(&header.creator).expect("invalid pubkey in GossipSub message"),
+        let creator = NodeId::new(
+            PT::from_bytes(&header.creator).expect("invalid pubkey in GossipSub message"),
         );
 
         if header.broadcast {
@@ -102,8 +102,10 @@ impl UnsafeGossipsub {
     }
 }
 
-impl Gossip for UnsafeGossipsub {
-    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
+impl<PT: PubKey> Gossip for UnsafeGossipsub<PT> {
+    type NodeIdPubKey = PT;
+
+    fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.current_tick = time;
         match to {
             // when self.handle_message is called, the broadcast actually happens
@@ -115,7 +117,7 @@ impl Gossip for UnsafeGossipsub {
                         hasher.update(&message);
                         hasher.hash().0
                     },
-                    creator: self.config.me.0.bytes(),
+                    creator: self.config.me.pubkey().bytes(),
                     broadcast: true,
                     message_len: message.len().try_into().unwrap(),
                 },
@@ -133,7 +135,7 @@ impl Gossip for UnsafeGossipsub {
                                 hasher.update(&message);
                                 hasher.hash().0
                             },
-                            creator: self.config.me.0.bytes(),
+                            creator: self.config.me.pubkey().bytes(),
                             broadcast: false,
                             message_len: message.len().try_into().unwrap(),
                         },
@@ -147,7 +149,7 @@ impl Gossip for UnsafeGossipsub {
     fn handle_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<Self::NodeIdPubKey>,
         mut gossip_message: GossipMessage,
     ) {
         let outer_header: OuterHeader =
@@ -171,7 +173,7 @@ impl Gossip for UnsafeGossipsub {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }
@@ -181,8 +183,13 @@ impl Gossip for UnsafeGossipsub {
 mod tests {
     use std::time::Duration;
 
-    use monad_crypto::hasher::{Hasher, HasherType};
+    use monad_crypto::{
+        certificate_signature::CertificateSignaturePubKey,
+        hasher::{Hasher, HasherType},
+        NopSignature,
+    };
     use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
+    use monad_types::NodeId;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -195,13 +202,13 @@ mod tests {
 
     #[test]
     fn test_framed_messages() {
-        let mut swarm = make_swarm(
+        let mut swarm = make_swarm::<NopSignature, _>(
             NUM_NODES,
-            |all_peers, me| {
+            |all_peers, me: &NodeId<CertificateSignaturePubKey<NopSignature>>| {
                 UnsafeGossipsubConfig {
                     seed: {
                         let mut hasher = HasherType::new();
-                        hasher.update(&me.0.bytes());
+                        hasher.update(&me.pubkey().bytes());
                         hasher.hash().0
                     },
                     me: *me,
@@ -211,7 +218,7 @@ mod tests {
                 .build()
             },
             |_all_peers, _me| {
-                vec![BytesTransformer::Latency(LatencyTransformer(
+                vec![BytesTransformer::Latency(LatencyTransformer::new(
                     Duration::from_millis(5),
                 ))]
             },
@@ -236,13 +243,13 @@ mod tests {
 
     #[test]
     fn test_split_messages() {
-        let mut swarm = make_swarm(
+        let mut swarm = make_swarm::<NopSignature, _>(
             NUM_NODES,
-            |all_peers, me| {
+            |all_peers, me: &NodeId<CertificateSignaturePubKey<NopSignature>>| {
                 UnsafeGossipsubConfig {
                     seed: {
                         let mut hasher = HasherType::new();
-                        hasher.update(&me.0.bytes());
+                        hasher.update(&me.pubkey().bytes());
                         hasher.hash().0
                     },
                     me: *me,
@@ -253,7 +260,7 @@ mod tests {
             },
             |_all_peers, _me| {
                 vec![
-                    BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
+                    BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(5))),
                     BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
                 ]
             },

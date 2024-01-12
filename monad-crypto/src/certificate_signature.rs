@@ -1,19 +1,34 @@
-use monad_crypto::{
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Debug,
+    hash::{Hash, Hasher},
+};
+
+use crate::{
     bls12_381::{BlsError, BlsKeyPair, BlsPubKey, BlsSignature},
     hasher::Hashable,
     secp256k1::{Error as SecpError, KeyPair as SecpKeyPair, PubKey as SecpPubKey, SecpSignature},
     NopSignature,
 };
 
-use crate::message_signature::MessageSignature;
+pub trait PubKey:
+    Debug + Eq + Hash + Ord + PartialOrd + Copy + Send + Sync + Unpin + 'static
+{
+    type Error: std::error::Error + Send + Sync;
+    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error>;
+    fn bytes(&self) -> Vec<u8>;
+}
 
 pub trait CertificateKeyPair: Send + Sized + Sync + 'static {
-    type PubKeyType: std::cmp::Eq + std::fmt::Debug + std::hash::Hash + Copy + Send + Unpin;
+    type PubKeyType: PubKey;
     type Error: std::error::Error + Send + Sync;
 
     fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error>;
     fn pubkey(&self) -> Self::PubKeyType;
 }
+
+pub type CertificateSignaturePubKey<T> =
+    <<T as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType;
 
 pub trait CertificateSignature:
     Copy + Clone + Eq + Hashable + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static
@@ -25,7 +40,7 @@ pub trait CertificateSignature:
     fn verify(
         &self,
         msg: &[u8],
-        pubkey: &<Self::KeyPairType as CertificateKeyPair>::PubKeyType,
+        pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error>;
 
     fn serialize(&self) -> Vec<u8>;
@@ -36,10 +51,19 @@ pub trait CertificateSignatureRecoverable: CertificateSignature {
     fn recover_pubkey(
         &self,
         msg: &[u8],
-    ) -> Result<
-        <<Self as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-        <Self as CertificateSignature>::Error,
-    >;
+    ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error>;
+}
+
+impl PubKey for SecpPubKey {
+    type Error = SecpError;
+
+    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_slice(pubkey)
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        SecpPubKey::bytes(self)
+    }
 }
 
 impl CertificateKeyPair for SecpKeyPair {
@@ -66,7 +90,7 @@ impl CertificateSignature for SecpSignature {
     fn verify(
         &self,
         msg: &[u8],
-        pubkey: &<Self::KeyPairType as CertificateKeyPair>::PubKeyType,
+        pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error> {
         pubkey.verify(msg, self)
     }
@@ -84,10 +108,7 @@ impl CertificateSignatureRecoverable for SecpSignature {
     fn recover_pubkey(
         &self,
         msg: &[u8],
-    ) -> Result<
-        <<Self as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-        <Self as CertificateSignature>::Error,
-    > {
+    ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error> {
         self.recover_pubkey(msg)
     }
 }
@@ -97,35 +118,56 @@ impl CertificateSignature for NopSignature {
     type Error = SecpError;
 
     fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
-        <Self as MessageSignature>::sign(msg, keypair)
+        let mut hasher = DefaultHasher::new();
+        hasher.write(msg);
+
+        NopSignature {
+            pubkey: keypair.pubkey(),
+            id: hasher.finish(),
+        }
     }
 
     fn verify(
         &self,
-        msg: &[u8],
-        pubkey: &<Self::KeyPairType as CertificateKeyPair>::PubKeyType,
+        _msg: &[u8],
+        _pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error> {
-        <Self as MessageSignature>::verify(self, msg, pubkey)
+        Ok(())
     }
 
     fn serialize(&self) -> Vec<u8> {
-        <Self as MessageSignature>::serialize(self)
+        self.id
+            .to_le_bytes()
+            .into_iter()
+            .chain(self.pubkey.bytes())
+            .collect()
     }
 
     fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
-        <Self as MessageSignature>::deserialize(signature)
+        let id = u64::from_le_bytes(signature[..8].try_into().unwrap());
+        let pubkey = SecpPubKey::from_slice(&signature[8..])?;
+        Ok(Self { pubkey, id })
     }
 }
 
 impl CertificateSignatureRecoverable for NopSignature {
     fn recover_pubkey(
         &self,
-        msg: &[u8],
-    ) -> Result<
-        <<Self as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
-        <Self as CertificateSignature>::Error,
-    > {
-        <Self as MessageSignature>::recover_pubkey(self, msg)
+        _msg: &[u8],
+    ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error> {
+        Ok(self.pubkey)
+    }
+}
+
+impl PubKey for BlsPubKey {
+    type Error = BlsError;
+
+    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
+        Self::deserialize(pubkey)
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        self.serialize()
     }
 }
 
@@ -153,7 +195,7 @@ impl CertificateSignature for BlsSignature {
     fn verify(
         &self,
         msg: &[u8],
-        pubkey: &<Self::KeyPairType as CertificateKeyPair>::PubKeyType,
+        pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error> {
         self.verify(msg, pubkey)
     }
@@ -171,24 +213,22 @@ impl CertificateSignature for BlsSignature {
 mod test {
     use std::ops::AddAssign;
 
-    use monad_crypto::{bls12_381::BlsSignature, secp256k1::SecpSignature};
-
     // valid certificate signature tests
     use crate::certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignatureRecoverable,
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
     };
+    use crate::{bls12_381::BlsSignature, secp256k1::SecpSignature};
     macro_rules! test_all_certificate_signature {
         ($test_name:ident, $test_code:block) => {
             mod $test_name {
-                use monad_crypto::{secp256k1::SecpSignature, NopSignature};
-
                 use super::*;
+                use crate::{secp256k1::SecpSignature, NopSignature};
 
                 fn invoke<T>()
                 where
                     T: CertificateSignature + std::fmt::Debug,
-                    <T::KeyPairType as CertificateKeyPair>::PubKeyType:
-                        std::cmp::Eq + std::fmt::Debug,
+                    CertificateSignaturePubKey<T>: std::cmp::Eq + std::fmt::Debug,
                 {
                     $test_code
                 }
@@ -214,15 +254,13 @@ mod test {
     macro_rules! test_all_certificate_signature_recoverable {
         ($test_name:ident, $test_code:block) => {
             mod $test_name {
-                use monad_crypto::{secp256k1::SecpSignature, NopSignature};
-
                 use super::*;
+                use crate::{secp256k1::SecpSignature, NopSignature};
 
                 fn invoke<T>()
                 where
                     T: CertificateSignatureRecoverable + std::fmt::Debug,
-                    <T::KeyPairType as CertificateKeyPair>::PubKeyType:
-                        std::cmp::Eq + std::fmt::Debug,
+                    CertificateSignaturePubKey<T>: std::cmp::Eq + std::fmt::Debug,
                 {
                     $test_code
                 }

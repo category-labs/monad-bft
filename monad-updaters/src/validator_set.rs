@@ -6,9 +6,9 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
-    validator_data::ValidatorData,
+    signature_collection::SignatureCollection, validator_data::ValidatorData,
 };
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_executor_glue::MonadEvent;
 use monad_types::{Epoch, SeqNum};
 
@@ -45,7 +45,7 @@ impl<ST, SCT: SignatureCollection> Default for ValidatorSetUpdater<ST, SCT> {
 impl<ST, SCT> Stream for ValidatorSetUpdater<ST, SCT>
 where
     Self: Unpin,
-    ST: MessageSignature,
+    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection,
 {
     type Item = MonadEvent<ST, SCT>;

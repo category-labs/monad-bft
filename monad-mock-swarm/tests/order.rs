@@ -53,7 +53,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-    let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
+    let first_node = ID::new(NodeId::new(*pubkeys.first().unwrap()));
 
     let mut filter_peers = HashSet::new();
     filter_peers.insert(first_node);
@@ -68,7 +68,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         },
         MockWALoggerConfig,
         vec![
-            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
             GenericTransformer::Partition(PartitionTransformer(filter_peers)),
             GenericTransformer::Replay(ReplayTransformer::new(
                 Duration::from_millis(500),

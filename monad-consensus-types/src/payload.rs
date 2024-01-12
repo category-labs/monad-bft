@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use monad_crypto::hasher::{Hash, Hashable, Hasher};
+use monad_crypto::{
+    certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+    hasher::{Hash, Hashable, Hasher},
+};
 use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
 use monad_types::{Round, SeqNum};
 use zerocopy::AsBytes;
-
-use crate::certificate_signature::{CertificateKeyPair, CertificateSignature};
 
 const BLOOM_SIZE: usize = 256;
 
@@ -148,7 +149,7 @@ impl RandaoReveal {
     pub fn verify<CS: CertificateSignature>(
         &self,
         round: Round,
-        pubkey: &<CS::KeyPairType as CertificateKeyPair>::PubKeyType,
+        pubkey: &CertificateSignaturePubKey<CS>,
     ) -> Result<(), CS::Error> {
         let sig = CS::deserialize(&self.0)?;
 

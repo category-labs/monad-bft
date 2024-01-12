@@ -55,7 +55,6 @@ impl<SCT: SignatureCollection> TryFrom<ProtoHighQcRoundSigColTuple>
         })
     }
 }
-
 impl<SCT: SignatureCollection> From<&TimeoutCertificate<SCT>> for ProtoTimeoutCertificate {
     fn from(value: &TimeoutCertificate<SCT>) -> Self {
         Self {

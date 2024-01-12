@@ -38,7 +38,7 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     /// only needs to be stored for the current round as timeout messages
     /// carry a QC which will be processed and advance the node to the
     /// highest known round
-    pending_timeouts: BTreeMap<NodeId, TimeoutMessage<SCT>>,
+    pending_timeouts: BTreeMap<NodeId<SCT::NodeIdPubKey>, TimeoutMessage<SCT>>,
 
     /// States for TimeoutMessage handling, ensures we only broadcast
     /// one message at each phase of handling
@@ -164,15 +164,21 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     /// has not done so before
     /// if 2f+1 timeout messages are received, create the Timeout Certificate
     #[must_use]
-    pub fn process_remote_timeout<VST: ValidatorSetType>(
+    pub fn process_remote_timeout<VST>(
         &mut self,
         validators: &VST,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         timeout_msg: TimeoutMessage<SCT>,
-    ) -> (Option<TimeoutCertificate<SCT>>, Vec<PacemakerCommand<SCT>>) {
+    ) -> (Option<TimeoutCertificate<SCT>>, Vec<PacemakerCommand<SCT>>)
+    where
+        VST: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let mut ret_commands = Vec::new();
 
         let tm_info = &timeout_msg.timeout.tminfo;
@@ -187,7 +193,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         // it's fine to overwrite if already exists
         self.pending_timeouts.insert(author, timeout_msg.clone());
 
-        let mut timeouts: Vec<NodeId> = self.pending_timeouts.keys().copied().collect();
+        let mut timeouts: Vec<NodeId<_>> = self.pending_timeouts.keys().copied().collect();
 
         if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
             // self.local_timeout_round emits PacemakerCommand::ScheduleReset
@@ -231,7 +237,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     #[must_use]
     fn handle_invalid_timeout(
         &mut self,
-        invalid_timeouts: Vec<(NodeId, SCT::SignatureType)>,
+        invalid_timeouts: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
     ) -> Vec<PacemakerCommand<SCT>> {
         for (node_id, sig) in invalid_timeouts {
             let removed = self.pending_timeouts.remove(&node_id);
@@ -278,7 +284,6 @@ mod test {
     use std::collections::HashSet;
 
     use monad_consensus_types::{
-        certificate_signature::CertificateSignature,
         ledger::CommitResult,
         multi_sig::MultiSig,
         quorum_certificate::QcInfo,
@@ -286,8 +291,9 @@ mod test {
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::{Hash, Hasher, HasherType},
-        secp256k1::{KeyPair, SecpSignature},
+        secp256k1::SecpSignature,
     };
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys},
@@ -299,13 +305,14 @@ mod test {
 
     use super::*;
 
-    type SignatureCollectionType = MultiSig<SecpSignature>;
+    type SignatureType = SecpSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
 
     fn get_high_qc<SCT: SignatureCollection>(
         qc_round: Round,
-        keys: &[KeyPair],
+        keys: &[SCT::NodeIdPubKey],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
-        valmap: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        valmap: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
     ) -> QuorumCertificate<SCT> {
         let vote_info = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
@@ -324,7 +331,7 @@ mod test {
 
         let mut sigs = Vec::new();
         for (key, certkey) in keys.iter().zip(certkeys.iter()) {
-            let node_id = NodeId(key.pubkey());
+            let node_id = NodeId::new(*key);
             let sig =
                 <SCT::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), certkey);
             sigs.push((node_id, sig));
@@ -365,9 +372,18 @@ mod test {
             Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
-        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) =
+            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
         let timeout_round = Round(1);
-        let high_qc = get_high_qc(Round(0), keys.as_slice(), certkeys.as_slice(), &vmap);
+        let high_qc = get_high_qc(
+            Round(0),
+            keys.iter()
+                .map(CertificateKeyPair::pubkey)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            certkeys.as_slice(),
+            &vmap,
+        );
 
         let tm0 = create_timeout_message(&certkeys[0], timeout_round, high_qc.clone(), true);
         let tm1 = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
@@ -379,7 +395,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[0].pubkey()),
+            NodeId::new(keys[0].pubkey()),
             tm0,
         );
         assert!(tc.is_none());
@@ -391,7 +407,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[1].pubkey()),
+            NodeId::new(keys[1].pubkey()),
             tm1,
         );
         assert_eq!(pacemaker.phase, PhaseHonest::One);
@@ -407,7 +423,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[2].pubkey()),
+            NodeId::new(keys[2].pubkey()),
             tm2,
         );
         assert_eq!(pacemaker.phase, PhaseHonest::Supermajority);
@@ -420,7 +436,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[3].pubkey()),
+            NodeId::new(keys[3].pubkey()),
             tm3,
         );
         assert!(tc.is_none());
@@ -433,9 +449,18 @@ mod test {
             Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
-        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) =
+            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
         let timeout_round = Round(1);
-        let high_qc = get_high_qc(Round(0), keys.as_slice(), certkeys.as_slice(), &vmap);
+        let high_qc = get_high_qc(
+            Round(0),
+            keys.iter()
+                .map(CertificateKeyPair::pubkey)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            certkeys.as_slice(),
+            &vmap,
+        );
 
         let tm0_valid = create_timeout_message(&certkeys[0], timeout_round, high_qc.clone(), true);
         let tm1_valid = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
@@ -447,7 +472,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[0].pubkey()),
+            NodeId::new(keys[0].pubkey()),
             tm0_valid,
         );
 
@@ -456,7 +481,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[1].pubkey()),
+            NodeId::new(keys[1].pubkey()),
             tm1_valid,
         );
 
@@ -465,7 +490,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[2].pubkey()),
+            NodeId::new(keys[2].pubkey()),
             tm2_invalid,
         );
         assert!(tc.is_none());
@@ -480,12 +505,12 @@ mod test {
             Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
-        let keys = create_keys(4);
+        let keys = create_keys::<SignatureType>(4);
         let certkeys = create_certificate_keys::<SignatureCollectionType>(4);
 
         let mut staking_list = keys
             .iter()
-            .map(|k| NodeId(k.pubkey()))
+            .map(|k| NodeId::new(k.pubkey()))
             .zip(std::iter::repeat(Stake(1)))
             .collect::<Vec<_>>();
 
@@ -499,7 +524,7 @@ mod test {
 
         let voting_identity = keys
             .iter()
-            .map(|k| NodeId(k.pubkey()))
+            .map(|k| NodeId::new(k.pubkey()))
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
@@ -507,7 +532,15 @@ mod test {
         let vmap = ValidatorMapping::new(voting_identity);
 
         let timeout_round = Round(1);
-        let high_qc = get_high_qc(Round(0), keys.as_slice(), certkeys.as_slice(), &vmap);
+        let high_qc = get_high_qc(
+            Round(0),
+            keys.iter()
+                .map(CertificateKeyPair::pubkey)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            certkeys.as_slice(),
+            &vmap,
+        );
 
         let tm0_invalid =
             create_timeout_message(&certkeys[0], timeout_round, high_qc.clone(), false);
@@ -519,7 +552,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[1].pubkey()),
+            NodeId::new(keys[1].pubkey()),
             tm1_valid,
         );
 
@@ -528,7 +561,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[0].pubkey()),
+            NodeId::new(keys[0].pubkey()),
             tm0_invalid,
         );
         assert!(tc.is_none());
@@ -541,7 +574,7 @@ mod test {
             &vmap,
             &mut safety,
             &high_qc,
-            NodeId(keys[2].pubkey()),
+            NodeId::new(keys[2].pubkey()),
             tm2_valid,
         );
         assert_eq!(pacemaker.phase, PhaseHonest::Supermajority);
@@ -560,7 +593,7 @@ mod test {
                 .unwrap()
                 .into_iter()
                 .collect::<HashSet<_>>(),
-            vec![NodeId(keys[1].pubkey()), NodeId(keys[2].pubkey())]
+            vec![NodeId::new(keys[1].pubkey()), NodeId::new(keys[2].pubkey())]
                 .into_iter()
                 .collect::<HashSet<_>>()
         );

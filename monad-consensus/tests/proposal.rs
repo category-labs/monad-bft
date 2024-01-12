@@ -11,8 +11,8 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    hasher::Hash,
-    secp256k1::{KeyPair, PubKey},
+    certificate_signature::CertificateSignaturePubKey, hasher::Hash, secp256k1::KeyPair,
+    NopSignature,
 };
 use monad_eth_types::EthAddress;
 use monad_testutil::{
@@ -26,14 +26,16 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-type SignatureCollectionType = MockSignatures;
+type SignatureType = NopSignature;
+type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+type SignatureCollectionType = MockSignatures<PubKeyType>;
 
 fn setup_block(
-    author: NodeId,
+    author: NodeId<PubKeyType>,
     block_round: Round,
     qc_round: Round,
-    signers: &[PubKey],
-) -> UnverifiedBlock<MockSignatures> {
+    signers: &[PubKeyType],
+) -> UnverifiedBlock<MockSignatures<PubKeyType>> {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
@@ -42,7 +44,7 @@ fn setup_block(
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let qc = QuorumCertificate::<MockSignatures>::new(
+    let qc = QuorumCertificate::<MockSignatures<PubKeyType>>::new(
         QcInfo {
             vote: Vote {
                 vote_info: vi,
@@ -52,7 +54,7 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    let b = Block::<MockSignatures>::new(
+    let b = Block::<MockSignatures<PubKeyType>>::new(
         author,
         block_round,
         &Payload {
@@ -69,12 +71,15 @@ fn setup_block(
 
 #[test]
 fn test_proposal_hash() {
-    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let (keypairs, _certkeys, vset, vmap) =
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(1);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
-        ValidatorsEpochMapping::default();
+    let mut val_epoch_map: ValidatorsEpochMapping<
+        ValidatorSet<PubKeyType>,
+        SignatureCollectionType,
+    > = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
-    let author = NodeId(keypairs[0].pubkey());
+    let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
@@ -99,11 +104,12 @@ fn test_proposal_hash() {
 
 #[test]
 fn test_proposal_missing_tc() {
-    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(1);
+    let (keypairs, _certkeys, vset, vmap) =
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(1);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
-    let author = NodeId(keypairs[0].pubkey());
+    let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
@@ -127,15 +133,18 @@ fn test_proposal_missing_tc() {
 
 #[test]
 fn test_proposal_author_not_sender() {
-    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<SignatureCollectionType>(2);
+    let (keypairs, _certkeys, vset, vmap) =
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(2);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
-        ValidatorsEpochMapping::default();
+    let mut val_epoch_map: ValidatorsEpochMapping<
+        ValidatorSet<PubKeyType>,
+        SignatureCollectionType,
+    > = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
 
     let author_keypair = &keypairs[0];
     let sender_keypair = &keypairs[1];
-    let author = NodeId(author_keypair.pubkey());
+    let author = NodeId::new(author_keypair.pubkey());
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
@@ -162,12 +171,12 @@ fn test_proposal_author_not_sender() {
 #[test]
 fn test_proposal_invalid_author() {
     let mut vlist = Vec::new();
-    let author_keypair = get_key(6);
-    let non_valdiator_keypair = get_key(7);
+    let author_keypair = get_key::<SignatureType>(6);
+    let non_valdiator_keypair = get_key::<SignatureType>(7);
 
-    vlist.push((NodeId(author_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(author_keypair.pubkey()), Stake(0)));
 
-    let author = NodeId(author_keypair.pubkey());
+    let author = NodeId::new(author_keypair.pubkey());
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
@@ -181,16 +190,18 @@ fn test_proposal_invalid_author() {
     let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
-    let vmap: ValidatorMapping<KeyPair> = ValidatorMapping::new(vec![(
-        NodeId(author_keypair.pubkey()),
+    let vmap: ValidatorMapping<PubKeyType, KeyPair> = ValidatorMapping::new(vec![(
+        NodeId::new(author_keypair.pubkey()),
         author_keypair.pubkey(),
     )]);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSet, SignatureCollectionType> =
-        ValidatorsEpochMapping::default();
+    let mut val_epoch_map: ValidatorsEpochMapping<
+        ValidatorSet<PubKeyType>,
+        SignatureCollectionType,
+    > = ValidatorsEpochMapping::default();
     val_epoch_map.insert(Epoch(1), vset, vmap);
     assert_eq!(
-        sp.verify(&epoch_manager, &val_epoch_map, &author.0)
+        sp.verify(&epoch_manager, &val_epoch_map, &author.pubkey())
             .unwrap_err(),
         Error::InvalidAuthor
     );
@@ -199,13 +210,13 @@ fn test_proposal_invalid_author() {
 #[test]
 fn test_proposal_invalid_qc() {
     let mut vlist = Vec::new();
-    let non_staked_keypair = get_key(6);
-    let staked_keypair = get_key(7);
+    let non_staked_keypair = get_key::<SignatureType>(6);
+    let staked_keypair = get_key::<SignatureType>(7);
 
-    vlist.push((NodeId(non_staked_keypair.pubkey()), Stake(0)));
-    vlist.push((NodeId(staked_keypair.pubkey()), Stake(1)));
+    vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
+    vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
 
-    let author = NodeId(non_staked_keypair.pubkey());
+    let author = NodeId::new(non_staked_keypair.pubkey());
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
@@ -218,9 +229,12 @@ fn test_proposal_invalid_qc() {
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
-        (NodeId(staked_keypair.pubkey()), staked_keypair.pubkey()),
         (
-            NodeId(non_staked_keypair.pubkey()),
+            NodeId::new(staked_keypair.pubkey()),
+            staked_keypair.pubkey(),
+        ),
+        (
+            NodeId::new(non_staked_keypair.pubkey()),
             non_staked_keypair.pubkey(),
         ),
     ]);

@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use monad_consensus_state::ConsensusProcess;
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection, txpool::TxPool,
+use monad_consensus_types::{signature_collection::SignatureCollection, txpool::TxPool};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_crypto::secp256k1::PubKey;
 use monad_executor::State;
 use monad_mock_swarm::{
     mock::MockExecutor,
@@ -56,7 +56,7 @@ where
     S: monad_executor::State,
 {
     fn max_tick(&self) -> Duration;
-    fn nodes(&self) -> Vec<(PubKey, S::Config)>;
+    fn nodes(&self) -> Vec<(CertificateSignaturePubKey<S::NodeIdSignature>, S::Config)>;
 }
 
 pub trait SimulationConfig<S>
@@ -67,7 +67,7 @@ where
     fn nodes(
         &self,
     ) -> Vec<(
-        ID,
+        ID<CertificateSignaturePubKey<S::SignatureType>>,
         <S::State as State>::Config,
         S::LoggerConfig,
         S::RouterSchedulerConfig,
@@ -93,13 +93,14 @@ where
     S: SwarmRelation<
         State = MonadState<CT, ST, SCT, VT, LT, TT>,
         TransportMessage = <S as SwarmRelation>::OutboundMessage,
+        SignatureType = ST,
     >,
     C: SimulationConfig<S>,
 
-    CT: ConsensusProcess<SCT> + PartialEq + Eq,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    CT: ConsensusProcess<ST, SCT> + PartialEq + Eq,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection,
     TT: TxPool,
 
@@ -137,13 +138,14 @@ where
     S: SwarmRelation<
         State = MonadState<CT, ST, SCT, VT, LT, TT>,
         TransportMessage = <S as SwarmRelation>::OutboundMessage,
+        SignatureType = ST,
     >,
     C: SimulationConfig<S>,
 
-    CT: ConsensusProcess<SCT> + PartialEq + Eq,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    CT: ConsensusProcess<ST, SCT> + PartialEq + Eq,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection,
     TT: TxPool,
 
@@ -152,7 +154,7 @@ where
 {
     type State = S::State;
     type InboundMessage = S::TransportMessage;
-    type NodeId = NodeId;
+    type NodeId = NodeId<CertificateSignaturePubKey<ST>>;
     type Swarm = S;
 
     fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {

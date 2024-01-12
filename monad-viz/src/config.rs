@@ -7,7 +7,7 @@ use iced::{
 use iced_lazy::Component;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::block_validator::MockValidator;
-use monad_crypto::secp256k1::KeyPair;
+use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_mock_swarm::swarm_relation::SwarmRelation;
@@ -52,7 +52,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
     fn nodes(
         &self,
     ) -> Vec<(
-        ID,
+        ID<CertificateSignaturePubKey<<VizSwarm as SwarmRelation>::SignatureType>>,
         MonadStateConfig,
         LoggerConfig,
         RouterSchedulerConfig,
@@ -60,10 +60,14 @@ impl SimulationConfig<VizSwarm> for SimConfig {
         u64,
     )> {
         let (keys, cert_keys, _validators, validator_mapping) = create_keys_w_validators::<
+            <VizSwarm as SwarmRelation>::SignatureType,
             <VizSwarm as SwarmRelation>::SignatureCollectionType,
         >(self.num_nodes);
 
-        let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+        let pubkeys = keys
+            .iter()
+            .map(CertificateKeyPair::pubkey)
+            .collect::<Vec<_>>();
 
         let state_configs = keys
             .into_iter()
@@ -78,7 +82,7 @@ impl SimulationConfig<VizSwarm> for SimConfig {
                 validators: validator_mapping
                     .map
                     .iter()
-                    .map(|(node_id, sctpubkey)| (node_id.0, Stake(1), *sctpubkey))
+                    .map(|(node_id, sctpubkey)| (node_id.pubkey(), Stake(1), *sctpubkey))
                     .collect::<Vec<_>>(),
 
                 consensus_config: ConsensusConfig {
@@ -97,11 +101,11 @@ impl SimulationConfig<VizSwarm> for SimConfig {
             .zip(state_configs)
             .map(|(a, b)| {
                 (
-                    ID::new(NodeId(a)),
+                    ID::new(NodeId::new(a)),
                     b,
                     LoggerConfig {},
                     RouterSchedulerConfig {
-                        all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
+                        all_peers: pubkeys.iter().map(|pubkey| NodeId::new(*pubkey)).collect(),
                     },
                     self.pipeline.clone(),
                     1,
@@ -174,36 +178,36 @@ where
         for idx in 0..self.config.pipeline.len() {
             let layer = &self.config.pipeline[idx];
             let element = match layer {
-                GenericTransformer::Latency(LatencyTransformer(latency)) => Column::new()
+                GenericTransformer::Latency(latency_transformer) => Column::new()
                     .push(Text::new(format!(
                         "({}) Latency Transformer: {}ms",
                         idx,
-                        latency.as_millis()
+                        latency_transformer.0.as_millis()
                     )))
                     .push(Slider::new(
                         0..=1_000,
-                        latency.as_millis() as u32,
+                        latency_transformer.0.as_millis() as u32,
                         move |l_ms: u32| {
                             let mut config = self.config.clone();
-                            config.pipeline[idx] = GenericTransformer::Latency(LatencyTransformer(
-                                Duration::from_millis(l_ms.into()),
-                            ));
+                            config.pipeline[idx] = GenericTransformer::Latency(
+                                LatencyTransformer::new(Duration::from_millis(l_ms.into())),
+                            );
                             config
                         },
                     )),
-                GenericTransformer::XorLatency(XorLatencyTransformer(latency)) => Column::new()
+                GenericTransformer::XorLatency(xor_latency_transformer) => Column::new()
                     .push(Text::new(format!(
                         "({}) XorLatency Transformer: {}ms",
                         idx,
-                        latency.as_millis()
+                        xor_latency_transformer.0.as_millis()
                     )))
                     .push(Slider::new(
                         0..=1_000,
-                        latency.as_millis() as u32,
+                        xor_latency_transformer.0.as_millis() as u32,
                         move |l_ms| {
                             let mut config = self.config.clone();
                             config.pipeline[idx] = GenericTransformer::XorLatency(
-                                XorLatencyTransformer(Duration::from_millis(l_ms.into())),
+                                XorLatencyTransformer::new(Duration::from_millis(l_ms.into())),
                             );
                             config
                         },

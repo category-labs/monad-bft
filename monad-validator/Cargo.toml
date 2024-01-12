@@ -10,10 +10,10 @@ bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
 monad-types = { path = "../monad-types" }
 
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-crypto = { path = "../monad-crypto" }
 monad-testutil = { path = "../monad-testutil" }

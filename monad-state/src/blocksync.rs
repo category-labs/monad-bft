@@ -2,8 +2,9 @@ use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
     validation::signing::Validated,
 };
-use monad_consensus_types::{
-    block::Block, message_signature::MessageSignature, signature_collection::SignatureCollection,
+use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{
     BlockSyncEvent, Command, FetchedBlock, LedgerCommand, MonadEvent, RouterCommand,
@@ -18,16 +19,16 @@ pub(crate) struct BlockSyncResponder {}
 
 impl BlockSyncResponder {
     /// Send a command to Ledger to fetch the block to respond with
-    pub(crate) fn handle_request_block_sync_message<
-        ST: MessageSignature,
-        SCT: SignatureCollection,
-        C,
-    >(
+    pub(crate) fn handle_request_block_sync_message<ST, SCT, C>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         s: RequestBlockSyncMessage,
         consensus_cached_block: Option<&Block<SCT>>,
-    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, C, SCT>> {
+    ) -> Vec<Command<MonadEvent<ST, SCT>, VerifiedMonadMessage<ST, SCT>, Block<SCT>, C, SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
         if let Some(block) = consensus_cached_block {
             // use retrieved block if currently cached in pending block tree
             vec![Command::RouterCommand(RouterCommand::Publish {

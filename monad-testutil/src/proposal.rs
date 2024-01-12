@@ -6,9 +6,7 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, BlockType, UnverifiedBlock},
-    certificate_signature::{CertificateKeyPair, CertificateSignature},
     ledger::CommitResult,
-    message_signature::MessageSignature,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -16,8 +14,11 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
+    },
     hasher::{Hasher, HasherType},
-    secp256k1::KeyPair,
 };
 use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round, SeqNum};
@@ -36,8 +37,8 @@ pub struct ProposalGen<ST, SCT> {
 
 impl<ST, SCT> Default for ProposalGen<ST, SCT>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn default() -> Self {
         Self::new()
@@ -46,8 +47,8 @@ where
 
 impl<ST, SCT> ProposalGen<ST, SCT>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new() -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
@@ -60,9 +61,12 @@ where
         }
     }
 
-    pub fn next_proposal<VT: ValidatorSetType, LT: LeaderElection>(
+    pub fn next_proposal<
+        VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection,
+    >(
         &mut self,
-        keys: &[KeyPair],
+        keys: &[ST::KeyPairType],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
@@ -86,12 +90,12 @@ where
                 k.pubkey()
                     == election
                         .get_leader(self.round, epoch_manager, val_epoch_map)
-                        .0
+                        .pubkey()
             })
             .expect("key not in valset");
 
         let block = Block::new(
-            NodeId(leader_key.pubkey()),
+            NodeId::new(leader_key.pubkey()),
             self.round,
             &Payload {
                 txns,
@@ -122,16 +126,19 @@ where
     // to ensure that the consensus state is consistent with the ProposalGen state
     // call state.pacemaker.handle_event(&mut state.safety, &state.high_qc);
     // before adding the state's key to keys
-    pub fn next_tc<VT: ValidatorSetType>(
+    pub fn next_tc<VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>>(
         &mut self,
-        keys: &[KeyPair],
+        keys: &[ST::KeyPairType],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         valset: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        validator_mapping: &ValidatorMapping<
+            CertificateSignaturePubKey<ST>,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
     ) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
         let node_ids = keys
             .iter()
-            .map(|keypair| NodeId(keypair.pubkey()))
+            .map(|keypair| NodeId::new(keypair.pubkey()))
             .collect::<Vec<_>>();
         if !valset.has_super_majority_votes(node_ids.iter()) {
             return Vec::new();
@@ -188,7 +195,10 @@ where
         &self,
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         block: &Block<SCT>,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        validator_mapping: &ValidatorMapping<
+            CertificateSignaturePubKey<ST>,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
     ) -> QuorumCertificate<SCT> {
         let vi = VoteInfo {
             id: block.get_id(),

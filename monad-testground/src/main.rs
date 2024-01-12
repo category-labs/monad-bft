@@ -8,13 +8,16 @@ use executor::{MonadP2PGossipConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    certificate_signature::CertificateKeyPair,
-    message_signature::MessageSignature,
     multi_sig::MultiSig,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::ValidatorData,
 };
-use monad_crypto::secp256k1::{KeyPair, SecpSignature};
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
+    secp256k1::SecpSignature,
+};
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
@@ -32,15 +35,15 @@ use crate::executor::{
 
 mod executor;
 
-pub struct Config<MessageSignatureType, SignatureCollectionType>
+pub struct Config<ST, SCT>
 where
-    MessageSignatureType: MessageSignature,
-    SignatureCollectionType: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub num_nodes: usize,
     pub simulation_length: Duration,
-    pub executor_config: ExecutorConfig<MessageSignatureType, SignatureCollectionType>,
-    pub state_config: StateConfig<SignatureCollectionType>,
+    pub executor_config: ExecutorConfig<ST, SCT>,
+    pub state_config: StateConfig<ST, SCT>,
 }
 
 #[derive(Parser, Debug)]
@@ -198,17 +201,18 @@ async fn main() {
     .unwrap();
 }
 
-fn testnet<MessageSignatureType, SignatureCollectionType>(
-    addresses: &Vec<String>,
-    args: &TestgroundArgs,
-) -> Vec<Config<MessageSignatureType, SignatureCollectionType>>
+fn testnet<ST, SCT>(addresses: &Vec<String>, args: &TestgroundArgs) -> Vec<Config<ST, SCT>>
 where
-    MessageSignatureType: MessageSignature,
-    SignatureCollectionType: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     let configs = std::iter::repeat_with(|| {
-        let keypair = KeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
-        let cert_keypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+        let keypair =
+            ST::KeyPairType::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
+        let cert_keypair = <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(
+            rand::random::<[u8; 32]>().as_mut_slice(),
+        )
+        .unwrap();
         (keypair, cert_keypair)
     })
     .take(addresses.len())
@@ -226,7 +230,7 @@ where
             let local_routers = LocalRouterConfig {
                 all_peers: genesis_peers
                     .iter()
-                    .map(|(peer_id, _, _)| NodeId(*peer_id))
+                    .map(|(peer_id, _, _)| NodeId::new(*peer_id))
                     .collect(),
                 external_latency: Duration::from_millis(external_latency_ms),
             }
@@ -239,14 +243,14 @@ where
     let known_addresses: HashMap<_, _> = addresses
         .iter()
         .zip(configs.iter())
-        .map(|(address, (keypair, _))| (NodeId(keypair.pubkey()), address.parse().unwrap()))
+        .map(|(address, (keypair, _))| (NodeId::new(keypair.pubkey()), address.parse().unwrap()))
         .collect();
 
     addresses
         .iter()
         .zip(configs)
         .map(|(address, (keypair, cert_keypair))| {
-            let me = NodeId(keypair.pubkey());
+            let me = NodeId::new(keypair.pubkey());
             Config {
                 num_nodes: addresses.len(),
                 simulation_length: Duration::from_secs(args.simulation_length_s),
@@ -275,7 +279,7 @@ where
                                     MonadP2PGossipConfig::Simple(MockGossipConfig {
                                         all_peers: genesis_peers
                                             .iter()
-                                            .map(|(pubkey, _, _)| NodeId(*pubkey))
+                                            .map(|(pubkey, _, _)| NodeId::new(*pubkey))
                                             .collect(),
                                         me,
                                     })
@@ -286,7 +290,7 @@ where
                                         me,
                                         all_peers: genesis_peers
                                             .iter()
-                                            .map(|(pubkey, _, _)| NodeId(*pubkey))
+                                            .map(|(pubkey, _, _)| NodeId::new(*pubkey))
                                             .collect(),
                                         fanout: *fanout,
                                     })
@@ -322,15 +326,15 @@ where
         .collect()
 }
 
-async fn run<MessageSignatureType, SignatureCollectionType>(
+async fn run<ST, SCT>(
     cx: Option<opentelemetry_api::Context>,
     wg_tx: tokio::sync::broadcast::Sender<()>,
     mut wg_rx: tokio::sync::broadcast::Receiver<()>,
-    config: Config<MessageSignatureType, SignatureCollectionType>,
+    config: Config<ST, SCT>,
 ) where
-    MessageSignatureType: MessageSignature + Unpin,
-    SignatureCollectionType: SignatureCollection + Unpin,
-    <SignatureCollectionType as SignatureCollection>::SignatureType: Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
+    <SCT as SignatureCollection>::SignatureType: Unpin,
 {
     let mut executor = make_monad_executor(config.executor_config).await;
     let (mut state, init_commands) = make_monad_state(config.state_config);

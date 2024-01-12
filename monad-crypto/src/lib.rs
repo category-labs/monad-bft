@@ -10,6 +10,8 @@ pub mod convert;
 pub mod hasher;
 pub mod secp256k1;
 
+pub mod certificate_signature;
+
 // This implementation won't sign or verify anything, but its still required to
 // return a PubKey It's Hash must also be unique (Signature's Hash is used as a
 // MonadMessage ID) for some period of time (the executor message window size?)

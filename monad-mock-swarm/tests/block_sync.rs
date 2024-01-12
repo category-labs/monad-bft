@@ -43,16 +43,16 @@ mod test {
             Round(50),
         );
 
-        let filter_peers = HashSet::from([ID::new(NodeId(pubkeys[0]))]);
+        let filter_peers = HashSet::from([ID::new(NodeId::new(pubkeys[0]))]);
 
         let mut pipeline = vec![
             MonadMessageTransformer::Filter(FilterTransformer {
                 drop_block_sync: true,
                 ..Default::default()
             }),
-            MonadMessageTransformer::Latency(LatencyTransformer(delta)),
+            MonadMessageTransformer::Latency(LatencyTransformer::new(delta)),
             MonadMessageTransformer::Partition(PartitionTransformer(filter_peers.clone())),
-            MonadMessageTransformer::Drop(DropTransformer()),
+            MonadMessageTransformer::Drop(DropTransformer::new()),
         ];
 
         let mut terminator = UntilTerminator::new().until_tick(Duration::from_secs(2));
@@ -63,11 +63,11 @@ mod test {
                 .zip(state_configs)
                 .map(|(pubkey, state_config)| {
                     (
-                        ID::new(NodeId(pubkey)),
+                        ID::new(NodeId::new(pubkey)),
                         state_config,
                         MockWALoggerConfig,
                         NoSerRouterConfig {
-                            all_peers: pubkeys.iter().copied().map(NodeId).collect(),
+                            all_peers: pubkeys.iter().copied().map(NodeId::new).collect(),
                         },
                         pipeline.clone(),
                         1,
@@ -147,7 +147,7 @@ mod test {
             Round(50),
         );
 
-        let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
+        let first_node = ID::new(NodeId::new(*pubkeys.first().unwrap()));
 
         let mut filter_peers = HashSet::new();
         filter_peers.insert(first_node);
@@ -157,7 +157,7 @@ mod test {
         let terminator = ProgressTerminator::new(
             pubkeys
                 .iter()
-                .map(|k| (ID::new(NodeId(*k)), 1))
+                .map(|k| (ID::new(NodeId::new(*k)), 1))
                 .collect::<BTreeMap<_, _>>(),
             Duration::from_secs(1),
         );
@@ -170,9 +170,9 @@ mod test {
             },
             MockWALoggerConfig,
             vec![
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)),
-                GenericTransformer::Drop(DropTransformer()),
+                GenericTransformer::Drop(DropTransformer::new()),
             ],
             false,
             terminator,
@@ -200,7 +200,7 @@ mod test {
 
         assert!(num_nodes >= 2, "test requires 2 or more nodes");
 
-        let first_node = ID::new(NodeId(*pubkeys.first().unwrap()));
+        let first_node = ID::new(NodeId::new(*pubkeys.first().unwrap()));
 
         let mut filter_peers = HashSet::new();
         filter_peers.insert(first_node);
@@ -215,13 +215,13 @@ mod test {
             },
             MockWALoggerConfig,
             vec![
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)),
                 GenericTransformer::Periodic(PeriodicTransformer::new(
                     Duration::from_secs(1),
                     Duration::from_secs(2),
                 )),
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(400))),
+                GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(400))),
             ],
             false,
             UntilTerminator::new().until_tick(Duration::from_secs(4)),
@@ -265,7 +265,7 @@ mod test {
             pubkeys
                 .iter()
                 .take(black_out_cnt)
-                .map(|k| ID::new(NodeId(*k))),
+                .map(|k| ID::new(NodeId::new(*k))),
         );
 
         run_nodes_until::<NoSerSwarm, _, _>(
@@ -276,10 +276,10 @@ mod test {
             },
             MockWALoggerConfig,
             vec![
-                GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+                GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
                 GenericTransformer::Partition(PartitionTransformer(filter_peers)),
                 GenericTransformer::Periodic(PeriodicTransformer::new(from, to)),
-                GenericTransformer::Drop(DropTransformer()),
+                GenericTransformer::Drop(DropTransformer::new()),
             ],
             false,
             UntilTerminator::new().until_tick(until),

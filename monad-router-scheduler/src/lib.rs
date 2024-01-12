@@ -3,16 +3,18 @@ use std::{
     time::Duration,
 };
 
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
 
 #[derive(Debug)]
-pub enum RouterEvent<InboundMessage, TransportMessage> {
-    Rx(NodeId, InboundMessage),
-    Tx(NodeId, TransportMessage),
+pub enum RouterEvent<PT: PubKey, InboundMessage, TransportMessage> {
+    Rx(NodeId<PT>, InboundMessage),
+    Tx(NodeId<PT>, TransportMessage),
 }
 
 /// RouterScheduler describes HOW gossip messages get delivered
 pub trait RouterScheduler {
+    type NodeIdPublicKey: PubKey;
     type Config;
 
     // Transport level message type (usually bytes)
@@ -24,44 +26,60 @@ pub trait RouterScheduler {
 
     fn new(config: Self::Config) -> Self;
 
-    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::TransportMessage);
-    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage);
+    fn process_inbound(
+        &mut self,
+        time: Duration,
+        from: NodeId<Self::NodeIdPublicKey>,
+        message: Self::TransportMessage,
+    );
+    fn send_outbound(
+        &mut self,
+        time: Duration,
+        to: RouterTarget<Self::NodeIdPublicKey>,
+        message: Self::OutboundMessage,
+    );
 
     fn peek_tick(&self) -> Option<Duration>;
     fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>>;
+    ) -> Option<RouterEvent<Self::NodeIdPublicKey, Self::InboundMessage, Self::TransportMessage>>;
 }
 
-pub struct NoSerRouterScheduler<IM, OM> {
-    all_peers: BTreeSet<NodeId>,
-    events: VecDeque<(Duration, RouterEvent<IM, OM>)>,
+pub struct NoSerRouterScheduler<PT: PubKey, IM, OM> {
+    all_peers: BTreeSet<NodeId<PT>>,
+    events: VecDeque<(Duration, RouterEvent<PT, IM, OM>)>,
 }
 
 #[derive(Clone)]
-pub struct NoSerRouterConfig {
-    pub all_peers: BTreeSet<NodeId>,
+pub struct NoSerRouterConfig<PT: PubKey> {
+    pub all_peers: BTreeSet<NodeId<PT>>,
 }
 
-impl<IM, OM> RouterScheduler for NoSerRouterScheduler<IM, OM>
+impl<PT: PubKey, IM, OM> RouterScheduler for NoSerRouterScheduler<PT, IM, OM>
 where
     OM: Clone,
     IM: From<OM>,
 {
-    type Config = NoSerRouterConfig;
+    type NodeIdPublicKey = PT;
+    type Config = NoSerRouterConfig<PT>;
     type TransportMessage = OM;
     type InboundMessage = IM;
     type OutboundMessage = OM;
 
-    fn new(config: NoSerRouterConfig) -> Self {
+    fn new(config: NoSerRouterConfig<Self::NodeIdPublicKey>) -> Self {
         Self {
             all_peers: config.all_peers,
             events: Default::default(),
         }
     }
 
-    fn process_inbound(&mut self, time: Duration, from: NodeId, message: Self::TransportMessage) {
+    fn process_inbound(
+        &mut self,
+        time: Duration,
+        from: NodeId<Self::NodeIdPublicKey>,
+        message: Self::TransportMessage,
+    ) {
         assert!(
             time >= self
                 .events
@@ -73,7 +91,12 @@ where
             .push_back((time, RouterEvent::Rx(from, message.into())))
     }
 
-    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
+    fn send_outbound(
+        &mut self,
+        time: Duration,
+        to: RouterTarget<Self::NodeIdPublicKey>,
+        message: Self::OutboundMessage,
+    ) {
         assert!(
             time >= self
                 .events
@@ -102,7 +125,8 @@ where
     fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>> {
+    ) -> Option<RouterEvent<Self::NodeIdPublicKey, Self::InboundMessage, Self::TransportMessage>>
+    {
         if self.peek_tick().unwrap_or(Duration::MAX) <= until {
             let (_, event) = self.events.pop_front().expect("must exist");
             Some(event)

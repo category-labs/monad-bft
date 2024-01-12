@@ -13,6 +13,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::{
     bls12_381::BlsPubKey,
+    certificate_signature::CertificateSignaturePubKey,
     secp256k1::{KeyPair, PubKey, SecpSignature},
 };
 use monad_executor::{Executor, State};
@@ -50,15 +51,20 @@ mod state;
 use state::NodeState;
 
 type SignatureType = SecpSignature;
-type SignatureCollectionType = BlsSignatureCollection;
+type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 // FIXME real tx validator
 type BlockValidatorType = MockValidator;
 type StateRootValidatorType = NopStateRoot;
 type MonadState = monad_state::MonadState<
-    ConsensusState<SignatureCollectionType, BlockValidatorType, StateRootValidatorType>,
+    ConsensusState<
+        SignatureType,
+        SignatureCollectionType,
+        BlockValidatorType,
+        StateRootValidatorType,
+    >,
     SignatureType,
     SignatureCollectionType,
-    ValidatorSet,
+    ValidatorSet<CertificateSignaturePubKey<SignatureType>>,
     // FIXME weighted round robin
     SimpleRoundRobin,
     EthTxPool,
@@ -235,13 +241,18 @@ async fn build_router<M, OM>(
     network_config: NodeNetworkConfig,
     identity: &KeyPair,
     peers: &[NodeBootstrapPeerConfig],
-) -> Service<SafeQuinnConfig, MockGossip, M, OM>
+) -> Service<
+    SafeQuinnConfig<SignatureType>,
+    MockGossip<CertificateSignaturePubKey<SignatureType>>,
+    M,
+    OM,
+>
 where
-    M: Message,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
 {
     Service::new(
         ServiceConfig {
-            me: NodeId(identity.pubkey()),
+            me: NodeId::new(identity.pubkey()),
             server_address: SocketAddr::V4(SocketAddrV4::new(
                 network_config.bind_address_host,
                 network_config.bind_address_port,
@@ -262,16 +273,16 @@ where
                         })
                         .next()
                         .unwrap_or_else(|| panic!("couldn't look up address={}", peer.address));
-                    (NodeId(peer.secp256k1_pubkey.to_owned()), address)
+                    (NodeId::new(peer.secp256k1_pubkey.to_owned()), address)
                 })
                 .collect(),
         },
         MockGossipConfig {
             all_peers: peers
                 .iter()
-                .map(|peer| NodeId(peer.secp256k1_pubkey.to_owned()))
+                .map(|peer| NodeId::new(peer.secp256k1_pubkey.to_owned()))
                 .collect(),
-            me: NodeId(identity.pubkey()),
+            me: NodeId::new(identity.pubkey()),
         }
         .build(),
     )

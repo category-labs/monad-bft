@@ -1,18 +1,33 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 
 use crate::ConsensusState;
 
-struct ConsensusStateWrapper<SCT: SignatureCollection, TV, SV> {
-    consensus_state: ConsensusState<SCT, TV, SV>,
+struct ConsensusStateWrapper<ST, SCT, TV, SV>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    consensus_state: ConsensusState<ST, SCT, TV, SV>,
 }
 
-impl<SCT: SignatureCollection, TV, SV> Drop for ConsensusStateWrapper<SCT, TV, SV> {
+impl<ST, SCT, TV, SV> Drop for ConsensusStateWrapper<ST, SCT, TV, SV>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn drop(&mut self) {
         eprintln!("{:?}", self);
     }
 }
 
-impl<SC: SignatureCollection, TV, SV> std::fmt::Debug for ConsensusStateWrapper<SC, TV, SV> {
+impl<ST, SC, TV, SV> std::fmt::Debug for ConsensusStateWrapper<ST, SC, TV, SV>
+where
+    ST: CertificateSignatureRecoverable,
+    SC: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
             .field(

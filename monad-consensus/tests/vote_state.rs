@@ -7,6 +7,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
     hasher::Hash,
     secp256k1::{KeyPair, SecpSignature},
 };
@@ -15,13 +16,15 @@ use monad_types::{BlockId, NodeId, Round, SeqNum};
 use monad_validator::validator_set::ValidatorSet;
 use test_case::test_case;
 
-type SignatureCollectionType = MultiSig<SecpSignature>;
+type SignatureType = SecpSignature;
+type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+type SignatureCollectionType = MultiSig<SignatureType>;
 
 fn create_vote_message(
     key: &KeyPair,
     certkey: &SignatureCollectionKeyPairType<SignatureCollectionType>,
     vote_round: Round,
-) -> (NodeId, VoteMessage<SignatureCollectionType>) {
+) -> (NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>) {
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
         round: vote_round,
@@ -37,7 +40,7 @@ fn create_vote_message(
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, certkey);
 
-    (NodeId(key.pubkey()), vm)
+    (NodeId::new(key.pubkey()), vm)
 }
 
 fn setup_ctx(
@@ -45,12 +48,12 @@ fn setup_ctx(
     num_rounds: u64,
 ) -> (
     Vec<KeyPair>,
-    ValidatorSet,
-    ValidatorMapping<SignatureCollectionKeyPairType<SignatureCollectionType>>,
-    Vec<(NodeId, VoteMessage<SignatureCollectionType>)>,
+    ValidatorSet<PubKeyType>,
+    ValidatorMapping<PubKeyType, SignatureCollectionKeyPairType<SignatureCollectionType>>,
+    Vec<(NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>)>,
 ) {
     let (keys, cert_keys, valset, vmap) =
-        create_keys_w_validators::<SignatureCollectionType>(num_nodes);
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_nodes);
 
     let mut votes = Vec::new();
     for j in 0..num_rounds {

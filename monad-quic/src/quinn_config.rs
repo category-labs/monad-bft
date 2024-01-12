@@ -1,31 +1,35 @@
-use std::{sync::Arc, time::Duration};
+use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     rustls::{self, TlsVerifier},
-    secp256k1::KeyPair,
 };
 use monad_types::NodeId;
 use quinn_proto::{congestion::CubicConfig, TransportConfig};
 
 /// QuinnConfig encapsulates all quinn-specific configuration
 pub trait QuinnConfig {
+    type NodeIdPubKey: PubKey;
+
     fn transport(&self) -> Arc<TransportConfig>;
     fn client(&self) -> Arc<dyn quinn_proto::crypto::ClientConfig>;
     fn server(&self) -> Arc<dyn quinn_proto::crypto::ServerConfig>;
 
     /// Get the NodeId of the remote for a given quinn connection
-    fn remote_peer_id(connection: &quinn::Connection) -> NodeId;
+    fn remote_peer_id(connection: &quinn::Connection) -> NodeId<Self::NodeIdPubKey>;
 }
 
-pub struct SafeQuinnConfig {
+pub struct SafeQuinnConfig<ST: CertificateSignatureRecoverable> {
     transport: Arc<TransportConfig>,
     client: Arc<dyn quinn_proto::crypto::ClientConfig>,
     server: Arc<dyn quinn_proto::crypto::ServerConfig>,
+
+    _phantom: PhantomData<ST>,
 }
 
-impl SafeQuinnConfig {
+impl<ST: CertificateSignatureRecoverable> SafeQuinnConfig<ST> {
     /// bandwidth_Mbps is in Megabit/s
-    pub fn new(identity: &KeyPair, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
+    pub fn new(identity: &ST::KeyPairType, max_rtt: Duration, bandwidth_Mbps: u16) -> Self {
         let mut transport_config = TransportConfig::default();
         let bandwidth_Bps = bandwidth_Mbps as u64 * 125_000;
         let rwnd = bandwidth_Bps * max_rtt.as_millis() as u64 / 1000;
@@ -41,13 +45,16 @@ impl SafeQuinnConfig {
             }));
         Self {
             transport: Arc::new(transport_config),
-            client: Arc::new(TlsVerifier::make_client_config(identity)),
-            server: Arc::new(TlsVerifier::make_server_config(identity)),
+            client: Arc::new(TlsVerifier::<ST>::make_client_config(identity)),
+            server: Arc::new(TlsVerifier::<ST>::make_server_config(identity)),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl QuinnConfig for SafeQuinnConfig {
+impl<ST: CertificateSignatureRecoverable> QuinnConfig for SafeQuinnConfig<ST> {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
+
     fn transport(&self) -> Arc<TransportConfig> {
         self.transport.clone()
     }
@@ -60,7 +67,7 @@ impl QuinnConfig for SafeQuinnConfig {
         self.server.clone()
     }
 
-    fn remote_peer_id(connection: &quinn::Connection) -> NodeId {
+    fn remote_peer_id(connection: &quinn::Connection) -> NodeId<Self::NodeIdPubKey> {
         let identity = connection
             .peer_identity()
             .expect("all quic sessions have TLS identity");
@@ -69,9 +76,10 @@ impl QuinnConfig for SafeQuinnConfig {
             .expect("always is rustls cert for default quinn");
 
         let raw_cert = certificates.first().expect("TLS verifier should have cert");
-        let cert = TlsVerifier::parse_cert(raw_cert).expect("cert must be x509 at this point");
-        let pubkey =
-            TlsVerifier::recover_node_pubkey(&cert).expect("must have valid pubkey at this point");
-        NodeId(pubkey)
+        let cert =
+            TlsVerifier::<ST>::parse_cert(raw_cert).expect("cert must be x509 at this point");
+        let pubkey = TlsVerifier::<ST>::recover_node_pubkey(&cert)
+            .expect("must have valid pubkey at this point");
+        NodeId::new(pubkey)
     }
 }

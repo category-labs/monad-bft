@@ -11,7 +11,6 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::UnverifiedBlock,
-    certificate_signature::CertificateSignature,
     ledger::CommitResult,
     multi_sig::MultiSig,
     payload::{ExecutionArtifacts, FullTransactionList},
@@ -21,8 +20,9 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
+    certificate_signature::CertificateSignature,
     hasher::{Hash, Hasher, HasherType},
-    secp256k1::{KeyPair, SecpSignature},
+    secp256k1::SecpSignature,
 };
 use monad_executor_glue::{ConsensusEvent, MonadEvent};
 use monad_testutil::{
@@ -39,8 +39,9 @@ use tempfile::{tempdir, TempDir};
 
 const N_VALIDATORS: usize = 400;
 
-type SignatureCollectionType = MultiSig<SecpSignature>;
-type BenchEvent = MonadEvent<SecpSignature, SignatureCollectionType>;
+type SignatureType = SecpSignature;
+type SignatureCollectionType = MultiSig<SignatureType>;
+type BenchEvent = MonadEvent<SignatureType, SignatureCollectionType>;
 
 struct MonadEventBencher {
     event: BenchEvent,
@@ -76,11 +77,11 @@ impl MonadEventBencher {
 fn bench_proposal(c: &mut Criterion) {
     let txns = FullTransactionList::new(vec![0x23_u8; 32 * 10000].into());
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
-        create_keys_w_validators::<MultiSig<SecpSignature>>(1);
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(1);
     let author_keypair = &keypairs[0];
 
-    let blk = setup_block(
-        NodeId(author_keypair.pubkey()),
+    let blk = setup_block::<SignatureType, SignatureCollectionType>(
+        NodeId::new(author_keypair.pubkey()),
         Round(10),
         Round(9),
         txns,
@@ -110,7 +111,7 @@ fn bench_proposal(c: &mut Criterion) {
 }
 
 fn bench_vote(c: &mut Criterion) {
-    let keypair: KeyPair = get_key(1);
+    let keypair = get_key::<SignatureType>(1);
     let certkey = get_certificate_key::<SignatureCollectionType>(2);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
@@ -150,7 +151,7 @@ fn bench_vote(c: &mut Criterion) {
 
 fn bench_timeout(c: &mut Criterion) {
     let (keypairs, cert_keys, _validators, validator_mapping) =
-        create_keys_w_validators::<SignatureCollectionType>(N_VALIDATORS as u32);
+        create_keys_w_validators::<SignatureType, SignatureCollectionType>(N_VALIDATORS as u32);
     let author_keypair = &keypairs[0];
     let author_certkey = &cert_keys[0];
 
@@ -173,7 +174,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let mut sigs = Vec::new();
     for (key, cert_key) in keypairs.iter().zip(cert_keys.iter()) {
-        let node_id = NodeId(key.pubkey());
+        let node_id = NodeId::new(key.pubkey());
         let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(qcinfo_hash.as_ref(), cert_key);
         sigs.push((node_id, sig));
     }
@@ -196,7 +197,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let mut sigs = Vec::new();
     for (key, certkey) in keypairs.iter().zip(cert_keys.iter()) {
-        let node_id = NodeId(key.pubkey());
+        let node_id = NodeId::new(key.pubkey());
         let sig = <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(high_qc_round_hash.as_ref(), certkey);
         sigs.push((node_id, sig));
     }

@@ -1,11 +1,13 @@
 use monad_consensus_types::{
     block::{BlockType, UnverifiedBlock},
-    certificate_signature::CertificateSignature,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
-use monad_crypto::hasher::{Hashable, Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::CertificateSignature,
+    hasher::{Hashable, Hasher, HasherType},
+};
 use monad_types::{BlockId, EnumDiscriminant};
 
 /// Consensus protocol vote message
@@ -78,9 +80,9 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
 
 /// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProposalMessage<T> {
-    pub block: UnverifiedBlock<T>,
-    pub last_round_tc: Option<TimeoutCertificate<T>>,
+pub struct ProposalMessage<SCT: SignatureCollection> {
+    pub block: UnverifiedBlock<SCT>,
+    pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 }
 
 /// The last_round_tc can be independently verified. The message hash is over
@@ -107,8 +109,8 @@ impl Hashable for RequestBlockSyncMessage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlockSyncResponseMessage<T> {
-    BlockFound(UnverifiedBlock<T>),
+pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
+    BlockFound(UnverifiedBlock<SCT>),
     NotAvailable(BlockId),
 }
 

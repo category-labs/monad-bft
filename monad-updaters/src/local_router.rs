@@ -7,21 +7,22 @@ use std::{
 };
 
 use futures::Stream;
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_types::{NodeId, RouterTarget};
 
 /// Implementation of the Router which uses tokio channels (as opposed to network links)
 /// to communicate between nodes. Useful for local testing
-pub struct LocalRouterConfig {
-    pub all_peers: Vec<NodeId>,
+pub struct LocalRouterConfig<PT: PubKey> {
+    pub all_peers: Vec<NodeId<PT>>,
     pub external_latency: Duration,
 }
 
-impl LocalRouterConfig {
-    pub fn build<M, OM>(self) -> HashMap<NodeId, LocalPeerRouter<M, OM>>
+impl<PT: PubKey> LocalRouterConfig<PT> {
+    pub fn build<M, OM>(self) -> HashMap<NodeId<PT>, LocalPeerRouter<M, OM>>
     where
-        M: Send + 'static,
+        M: Message<NodeIdPubKey = PT> + Send + 'static,
     {
         let mut txs = HashMap::new();
         let mut rxs = HashMap::new();
@@ -72,19 +73,25 @@ impl LocalRouterConfig {
     }
 }
 
-pub struct LocalPeerRouter<M, OM> {
-    me: NodeId,
-    txs: HashMap<NodeId, tokio::sync::mpsc::UnboundedSender<(Instant, NodeId, M)>>,
-    rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId, M)>,
+pub struct LocalPeerRouter<M: Message, OM> {
+    me: NodeId<M::NodeIdPubKey>,
+    txs: HashMap<
+        NodeId<M::NodeIdPubKey>,
+        tokio::sync::mpsc::UnboundedSender<(Instant, NodeId<M::NodeIdPubKey>, M)>,
+    >,
+    rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId<M::NodeIdPubKey>, M)>,
 
     _pd: PhantomData<OM>,
 }
 
-impl<M, OM> LocalPeerRouter<M, OM> {
+impl<M: Message, OM> LocalPeerRouter<M, OM> {
     fn new(
-        me: NodeId,
-        txs: HashMap<NodeId, tokio::sync::mpsc::UnboundedSender<(Instant, NodeId, M)>>,
-        rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId, M)>,
+        me: NodeId<M::NodeIdPubKey>,
+        txs: HashMap<
+            NodeId<M::NodeIdPubKey>,
+            tokio::sync::mpsc::UnboundedSender<(Instant, NodeId<M::NodeIdPubKey>, M)>,
+        >,
+        rx: tokio::sync::mpsc::UnboundedReceiver<(NodeId<M::NodeIdPubKey>, M)>,
     ) -> Self {
         Self {
             me,
@@ -97,10 +104,10 @@ impl<M, OM> LocalPeerRouter<M, OM> {
 
 impl<M, OM> Executor for LocalPeerRouter<M, OM>
 where
-    M: Clone,
+    M: Message,
     OM: Into<M>,
 {
-    type Command = RouterCommand<OM>;
+    type Command = RouterCommand<M::NodeIdPubKey, OM>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {

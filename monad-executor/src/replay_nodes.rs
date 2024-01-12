@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use monad_crypto::secp256k1::PubKey;
 use monad_executor_glue::{Command, LedgerCommand, Message, RouterCommand};
 use monad_types::{NodeId, RouterTarget};
 
@@ -10,7 +9,7 @@ pub struct PendingMsg<S>
 where
     S: State,
 {
-    pub send_id: NodeId,
+    pub send_id: NodeId<<S::Message as Message>::NodeIdPubKey>,
     pub send_tick: Duration,
     pub event: S::Event,
     pub message: <S as State>::OutboundMessage,
@@ -57,14 +56,14 @@ pub struct ReplayNodes<S>
 where
     S: State,
 {
-    pub replay_nodes_info: BTreeMap<NodeId, NodesInfo<S>>,
+    pub replay_nodes_info: BTreeMap<NodeId<<S::Message as Message>::NodeIdPubKey>, NodesInfo<S>>,
 }
 
 impl<S> ReplayNodes<S>
 where
     S: State,
 {
-    pub fn new(peers: Vec<(PubKey, S::Config)>) -> Self {
+    pub fn new(peers: Vec<(<S::Message as Message>::NodeIdPubKey, S::Config)>) -> Self {
         assert!(!peers.is_empty());
         let mut replay_nodes_info = BTreeMap::new();
         for (pubkey, state_config) in peers {
@@ -76,12 +75,17 @@ where
                 blockchain,
                 pending_messages,
             };
-            replay_nodes_info.insert(NodeId(pubkey), nodes_info);
+            replay_nodes_info.insert(NodeId::new(pubkey), nodes_info);
         }
         Self { replay_nodes_info }
     }
 
-    pub fn step(&mut self, node_id: &NodeId, event: S::Event, tick: Duration) {
+    pub fn step(
+        &mut self,
+        node_id: &NodeId<<S::Message as Message>::NodeIdPubKey>,
+        event: S::Event,
+        tick: Duration,
+    ) {
         let state = self.replay_nodes_info.get_mut(node_id).unwrap().mut_state();
         let commands = state.update(event);
         self.mutate_state(node_id, tick, commands);
@@ -89,7 +93,7 @@ where
 
     fn mutate_state(
         &mut self,
-        node_id: &NodeId,
+        node_id: &NodeId<<S::Message as Message>::NodeIdPubKey>,
         tick: Duration,
         cmds: Vec<
             Command<

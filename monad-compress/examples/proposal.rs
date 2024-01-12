@@ -30,7 +30,8 @@ fn main() {
     let mut rng = rand_chacha::ChaCha8Rng::from_entropy();
     rng.fill_bytes(&mut transactions);
 
-    let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
+    let (keys, cert_keys, valset, valmap) =
+        create_keys_w_validators::<SecpSignature, BlsSignatureCollection<_>>(10);
 
     let validator_stakes = Vec::from_iter(valset.get_members().clone());
 
@@ -43,7 +44,8 @@ fn main() {
         ValidatorMapping::new(valmap),
     );
     let election = SimpleRoundRobin::new();
-    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
+    let mut propgen: ProposalGen<_, _> =
+        ProposalGen::<SecpSignature, BlsSignatureCollection<_>>::new();
 
     let proposal = propgen
         .next_proposal(
@@ -64,14 +66,13 @@ fn main() {
             k.pubkey()
                 == election
                     .get_leader(proposal.block.0.round, &epoch_manager, &val_epoch_map)
-                    .0
+                    .pubkey()
         })
         .expect("key in valset");
 
-    let proposal: VerifiedMonadMessage<SecpSignature, BlsSignatureCollection> =
-        ConsensusMessage::<BlsSignatureCollection>::Proposal(proposal)
-            .sign(leader_key)
-            .into();
+    let proposal: VerifiedMonadMessage<_, _> = ConsensusMessage::Proposal(proposal)
+        .sign::<SecpSignature>(leader_key)
+        .into();
 
     let proposal_bytes: Bytes = proposal.serialize();
 

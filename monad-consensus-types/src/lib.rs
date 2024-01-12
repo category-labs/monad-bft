@@ -1,11 +1,8 @@
 pub mod block;
 pub mod block_validator;
 pub mod bls;
-pub mod certificate_signature;
-pub mod command;
 pub mod convert;
 pub mod ledger;
-pub mod message_signature;
 pub mod multi_sig;
 pub mod payload;
 pub mod quorum_certificate;

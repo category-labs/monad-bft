@@ -1,12 +1,14 @@
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     fmt::Debug,
+    marker::PhantomData,
     mem,
     time::Duration,
 };
 
 use bytes::{Buf, Bytes};
 use bytes_utils::SegmentedBuf;
+use monad_crypto::certificate_signature::PubKey;
 use monad_tracing_counter::inc_count;
 use monad_types::NodeId;
 use rand::{prelude::SliceRandom, Rng};
@@ -14,10 +16,10 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
 
 pub const UNIQUE_ID: usize = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ID(usize, NodeId);
+pub struct ID<PT: PubKey>(usize, NodeId<PT>);
 
-impl ID {
-    pub fn new(peer_id: NodeId) -> Self {
+impl<PT: PubKey> ID<PT> {
+    pub fn new(peer_id: NodeId<PT>) -> Self {
         Self(UNIQUE_ID, peer_id)
     }
 
@@ -31,7 +33,7 @@ impl ID {
         &self.0
     }
 
-    pub fn get_peer_id(&self) -> &NodeId {
+    pub fn get_peer_id(&self) -> &NodeId<PT> {
         &self.1
     }
 
@@ -41,21 +43,21 @@ impl ID {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkMessage<M> {
-    pub from: ID,
-    pub to: ID,
+pub struct LinkMessage<PT: PubKey, M> {
+    pub from: ID<PT>,
+    pub to: ID<PT>,
     pub message: M,
 
     /// absolute time
     pub from_tick: Duration,
 }
 
-impl<M: Eq> Ord for LinkMessage<M> {
+impl<PT: PubKey, M: Eq> Ord for LinkMessage<PT, M> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (self.from_tick, self.from, self.to).cmp(&(other.from_tick, other.from, other.to))
     }
 }
-impl<M> PartialOrd for LinkMessage<M>
+impl<PT: PubKey, M> PartialOrd for LinkMessage<PT, M>
 where
     Self: Ord,
 {
@@ -73,23 +75,28 @@ where
  * Content of a Complete Stream will no longer get processed
  *
  */
-type StreamMessage<M> = (Duration, LinkMessage<M>);
-pub enum TransformerStream<M> {
-    Continue(Vec<StreamMessage<M>>),
-    Complete(Vec<StreamMessage<M>>),
+type StreamMessage<PT, M> = (Duration, LinkMessage<PT, M>);
+pub enum TransformerStream<PT: PubKey, M> {
+    Continue(Vec<StreamMessage<PT, M>>),
+    Complete(Vec<StreamMessage<PT, M>>),
 }
 
 pub trait Transformer<M> {
+    type NodeIdPubKey: PubKey;
+
     #[must_use]
     /// note that the output Duration should be a delay, not an absolute time
     // TODO-3 smallvec? resulting Vec will almost always be len 1
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M>;
+    fn transform(
+        &mut self,
+        message: LinkMessage<Self::NodeIdPubKey, M>,
+    ) -> TransformerStream<Self::NodeIdPubKey, M>;
 
     fn min_external_delay(&self) -> Option<Duration> {
         None
     }
 
-    fn boxed(self) -> Box<dyn Transformer<M>>
+    fn boxed(self) -> Box<dyn Transformer<M, NodeIdPubKey = Self::NodeIdPubKey>>
     where
         Self: Sized + 'static,
     {
@@ -98,9 +105,17 @@ pub trait Transformer<M> {
 }
 /// adds constant latency
 #[derive(Clone, Debug)]
-pub struct LatencyTransformer(pub Duration);
-impl<M> Transformer<M> for LatencyTransformer {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+pub struct LatencyTransformer<PT: PubKey>(pub Duration, PhantomData<PT>);
+
+impl<PT: PubKey> LatencyTransformer<PT> {
+    pub fn new(latency: Duration) -> Self {
+        Self(latency, PhantomData)
+    }
+}
+
+impl<PT: PubKey, M> Transformer<M> for LatencyTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         TransformerStream::Continue(vec![(self.0, message)])
     }
 
@@ -111,14 +126,22 @@ impl<M> Transformer<M> for LatencyTransformer {
 
 /// adds constant latency (parametrizable cap) to each link determined by xor(peer_id_1, peer_id_2)
 #[derive(Clone, Debug)]
-pub struct XorLatencyTransformer(pub Duration);
-impl<M> Transformer<M> for XorLatencyTransformer {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+pub struct XorLatencyTransformer<PT: PubKey>(pub Duration, PhantomData<PT>);
+
+impl<PT: PubKey> XorLatencyTransformer<PT> {
+    pub fn new(max_latency: Duration) -> Self {
+        Self(max_latency, PhantomData)
+    }
+}
+
+impl<PT: PubKey, M> Transformer<M> for XorLatencyTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         let mut ck: u8 = 0;
-        for b in message.from.get_peer_id().0.bytes() {
+        for b in message.from.get_peer_id().pubkey().bytes() {
             ck ^= b;
         }
-        for b in message.to.get_peer_id().0.bytes() {
+        for b in message.to.get_peer_id().pubkey().bytes() {
             ck ^= b;
         }
         TransformerStream::Continue(vec![(self.0.mul_f32(ck as f32 / u8::MAX as f32), message)])
@@ -127,16 +150,18 @@ impl<M> Transformer<M> for XorLatencyTransformer {
 
 /// adds random latency to each message up to a cap
 #[derive(Clone, Debug)]
-pub struct RandLatencyTransformer {
+pub struct RandLatencyTransformer<PT: PubKey> {
     gen: ChaChaRng,
     max_latency: u64,
+    _phantom: PhantomData<PT>,
 }
 
-impl RandLatencyTransformer {
+impl<PT: PubKey> RandLatencyTransformer<PT> {
     pub fn new(seed: u64, max_latency: u64) -> Self {
         RandLatencyTransformer {
             gen: ChaChaRng::seed_from_u64(seed),
             max_latency,
+            _phantom: PhantomData,
         }
     }
 
@@ -147,16 +172,18 @@ impl RandLatencyTransformer {
     }
 }
 
-impl<M> Transformer<M> for RandLatencyTransformer {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+impl<PT: PubKey, M> Transformer<M> for RandLatencyTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         TransformerStream::Continue(vec![(self.next_latency(), message)])
     }
 }
 #[derive(Clone)]
-pub struct PartitionTransformer(pub HashSet<ID>);
+pub struct PartitionTransformer<PT: PubKey>(pub HashSet<ID<PT>>);
 
-impl<M> Transformer<M> for PartitionTransformer {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+impl<PT: PubKey, M> Transformer<M> for PartitionTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         if self.0.contains(&message.from) || self.0.contains(&message.to) {
             TransformerStream::Continue(vec![(Duration::ZERO, message)])
         } else {
@@ -165,7 +192,7 @@ impl<M> Transformer<M> for PartitionTransformer {
     }
 }
 
-impl Debug for PartitionTransformer {
+impl<PT: PubKey> Debug for PartitionTransformer<PT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionTransformer")
             .field("peers", &self.0)
@@ -175,30 +202,50 @@ impl Debug for PartitionTransformer {
 
 #[derive(Clone, Debug)]
 
-pub struct DropTransformer();
+pub struct DropTransformer<PT: PubKey>(PhantomData<PT>);
 
-impl<M> Transformer<M> for DropTransformer {
-    fn transform(&mut self, _: LinkMessage<M>) -> TransformerStream<M> {
+impl<PT: PubKey> Default for DropTransformer<PT> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<PT: PubKey> DropTransformer<PT> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<PT: PubKey, M> Transformer<M> for DropTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, _: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         TransformerStream::Complete(vec![])
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct PeriodicTransformer {
+pub struct PeriodicTransformer<PT: PubKey> {
     pub start: Duration,
     pub end: Duration,
+
+    _phantom: PhantomData<PT>,
 }
 
-impl PeriodicTransformer {
+impl<PT: PubKey> PeriodicTransformer<PT> {
     /// [start, end)
     pub fn new(start: Duration, end: Duration) -> Self {
         assert!(start <= end);
-        PeriodicTransformer { start, end }
+        PeriodicTransformer {
+            start,
+            end,
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<M> Transformer<M> for PeriodicTransformer {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+impl<PT: PubKey, M> Transformer<M> for PeriodicTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         if message.from_tick < self.start || message.from_tick >= self.end {
             TransformerStream::Complete(vec![(Duration::ZERO, message)])
         } else {
@@ -213,13 +260,13 @@ pub enum TransformerReplayOrder {
     Random(u64),
 }
 #[derive(Clone)]
-pub struct ReplayTransformer<M> {
-    pub filtered_msgs: Vec<LinkMessage<M>>,
+pub struct ReplayTransformer<PT: PubKey, M> {
+    pub filtered_msgs: Vec<LinkMessage<PT, M>>,
     pub end: Duration,
     pub order: TransformerReplayOrder,
 }
 
-impl<M> ReplayTransformer<M> {
+impl<PT: PubKey, M> ReplayTransformer<PT, M> {
     /// [Duration::ZERO, end)
     pub fn new(end: Duration, order: TransformerReplayOrder) -> Self {
         ReplayTransformer {
@@ -230,7 +277,7 @@ impl<M> ReplayTransformer<M> {
     }
 }
 
-impl<M> Debug for ReplayTransformer<M> {
+impl<PT: PubKey, M> Debug for ReplayTransformer<PT, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReplayTransformer")
             .field("end", &self.end)
@@ -239,8 +286,9 @@ impl<M> Debug for ReplayTransformer<M> {
     }
 }
 
-impl<M> Transformer<M> for ReplayTransformer<M> {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+impl<PT: PubKey, M> Transformer<M> for ReplayTransformer<PT, M> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         if message.from_tick >= self.end {
             if self.filtered_msgs.is_empty() {
                 return TransformerStream::Continue(vec![(Duration::ZERO, message)]);
@@ -272,18 +320,19 @@ impl<M> Transformer<M> for ReplayTransformer<M> {
 }
 
 #[derive(Debug, Clone)]
-pub enum GenericTransformer<M> {
-    Latency(LatencyTransformer),
-    XorLatency(XorLatencyTransformer),
-    RandLatency(RandLatencyTransformer),
-    Partition(PartitionTransformer),
-    Drop(DropTransformer),
-    Periodic(PeriodicTransformer),
-    Replay(ReplayTransformer<M>),
+pub enum GenericTransformer<PT: PubKey, M> {
+    Latency(LatencyTransformer<PT>),
+    XorLatency(XorLatencyTransformer<PT>),
+    RandLatency(RandLatencyTransformer<PT>),
+    Partition(PartitionTransformer<PT>),
+    Drop(DropTransformer<PT>),
+    Periodic(PeriodicTransformer<PT>),
+    Replay(ReplayTransformer<PT, M>),
 }
 
-impl<M> Transformer<M> for GenericTransformer<M> {
-    fn transform(&mut self, message: LinkMessage<M>) -> TransformerStream<M> {
+impl<PT: PubKey, M> Transformer<M> for GenericTransformer<PT, M> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, M>) -> TransformerStream<PT, M> {
         match self {
             GenericTransformer::Latency(t) => t.transform(message),
             GenericTransformer::XorLatency(t) => t.transform(message),
@@ -298,37 +347,37 @@ impl<M> Transformer<M> for GenericTransformer<M> {
     fn min_external_delay(&self) -> Option<Duration> {
         match self {
             GenericTransformer::Latency(t) => {
-                <LatencyTransformer as Transformer<M>>::min_external_delay(t)
+                <LatencyTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::XorLatency(t) => {
-                <XorLatencyTransformer as Transformer<M>>::min_external_delay(t)
+                <XorLatencyTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::RandLatency(t) => {
-                <RandLatencyTransformer as Transformer<M>>::min_external_delay(t)
+                <RandLatencyTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::Partition(t) => {
-                <PartitionTransformer as Transformer<M>>::min_external_delay(t)
+                <PartitionTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::Drop(t) => {
-                <DropTransformer as Transformer<M>>::min_external_delay(t)
+                <DropTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::Periodic(t) => {
-                <PeriodicTransformer as Transformer<M>>::min_external_delay(t)
+                <PeriodicTransformer<PT> as Transformer<M>>::min_external_delay(t)
             }
             GenericTransformer::Replay(t) => t.min_external_delay(),
         }
     }
 }
 
-pub type GenericTransformerPipeline<M> = Vec<GenericTransformer<M>>;
+pub type GenericTransformerPipeline<PT, M> = Vec<GenericTransformer<PT, M>>;
 
 #[derive(Debug, Clone)]
-pub struct BytesSplitterTransformer {
+pub struct BytesSplitterTransformer<PT: PubKey> {
     rng: ChaCha20Rng,
-    buffers: BTreeMap<ID, VecDeque<LinkMessage<Bytes>>>,
+    buffers: BTreeMap<ID<PT>, VecDeque<LinkMessage<PT, Bytes>>>,
 }
 
-impl Default for BytesSplitterTransformer {
+impl<PT: PubKey> Default for BytesSplitterTransformer<PT> {
     fn default() -> Self {
         Self {
             rng: ChaCha20Rng::from_seed([0_u8; 32]),
@@ -337,14 +386,15 @@ impl Default for BytesSplitterTransformer {
     }
 }
 
-impl BytesSplitterTransformer {
+impl<PT: PubKey> BytesSplitterTransformer<PT> {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl Transformer<Bytes> for BytesSplitterTransformer {
-    fn transform(&mut self, message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
+impl<PT: PubKey> Transformer<Bytes> for BytesSplitterTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, Bytes>) -> TransformerStream<PT, Bytes> {
         let entry = self.buffers.entry(message.to).or_default();
         entry.push_back(message);
 
@@ -423,7 +473,7 @@ impl BwWindow {
         }
     }
 
-    fn try_push(&mut self, burst_size: usize, msg: &LinkMessage<Bytes>) -> bool {
+    fn try_push<PT: PubKey>(&mut self, burst_size: usize, msg: &LinkMessage<PT, Bytes>) -> bool {
         // assert msgs are increasing in from_tick
         assert!(self
             .window
@@ -441,28 +491,32 @@ impl BwWindow {
 }
 
 #[derive(Clone, Debug)]
-pub struct BwTransformer {
+pub struct BwTransformer<PT: PubKey> {
     // number of bits allowed in the sampling period
     burst_size: usize,
     // sampling period
     sampling_period: Duration,
     // upload bandwidth window
     window: BwWindow,
+
+    _phantom: PhantomData<PT>,
 }
 
-impl BwTransformer {
+impl<PT: PubKey> BwTransformer<PT> {
     pub fn new(upload_mbps: usize, sampling_period: Duration) -> Self {
         Self {
             burst_size: upload_mbps * 1024 * 1024 * sampling_period.as_micros() as usize
                 / Duration::from_secs(1).as_micros() as usize,
             sampling_period,
             window: BwWindow::default(),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl Transformer<Bytes> for BwTransformer {
-    fn transform(&mut self, message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
+impl<PT: PubKey> Transformer<Bytes> for BwTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, Bytes>) -> TransformerStream<PT, Bytes> {
         self.window
             .advance_to(message.from_tick, self.sampling_period);
 
@@ -476,15 +530,17 @@ impl Transformer<Bytes> for BwTransformer {
 }
 
 #[derive(Debug, Clone)]
-pub struct PacerTransformer {
+pub struct PacerTransformer<PT: PubKey> {
     upload_mbps: usize,
     burst_bits: usize,
 
     // in absolute time
     last_scheduled_ts: Duration,
+
+    _phantom: PhantomData<PT>,
 }
 
-impl PacerTransformer {
+impl<PT: PubKey> PacerTransformer<PT> {
     pub fn new(upload_mbps: usize, burst_bits: usize) -> Self {
         assert!(burst_bits >= 8);
         Self {
@@ -492,12 +548,15 @@ impl PacerTransformer {
             burst_bits,
 
             last_scheduled_ts: Duration::ZERO,
+
+            _phantom: PhantomData,
         }
     }
 }
 
-impl Transformer<Bytes> for PacerTransformer {
-    fn transform(&mut self, mut message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
+impl<PT: PubKey> Transformer<Bytes> for PacerTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, mut message: LinkMessage<PT, Bytes>) -> TransformerStream<PT, Bytes> {
         // The goal of PacerTransformer is to pace messages at a configurable rate. Given a
         // message_1 that's sent at from_tick_1, the delays to generate for each message chunk is
         // straightforward.
@@ -540,7 +599,7 @@ impl Transformer<Bytes> for PacerTransformer {
             .checked_sub(message.from_tick)
             .unwrap_or(Duration::ZERO);
 
-        let mut stream_messages: Vec<StreamMessage<_>> = Vec::new();
+        let mut stream_messages: Vec<StreamMessage<_, _>> = Vec::new();
         let mut idx = 0;
         while !message.message.is_empty() {
             let chunk = message
@@ -570,22 +629,23 @@ impl Transformer<Bytes> for PacerTransformer {
 }
 
 #[derive(Debug, Clone)]
-pub enum BytesTransformer {
-    Latency(LatencyTransformer),
-    XorLatency(XorLatencyTransformer),
-    RandLatency(RandLatencyTransformer),
-    Partition(PartitionTransformer),
-    Drop(DropTransformer),
-    Periodic(PeriodicTransformer),
-    Replay(ReplayTransformer<Bytes>),
+pub enum BytesTransformer<PT: PubKey> {
+    Latency(LatencyTransformer<PT>),
+    XorLatency(XorLatencyTransformer<PT>),
+    RandLatency(RandLatencyTransformer<PT>),
+    Partition(PartitionTransformer<PT>),
+    Drop(DropTransformer<PT>),
+    Periodic(PeriodicTransformer<PT>),
+    Replay(ReplayTransformer<PT, Bytes>),
 
-    BytesSplitter(BytesSplitterTransformer),
-    Bw(BwTransformer),
-    Pacer(PacerTransformer),
+    BytesSplitter(BytesSplitterTransformer<PT>),
+    Bw(BwTransformer<PT>),
+    Pacer(PacerTransformer<PT>),
 }
 
-impl Transformer<Bytes> for BytesTransformer {
-    fn transform(&mut self, message: LinkMessage<Bytes>) -> TransformerStream<Bytes> {
+impl<PT: PubKey> Transformer<Bytes> for BytesTransformer<PT> {
+    type NodeIdPubKey = PT;
+    fn transform(&mut self, message: LinkMessage<PT, Bytes>) -> TransformerStream<PT, Bytes> {
         match self {
             BytesTransformer::Latency(t) => t.transform(message),
             BytesTransformer::XorLatency(t) => t.transform(message),
@@ -603,22 +663,22 @@ impl Transformer<Bytes> for BytesTransformer {
     fn min_external_delay(&self) -> Option<Duration> {
         match self {
             BytesTransformer::Latency(t) => {
-                <LatencyTransformer as Transformer<Bytes>>::min_external_delay(t)
+                <LatencyTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::XorLatency(t) => {
-                <XorLatencyTransformer as Transformer<Bytes>>::min_external_delay(t)
+                <XorLatencyTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::RandLatency(t) => {
-                <RandLatencyTransformer as Transformer<Bytes>>::min_external_delay(t)
+                <RandLatencyTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Partition(t) => {
-                <PartitionTransformer as Transformer<Bytes>>::min_external_delay(t)
+                <PartitionTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Drop(t) => {
-                <DropTransformer as Transformer<Bytes>>::min_external_delay(t)
+                <DropTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Periodic(t) => {
-                <PeriodicTransformer as Transformer<Bytes>>::min_external_delay(t)
+                <PeriodicTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Replay(t) => t.min_external_delay(),
             BytesTransformer::BytesSplitter(t) => t.min_external_delay(),
@@ -628,15 +688,19 @@ impl Transformer<Bytes> for BytesTransformer {
     }
 }
 
-pub type BytesTransformerPipeline = Vec<BytesTransformer>;
+pub type BytesTransformerPipeline<PT> = Vec<BytesTransformer<PT>>;
 
 /**
  * pipeline consist of transformers that goes through all the output
  * you can also use multiple pipelines to filter target for unique needs
  * */
 pub trait Pipeline<M> {
+    type NodeIdPubKey: PubKey;
     #[must_use]
-    fn process(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)>;
+    fn process(
+        &mut self,
+        message: LinkMessage<Self::NodeIdPubKey, M>,
+    ) -> Vec<(Duration, LinkMessage<Self::NodeIdPubKey, M>)>;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
 
@@ -650,7 +714,11 @@ impl<T, M> Pipeline<M> for Vec<T>
 where
     T: Transformer<M>,
 {
-    fn process(&mut self, message: LinkMessage<M>) -> Vec<(Duration, LinkMessage<M>)> {
+    type NodeIdPubKey = T::NodeIdPubKey;
+    fn process(
+        &mut self,
+        message: LinkMessage<T::NodeIdPubKey, M>,
+    ) -> Vec<(Duration, LinkMessage<T::NodeIdPubKey, M>)> {
         let mut complete_message = vec![];
         let mut remain_message = vec![(Duration::ZERO, message)];
         for layer in self {

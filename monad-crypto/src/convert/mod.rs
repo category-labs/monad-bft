@@ -1,41 +1,6 @@
-use monad_proto::{
-    error::ProtoError,
-    proto::basic::{ProtoHash, ProtoPubkey},
-};
+use monad_proto::{error::ProtoError, proto::basic::ProtoHash};
 
-use crate::{bls12_381::BlsPubKey, hasher::Hash, PubKey};
-
-impl From<&PubKey> for ProtoPubkey {
-    fn from(value: &PubKey) -> Self {
-        Self {
-            pubkey: value.bytes().into(),
-        }
-    }
-}
-
-impl From<&BlsPubKey> for ProtoPubkey {
-    fn from(value: &BlsPubKey) -> Self {
-        Self {
-            pubkey: value.serialize().into(),
-        }
-    }
-}
-
-impl TryFrom<ProtoPubkey> for PubKey {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPubkey) -> Result<Self, Self::Error> {
-        PubKey::from_slice(&value.pubkey).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
-    }
-}
-
-impl TryFrom<ProtoPubkey> for BlsPubKey {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoPubkey) -> Result<Self, Self::Error> {
-        BlsPubKey::deserialize(&value.pubkey).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
-    }
-}
+use crate::hasher::Hash;
 
 impl From<&Hash> for ProtoHash {
     fn from(value: &Hash) -> Self {

@@ -1,17 +1,18 @@
 use std::{collections::VecDeque, time::Duration};
 
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
 
 use super::{Gossip, GossipEvent};
 use crate::{AppMessage, GossipMessage};
 
-pub struct MockGossipConfig {
-    pub all_peers: Vec<NodeId>,
-    pub me: NodeId,
+pub struct MockGossipConfig<PT: PubKey> {
+    pub all_peers: Vec<NodeId<PT>>,
+    pub me: NodeId<PT>,
 }
 
-impl MockGossipConfig {
-    pub fn build(self) -> MockGossip {
+impl<PT: PubKey> MockGossipConfig<PT> {
+    pub fn build(self) -> MockGossip<PT> {
         MockGossip {
             config: self,
 
@@ -21,15 +22,17 @@ impl MockGossipConfig {
     }
 }
 
-pub struct MockGossip {
-    config: MockGossipConfig,
+pub struct MockGossip<PT: PubKey> {
+    config: MockGossipConfig<PT>,
 
-    events: VecDeque<GossipEvent>,
+    events: VecDeque<GossipEvent<PT>>,
     current_tick: Duration,
 }
 
-impl Gossip for MockGossip {
-    fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
+impl<PT: PubKey> Gossip for MockGossip<PT> {
+    type NodeIdPubKey = PT;
+
+    fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.current_tick = time;
         match to {
             RouterTarget::Broadcast => {
@@ -60,7 +63,7 @@ impl Gossip for MockGossip {
     fn handle_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<Self::NodeIdPubKey>,
         gossip_message: GossipMessage,
     ) {
         self.current_tick = time;
@@ -76,7 +79,7 @@ impl Gossip for MockGossip {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }
@@ -86,6 +89,7 @@ impl Gossip for MockGossip {
 mod tests {
     use std::time::Duration;
 
+    use monad_crypto::NopSignature;
     use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
@@ -98,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_framed_messages() {
-        let mut swarm = make_swarm(
+        let mut swarm = make_swarm::<NopSignature, _>(
             NUM_NODES,
             |all_peers, me| {
                 MockGossipConfig {
@@ -108,7 +112,7 @@ mod tests {
                 .build()
             },
             |_all_peers, _me| {
-                vec![BytesTransformer::Latency(LatencyTransformer(
+                vec![BytesTransformer::Latency(LatencyTransformer::new(
                     Duration::from_millis(5),
                 ))]
             },
@@ -133,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_split_messages() {
-        let mut swarm = make_swarm(
+        let mut swarm = make_swarm::<NopSignature, _>(
             NUM_NODES,
             |all_peers, me| {
                 MockGossipConfig {
@@ -144,7 +148,7 @@ mod tests {
             },
             |_all_peers, _me| {
                 vec![
-                    BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
+                    BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(5))),
                     BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
                 ]
             },

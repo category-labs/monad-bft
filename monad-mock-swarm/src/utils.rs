@@ -15,7 +15,6 @@ pub mod test_tool {
     };
     use monad_consensus_types::{
         block::{Block, UnverifiedBlock},
-        certificate_signature::CertificateSignature,
         ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
@@ -23,7 +22,12 @@ pub mod test_tool {
         timeout::{Timeout, TimeoutInfo},
         voting::{Vote, VoteInfo},
     };
-    use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
+    use monad_crypto::{
+        certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+        hasher::Hash,
+        secp256k1::KeyPair,
+        NopSignature,
+    };
     use monad_eth_types::EthAddress;
     use monad_state::VerifiedMonadMessage;
     use monad_testutil::signing::create_keys;
@@ -31,24 +35,25 @@ pub mod test_tool {
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     type ST = NopSignature;
+    type PubKeyType = CertificateSignaturePubKey<ST>;
     type SC = MultiSig<NopSignature>;
     type QC = QuorumCertificate<SC>;
 
     /// FIXME-3 these should take in from/to/from_tick as params, not have defaults
-    pub fn get_mock_message() -> LinkMessage<String> {
-        let keys = create_keys(2);
+    pub fn get_mock_message() -> LinkMessage<PubKeyType, String> {
+        let keys = create_keys::<ST>(2);
         LinkMessage {
-            from: ID::new(NodeId(keys[0].pubkey())),
-            to: ID::new(NodeId(keys[1].pubkey())),
+            from: ID::new(NodeId::new(keys[0].pubkey())),
+            to: ID::new(NodeId::new(keys[1].pubkey())),
             message: "Dummy Message".to_string(),
             from_tick: Duration::from_millis(10),
         }
     }
 
-    pub fn fake_node_id() -> NodeId {
+    pub fn fake_node_id() -> NodeId<PubKeyType> {
         let mut privkey: [u8; 32] = [127; 32];
         let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-        NodeId(keypair.pubkey())
+        NodeId::new(keypair.pubkey())
     }
 
     pub fn fake_qc() -> QuorumCertificate<SC> {

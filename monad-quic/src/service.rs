@@ -10,6 +10,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, Stream, StreamExt};
+use monad_crypto::certificate_signature::PubKey;
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
@@ -28,20 +29,21 @@ use crate::{
 pub struct Service<QC, G, M, OM>
 where
     G: Gossip,
-    M: Message,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey>,
+    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
 {
     /// An arbitrary starting time - used for computing internally consistent relative times,
     /// which are in std::time::Duration, for the Gossip trait
     zero_instant: Instant,
     /// The NodeId of self
-    me: NodeId,
+    me: NodeId<G::NodeIdPubKey>,
     /// known_addresses is used for knowing what address to dial to connect to a given PeerId.
     ///
     /// The dialed peer's certificate MUST be validated to ensure that it matches the expected
     /// PeerId.
     ///
     /// This might be replaced in the future once we support peer discovery
-    known_addresses: HashMap<NodeId, SocketAddr>,
+    known_addresses: HashMap<NodeId<G::NodeIdPubKey>, SocketAddr>,
 
     /// The gossip implementation
     gossip: ConnectionManager<G>,
@@ -55,18 +57,18 @@ where
     accept: BoxFuture<'static, Connecting>,
 
     /// Receiver channel for all connection events
-    connection_events: tokio::sync::mpsc::Receiver<ConnectionEvent>,
+    connection_events: tokio::sync::mpsc::Receiver<ConnectionEvent<G::NodeIdPubKey>>,
     // Sender channel for connection events (cloned for each new connection)
-    connection_events_sender: tokio::sync::mpsc::Sender<ConnectionEvent>,
+    connection_events_sender: tokio::sync::mpsc::Sender<ConnectionEvent<G::NodeIdPubKey>>,
 
     /// Each currently open canonical connection
-    canonical_connections: HashMap<ConnectionId, CanonicalConnection>,
+    canonical_connections: HashMap<ConnectionId, CanonicalConnection<G::NodeIdPubKey>>,
 
     /// Latest tie-broken connection for any given NodeId
     ///
     /// If the value is None, then the canonical connection is not yet ready
     /// This can happen if there's a pending outbound connection
-    node_connections: HashMap<NodeId, Option<ConnectionId>>,
+    node_connections: HashMap<NodeId<G::NodeIdPubKey>, Option<ConnectionId>>,
 
     /// Future that yields whenever the gossip implementation wants to be woken up
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
@@ -75,8 +77,8 @@ where
     _pd: PhantomData<(M, OM)>,
 }
 
-struct CanonicalConnection {
-    node_id: NodeId,
+struct CanonicalConnection<PT: PubKey> {
+    node_id: NodeId<PT>,
     /// Channel that can be used for writing bytes on the connection
     writer: tokio::sync::mpsc::Sender<Bytes>,
 }
@@ -87,9 +89,9 @@ const CONNECTION_EVENTS_BUFFER_SIZE: usize = 1_000;
 const CONNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE: usize = 100;
 
 /// Configuration for Service
-pub struct ServiceConfig<QC> {
+pub struct ServiceConfig<QC: QuinnConfig> {
     /// The NodeId of self
-    pub me: NodeId,
+    pub me: NodeId<QC::NodeIdPubKey>,
 
     /// The UDP address to bind the quic endpoint to
     pub server_address: SocketAddr,
@@ -100,14 +102,14 @@ pub struct ServiceConfig<QC> {
     ///
     /// Currently, the entire validator set must be present here, because peer discovery is not
     /// supported
-    pub known_addresses: HashMap<NodeId, SocketAddr>,
+    pub known_addresses: HashMap<NodeId<QC::NodeIdPubKey>, SocketAddr>,
 }
 
 impl<QC, G, M, OM> Service<QC, G, M, OM>
 where
-    QC: QuinnConfig,
     G: Gossip,
-    M: Message,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey>,
+    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
 {
     pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
@@ -155,15 +157,15 @@ where
 
 impl<QC, G, M, OM> Executor for Service<QC, G, M, OM>
 where
-    QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
+    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
     OM: Into<M> + Clone,
 {
-    type Command = RouterCommand<OM>;
+    type Command = RouterCommand<G::NodeIdPubKey, OM>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
         commands.retain(|cmd| match cmd {
@@ -198,9 +200,9 @@ where
 
 impl<QC, G, M, OM> Stream for Service<QC, G, M, OM>
 where
-    QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
+    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
@@ -296,16 +298,16 @@ where
 
 impl<QC, G, M, OM> Service<QC, G, M, OM>
 where
-    QC: QuinnConfig,
     G: Gossip,
-    M: Message + Deserializable<Bytes> + Send + Sync + 'static,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
+    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 
     OM: Into<M> + Clone,
 {
     /// Wires events from a new pending connection to self.connection_events
-    fn connecting(&mut self, mut connection: Connection) {
+    fn connecting(&mut self, mut connection: Connection<G::NodeIdPubKey>) {
         let connection_events_sender = self.connection_events_sender.clone();
         tokio::spawn(async move {
             while let Some(event) = connection.next().await {
@@ -322,7 +324,7 @@ where
     fn connected(
         &mut self,
         time: Duration,
-        node_id: NodeId,
+        node_id: NodeId<G::NodeIdPubKey>,
         mut connection_writer: ConnectionWriter,
     ) {
         let connection_id = connection_writer.connection_id();
@@ -372,7 +374,7 @@ where
     fn handle_gossip_event(
         &mut self,
         time: Duration,
-        gossip_event: ConnectionManagerEvent,
+        gossip_event: ConnectionManagerEvent<G::NodeIdPubKey>,
     ) -> Option<M::Event> {
         match gossip_event {
             ConnectionManagerEvent::RequestConnect(to) => {

@@ -1,10 +1,13 @@
-use monad_crypto::bls12_381::BlsAggregateSignature;
+use std::marker::PhantomData;
+
+use monad_crypto::{
+    bls12_381::BlsAggregateSignature,
+    certificate_signature::{CertificateSignature, CertificateSignatureRecoverable, PubKey},
+};
 use monad_proto::{error::ProtoError, proto::signing::*};
 
 use crate::{
     bls::BlsSignatureCollection,
-    certificate_signature::{CertificateSignature, CertificateSignatureRecoverable},
-    message_signature::MessageSignature,
     multi_sig::MultiSig,
     signature_collection::{SignatureCollection, SignatureCollectionError},
 };
@@ -35,8 +38,8 @@ impl<S: CertificateSignatureRecoverable> TryFrom<ProtoMultiSig> for MultiSig<S> 
     }
 }
 
-impl From<&BlsSignatureCollection> for ProtoBlsSignatureCollection {
-    fn from(value: &BlsSignatureCollection) -> Self {
+impl<PT: PubKey> From<&BlsSignatureCollection<PT>> for ProtoBlsSignatureCollection {
+    fn from(value: &BlsSignatureCollection<PT>) -> Self {
         Self {
             signers: serde_cbor::to_vec(&value.signers)
                 .expect("serialization success")
@@ -46,7 +49,7 @@ impl From<&BlsSignatureCollection> for ProtoBlsSignatureCollection {
     }
 }
 
-impl TryFrom<ProtoBlsSignatureCollection> for BlsSignatureCollection {
+impl<PT: PubKey> TryFrom<ProtoBlsSignatureCollection> for BlsSignatureCollection<PT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoBlsSignatureCollection) -> Result<Self, Self::Error> {
@@ -55,6 +58,7 @@ impl TryFrom<ProtoBlsSignatureCollection> for BlsSignatureCollection {
                 .map_err(|e| ProtoError::DeserializeError(format!("{}", e)))?,
             sig: BlsAggregateSignature::deserialize(&value.sig)
                 .map_err(|e| ProtoError::CryptoError(format!("{}", e)))?,
+            _phantom: PhantomData,
         })
     }
 }
@@ -72,18 +76,6 @@ pub fn proto_to_signature_collection<SCT: SignatureCollection>(
         SignatureCollectionError::DeserializeError(e) => ProtoError::DeserializeError(e),
         _ => panic!("invalid err type during deserialization"),
     })
-}
-
-pub fn message_signature_to_proto(signature: &impl MessageSignature) -> ProtoSignature {
-    ProtoSignature {
-        sig: signature.serialize().into(),
-    }
-}
-
-pub fn proto_to_message_signature<S: MessageSignature>(
-    proto: ProtoSignature,
-) -> Result<S, ProtoError> {
-    S::deserialize(&proto.sig).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
 }
 
 pub fn certificate_signature_to_proto(signature: &impl CertificateSignature) -> ProtoSignature {

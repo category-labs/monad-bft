@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt::Debug, time::Duration, vec};
 
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::block_validator::MockValidator;
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey};
 use monad_eth_types::EthAddress;
 use monad_executor::{replay_nodes::ReplayNodes, timed_event::TimedEvent, State};
 use monad_mock_swarm::swarm_relation::SwarmRelation;
@@ -25,11 +25,20 @@ pub struct RepConfig {
 type MS = <VizSwarm as SwarmRelation>::State;
 
 impl ReplayConfig<MS> for RepConfig {
-    fn nodes(&self) -> Vec<(PubKey, <MS as State>::Config)> {
+    fn nodes(
+        &self,
+    ) -> Vec<(
+        CertificateSignaturePubKey<<VizSwarm as SwarmRelation>::SignatureType>,
+        <MS as State>::Config,
+    )> {
         let (keys, cert_keys, _validators, validator_mapping) = create_keys_w_validators::<
+            <VizSwarm as SwarmRelation>::SignatureType,
             <VizSwarm as SwarmRelation>::SignatureCollectionType,
         >(self.num_nodes);
-        let pubkeys = keys.iter().map(KeyPair::pubkey).collect::<Vec<_>>();
+        let pubkeys = keys
+            .iter()
+            .map(CertificateKeyPair::pubkey)
+            .collect::<Vec<_>>();
 
         let state_configs = keys
             .into_iter()
@@ -44,7 +53,7 @@ impl ReplayConfig<MS> for RepConfig {
                 validators: validator_mapping
                     .map
                     .iter()
-                    .map(|(node_id, sctpubkey)| (node_id.0, Stake(1), *sctpubkey))
+                    .map(|(node_id, sctpubkey)| (node_id.pubkey(), Stake(1), *sctpubkey))
                     .collect::<Vec<_>>(),
                 consensus_config: ConsensusConfig {
                     proposal_txn_limit: 5000,
@@ -71,7 +80,10 @@ where
     pub nodes: ReplayNodes<S::State>,
     pub current_tick: Duration,
     config: C,
-    pub replay_events: BTreeMap<NodeId, Vec<TimedEvent<<S::State as State>::Event>>>,
+    pub replay_events: BTreeMap<
+        NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+        Vec<TimedEvent<<S::State as State>::Event>>,
+    >,
 }
 
 impl<S, C> ReplayNodesSimulation<S, C>
@@ -81,7 +93,10 @@ where
 {
     pub fn new(
         config: C,
-        replay_events: BTreeMap<NodeId, Vec<TimedEvent<<S::State as State>::Event>>>,
+        replay_events: BTreeMap<
+            NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+            Vec<TimedEvent<<S::State as State>::Event>>,
+        >,
     ) -> Self {
         Self {
             nodes: ReplayNodes::new(config.nodes()),
@@ -102,9 +117,14 @@ where
 
     fn get_pending_events(
         &self,
-        node_id: &NodeId,
-    ) -> Vec<NodeEvent<NodeId, <S::State as State>::OutboundMessage, <S::State as State>::Event>>
-    {
+        node_id: &NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+    ) -> Vec<
+        NodeEvent<
+            NodeId<CertificateSignaturePubKey<S::SignatureType>>,
+            <S::State as State>::OutboundMessage,
+            <S::State as State>::Event,
+        >,
+    > {
         let mut nes = vec![];
         for pmsg in self
             .nodes
@@ -139,7 +159,7 @@ where
 {
     type State = S::State;
     type InboundMessage = S::OutboundMessage;
-    type NodeId = NodeId;
+    type NodeId = NodeId<CertificateSignaturePubKey<S::SignatureType>>;
     type Swarm = S;
 
     fn state(&self) -> Vec<NodeState<Self::NodeId, Self::Swarm, Self::InboundMessage>> {

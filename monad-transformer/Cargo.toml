@@ -11,6 +11,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-crypto = { path = "../monad-crypto" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 

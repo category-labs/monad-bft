@@ -10,6 +10,7 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
     hasher::{Hash, Hashable, Hasher, HasherType},
     secp256k1::{KeyPair, SecpSignature},
 };
@@ -19,13 +20,15 @@ use monad_types::*;
 use test_case::test_case;
 use zerocopy::AsBytes;
 
+type SignatureType = SecpSignature;
 type SignatureCollectionType = MultiSig<SecpSignature>;
+type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
 #[test]
 fn timeout_digest() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new(
+        high_qc: QuorumCertificate::<MockSignatures<PubKeyType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
@@ -56,7 +59,7 @@ fn timeout_digest() {
 fn timeout_info_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new(
+        high_qc: QuorumCertificate::<MockSignatures<PubKeyType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
@@ -88,7 +91,7 @@ fn timeout_info_hash() {
 fn timeout_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new(
+        high_qc: QuorumCertificate::<MockSignatures<PubKeyType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
@@ -125,7 +128,7 @@ fn timeout_hash() {
 fn timeout_msg_hash() {
     let ti = TimeoutInfo {
         round: Round(10),
-        high_qc: QuorumCertificate::<MockSignatures>::new(
+        high_qc: QuorumCertificate::<MockSignatures<PubKeyType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
@@ -147,7 +150,7 @@ fn timeout_msg_hash() {
         last_round_tc: None,
     };
 
-    let cert_key = get_certificate_key::<MockSignatures>(7);
+    let cert_key = get_certificate_key::<MockSignatures<PubKeyType>>(7);
 
     let tmo_msg = TimeoutMessage::new(tmo, &cert_key);
 
@@ -191,9 +194,9 @@ fn proposal_msg_hash() {
 
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-    let author = NodeId(keypair.pubkey());
+    let author = NodeId::new(keypair.pubkey());
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new(
+    let qc = QuorumCertificate::<MockSignatures<PubKeyType>>::new(
         QcInfo {
             vote: Vote {
                 vote_info: VoteInfo {
@@ -209,7 +212,7 @@ fn proposal_msg_hash() {
         MockSignatures::with_pubkeys(&[]),
     );
 
-    let block = Block::<MockSignatures>::new(
+    let block = Block::<MockSignatures<PubKeyType>>::new(
         author,
         round,
         &Payload {
@@ -222,7 +225,7 @@ fn proposal_msg_hash() {
         &qc,
     );
 
-    let proposal: ProposalMessage<MockSignatures> = ProposalMessage {
+    let proposal: ProposalMessage<MockSignatures<PubKeyType>> = ProposalMessage {
         block: UnverifiedBlock(block.clone()),
         last_round_tc: None,
     };
@@ -243,7 +246,7 @@ fn max_high_qc() {
     .iter()
     .map(|x| {
         let msg = HasherType::hash_object(x);
-        let keypair = get_key(0);
+        let keypair = get_key::<SignatureType>(0);
         HighQcRoundSigColTuple {
             high_qc_round: *x,
             sigs: keypair.sign(msg.as_ref()),

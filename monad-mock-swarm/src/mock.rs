@@ -1,5 +1,5 @@
 use std::{
-    cmp::{Ordering, Reverse},
+    cmp::Reverse,
     hash::{Hash, Hasher},
     marker::{PhantomData, Unpin},
     ops::DerefMut,
@@ -9,7 +9,10 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
-use monad_consensus_types::validator_data::ValidatorData;
+use monad_consensus_types::{
+    signature_collection::SignatureCollection, validator_data::ValidatorData,
+};
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::{Executor, State};
 use monad_executor_glue::{Command, ExecutionLedgerCommand, Message, RouterCommand, TimerCommand};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
@@ -25,7 +28,11 @@ pub struct MockExecutor<S>
 where
     S: SwarmRelation,
 {
-    ledger: MockLedger<<S::State as State>::Block, <S::State as State>::Event>,
+    ledger: MockLedger<
+        CertificateSignaturePubKey<S::SignatureType>,
+        <S::State as State>::Block,
+        <S::State as State>::Event,
+    >,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
     state_root_hash: S::StateRootHashExecutor,
@@ -69,35 +76,6 @@ impl<E> PartialEq for TimerEvent<E> {
 
 impl<E> Eq for TimerEvent<E> {}
 
-pub struct SequencedPeerEvent<T> {
-    pub tick: Duration,
-    pub from: NodeId,
-    pub t: T,
-
-    // When the event was sent - only used for observability
-    pub tx_tick: Duration,
-}
-
-impl<T> PartialEq for SequencedPeerEvent<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.tick == other.tick
-    }
-}
-impl<T> Eq for SequencedPeerEvent<T> {}
-impl<T> PartialOrd for SequencedPeerEvent<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // reverse ordering - because we want smaller events to be higher priority!
-        Some(other.tick.cmp(&self.tick))
-    }
-}
-
-impl<T> Ord for SequencedPeerEvent<T> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // reverse ordering - because we want smaller events to be higher priority!
-        other.tick.cmp(&self.tick)
-    }
-}
-
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum ExecutorEventType {
     Router,
@@ -139,7 +117,7 @@ where
     pub fn send_message(
         &mut self,
         tick: Duration,
-        from: NodeId,
+        from: NodeId<CertificateSignaturePubKey<S::SignatureType>>,
         message: <S::RouterScheduler as RouterScheduler>::TransportMessage,
     ) {
         assert!(tick >= self.tick);
@@ -273,9 +251,9 @@ where
     }
 }
 
-pub enum MockExecutorEvent<E, TransportMessage> {
+pub enum MockExecutorEvent<E, PT: PubKey, TransportMessage> {
     Event(E),
-    Send(NodeId, TransportMessage),
+    Send(NodeId<PT>, TransportMessage),
 }
 
 impl<S> MockExecutor<S>
@@ -285,7 +263,13 @@ where
     pub fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<MockExecutorEvent<<S::State as State>::Event, S::TransportMessage>> {
+    ) -> Option<
+        MockExecutorEvent<
+            <S::State as State>::Event,
+            CertificateSignaturePubKey<S::SignatureType>,
+            S::TransportMessage,
+        >,
+    > {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
@@ -329,7 +313,13 @@ impl<S> MockExecutor<S>
 where
     S: SwarmRelation,
 {
-    pub fn ledger(&self) -> &MockLedger<<S::State as State>::Block, <S::State as State>::Event> {
+    pub fn ledger(
+        &self,
+    ) -> &MockLedger<
+        CertificateSignaturePubKey<S::SignatureType>,
+        <S::State as State>::Block,
+        <S::State as State>::Event,
+    > {
         &self.ledger
     }
 }
@@ -411,7 +401,7 @@ pub struct MockExecutionLedger<SCT> {
     phantom: PhantomData<SCT>,
 }
 
-impl<SCT> Executor for MockExecutionLedger<SCT> {
+impl<SCT: SignatureCollection> Executor for MockExecutionLedger<SCT> {
     type Command = ExecutionLedgerCommand<SCT>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {

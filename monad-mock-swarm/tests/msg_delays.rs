@@ -19,7 +19,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::XorLatency(XorLatencyTransformer(
+        vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
             Duration::from_millis(u8::MAX as u64),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(60)),

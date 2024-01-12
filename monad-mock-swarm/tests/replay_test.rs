@@ -2,10 +2,13 @@ use std::time::Duration;
 
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    block_validator::MockValidator, message_signature::MessageSignature, multi_sig::MultiSig,
-    payload::StateRoot, signature_collection::SignatureCollection, txpool::TxPool,
+    block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
+    signature_collection::SignatureCollection, txpool::TxPool,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    NopSignature,
+};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
@@ -44,18 +47,30 @@ impl SwarmRelation for ReplaySwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, MockValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            MockValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
+    >;
 
     type LoggerConfig = <Self::Logger as PersistenceLogger>::Config;
     type Logger =
@@ -77,10 +92,10 @@ fn run_nodes_until<S, CT, ST, SCT, VT, LT, TT>(
 where
     S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, TT>>,
 
-    CT: ConsensusProcess<SCT> + PartialEq + Eq,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    CT: ConsensusProcess<ST, SCT> + PartialEq + Eq,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection,
     TT: TxPool,
 
@@ -154,11 +169,11 @@ fn replay_one_honest(failure_idx: &[usize]) {
     );
 
     let pubkeys = peers;
-    let router_scheduler_config = |all_peers: Vec<NodeId>, _: NodeId| NoSerRouterConfig {
+    let router_scheduler_config = |all_peers: Vec<NodeId<_>>, _: NodeId<_>| NoSerRouterConfig {
         all_peers: all_peers.into_iter().collect(),
     };
     let logger_config = MockMemLoggerConfig::default();
-    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer(
+    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
         Duration::from_millis(1),
     ))];
     let phase_one_until = Duration::from_secs(4);
@@ -171,12 +186,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
             .zip(state_configs)
             .map(|(pubkey, state_config)| {
                 (
-                    ID::new(NodeId(pubkey)),
+                    ID::new(NodeId::new(pubkey)),
                     state_config,
                     logger_config.clone(),
                     router_scheduler_config(
-                        pubkeys.iter().copied().map(NodeId).collect(),
-                        NodeId(pubkey),
+                        pubkeys.iter().copied().map(NodeId::new).collect(),
+                        NodeId::new(pubkey),
                     ),
                     pipeline.clone(),
                     default_seed,
@@ -212,10 +227,10 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     // bring down 2 nodes
     let node0 = nodes
-        .remove_state(&ID::new(NodeId(pubkeys[f0])))
+        .remove_state(&ID::new(NodeId::new(pubkeys[f0])))
         .expect("peer0 exists");
     let node1 = nodes
-        .remove_state(&ID::new(NodeId(pubkeys[f1])))
+        .remove_state(&ID::new(NodeId::new(pubkeys[f1])))
         .expect("peer1 exists");
 
     let phase_two_until = max_tick + Duration::from_secs(4);
@@ -239,24 +254,24 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_logger_config = MockMemLoggerConfig::new(node1.logger.log);
 
     nodes.add_state((
-        ID::new(NodeId(pubkeys[f0])),
+        ID::new(NodeId::new(pubkeys[f0])),
         state_configs_duplicate.remove(f0),
         node0_logger_config,
         router_scheduler_config(
-            pubkeys.iter().copied().map(NodeId).collect(),
-            NodeId(pubkeys[f0]),
+            pubkeys.iter().copied().map(NodeId::new).collect(),
+            NodeId::new(pubkeys[f0]),
         ),
         pipeline.clone(),
         default_seed,
     ));
 
     nodes.add_state((
-        ID::new(NodeId(pubkeys[f1])),
+        ID::new(NodeId::new(pubkeys[f1])),
         state_configs_duplicate.remove(f1 - 1),
         node1_logger_config,
         router_scheduler_config(
-            pubkeys.iter().copied().map(NodeId).collect(),
-            NodeId(pubkeys[f1]),
+            pubkeys.iter().copied().map(NodeId::new).collect(),
+            NodeId::new(pubkeys[f1]),
         ),
         pipeline,
         default_seed,
@@ -266,7 +281,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node0_consensus = node0.state.consensus();
     let node0_consensus_recovered = nodes
         .states()
-        .get(&ID::new(NodeId(pubkeys[f0])))
+        .get(&ID::new(NodeId::new(pubkeys[f0])))
         .unwrap()
         .state
         .consensus();
@@ -275,7 +290,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     let node1_consensus = node1.state.consensus();
     let node1_consensus_recovered = nodes
         .states()
-        .get(&ID::new(NodeId(pubkeys[f1])))
+        .get(&ID::new(NodeId::new(pubkeys[f1])))
         .unwrap()
         .state
         .consensus();

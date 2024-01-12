@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use monad_crypto::hasher::{Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
+    hasher::{Hasher, HasherType},
+    NopSignature,
+};
 use monad_gossip::{
     broadcasttree::{BroadcastTree, BroadcastTreeConfig},
     gossipsub::{UnsafeGossipsub, UnsafeGossipsubConfig},
@@ -20,17 +24,22 @@ const GOSSIPSUB_FANOUT: usize = 7;
 const BROADCASTTREE_ARITY: usize = 6;
 const BROADCASTTREE_NUM_ROUTES: usize = 1;
 
-fn testnet<G: Gossip>(make_gossip: impl Fn(&[NodeId], &NodeId) -> G) -> Swarm<G> {
+fn testnet<
+    ST: CertificateSignatureRecoverable,
+    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+>(
+    make_gossip: impl Fn(&[NodeId<G::NodeIdPubKey>], &NodeId<G::NodeIdPubKey>) -> G,
+) -> Swarm<G> {
     const NUM_NODES: u16 = 100;
-    make_swarm(NUM_NODES, make_gossip, |_all_peers, _me| {
+    make_swarm::<ST, _>(NUM_NODES, make_gossip, |_all_peers, _me| {
         vec![
-            BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(50))),
+            BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(50))),
             BytesTransformer::Pacer(PacerTransformer::new(UP_BANDWIDTH_MBIT, 8 * 1450)),
         ]
     })
 }
 
-fn make_mock_gossip(all_peers: &[NodeId], me: &NodeId) -> MockGossip {
+fn make_mock_gossip<PT: PubKey>(all_peers: &[NodeId<PT>], me: &NodeId<PT>) -> MockGossip<PT> {
     MockGossipConfig {
         all_peers: all_peers.to_vec(),
         me: *me,
@@ -39,7 +48,7 @@ fn make_mock_gossip(all_peers: &[NodeId], me: &NodeId) -> MockGossip {
 }
 
 fn testnet_mock_gossip_broadcast() -> u128 {
-    let mut swarm = testnet(make_mock_gossip);
+    let mut swarm = testnet::<NopSignature, _>(make_mock_gossip);
     let mut rng = ChaCha20Rng::from_seed([0; 32]);
     test_broadcast(
         &mut rng,
@@ -53,7 +62,7 @@ fn testnet_mock_gossip_broadcast() -> u128 {
 }
 
 fn testnet_mock_gossip_direct() -> u128 {
-    let mut swarm = testnet(make_mock_gossip);
+    let mut swarm = testnet::<NopSignature, _>(make_mock_gossip);
     let mut rng = ChaCha20Rng::from_seed([0; 32]);
     test_direct(
         &mut rng,
@@ -64,11 +73,11 @@ fn testnet_mock_gossip_direct() -> u128 {
     .as_millis()
 }
 
-fn make_gossipsub(all_peers: &[NodeId], me: &NodeId) -> UnsafeGossipsub {
+fn make_gossipsub<PT: PubKey>(all_peers: &[NodeId<PT>], me: &NodeId<PT>) -> UnsafeGossipsub<PT> {
     UnsafeGossipsubConfig {
         seed: {
             let mut hasher = HasherType::new();
-            hasher.update(&me.0.bytes());
+            hasher.update(&me.pubkey().bytes());
             hasher.hash().0
         },
         me: *me,
@@ -79,7 +88,7 @@ fn make_gossipsub(all_peers: &[NodeId], me: &NodeId) -> UnsafeGossipsub {
 }
 
 fn testnet_gossipsub_broadcast() -> u128 {
-    let mut swarm = testnet(make_gossipsub);
+    let mut swarm = testnet::<NopSignature, _>(make_gossipsub);
     let mut rng = ChaCha20Rng::from_seed([0; 32]);
     test_broadcast(
         &mut rng,
@@ -93,7 +102,7 @@ fn testnet_gossipsub_broadcast() -> u128 {
 }
 
 fn testnet_gossipsub_direct() -> u128 {
-    let mut swarm = testnet(make_gossipsub);
+    let mut swarm = testnet::<NopSignature, _>(make_gossipsub);
     let mut rng = ChaCha20Rng::from_seed([0; 32]);
     test_direct(
         &mut rng,
@@ -104,7 +113,7 @@ fn testnet_gossipsub_direct() -> u128 {
     .as_millis()
 }
 
-fn make_broadcasttree(all_peers: &[NodeId], me: &NodeId) -> BroadcastTree {
+fn make_broadcasttree<PT: PubKey>(all_peers: &[NodeId<PT>], me: &NodeId<PT>) -> BroadcastTree<PT> {
     BroadcastTreeConfig {
         all_peers: all_peers.to_vec(),
         my_id: *me,
@@ -115,7 +124,7 @@ fn make_broadcasttree(all_peers: &[NodeId], me: &NodeId) -> BroadcastTree {
 }
 
 fn testnet_broadcasttree_broadcast() -> u128 {
-    let mut swarm = testnet(make_broadcasttree);
+    let mut swarm = testnet::<NopSignature, _>(make_broadcasttree);
     let mut rng = ChaCha20Rng::from_seed([0; 32]);
     test_broadcast(
         &mut rng,
@@ -129,7 +138,7 @@ fn testnet_broadcasttree_broadcast() -> u128 {
 }
 
 fn testnet_broadcasttree_direct() -> u128 {
-    let mut swarm = testnet(make_broadcasttree);
+    let mut swarm = testnet::<NopSignature, _>(make_broadcasttree);
     let mut rng = ChaCha20Rng::from_seed([0; 32]);
     test_direct(
         &mut rng,

@@ -3,7 +3,10 @@ pub mod timed_event;
 
 use std::{ops::DerefMut, pin::Pin};
 
-use monad_consensus_types::block::BlockType;
+use monad_consensus_types::{block::BlockType, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_executor_glue::{Command, Message};
 
 /// An Executor executes Commands
@@ -58,13 +61,19 @@ pub type BoxExecutor<'a, C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin +
 /// Generally, updaters produce an Event to update State
 pub trait State: Sized {
     type Config;
-    type Message: Message<Event = Self::Event>;
+    type Message: Message<
+        NodeIdPubKey = CertificateSignaturePubKey<Self::NodeIdSignature>,
+        Event = Self::Event,
+    >;
 
     type Event: Clone;
     type OutboundMessage: Clone + Into<Self::Message>;
     type Block: BlockType;
     type Checkpoint;
-    type SignatureCollection;
+    type NodeIdSignature: CertificateSignatureRecoverable;
+    type SignatureCollection: SignatureCollection<
+        NodeIdPubKey = CertificateSignaturePubKey<Self::NodeIdSignature>,
+    >;
 
     /// Create the initial State and any initial Commands for executors
     fn init(

@@ -6,7 +6,7 @@ use monad_consensus_types::{
     block_validator::MockValidator, bls::BlsSignatureCollection, multi_sig::MultiSig,
     payload::StateRoot,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
@@ -24,10 +24,16 @@ use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
+type SignatureType = NopSignature;
+type NodeIdPubKey = CertificateSignaturePubKey<NopSignature>;
+
 fn setup() -> (
     SwarmTestConfig,
-    impl Fn(Vec<NodeId>, NodeId) -> QuicRouterSchedulerConfig<MockGossip>,
-    Vec<BytesTransformer>,
+    impl Fn(
+        Vec<NodeId<NodeIdPubKey>>,
+        NodeId<NodeIdPubKey>,
+    ) -> QuicRouterSchedulerConfig<MockGossip<NodeIdPubKey>>,
+    Vec<BytesTransformer<NodeIdPubKey>>,
     UntilTerminator,
 ) {
     let zero_instant = Instant::now();
@@ -43,15 +49,17 @@ fn setup() -> (
         val_set_update_interval: SeqNum(2000),
         epoch_start_delay: Round(50),
     };
-    let rsc = move |all_peers: Vec<NodeId>, me: NodeId| QuicRouterSchedulerConfig {
-        zero_instant,
-        all_peers: all_peers.iter().cloned().collect(),
-        me,
-        master_seed: 7,
-        gossip: MockGossipConfig { all_peers, me }.build(),
+    let rsc = move |all_peers: Vec<NodeId<NodeIdPubKey>>, me: NodeId<NodeIdPubKey>| {
+        QuicRouterSchedulerConfig {
+            zero_instant,
+            all_peers: all_peers.iter().cloned().collect(),
+            me,
+            master_seed: 7,
+            gossip: MockGossipConfig { all_peers, me }.build(),
+        }
     };
     let xfmrs = vec![
-        BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
+        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(100))),
         BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
     ];
     let terminator = UntilTerminator::new().until_round(Round(10));
@@ -62,7 +70,7 @@ fn setup() -> (
 struct NopSwarm;
 
 impl SwarmRelation for NopSwarm {
-    type SignatureType = NopSignature;
+    type SignatureType = SignatureType;
     type SignatureCollectionType = MultiSig<NopSignature>;
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -72,19 +80,24 @@ impl SwarmRelation for NopSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<NodeIdPubKey>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip<NodeIdPubKey>>;
     type RouterScheduler =
-        QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
+        QuicRouterScheduler<MockGossip<NodeIdPubKey>, Self::InboundMessage, Self::OutboundMessage>;
 
-    type Pipeline = BytesTransformerPipeline;
+    type Pipeline = BytesTransformerPipeline<NodeIdPubKey>;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
@@ -100,8 +113,8 @@ impl SwarmRelation for NopSwarm {
 struct BlsSwarm;
 
 impl SwarmRelation for BlsSwarm {
-    type SignatureType = NopSignature;
-    type SignatureCollectionType = BlsSignatureCollection;
+    type SignatureType = SignatureType;
+    type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -110,19 +123,24 @@ impl SwarmRelation for BlsSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<NodeIdPubKey>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
     type RouterScheduler =
-        QuicRouterScheduler<MockGossip, Self::InboundMessage, Self::OutboundMessage>;
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip>;
+        QuicRouterScheduler<MockGossip<NodeIdPubKey>, Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip<NodeIdPubKey>>;
 
-    type Pipeline = BytesTransformerPipeline;
+    type Pipeline = BytesTransformerPipeline<NodeIdPubKey>;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =

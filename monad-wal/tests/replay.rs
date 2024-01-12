@@ -3,6 +3,8 @@ mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
     use bytes::Bytes;
+    use monad_consensus_types::multi_sig::MultiSig;
+    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
     use monad_executor::State;
     use monad_executor_glue::Message;
     use monad_testutil::block::MockBlock;
@@ -11,6 +13,9 @@ mod test {
         wal::{WALogger, WALoggerConfig},
         PersistenceLogger,
     };
+
+    type SignatureType = NopSignature;
+    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEvent {
@@ -53,9 +58,10 @@ mod test {
     struct MockMessage;
 
     impl Message for MockMessage {
+        type NodeIdPubKey = PubKeyType;
         type Event = TestEvent;
 
-        fn event(self, _from: NodeId) -> Self::Event {
+        fn event(self, _from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
             TestEvent { data: 0 }
         }
     }
@@ -65,9 +71,10 @@ mod test {
         type Event = TestEvent;
         type OutboundMessage = MockMessage;
         type Message = MockMessage;
-        type Block = MockBlock;
+        type Block = MockBlock<PubKeyType>;
         type Checkpoint = ();
-        type SignatureCollection = ();
+        type NodeIdSignature = SignatureType;
+        type SignatureCollection = MultiSig<SignatureType>;
 
         fn init(
             _config: Self::Config,

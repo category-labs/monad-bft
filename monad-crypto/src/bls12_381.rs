@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use zeroize::Zeroize;
 
 use crate::hasher::{Hashable, Hasher};
@@ -120,6 +122,18 @@ impl PartialEq for BlsPubKey {
 }
 
 impl Eq for BlsPubKey {}
+
+impl PartialOrd for BlsPubKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BlsPubKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.serialize().cmp(&other.serialize())
+    }
+}
 
 impl BlsPubKey {
     /// Validate that the pubkey is a point on the curve. Used to guard against

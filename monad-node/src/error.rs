@@ -1,4 +1,5 @@
 use clap::error::ErrorKind;
+use monad_consensus_types::signature_collection::SignatureCollection;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -28,7 +29,8 @@ pub enum NodeSetupError {
     SignatureCollectionError(
         #[from]
         monad_consensus_types::signature_collection::SignatureCollectionError<
-            crate::SignatureType,
+            <crate::SignatureCollectionType as SignatureCollection>::NodeIdPubKey,
+            <crate::SignatureCollectionType as SignatureCollection>::SignatureType,
         >,
     ),
 

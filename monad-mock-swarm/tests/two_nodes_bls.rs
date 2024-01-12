@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block_validator::MockValidator, bls::BlsSignatureCollection, payload::StateRoot,
 };
-use monad_crypto::secp256k1::SecpSignature;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, secp256k1::SecpSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
@@ -22,7 +22,8 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 struct BLSSwarm;
 impl SwarmRelation for BLSSwarm {
     type SignatureType = SecpSignature;
-    type SignatureCollectionType = BlsSignatureCollection;
+    type SignatureCollectionType =
+        BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
     type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -31,18 +32,30 @@ impl SwarmRelation for BLSSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, MockValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            MockValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
+    >;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
@@ -65,7 +78,7 @@ fn two_nodes_bls() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer(
+        vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),

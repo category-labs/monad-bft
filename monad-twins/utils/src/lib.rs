@@ -2,6 +2,9 @@ pub mod twin_reader;
 
 use std::collections::BTreeMap;
 
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes},
@@ -14,17 +17,27 @@ use rand_chacha::ChaChaRng;
 
 use crate::twin_reader::{TwinsNodeConfig, TwinsTestCase};
 
-pub fn run_twins_test<S, L, R>(
+pub fn run_twins_test<ST, S, L, R>(
     get_logger_config: L,
     get_router_cfg: R,
     seed: u64,
     test_case: TwinsTestCase<S>,
 ) where
-    S: SwarmRelation<Pipeline = MonadMessageTransformerPipeline>,
+    ST: CertificateSignatureRecoverable,
+    S: SwarmRelation<
+        SignatureType = ST,
+        Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
+    >,
     MockExecutor<S>: Unpin,
     Node<S>: Send,
-    L: Fn(&ID, &Vec<ID>) -> S::LoggerConfig,
-    R: Fn(&ID, &Vec<ID>) -> S::RouterSchedulerConfig,
+    L: Fn(
+        &ID<CertificateSignaturePubKey<ST>>,
+        &Vec<ID<CertificateSignaturePubKey<ST>>>,
+    ) -> S::LoggerConfig,
+    R: Fn(
+        &ID<CertificateSignaturePubKey<ST>>,
+        &Vec<ID<CertificateSignaturePubKey<ST>>>,
+    ) -> S::RouterSchedulerConfig,
 {
     let TwinsTestCase {
         description: _,

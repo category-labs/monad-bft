@@ -3,16 +3,17 @@ use std::{
     error, fmt,
 };
 
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 
-pub type Result<T> = std::result::Result<T, ValidatorSetError>;
+pub type Result<T, PT> = std::result::Result<T, ValidatorSetError<PT>>;
 
 #[derive(Debug)]
-pub enum ValidatorSetError {
-    DuplicateValidator(NodeId),
+pub enum ValidatorSetError<PT: PubKey> {
+    DuplicateValidator(NodeId<PT>),
 }
 
-impl fmt::Display for ValidatorSetError {
+impl<PT: PubKey> fmt::Display for ValidatorSetError<PT> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateValidator(node_id) => write!(f, "Duplicate NodeId: {:?}", node_id),
@@ -20,36 +21,42 @@ impl fmt::Display for ValidatorSetError {
     }
 }
 
-impl error::Error for ValidatorSetError {
+impl<PT: PubKey> error::Error for ValidatorSetError<PT> {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         None
     }
 }
 
 pub trait ValidatorSetType {
-    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self>
+    type NodeIdPubKey: PubKey;
+
+    fn new(
+        validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
+    ) -> Result<Self, Self::NodeIdPubKey>
     where
         Self: Sized;
-    fn get_members(&self) -> &HashMap<NodeId, Stake>;
-    fn get_list(&self) -> &Vec<NodeId>;
+    fn get_members(&self) -> &HashMap<NodeId<Self::NodeIdPubKey>, Stake>;
+    fn get_list(&self) -> &Vec<NodeId<Self::NodeIdPubKey>>;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
-    fn is_member(&self, addr: &NodeId) -> bool;
+    fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool;
     fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
     where
-        I: IntoIterator<Item = &'a NodeId>;
-    fn has_honest_vote(&self, addrs: &[NodeId]) -> bool;
+        I: IntoIterator<Item = &'a NodeId<Self::NodeIdPubKey>>;
+    fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
 }
 
 #[derive(Debug)]
-pub struct ValidatorSet {
-    validators: HashMap<NodeId, Stake>,
-    validator_list: Vec<NodeId>,
+pub struct ValidatorSet<PT: PubKey> {
+    validators: HashMap<NodeId<PT>, Stake>,
+    validator_list: Vec<NodeId<PT>>,
     total_stake: Stake,
 }
 
-impl ValidatorSetType for ValidatorSet {
-    fn new(validators: Vec<(NodeId, Stake)>) -> Result<Self> {
+impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
+    type NodeIdPubKey = PT;
+
+    fn new(validators: Vec<(NodeId<PT>, Stake)>) -> Result<Self, PT> {
         let mut vmap = HashMap::new();
         let mut vlist = Vec::new();
         for (node_id, stake) in validators.into_iter() {
@@ -74,11 +81,11 @@ impl ValidatorSetType for ValidatorSet {
         })
     }
 
-    fn get_members(&self) -> &HashMap<NodeId, Stake> {
+    fn get_members(&self) -> &HashMap<NodeId<PT>, Stake> {
         &self.validators
     }
 
-    fn get_list(&self) -> &Vec<NodeId> {
+    fn get_list(&self) -> &Vec<NodeId<PT>> {
         &self.validator_list
     }
 
@@ -90,13 +97,13 @@ impl ValidatorSetType for ValidatorSet {
         self.validator_list.is_empty()
     }
 
-    fn is_member(&self, addr: &NodeId) -> bool {
+    fn is_member(&self, addr: &NodeId<PT>) -> bool {
         self.validators.contains_key(addr)
     }
 
     fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
     where
-        I: IntoIterator<Item = &'a NodeId>,
+        I: IntoIterator<Item = &'a NodeId<PT>>,
     {
         let mut duplicates = HashSet::new();
 
@@ -110,7 +117,7 @@ impl ValidatorSetType for ValidatorSet {
         voter_stake >= Stake(self.total_stake.0 * 2 / 3 + 1)
     }
 
-    fn has_honest_vote(&self, addrs: &[NodeId]) -> bool {
+    fn has_honest_vote(&self, addrs: &[NodeId<PT>]) -> bool {
         assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), addrs.len());
         addrs
             .iter()
@@ -122,7 +129,7 @@ impl ValidatorSetType for ValidatorSet {
 
 #[cfg(test)]
 mod test {
-    use monad_crypto::secp256k1::KeyPair;
+    use monad_crypto::{secp256k1::KeyPair, NopSignature};
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 
@@ -133,33 +140,33 @@ mod test {
     fn test_membership() {
         let seed1 = 7_u64;
         let seed2 = 8_u64;
-        let keypair1 = get_key(seed1);
+        let keypair1 = get_key::<NopSignature>(seed1);
 
-        let v1 = (NodeId(keypair1.pubkey()), Stake(1));
-        let v1_ = (NodeId(keypair1.pubkey()), Stake(2));
+        let v1 = (NodeId::new(keypair1.pubkey()), Stake(1));
+        let v1_ = (NodeId::new(keypair1.pubkey()), Stake(2));
 
-        let keypair2 = get_key(seed2);
+        let keypair2 = get_key::<NopSignature>(seed2);
 
-        let v2 = (NodeId(keypair2.pubkey()), Stake(2));
+        let v2 = (NodeId::new(keypair2.pubkey()), Stake(2));
 
         let validators_duplicate = vec![v1, v1_];
         let _vs_err = ValidatorSet::new(validators_duplicate).unwrap_err();
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::new(validators).unwrap();
-        assert!(vs.is_member(&NodeId(keypair1.pubkey())));
+        assert!(vs.is_member(&NodeId::new(keypair1.pubkey())));
 
         let mut pkey3: [u8; 32] = [102; 32];
         let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
-        assert!(!vs.is_member(&NodeId(pubkey3)));
+        assert!(!vs.is_member(&NodeId::new(pubkey3)));
     }
 
     #[test]
     fn test_super_maj() {
-        let keypairs = create_keys(3);
+        let keypairs = create_keys::<NopSignature>(3);
 
-        let v1 = (NodeId(keypairs[0].pubkey()), Stake(1));
-        let v2 = (NodeId(keypairs[1].pubkey()), Stake(3));
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(1));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(3));
 
         let pubkey3 = keypairs[2].pubkey();
 
@@ -167,17 +174,17 @@ mod test {
         let vs = ValidatorSet::new(validators).unwrap();
         assert!(vs.has_super_majority_votes(&[v2.0]));
         assert!(!vs.has_super_majority_votes(&[v1.0]));
-        assert!(vs.has_super_majority_votes(&[v2.0, NodeId(pubkey3)]));
-        assert!(!vs.has_super_majority_votes(&[v1.0, NodeId(pubkey3)]));
+        assert!(vs.has_super_majority_votes(&[v2.0, NodeId::new(pubkey3)]));
+        assert!(!vs.has_super_majority_votes(&[v1.0, NodeId::new(pubkey3)]));
         // Address(3) is a non-member
     }
 
     #[test]
     fn test_honest_vote() {
-        let keypairs = create_keys(2);
+        let keypairs = create_keys::<NopSignature>(2);
 
-        let v1 = (NodeId(keypairs[0].pubkey()), Stake(1));
-        let v2 = (NodeId(keypairs[1].pubkey()), Stake(2));
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(1));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(2));
 
         let validators = vec![v1, v2];
         let vs = ValidatorSet::new(validators).unwrap();

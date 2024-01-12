@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_crypto::{rustls::TlsVerifier, secp256k1::KeyPair};
+use monad_crypto::{rustls::TlsVerifier, secp256k1::KeyPair, NopSignature};
 use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -19,11 +19,11 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 use crate::timeout_queue::TimeoutQueue;
 
-pub struct QuicRouterSchedulerConfig<G> {
+pub struct QuicRouterSchedulerConfig<G: Gossip> {
     pub zero_instant: Instant,
 
-    pub all_peers: BTreeSet<NodeId>,
-    pub me: NodeId,
+    pub all_peers: BTreeSet<NodeId<G::NodeIdPubKey>>,
+    pub me: NodeId<G::NodeIdPubKey>,
 
     pub master_seed: u64,
 
@@ -49,20 +49,20 @@ impl ConnectionState {
 pub struct QuicRouterScheduler<G: Gossip, IM, OM> {
     zero_instant: Instant,
 
-    me: NodeId,
+    me: NodeId<G::NodeIdPubKey>,
     endpoint: quinn_proto::Endpoint,
     client_config: ClientConfig,
     connections: BTreeMap<ConnectionHandle, ConnectionState>,
-    node_connections: HashMap<NodeId, ConnectionHandle>,
+    node_connections: HashMap<NodeId<G::NodeIdPubKey>, ConnectionHandle>,
 
-    peer_ids: HashMap<NodeId, SocketAddr>,
-    addresses: HashMap<SocketAddr, NodeId>,
+    peer_ids: HashMap<NodeId<G::NodeIdPubKey>, SocketAddr>,
+    addresses: HashMap<SocketAddr, NodeId<G::NodeIdPubKey>>,
 
     gossip: ConnectionManager<G>,
 
     timeouts: TimeoutQueue,
 
-    pending_events: BTreeMap<Duration, VecDeque<RouterEvent<IM, Bytes>>>,
+    pending_events: BTreeMap<Duration, VecDeque<RouterEvent<G::NodeIdPubKey, IM, Bytes>>>,
 
     phantom: PhantomData<OM>,
 }
@@ -72,6 +72,7 @@ where
     IM: Deserializable<Bytes>,
     OM: Serializable<Bytes>,
 {
+    type NodeIdPublicKey = G::NodeIdPubKey;
     type Config = QuicRouterSchedulerConfig<G>;
 
     type InboundMessage = IM;
@@ -87,7 +88,7 @@ where
             Arc::new(config)
         };
 
-        // We can generate a random keypair here, because we  don't need to verify the sources of
+        // We can generate a random keypair here, because we don't need to verify the sources of
         // messages using the TLS baked into quic
         let scratch_keypair = {
             let mut seed = [0; 32];
@@ -102,7 +103,9 @@ where
             Some(Arc::new(
                 {
                     let mut server_config = quinn_proto::ServerConfig::with_crypto(Arc::new(
-                        TlsVerifier::make_server_config(&scratch_keypair),
+                        // We can use NopSignature here, because we don't need to verify the sources of
+                        // messages using the TLS baked into quic
+                        TlsVerifier::<NopSignature>::make_server_config(&scratch_keypair),
                     ));
                     server_config.transport_config(transport_config.clone());
                     server_config
@@ -132,8 +135,11 @@ where
             me: config.me,
             endpoint,
             client_config: {
-                let mut client_config =
-                    ClientConfig::new(Arc::new(TlsVerifier::make_client_config(&scratch_keypair)));
+                let mut client_config = ClientConfig::new(Arc::new(
+                    // We can use NopSignature here, because we don't need to verify the sources of
+                    // messages using the TLS baked into quic
+                    TlsVerifier::<NopSignature>::make_client_config(&scratch_keypair),
+                ));
                 client_config.transport_config(transport_config);
                 client_config
             },
@@ -155,7 +161,7 @@ where
     fn process_inbound(
         &mut self,
         time: std::time::Duration,
-        from: NodeId,
+        from: NodeId<G::NodeIdPubKey>,
         message: Self::TransportMessage,
     ) {
         assert_ne!(from, self.me);
@@ -215,7 +221,12 @@ where
         }
     }
 
-    fn send_outbound(&mut self, time: Duration, to: RouterTarget, message: Self::OutboundMessage) {
+    fn send_outbound(
+        &mut self,
+        time: Duration,
+        to: RouterTarget<G::NodeIdPubKey>,
+        message: Self::OutboundMessage,
+    ) {
         self.gossip.send(time, to, message.serialize());
         self.poll_gossip(time);
     }
@@ -227,7 +238,7 @@ where
     fn step_until(
         &mut self,
         until: Duration,
-    ) -> Option<RouterEvent<Self::InboundMessage, Self::TransportMessage>> {
+    ) -> Option<RouterEvent<G::NodeIdPubKey, Self::InboundMessage, Self::TransportMessage>> {
         while let Some((min_tick, event_type)) = self.peek_event() {
             if min_tick > until {
                 break;
@@ -300,7 +311,10 @@ where
             .min_by_key(|(tick, _)| *tick)
     }
 
-    fn canonical_connection(&self, node: &NodeId) -> Option<(ConnectionHandle, StreamId)> {
+    fn canonical_connection(
+        &self,
+        node: &NodeId<G::NodeIdPubKey>,
+    ) -> Option<(ConnectionHandle, StreamId)> {
         let connection_handle = self.node_connections.get(node)?;
         let state = self
             .connections

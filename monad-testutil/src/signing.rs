@@ -3,22 +3,24 @@ use std::{collections::HashSet, marker::PhantomData};
 use monad_consensus::validation::signing::{Unvalidated, Unverified};
 use monad_consensus_types::{
     block::Block,
-    certificate_signature::CertificateKeyPair,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     voting::ValidatorMapping,
 };
 use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    },
     hasher::{Hash, Hashable, Hasher, HasherType},
-    secp256k1::{KeyPair, PubKey, SecpSignature},
+    secp256k1::{KeyPair, SecpSignature},
 };
 use monad_types::NodeId;
 use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
-pub struct MockSignatures {
-    pubkey: Vec<PubKey>,
+pub struct MockSignatures<PT: PubKey> {
+    pubkey: Vec<PT>,
 }
 
 #[derive(Debug)]
@@ -32,26 +34,30 @@ impl std::fmt::Display for MockSignatureError {
 
 impl std::error::Error for MockSignatureError {}
 
-impl MockSignatures {
-    pub fn with_pubkeys(pubkeys: &[PubKey]) -> Self {
+impl<PT: PubKey> MockSignatures<PT> {
+    pub fn with_pubkeys(pubkeys: &[PT]) -> Self {
         Self {
             pubkey: pubkeys.to_vec(),
         }
     }
 }
 
-impl Hashable for MockSignatures {
+impl<PT: PubKey> Hashable for MockSignatures<PT> {
     fn hash(&self, _state: &mut impl Hasher) {}
 }
 
-impl SignatureCollection for MockSignatures {
+impl<PT: PubKey> SignatureCollection for MockSignatures<PT> {
+    type NodeIdPubKey = PT;
     type SignatureType = SecpSignature;
 
     fn new(
-        _sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
-        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        _sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
+        _validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
         _msg: &[u8],
-    ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         Ok(Self { pubkey: Vec::new() })
     }
 
@@ -61,18 +67,31 @@ impl SignatureCollection for MockSignatures {
 
     fn verify(
         &self,
-        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        _validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
         _msg: &[u8],
-    ) -> Result<Vec<NodeId>, SignatureCollectionError<Self::SignatureType>> {
-        Ok(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)).collect())
+    ) -> Result<
+        Vec<NodeId<Self::NodeIdPubKey>>,
+        SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>,
+    > {
+        Ok(self
+            .pubkey
+            .iter()
+            .map(|pubkey| NodeId::new(*pubkey))
+            .collect())
     }
 
     fn get_participants(
         &self,
-        _validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        _validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
         _msg: &[u8],
-    ) -> HashSet<NodeId> {
-        HashSet::from_iter(self.pubkey.iter().map(|pubkey| NodeId(*pubkey)))
+    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
+        HashSet::from_iter(self.pubkey.iter().map(|pubkey| NodeId::new(*pubkey)))
     }
 
     fn num_signatures(&self) -> usize {
@@ -83,7 +102,9 @@ impl SignatureCollection for MockSignatures {
         unreachable!()
     }
 
-    fn deserialize(_data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+    fn deserialize(
+        _data: &[u8],
+    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         unreachable!()
     }
 }
@@ -91,7 +112,7 @@ impl SignatureCollection for MockSignatures {
 pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let block_id = {
         let mut hasher = HasherType::new();
-        hasher.update(b.author.0.bytes());
+        hasher.update(b.author.pubkey().bytes());
         hasher.update(b.round);
         hasher.update(b.payload.txns.bytes());
         hasher.update(b.payload.header.parent_hash);
@@ -115,16 +136,16 @@ pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     hasher.hash()
 }
 
-pub fn node_id() -> NodeId {
+pub fn node_id<ST: CertificateSignatureRecoverable>() -> NodeId<CertificateSignaturePubKey<ST>> {
     let mut privkey: [u8; 32] = [127; 32];
-    let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
-    NodeId(keypair.pubkey())
+    let keypair = ST::KeyPairType::from_bytes(&mut privkey).unwrap();
+    NodeId::new(keypair.pubkey())
 }
 
-pub fn create_keys(num_keys: u32) -> Vec<KeyPair> {
+pub fn create_keys<ST: CertificateSignatureRecoverable>(num_keys: u32) -> Vec<ST::KeyPairType> {
     let mut res = Vec::new();
     for i in 0..num_keys {
-        let keypair = get_key(i.into());
+        let keypair = get_key::<ST>(i.into());
         res.push(keypair);
     }
 
@@ -164,13 +185,14 @@ impl TestSigner<SecpSignature> {
     }
 }
 
-pub fn get_key(seed: u64) -> KeyPair {
+pub fn get_key<ST: CertificateSignatureRecoverable>(seed: u64) -> ST::KeyPairType {
     let mut hasher = HasherType::new();
     hasher.update(seed.to_le_bytes());
     let mut hash = hasher.hash();
-    KeyPair::from_bytes(&mut hash.0).unwrap()
+    <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut hash.0).unwrap()
 }
 
+// FIXME a lot of these functions can be collapsed now that CertificateSignature is generic
 pub fn get_certificate_key<SCT: SignatureCollection>(
     seed: u64,
 ) -> SignatureCollectionKeyPairType<SCT> {

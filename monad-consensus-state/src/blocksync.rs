@@ -28,9 +28,9 @@ const DEFAULT_NODE_INDEX: usize = 0;
 /// Represents a blocksync request that has been made and
 /// that we are waiting for
 #[derive(PartialEq, Eq, Debug, Clone)]
-struct InFlightRequest<SCT> {
+struct InFlightRequest<SCT: SignatureCollection> {
     /// The node we are requesting the block from
-    req_target: NodeId,
+    req_target: NodeId<SCT::NodeIdPubKey>,
 
     /// The number of times we have tried making this request
     retry_cnt: usize,
@@ -81,7 +81,11 @@ impl<SCT: SignatureCollection> BlockSyncResult<SCT> {
 }
 
 impl<SCT: SignatureCollection> InFlightRequest<SCT> {
-    pub fn new(req_target: NodeId, retry_cnt: usize, qc: QuorumCertificate<SCT>) -> Self {
+    pub fn new(
+        req_target: NodeId<SCT::NodeIdPubKey>,
+        retry_cnt: usize,
+        qc: QuorumCertificate<SCT>,
+    ) -> Self {
         Self {
             req_target,
             retry_cnt,
@@ -92,12 +96,12 @@ impl<SCT: SignatureCollection> InFlightRequest<SCT> {
 
 /// Tracks inflight requests
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockSyncRequester<SCT> {
+pub struct BlockSyncRequester<SCT: SignatureCollection> {
     /// current inflight requests
     requests: HashMap<BlockId, InFlightRequest<SCT>>,
 
     /// this node
-    my_id: NodeId,
+    my_id: NodeId<SCT::NodeIdPubKey>,
 
     /// amount of time to wait for response to a request
     /// before giving up on that specific request
@@ -108,7 +112,7 @@ impl<SCT> BlockSyncRequester<SCT>
 where
     SCT: SignatureCollection,
 {
-    pub fn new(my_id: NodeId, tmo_duration: Duration) -> Self {
+    pub fn new(my_id: NodeId<SCT::NodeIdPubKey>, tmo_duration: Duration) -> Self {
         Self {
             requests: HashMap::new(),
             my_id,
@@ -132,23 +136,29 @@ where
 
     /// create a command to request the block for the given QC
     /// does nothing if there is already a pending request for the QC
-    pub fn request<VT: ValidatorSetType>(
+    pub fn request<VT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validator_set: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         self.request_helper(qc, validator_set, DEFAULT_NODE_INDEX)
     }
 
     // this function creates a request and creates the appropriate commands
     // to execute the request and creates/stores an InFlightRequest to track
     // the request
-    fn request_helper<VT: ValidatorSetType>(
+    fn request_helper<VT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validator_set: &VT,
         req_cnt: usize,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let id = qc.get_block_id();
 
         if self.requests.contains_key(&id) {
@@ -169,13 +179,17 @@ where
     /// Handle the response to a BlockSync request
     /// If the request was not fulfilled, the request is tried again with
     /// a different node
-    pub fn handle_response<VT: ValidatorSetType, TV: BlockValidator>(
+    pub fn handle_response<VT, TV>(
         &mut self,
-        author: &NodeId,
+        author: &NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
         validator_set: &VT,
         transaction_validator: &TV,
-    ) -> BlockSyncResult<SCT> {
+    ) -> BlockSyncResult<SCT>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        TV: BlockValidator,
+    {
         let bid = msg.get_block_id();
 
         if self
@@ -210,11 +224,14 @@ where
 
     /// If we receive a BlockSync timeout for a blockid, retry with a new
     /// target node
-    pub fn handle_timeout<VT: ValidatorSetType>(
+    pub fn handle_timeout<VT>(
         &mut self,
         bid: BlockId,
         validator_set: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         // avoid duplicate logging
         let mut cmds = vec![ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSync(
             bid,
@@ -231,7 +248,11 @@ where
     }
 
     // choose a node for a request that is not self.
-    fn choose_peer(&self, peers: &[NodeId], mut cnt: usize) -> (NodeId, usize) {
+    fn choose_peer(
+        &self,
+        peers: &[NodeId<SCT::NodeIdPubKey>],
+        mut cnt: usize,
+    ) -> (NodeId<SCT::NodeIdPubKey>, usize) {
         debug_assert!(peers.len() > 1);
 
         let mut peer = peers[(cnt) % peers.len()];
@@ -258,7 +279,9 @@ mod test {
         signature_collection::SignatureCollection,
         voting::{Vote, VoteInfo},
     };
-    use monad_crypto::hasher::Hash;
+    use monad_crypto::{
+        certificate_signature::CertificateSignaturePubKey, hasher::Hash, NopSignature,
+    };
     use monad_eth_types::EthAddress;
     use monad_testutil::{
         signing::{get_key, MockSignatures},
@@ -269,31 +292,27 @@ mod test {
 
     use super::BlockSyncRequester;
     use crate::{command::ConsensusCommand, BlockSyncResponseMessage, BlockSyncResult};
-    type SC = MockSignatures;
-    type VT = ValidatorSet;
+    type ST = NopSignature;
+    type SC = MockSignatures<CertificateSignaturePubKey<ST>>;
+    type VT = ValidatorSet<CertificateSignaturePubKey<ST>>;
     type QC = QuorumCertificate<SC>;
     type TV = MockValidator;
 
     fn extract_request_sync<SCT: SignatureCollection>(
         cmds: &[ConsensusCommand<SCT>],
     ) -> &ConsensusCommand<SCT> {
-        let res = cmds.iter().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds
+            .iter()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         res.expect("request sync not found")
     }
 
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
-        let keypair = get_key(6);
-        let mut manager = BlockSyncRequester::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
-        let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
+        let keypair = get_key::<ST>(6);
+        let mut manager =
+            BlockSyncRequester::<SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
+        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(4);
 
         let qc = &QC::new(
             QcInfo {
@@ -308,7 +327,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
 
         let cmds = manager.request::<VT>(qc, &valset);
@@ -341,7 +360,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
         let cmds = manager.request::<VT>(qc, &valset);
 
@@ -357,9 +376,10 @@ mod test {
 
     #[test]
     fn test_handle_request() {
-        let keypair = get_key(6);
-        let mut manager = BlockSyncRequester::<SC>::new(NodeId(keypair.pubkey()), Duration::MAX);
-        let (_, _, valset, _) = create_keys_w_validators::<SC>(4);
+        let keypair = get_key::<ST>(6);
+        let mut manager =
+            BlockSyncRequester::<SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
+        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(4);
         let transaction_validator = TV::default();
 
         let payload = Payload {
@@ -371,7 +391,7 @@ mod test {
         };
 
         let block_1 = Block::new(
-            NodeId(keypair.pubkey()),
+            NodeId::new(keypair.pubkey()),
             Round(0),
             &payload,
             &QC::new(
@@ -387,12 +407,12 @@ mod test {
                         ledger_commit_info: CommitResult::NoCommit,
                     },
                 },
-                MockSignatures::with_pubkeys(&[]),
+                SC::with_pubkeys(&[]),
             ),
         );
 
         let block_2 = Block::new(
-            NodeId(keypair.pubkey()),
+            NodeId::new(keypair.pubkey()),
             Round(1),
             &payload,
             &QC::new(
@@ -408,12 +428,12 @@ mod test {
                         ledger_commit_info: CommitResult::NoCommit,
                     },
                 },
-                MockSignatures::with_pubkeys(&[]),
+                SC::with_pubkeys(&[]),
             ),
         );
 
         let block_3 = Block::new(
-            NodeId(keypair.pubkey()),
+            NodeId::new(keypair.pubkey()),
             Round(2),
             &payload,
             &QC::new(
@@ -429,7 +449,7 @@ mod test {
                         ledger_commit_info: CommitResult::NoCommit,
                     },
                 },
-                MockSignatures::with_pubkeys(&[]),
+                SC::with_pubkeys(&[]),
             ),
         );
 
@@ -447,7 +467,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
 
         let cmds = manager.request::<VT>(qc_1, &valset);
@@ -475,7 +495,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
 
         let cmds = manager.request::<VT>(qc_2, &valset);
@@ -503,7 +523,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
 
         let cmds = manager.request::<VT>(qc_3, &valset);
@@ -534,7 +554,7 @@ mod test {
 
         // arbitrary response should be rejected
         let BlockSyncResult::<SC>::UnexpectedResponse = manager.handle_response(
-            &NodeId(keypair.pubkey()),
+            &NodeId::new(keypair.pubkey()),
             msg_no_block_1,
             &valset,
             &transaction_validator,
@@ -545,7 +565,7 @@ mod test {
         // valid message from invalid individual should still get dropped
 
         let BlockSyncResult::<SC>::UnexpectedResponse = manager.handle_response(
-            &NodeId(keypair.pubkey()),
+            &NodeId::new(keypair.pubkey()),
             msg_with_block_2.clone(),
             &valset,
             &transaction_validator,
@@ -625,7 +645,7 @@ mod test {
 
     #[test]
     fn test_never_request_to_self() {
-        let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
+        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(30);
         let my_id = valset.get_list()[0];
         let mut manager = BlockSyncRequester::<SC>::new(my_id, Duration::MAX);
 
@@ -642,7 +662,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
 
         let cmds = manager.request::<VT>(qc, &valset);
@@ -693,7 +713,7 @@ mod test {
     fn test_proper_emit_timeout() {
         // Total of 3 cases of timeout
         // Request, Failed, natural timeout
-        let (_, _, valset, _) = create_keys_w_validators::<SC>(30);
+        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(30);
         let my_id = valset.get_list()[0];
         let mut manager = BlockSyncRequester::<SC>::new(my_id, Duration::MAX);
 
@@ -719,7 +739,7 @@ mod test {
                         ledger_commit_info: CommitResult::NoCommit,
                     },
                 },
-                MockSignatures::with_pubkeys(&[]),
+                SC::with_pubkeys(&[]),
             );
 
             Block::new(valset.get_list()[0], Round(0), &payload, qc)
@@ -738,7 +758,7 @@ mod test {
                     ledger_commit_info: CommitResult::NoCommit,
                 },
             },
-            MockSignatures::with_pubkeys(&[]),
+            SC::with_pubkeys(&[]),
         );
 
         let cmds = manager.request::<VT>(qc, &valset);

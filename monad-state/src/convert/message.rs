@@ -1,12 +1,15 @@
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_proto::{error::ProtoError, proto::message::*};
 
 use crate::{MonadMessage, VerifiedMonadMessage};
 
-impl<ST: MessageSignature, SCT: SignatureCollection> From<&VerifiedMonadMessage<ST, SCT>>
-    for ProtoMonadMessage
+impl<ST, SCT> From<&VerifiedMonadMessage<ST, SCT>> for ProtoMonadMessage
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn from(value: &VerifiedMonadMessage<ST, SCT>) -> Self {
         Self {
@@ -25,8 +28,10 @@ impl<ST: MessageSignature, SCT: SignatureCollection> From<&VerifiedMonadMessage<
     }
 }
 
-impl<ST: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoMonadMessage>
-    for MonadMessage<ST, SCT>
+impl<ST, SCT> TryFrom<ProtoMonadMessage> for MonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type Error = ProtoError;
 

@@ -1,13 +1,10 @@
 use std::ops::Deref;
 
 use monad_consensus_types::{
-    convert::signing::{
-        certificate_signature_to_proto, message_signature_to_proto, proto_to_certificate_signature,
-        proto_to_message_signature,
-    },
-    message_signature::MessageSignature,
+    convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
     signature_collection::SignatureCollection,
 };
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_proto::{error::ProtoError, proto::message::*};
 
 use crate::{
@@ -165,8 +162,8 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage>
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> From<&VerifiedConsensusMessage<MS, SCT>>
-    for ProtoUnverifiedConsensusMessage
+impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
+    From<&VerifiedConsensusMessage<MS, SCT>> for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &VerifiedConsensusMessage<MS, SCT>) -> Self {
         let oneof_message = match value.deref().deref() {
@@ -182,13 +179,13 @@ impl<MS: MessageSignature, SCT: SignatureCollection> From<&VerifiedConsensusMess
         };
         Self {
             oneof_message: Some(oneof_message),
-            author_signature: Some(message_signature_to_proto(value.author_signature())),
+            author_signature: Some(certificate_signature_to_proto(value.author_signature())),
         }
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoUnverifiedConsensusMessage>
-    for UnverifiedConsensusMessage<MS, SCT>
+impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
+    TryFrom<ProtoUnverifiedConsensusMessage> for UnverifiedConsensusMessage<MS, SCT>
 {
     type Error = ProtoError;
 
@@ -207,7 +204,7 @@ impl<MS: MessageSignature, SCT: SignatureCollection> TryFrom<ProtoUnverifiedCons
                 "Unverified<ConsensusMessage>.oneofmessage".to_owned(),
             ))?,
         };
-        let signature = proto_to_message_signature(value.author_signature.ok_or(
+        let signature = proto_to_certificate_signature(value.author_signature.ok_or(
             Self::Error::MissingRequiredField("Unverified<ConsensusMessage>.signature".to_owned()),
         )?)?;
         Ok(Unverified::new(Unvalidated::new(message), signature))

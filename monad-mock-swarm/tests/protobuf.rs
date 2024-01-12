@@ -10,8 +10,9 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
     hasher::{Hash, Hasher, HasherType},
-    secp256k1::{KeyPair, SecpSignature},
+    secp256k1::SecpSignature,
 };
 use monad_executor_glue::{
     convert::interface::{deserialize_event, serialize_event},
@@ -31,12 +32,13 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-type SignatureCollectionType = MultiSig<SecpSignature>;
+type SignatureType = SecpSignature;
+type SignatureCollectionType = MultiSig<SignatureType>;
 
 #[test]
 fn test_consensus_timeout_event() {
     let event = MonadEvent::ConsensusEvent(
-        ConsensusEvent::<SecpSignature, SignatureCollectionType>::Timeout(
+        ConsensusEvent::<SignatureType, SignatureCollectionType>::Timeout(
             monad_types::TimeoutVariant::Pacemaker,
         ),
     );
@@ -49,7 +51,7 @@ fn test_consensus_timeout_event() {
 
 #[test]
 fn test_consensus_message_event_vote_multisig() {
-    let keypair: KeyPair = get_key(0);
+    let keypair = get_key::<SignatureType>(0);
     let certkeypair = get_certificate_key::<SignatureCollectionType>(7);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
@@ -76,14 +78,17 @@ fn test_consensus_message_event_vote_multisig() {
     });
 
     let buf = serialize_event(&event);
-    let rx_event = deserialize_event::<SecpSignature, SignatureCollectionType>(&buf);
+    let rx_event = deserialize_event::<SignatureType, SignatureCollectionType>(&buf);
 
     assert_eq!(event, rx_event.unwrap());
 }
 
 #[test]
 fn test_consensus_message_event_proposal_bls() {
-    let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<BlsSignatureCollection>(10);
+    let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<
+        SignatureType,
+        BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,
+    >(10);
     let mut val_epoch_map = ValidatorsEpochMapping::default();
     val_epoch_map.insert(
         Epoch(1),
@@ -93,7 +98,10 @@ fn test_consensus_message_event_proposal_bls() {
     );
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let election = SimpleRoundRobin::new();
-    let mut propgen: ProposalGen<SecpSignature, BlsSignatureCollection> = ProposalGen::new();
+    let mut propgen: ProposalGen<
+        SignatureType,
+        BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,
+    > = ProposalGen::new();
 
     let proposal = propgen.next_proposal(
         &keys,
@@ -108,7 +116,7 @@ fn test_consensus_message_event_proposal_bls() {
     let consensus_proposal_msg = ConsensusMessage::Proposal((*proposal).clone());
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-        sender: proposal.author().0,
+        sender: proposal.author().pubkey(),
         unverified_message: Unverified::new(
             Unvalidated::new(consensus_proposal_msg),
             *proposal.author_signature(),
@@ -116,7 +124,10 @@ fn test_consensus_message_event_proposal_bls() {
     });
 
     let buf = serialize_event(&event);
-    let rx_event = deserialize_event::<SecpSignature, BlsSignatureCollection>(&buf);
+    let rx_event = deserialize_event::<
+        SignatureType,
+        BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,
+    >(&buf);
 
     assert_eq!(event, rx_event.unwrap());
 }

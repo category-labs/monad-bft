@@ -3296,6 +3296,7 @@ dependencies = [
 name = "monad-router-scheduler"
 version = "0.1.0"
 dependencies = [
+ "monad-crypto",
  "monad-types",
 ]
 
@@ -3395,6 +3396,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "bytes-utils",
+ "monad-crypto",
  "monad-tracing-counter",
  "monad-types",
  "rand",

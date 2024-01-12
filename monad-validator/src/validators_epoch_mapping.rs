@@ -14,7 +14,13 @@ where
     VT: ValidatorSetType,
     SCT: SignatureCollection,
 {
-    validator_map: HashMap<Epoch, (VT, ValidatorMapping<SignatureCollectionKeyPairType<SCT>>)>,
+    validator_map: HashMap<
+        Epoch,
+        (
+            VT,
+            ValidatorMapping<VT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+        ),
+    >,
 }
 
 impl<VT, SCT> ValidatorsEpochMapping<VT, SCT>
@@ -29,7 +35,7 @@ where
     pub fn get_cert_pubkeys(
         &self,
         epoch: &Epoch,
-    ) -> Option<&ValidatorMapping<SignatureCollectionKeyPairType<SCT>>> {
+    ) -> Option<&ValidatorMapping<VT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>> {
         self.validator_map.get(epoch).map(|vs| &vs.1)
     }
 
@@ -37,7 +43,7 @@ where
         &mut self,
         epoch: Epoch,
         val_stakes: VT,
-        val_cert_pubkeys: ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
+        val_cert_pubkeys: ValidatorMapping<VT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
     ) {
         let res = self
             .validator_map

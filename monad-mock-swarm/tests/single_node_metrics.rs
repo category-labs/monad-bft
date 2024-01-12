@@ -36,7 +36,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer(
+        vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),

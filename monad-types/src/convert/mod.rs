@@ -1,28 +1,38 @@
+use monad_crypto::certificate_signature::PubKey;
 use monad_proto::{
     error::ProtoError,
-    proto::basic::{ProtoBlockId, ProtoEpoch, ProtoNodeId, ProtoRound, ProtoSeqNum, ProtoStake},
+    proto::basic::{
+        ProtoBlockId, ProtoEpoch, ProtoNodeId, ProtoPubkey, ProtoRound, ProtoSeqNum, ProtoStake,
+    },
 };
 
 use crate::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
 
-impl From<&NodeId> for ProtoNodeId {
-    fn from(nodeid: &NodeId) -> Self {
+impl<P: PubKey> From<&NodeId<P>> for ProtoNodeId {
+    fn from(nodeid: &NodeId<P>) -> Self {
         Self {
-            pubkey: Some((&(nodeid.0)).into()),
+            pubkey: Some(pubkey_to_proto(&nodeid.pubkey)),
         }
     }
 }
 
-impl TryFrom<ProtoNodeId> for NodeId {
+impl<P: PubKey> TryFrom<ProtoNodeId> for NodeId<P> {
     type Error = ProtoError;
     fn try_from(value: ProtoNodeId) -> Result<Self, Self::Error> {
-        Ok(Self(
-            value
-                .pubkey
-                .ok_or(ProtoError::MissingRequiredField("NodeId.0".to_owned()))?
-                .try_into()?,
-        ))
+        Ok(Self::new(proto_to_pubkey(value.pubkey.ok_or(
+            ProtoError::MissingRequiredField("NodeId.0".to_owned()),
+        )?)?))
     }
+}
+
+pub fn pubkey_to_proto(pubkey: &impl PubKey) -> ProtoPubkey {
+    ProtoPubkey {
+        pubkey: pubkey.bytes().into(),
+    }
+}
+
+pub fn proto_to_pubkey<P: PubKey>(pubkey: ProtoPubkey) -> Result<P, ProtoError> {
+    P::from_bytes(&pubkey.pubkey).map_err(|e| ProtoError::CryptoError(format!("{}", e)))
 }
 
 impl From<&Round> for ProtoRound {

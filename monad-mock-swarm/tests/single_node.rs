@@ -22,7 +22,7 @@ fn two_nodes() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer(
+        vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),
@@ -56,7 +56,7 @@ fn two_nodes_quic() {
             gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
-        vec![BytesTransformer::Latency(LatencyTransformer(
+        vec![BytesTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),
@@ -92,7 +92,7 @@ fn two_nodes_quic_bw() {
         },
         MockWALoggerConfig,
         vec![
-            BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(1))),
+            BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
             BytesTransformer::Bw(BwTransformer::new(8, Duration::from_secs(1))),
         ],
         UntilTerminator::new().until_tick(Duration::from_secs(10)),

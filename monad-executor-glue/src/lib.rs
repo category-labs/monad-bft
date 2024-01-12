@@ -12,25 +12,31 @@ use monad_consensus::{
 };
 use monad_consensus_types::{
     block::{Block, UnverifiedBlock},
-    message_signature::MessageSignature,
     signature_collection::SignatureCollection,
     validator_data::ValidatorData,
 };
-use monad_crypto::{hasher::Hash as ConsensusHash, secp256k1::PubKey};
+use monad_crypto::{
+    certificate_signature::{CertificateSignatureRecoverable, PubKey},
+    hasher::Hash as ConsensusHash,
+};
 use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
 
 #[derive(Clone)]
-pub enum RouterCommand<OM> {
+pub enum RouterCommand<PT: PubKey, OM> {
     // Publish should not be replayed
-    Publish { target: RouterTarget, message: OM },
+    Publish {
+        target: RouterTarget<PT>,
+        message: OM,
+    },
     // TODO-2 add a RouterCommand for setting peer set for broadcast
 }
 
 pub trait Message: Clone {
+    type NodeIdPubKey: PubKey;
     type Event;
 
     // TODO-3 NodeId -> &NodeId
-    fn event(self, from: NodeId) -> Self::Event;
+    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
 }
 
 pub enum TimerCommand<E> {
@@ -45,17 +51,17 @@ pub enum TimerCommand<E> {
     ScheduleReset(TimeoutVariant),
 }
 
-pub enum LedgerCommand<B, E> {
+pub enum LedgerCommand<PT: PubKey, B, E> {
     LedgerCommit(Vec<B>),
     // LedgerFetch should not be replayed
     LedgerFetch(
-        NodeId,
+        NodeId<PT>,
         BlockId,
         Box<dyn (FnOnce(Option<B>) -> E) + Send + Sync>,
     ),
 }
 
-pub enum ExecutionLedgerCommand<SCT> {
+pub enum ExecutionLedgerCommand<SCT: SignatureCollection> {
     LedgerCommit(Vec<Block<SCT>>),
 }
 
@@ -67,23 +73,23 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
-pub enum Command<E, OM, B, C, SCT> {
-    RouterCommand(RouterCommand<OM>),
+pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
+    RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
 
-    LedgerCommand(LedgerCommand<B, E>),
+    LedgerCommand(LedgerCommand<SCT::NodeIdPubKey, B, E>),
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
 }
 
-impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
+impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
     pub fn split_commands(
         commands: Vec<Self>,
     ) -> (
-        Vec<RouterCommand<OM>>,
+        Vec<RouterCommand<SCT::NodeIdPubKey, OM>>,
         Vec<TimerCommand<E>>,
-        Vec<LedgerCommand<B, E>>,
+        Vec<LedgerCommand<SCT::NodeIdPubKey, B, E>>,
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
@@ -119,13 +125,13 @@ impl<E, OM, B, C, SCT> Command<E, OM, B, C, SCT> {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
-        sender: PubKey,
+        sender: SCT::NodeIdPubKey,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
     StateUpdate((SeqNum, ConsensusHash)),
     BlockSyncResponse {
-        sender: PubKey,
+        sender: SCT::NodeIdPubKey,
         unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
     },
 }
@@ -158,9 +164,9 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
 /// FetchedBlock is a consensus block fetched from the consensus ledger. It's
 /// used to respond to a block sync request
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FetchedBlock<SCT> {
+pub struct FetchedBlock<SCT: SignatureCollection> {
     /// The node that requested this block
-    pub requester: NodeId,
+    pub requester: NodeId<SCT::NodeIdPubKey>,
 
     /// id of the requested block
     pub block_id: BlockId,
@@ -176,7 +182,7 @@ pub struct FetchedBlock<SCT> {
 pub enum BlockSyncEvent<SCT: SignatureCollection> {
     /// A peer requesting for a missing block
     BlockSyncRequest {
-        sender: PubKey,
+        sender: SCT::NodeIdPubKey,
         unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
     },
     /// Fetched full block from the consensus ledger
@@ -211,7 +217,7 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
 where
-    ST: MessageSignature,
+    ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection,
 {
     /// Events for consensus state
@@ -246,10 +252,10 @@ impl monad_types::Serializable<Bytes>
     }
 }
 
-impl monad_types::Deserializable<[u8]>
+impl<PT: PubKey> monad_types::Deserializable<[u8]>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::bls::BlsSignatureCollection,
+        monad_consensus_types::bls::BlsSignatureCollection<PT>,
     >
 {
     type ReadError = monad_proto::error::ProtoError;
@@ -259,10 +265,10 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Bytes>
+impl<PT: PubKey> monad_types::Serializable<Bytes>
     for MonadEvent<
         monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::bls::BlsSignatureCollection,
+        monad_consensus_types::bls::BlsSignatureCollection<PT>,
     >
 {
     fn serialize(&self) -> Bytes {

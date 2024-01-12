@@ -20,7 +20,7 @@ fn many_nodes_noser() {
             all_peers: all_peers.into_iter().collect(),
         },
         MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer(
+        vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(4)),
@@ -54,7 +54,7 @@ fn many_nodes_quic() {
             gossip: MockGossipConfig { all_peers, me }.build(),
         },
         MockWALoggerConfig,
-        vec![BytesTransformer::Latency(LatencyTransformer(
+        vec![BytesTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))],
         UntilTerminator::new().until_tick(Duration::from_secs(4)),
@@ -89,7 +89,7 @@ fn many_nodes_quic_bw() {
     };
 
     let xfmrs = vec![
-        BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
+        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(100))),
         BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(10))),
     ];
 

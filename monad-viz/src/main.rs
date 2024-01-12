@@ -28,7 +28,7 @@ use monad_consensus_types::{
     multi_sig::MultiSig,
     payload::StateRoot,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{mock_txpool::MockTxPool, swarm_relation::SwarmRelation};
@@ -60,18 +60,30 @@ impl SwarmRelation for VizSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = GenericTransformerPipeline<Self::OutboundMessage>;
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::OutboundMessage,
+    >;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
@@ -84,8 +96,12 @@ impl SwarmRelation for VizSwarm {
     >;
 }
 
-type NS<'a> =
-    NodeState<'a, NodeId, VizSwarm, <<VizSwarm as SwarmRelation>::State as State>::OutboundMessage>;
+type NS<'a> = NodeState<
+    'a,
+    NodeId<CertificateSignaturePubKey<<VizSwarm as SwarmRelation>::SignatureType>>,
+    VizSwarm,
+    <<VizSwarm as SwarmRelation>::State as State>::OutboundMessage,
+>;
 
 type Sim = NodesSimulation<VizSwarm, SimConfig>;
 type ReplaySim = ReplayNodesSimulation<VizSwarm, RepConfig>;
@@ -144,7 +160,7 @@ impl Application for Viz {
                     TimedEvent<<<VizSwarm as SwarmRelation>::State as State>::Event>,
                 >::new(log_config)
                 .unwrap();
-                replay_events.insert(NodeId(*pk), event_vec.clone());
+                replay_events.insert(NodeId::new(*pk), event_vec.clone());
                 config.max_tick = max(
                     config.max_tick,
                     event_vec
@@ -168,10 +184,12 @@ impl Application for Viz {
                 delta: Duration::from_millis(101),
                 max_tick: Duration::from_secs_f32(4.0),
                 pipeline: vec![
-                    GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(100))),
-                    GenericTransformer::XorLatency(XorLatencyTransformer(Duration::from_millis(
-                        20,
+                    GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
+                        100,
                     ))),
+                    GenericTransformer::XorLatency(XorLatencyTransformer::new(
+                        Duration::from_millis(20),
+                    )),
                 ],
             };
             let simulation = { NodesSimulation::<VizSwarm, _>::new(config) };

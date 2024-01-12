@@ -5,8 +5,8 @@ use std::{
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use monad_crypto::{
+    certificate_signature::PubKey,
     hasher::{Hasher, HasherType},
-    secp256k1::PubKey,
 };
 use monad_types::{NodeId, RouterTarget};
 use rand::{seq::SliceRandom, SeedableRng};
@@ -32,15 +32,15 @@ struct Header {
 struct OuterHeader(u32);
 const OUTER_HEADER_SIZE: usize = std::mem::size_of::<OuterHeader>();
 
-pub struct BroadcastTreeConfig {
-    pub all_peers: Vec<NodeId>,
-    pub my_id: NodeId,
+pub struct BroadcastTreeConfig<PT: PubKey> {
+    pub all_peers: Vec<NodeId<PT>>,
+    pub my_id: NodeId<PT>,
     pub tree_arity: usize,
     pub num_routes: usize,
 }
 
-impl BroadcastTreeConfig {
-    pub fn build(mut self) -> BroadcastTree {
+impl<PT: PubKey> BroadcastTreeConfig<PT> {
+    pub fn build(mut self) -> BroadcastTree<PT> {
         assert!(self.num_routes > 0);
         assert!(self.tree_arity > 1);
         self.all_peers.sort();
@@ -61,25 +61,25 @@ impl BroadcastTreeConfig {
 // TODO
 // if message parts arrive, is there a way to verify if its valid? if msg is corrupt,
 // but the header is fine, it will mess up the message reconstruction
-pub struct BroadcastTree {
-    config: BroadcastTreeConfig,
+pub struct BroadcastTree<PT: PubKey> {
+    config: BroadcastTreeConfig<PT>,
 
     msg_cache: HashMap<MsgId, HashMap<PartIndex, Bytes>>,
     // TODO garbage collect complete_msgs
     completed_msgs: HashSet<MsgId>,
 
-    events: VecDeque<GossipEvent>,
+    events: VecDeque<GossipEvent<PT>>,
     current_tick: Duration,
 }
 
-impl BroadcastTree {
+impl<PT: PubKey> BroadcastTree<PT> {
     // The broadcast is done through a k-arity tree for a given root node.
     // msgid is used to seed a random order of the non-root peers, and from
     // that ordering, a k-arity tree can be formed.
     // A node only needs to know about the child nodes it is responsible for
     // messaging
     // children of a node at index i are at indices (i*k)+1 through (i*k)+k
-    fn calculate_route(&self, root: NodeId, msgid: MsgId) -> Vec<Vec<NodeId>> {
+    fn calculate_route(&self, root: NodeId<PT>, msgid: MsgId) -> Vec<Vec<NodeId<PT>>> {
         let mut rng = ChaCha8Rng::from_seed(msgid);
         let mut peerlist = self.config.all_peers.clone();
 
@@ -121,7 +121,7 @@ impl BroadcastTree {
 
     fn handle_message_part(
         &mut self,
-        from: NodeId,
+        from: NodeId<PT>,
         message_header: Header,
         message_part: GossipMessage,
     ) {
@@ -134,13 +134,13 @@ impl BroadcastTree {
 
         // send the part to the designated routes
         // calculate the route based on the root sender of the part
-        let root = match PubKey::from_slice(&message_header.root) {
+        let root = match PT::from_bytes(&message_header.root) {
             Ok(k) => k,
             Err(_) => return, // TODO, someone sending a bad gossip_header, evidence?
         };
         // TODO: we can cache the calculated routes and garbage clean at the same time
         // completed_msgs are cleared
-        let routes = self.calculate_route(NodeId(root), message_header.id);
+        let routes = self.calculate_route(NodeId::new(root), message_header.id);
         let route_idx = message_header.part as usize;
 
         let children = &routes[route_idx];
@@ -151,14 +151,14 @@ impl BroadcastTree {
         }
 
         if !self.completed_msgs.contains(&message_header.id) {
-            self.try_combine_message_part(NodeId(root), message_header, message_part);
+            self.try_combine_message_part(NodeId::new(root), message_header, message_part);
         }
     }
 
     // TODO this is assuming no erasure encoding and one part per route
     fn try_combine_message_part(
         &mut self,
-        from_peer: NodeId,
+        from_peer: NodeId<PT>,
         message_header: Header,
         message_part: GossipMessage,
     ) {
@@ -241,7 +241,7 @@ impl BroadcastTree {
     fn send_broadcast_gossip_messages(
         &mut self,
         gossip_messages: Vec<FragmentedGossipMessage>,
-        root: NodeId,
+        root: NodeId<PT>,
         msgid: MsgId,
     ) {
         let routes = self.calculate_route(root, msgid);
@@ -259,15 +259,16 @@ impl BroadcastTree {
 // application level message -> gossip level conversion
 // if we break a message into parts, need to have a msg_id and part index
 // also, need to know the root sender of a message so we can figure out the correct root bcast tree to use
-impl Gossip for BroadcastTree {
-    fn send(&mut self, time: std::time::Duration, to: RouterTarget, message: AppMessage) {
+impl<PT: PubKey> Gossip for BroadcastTree<PT> {
+    type NodeIdPubKey = PT;
+    fn send(&mut self, time: std::time::Duration, to: RouterTarget<PT>, message: AppMessage) {
         self.current_tick = time;
 
         let mut hasher = HasherType::new();
         hasher.update(&message);
         let msgid = hasher.hash().0;
 
-        let root_id_bytes = self.config.my_id.0.bytes();
+        let root_id_bytes = self.config.my_id.pubkey().bytes();
 
         match to {
             RouterTarget::Broadcast => {
@@ -299,7 +300,7 @@ impl Gossip for BroadcastTree {
     fn handle_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<PT>,
         mut gossip_message: GossipMessage,
     ) {
         self.current_tick = time;
@@ -320,7 +321,7 @@ impl Gossip for BroadcastTree {
         }
     }
 
-    fn poll(&mut self, time: Duration) -> Option<GossipEvent> {
+    fn poll(&mut self, time: Duration) -> Option<GossipEvent<PT>> {
         assert!(time >= self.current_tick);
         self.events.pop_front()
     }
@@ -334,6 +335,7 @@ mod tests {
     use monad_crypto::{
         hasher::{Hasher, HasherType},
         secp256k1::KeyPair,
+        NopSignature,
     };
     use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
     use monad_types::{NodeId, RouterTarget};
@@ -353,7 +355,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
+                NodeId::new(keypair.pubkey())
             })
             .collect();
         let mut g = BroadcastTreeConfig {
@@ -391,7 +393,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
+                NodeId::new(keypair.pubkey())
             })
             .collect();
         let mut g = BroadcastTreeConfig {
@@ -461,7 +463,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
+                NodeId::new(keypair.pubkey())
             })
             .collect();
         let mut g = BroadcastTreeConfig {
@@ -527,7 +529,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
+                NodeId::new(keypair.pubkey())
             })
             .collect();
         let mut g = BroadcastTreeConfig {
@@ -568,7 +570,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
+                NodeId::new(keypair.pubkey())
             })
             .collect();
         peers.sort();
@@ -606,7 +608,7 @@ mod tests {
             .map(|idx| {
                 let mut key = [idx; 32];
                 let keypair = KeyPair::from_bytes(&mut key).unwrap();
-                NodeId(keypair.pubkey())
+                NodeId::new(keypair.pubkey())
             })
             .collect();
         peers.sort();
@@ -638,7 +640,7 @@ mod tests {
     #[test_case(3, 3)]
     #[test_case(3, 5)]
     fn test_framed_messages(num_routes: usize, tree_arity: usize) {
-        let mut swarm = make_swarm(
+        let mut swarm = make_swarm::<NopSignature, _>(
             53,
             |all_peers, me| {
                 BroadcastTreeConfig {
@@ -650,7 +652,7 @@ mod tests {
                 .build()
             },
             |_all_peers, _me| {
-                vec![BytesTransformer::Latency(LatencyTransformer(
+                vec![BytesTransformer::Latency(LatencyTransformer::new(
                     Duration::from_millis(5),
                 ))]
             },
@@ -676,7 +678,7 @@ mod tests {
     // ability to flush the transformer explicitly.
     #[test]
     fn test_split_messages() {
-        let mut swarm = make_swarm(
+        let mut swarm = make_swarm::<NopSignature, _>(
             3,
             |all_peers, me| {
                 BroadcastTreeConfig {
@@ -689,7 +691,7 @@ mod tests {
             },
             |_all_peers, _me| {
                 vec![
-                    BytesTransformer::Latency(LatencyTransformer(Duration::from_millis(5))),
+                    BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(5))),
                     BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
                 ]
             },

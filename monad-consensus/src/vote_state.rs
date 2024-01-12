@@ -1,14 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use monad_consensus_types::{
-    certificate_signature::CertificateSignature,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
     },
     voting::ValidatorMapping,
 };
-use monad_crypto::hasher::{Hash, Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::{CertificateSignature, PubKey},
+    hasher::{Hash, Hasher, HasherType},
+};
 use monad_types::{NodeId, Round};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::error;
@@ -21,7 +23,7 @@ use crate::messages::message::VoteMessage;
 #[derive(Debug, PartialEq, Eq)]
 pub struct VoteState<SCT: SignatureCollection> {
     /// Received pending votes for rounds >= self.earliest_round
-    pending_votes: BTreeMap<Round, RoundVoteState<SCT::SignatureType>>,
+    pending_votes: BTreeMap<Round, RoundVoteState<SCT::NodeIdPubKey, SCT::SignatureType>>,
     /// The earliest round that we'll accept votes for
     /// We use this to not build the same QC twice, and to know which votes are stale
     earliest_round: Round,
@@ -37,16 +39,16 @@ impl<SCT: SignatureCollection> Default for VoteState<SCT> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct RoundVoteState<ST: CertificateSignature> {
+struct RoundVoteState<PT: PubKey, ST: CertificateSignature> {
     /// Pending votes, keyed by vote hash
     /// It's possible for a Node to have pending votes in multiple buckets if they're malicious
-    pending_votes: HashMap<Hash, BTreeMap<NodeId, ST>>,
+    pending_votes: HashMap<Hash, BTreeMap<NodeId<PT>, ST>>,
     // All vote hashes each node has voted on; multiple vote hashes for a given node implies
     // they're malicious
-    node_votes: HashMap<NodeId, HashSet<ST>>,
+    node_votes: HashMap<NodeId<PT>, HashSet<ST>>,
 }
 
-impl<ST: CertificateSignature> Default for RoundVoteState<ST> {
+impl<PT: PubKey, ST: CertificateSignature> Default for RoundVoteState<PT, ST> {
     fn default() -> Self {
         RoundVoteState {
             pending_votes: HashMap::new(),
@@ -65,13 +67,19 @@ where
     SCT: SignatureCollection,
 {
     #[must_use]
-    pub fn process_vote<VT: ValidatorSetType>(
+    pub fn process_vote<VT>(
         &mut self,
-        author: &NodeId,
+        author: &NodeId<SCT::NodeIdPubKey>,
         vote_msg: &VoteMessage<SCT>,
         validators: &VT,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<SCT>>,
-    ) -> (Option<QuorumCertificate<SCT>>, Vec<VoteStateCommand>) {
+        validator_mapping: &ValidatorMapping<
+            SCT::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+    ) -> (Option<QuorumCertificate<SCT>>, Vec<VoteStateCommand>)
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let vote = vote_msg.vote;
         let round = vote_msg.vote.vote_info.round;
 
@@ -136,8 +144,8 @@ where
 
     #[must_use]
     fn handle_invalid_vote(
-        pending_entry: &mut BTreeMap<NodeId, SCT::SignatureType>,
-        invalid_votes: Vec<(NodeId, SCT::SignatureType)>,
+        pending_entry: &mut BTreeMap<NodeId<SCT::NodeIdPubKey>, SCT::SignatureType>,
+        invalid_votes: Vec<(NodeId<SCT::NodeIdPubKey>, SCT::SignatureType)>,
     ) -> Vec<VoteStateCommand> {
         let invalid_vote_set = invalid_votes
             .into_iter()
@@ -159,13 +167,13 @@ mod test {
     use std::collections::HashSet;
 
     use monad_consensus_types::{
-        certificate_signature::CertificateSignature,
         ledger::CommitResult,
         multi_sig::MultiSig,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{
+        certificate_signature::CertificateSignature,
         hasher::{Hash, Hasher, HasherType},
         secp256k1::SecpSignature,
     };
@@ -176,7 +184,8 @@ mod test {
     use super::VoteState;
     use crate::messages::message::VoteMessage;
 
-    type SignatureCollectionType = MultiSig<SecpSignature>;
+    type SignatureType = SecpSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
 
     fn create_vote_message<SCT: SignatureCollection>(
         certkeypair: &SignatureCollectionKeyPairType<SCT>,
@@ -211,7 +220,7 @@ mod test {
     fn clean_older_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
         let (keys, cert_keys, valset, val_map) =
-            create_keys_w_validators::<SignatureCollectionType>(4);
+            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
 
         // add one vote for rounds 0-3
         let mut votes = Vec::new();
@@ -221,8 +230,12 @@ mod test {
                 Round(i.try_into().unwrap()),
                 true,
             );
-            let (_qc, cmds) =
-                votestate.process_vote(&NodeId(cert_keys[0].pubkey()), &svm, &valset, &val_map);
+            let (_qc, cmds) = votestate.process_vote(
+                &NodeId::new(cert_keys[0].pubkey()),
+                &svm,
+                &valset,
+                &val_map,
+            );
             votes.push(svm);
             assert!(cmds.is_empty());
         }
@@ -233,7 +246,8 @@ mod test {
         // removed
         for certkey in cert_keys.iter().take(4) {
             let svm = create_vote_message::<SignatureCollectionType>(certkey, Round(4), true);
-            let _qc = votestate.process_vote(&NodeId(certkey.pubkey()), &svm, &valset, &val_map);
+            let _qc =
+                votestate.process_vote(&NodeId::new(certkey.pubkey()), &svm, &valset, &val_map);
         }
         votestate.start_new_round(Round(5));
 
@@ -241,8 +255,12 @@ mod test {
 
         // apply old votes again
         for svm in votes {
-            let (_qc, cmds) =
-                votestate.process_vote(&NodeId(cert_keys[0].pubkey()), &svm, &valset, &val_map);
+            let (_qc, cmds) = votestate.process_vote(
+                &NodeId::new(cert_keys[0].pubkey()),
+                &svm,
+                &valset,
+                &val_map,
+            );
         }
 
         // pending_votes should still be 0 after starting a new round and processing old votes
@@ -253,17 +271,19 @@ mod test {
     fn handle_future_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
         let (keys, cert_keys, valset, vmap) =
-            create_keys_w_validators::<SignatureCollectionType>(4);
+            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
 
         // add one vote for rounds 0-3 and 5-8
         for i in 0..4 {
             let svm = create_vote_message(&cert_keys[0], Round(i.try_into().unwrap()), true);
-            let _qc = votestate.process_vote(&NodeId(cert_keys[0].pubkey()), &svm, &valset, &vmap);
+            let _qc =
+                votestate.process_vote(&NodeId::new(cert_keys[0].pubkey()), &svm, &valset, &vmap);
         }
 
         for i in 5..9 {
             let svm = create_vote_message(&cert_keys[0], Round(i.try_into().unwrap()), true);
-            let _qc = votestate.process_vote(&NodeId(cert_keys[0].pubkey()), &svm, &valset, &vmap);
+            let _qc =
+                votestate.process_vote(&NodeId::new(cert_keys[0].pubkey()), &svm, &valset, &vmap);
         }
 
         assert_eq!(votestate.pending_votes.len(), 8);
@@ -272,7 +292,7 @@ mod test {
         // removed
         for certkey in cert_keys.iter().take(4) {
             let svm = create_vote_message::<SignatureCollectionType>(certkey, Round(4), true);
-            let _qc = votestate.process_vote(&NodeId(certkey.pubkey()), &svm, &valset, &vmap);
+            let _qc = votestate.process_vote(&NodeId::new(certkey.pubkey()), &svm, &valset, &vmap);
         }
         votestate.start_new_round(Round(5));
 
@@ -282,12 +302,13 @@ mod test {
     #[test]
     fn duplicate_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) =
+            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
 
         // create a vote for round 0 from one node, but add it supermajority number of times
         // this should not result in QC creation
         let svm = create_vote_message(&certkeys[0], Round(0), true);
-        let author = NodeId(certkeys[0].pubkey());
+        let author = NodeId::new(certkeys[0].pubkey());
 
         for _ in 0..4 {
             let (qc, cmds) = votestate.process_vote(&author, &svm, &valset, &vmap);
@@ -299,7 +320,8 @@ mod test {
     #[test]
     fn invalid_votes_no_qc() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) =
+            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
         let vote_round = Round(0);
 
         let v0_valid = create_vote_message(&certkeys[0], vote_round, true);
@@ -308,7 +330,8 @@ mod test {
 
         let vote_idx = HasherType::hash_object(&v0_valid.vote);
 
-        let (qc, _) = votestate.process_vote(&NodeId(keys[0].pubkey()), &v0_valid, &valset, &vmap);
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[0].pubkey()), &v0_valid, &valset, &vmap);
         assert!(qc.is_none());
         assert!(
             votestate
@@ -322,7 +345,8 @@ mod test {
                 == 1
         );
 
-        let (qc, _) = votestate.process_vote(&NodeId(keys[1].pubkey()), &v1_valid, &valset, &vmap);
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[1].pubkey()), &v1_valid, &valset, &vmap);
         assert!(qc.is_none());
         assert!(
             votestate
@@ -339,7 +363,7 @@ mod test {
         // VoteState attempts to create a QC, but failed because one of the sigs is invalid
         // doesn't have supermajority after removing the invalid
         let (qc, _) =
-            votestate.process_vote(&NodeId(keys[2].pubkey()), &v2_invalid, &valset, &vmap);
+            votestate.process_vote(&NodeId::new(keys[2].pubkey()), &v2_invalid, &valset, &vmap);
         assert!(qc.is_none());
         assert!(
             votestate
@@ -358,12 +382,12 @@ mod test {
     fn invalid_votes_qc() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
 
-        let keys = create_keys(4);
+        let keys = create_keys::<SignatureType>(4);
         let certkeys = create_certificate_keys::<SignatureCollectionType>(4);
 
         let mut staking_list = keys
             .iter()
-            .map(|k| NodeId(k.pubkey()))
+            .map(|k| NodeId::new(k.pubkey()))
             .zip(std::iter::repeat(Stake(1)))
             .collect::<Vec<_>>();
 
@@ -372,7 +396,7 @@ mod test {
 
         let voting_identity = keys
             .iter()
-            .map(|k| NodeId(k.pubkey()))
+            .map(|k| NodeId::new(k.pubkey()))
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
@@ -387,7 +411,8 @@ mod test {
 
         let vote_idx = HasherType::hash_object(&v0_valid.vote);
 
-        let (qc, _) = votestate.process_vote(&NodeId(keys[0].pubkey()), &v0_valid, &valset, &vmap);
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[0].pubkey()), &v0_valid, &valset, &vmap);
         assert!(qc.is_none());
         assert!(
             votestate
@@ -404,7 +429,7 @@ mod test {
         // VoteState accepts the invalid signature because the stake is not enough
         // to trigger verification
         let (qc, _) =
-            votestate.process_vote(&NodeId(keys[1].pubkey()), &v1_invalid, &valset, &vmap);
+            votestate.process_vote(&NodeId::new(keys[1].pubkey()), &v1_invalid, &valset, &vmap);
         assert!(qc.is_none());
         assert!(
             votestate
@@ -421,7 +446,8 @@ mod test {
         // VoteState attempts to create a QC
         // the first attempt fails: v1.sig is invalid
         // the second iteration succeeds: still have enough stake after removing v1
-        let (qc, _) = votestate.process_vote(&NodeId(keys[2].pubkey()), &v2_valid, &valset, &vmap);
+        let (qc, _) =
+            votestate.process_vote(&NodeId::new(keys[2].pubkey()), &v2_valid, &valset, &vmap);
         assert!(qc.is_some());
         assert_eq!(
             qc.unwrap()
@@ -430,7 +456,7 @@ mod test {
                 .unwrap()
                 .into_iter()
                 .collect::<HashSet<_>>(),
-            vec![NodeId(keys[0].pubkey()), NodeId(keys[2].pubkey())]
+            vec![NodeId::new(keys[0].pubkey()), NodeId::new(keys[2].pubkey())]
                 .into_iter()
                 .collect::<HashSet<_>>()
         );

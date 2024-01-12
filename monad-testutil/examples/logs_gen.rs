@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
@@ -34,18 +34,30 @@ impl SwarmRelation for LogSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
+    >;
 
     type LoggerConfig = WALoggerConfig;
     type Logger =
@@ -84,7 +96,7 @@ pub fn generate_log(
         file_path: PathBuf::from(format!("{:?}.log", pubkey)),
         sync: false,
     });
-    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer(
+    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
         Duration::from_millis(100),
     ))];
     let peers = pubkeys
@@ -94,11 +106,11 @@ pub fn generate_log(
         .zip(file_path_vec)
         .map(|((a, b), c)| {
             (
-                ID::new(NodeId(a)),
+                ID::new(NodeId::new(a)),
                 b,
                 c,
                 NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| NodeId(*pubkey)).collect(),
+                    all_peers: pubkeys.iter().map(|pubkey| NodeId::new(*pubkey)).collect(),
                 },
                 pipeline.clone(),
                 1,

@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::CertificateSignatureRecoverable,
+    hasher::{Hash, Hashable, Hasher, HasherType},
+};
 use monad_proto::proto::signing::ProtoMultiSig;
 use monad_types::NodeId;
 use prost::Message;
 use tracing::{error, warn};
 
 use crate::{
-    certificate_signature::CertificateSignatureRecoverable,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
+        SignatureCollectionPubKeyType,
     },
     voting::ValidatorMapping,
 };
@@ -34,13 +37,17 @@ impl<S: CertificateSignatureRecoverable> Hashable for MultiSig<S> {
 }
 
 impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
+    type NodeIdPubKey = SignatureCollectionPubKeyType<Self>;
     type SignatureType = S;
 
     fn new(
-        sigs: impl IntoIterator<Item = (NodeId, Self::SignatureType)>,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
+        validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
         msg: &[u8],
-    ) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         let mut sig_map = BTreeMap::new();
         // software bug: signature collector should check the node_id is in validator set
         let mut external_sigs = Vec::new();
@@ -115,9 +122,15 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
 
     fn verify(
         &self,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
         msg: &[u8],
-    ) -> Result<Vec<NodeId>, SignatureCollectionError<Self::SignatureType>> {
+    ) -> Result<
+        Vec<NodeId<Self::NodeIdPubKey>>,
+        SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>,
+    > {
         let mut node_ids = Vec::new();
         let mut verified_unvalidated_sigs = HashMap::new();
         let mut invalid_sigs = Vec::new();
@@ -157,9 +170,12 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
 
     fn get_participants(
         &self,
-        validator_mapping: &ValidatorMapping<SignatureCollectionKeyPairType<Self>>,
+        validator_mapping: &ValidatorMapping<
+            Self::NodeIdPubKey,
+            SignatureCollectionKeyPairType<Self>,
+        >,
         msg: &[u8],
-    ) -> HashSet<NodeId> {
+    ) -> HashSet<NodeId<Self::NodeIdPubKey>> {
         let mut node_ids = HashSet::new();
         let mut pub_keys = HashSet::new();
 
@@ -183,7 +199,9 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
         proto.encode_to_vec()
     }
 
-    fn deserialize(data: &[u8]) -> Result<Self, SignatureCollectionError<Self::SignatureType>> {
+    fn deserialize(
+        data: &[u8],
+    ) -> Result<Self, SignatureCollectionError<Self::NodeIdPubKey, Self::SignatureType>> {
         let multisig = ProtoMultiSig::decode(data)
             .map_err(|e| SignatureCollectionError::DeserializeError(format!("{}", e)))?;
         multisig
@@ -196,7 +214,11 @@ impl<S: CertificateSignatureRecoverable> SignatureCollection for MultiSig<S> {
 mod test {
     use std::collections::HashSet;
 
-    use monad_crypto::{hasher::Hash, secp256k1::SecpSignature};
+    use monad_crypto::{
+        certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+        hasher::Hash,
+        secp256k1::SecpSignature,
+    };
     use monad_testutil::signing::get_key;
     use monad_types::NodeId;
     use rand::{seq::SliceRandom, SeedableRng};
@@ -205,25 +227,26 @@ mod test {
 
     use super::MultiSig;
     use crate::{
-        certificate_signature::CertificateSignature,
         signature_collection::{
             SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
         },
         test_utils::setup_sigcol_test,
     };
 
-    type SignatureCollectionType = MultiSig<SecpSignature>;
+    type SignatureType = SecpSignature;
+    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
+    type SignatureCollectionType = MultiSig<SignatureType>;
 
     fn get_sigs<'a>(
         msg: &[u8],
         iter: impl Iterator<
             Item = &'a (
-                NodeId,
+                NodeId<PubKeyType>,
                 SignatureCollectionKeyPairType<SignatureCollectionType>,
             ),
         >,
     ) -> Vec<(
-        NodeId,
+        NodeId<PubKeyType>,
         <SignatureCollectionType as SignatureCollection>::SignatureType,
     )> {
         crate::test_utils::get_sigs::<SignatureCollectionType>(msg, iter)
@@ -237,7 +260,8 @@ mod test {
     #[test_case(8, 32, 32; "seed 8, 32/32 invalid")]
     fn test_creation_invalid_signature(seed: u64, num_keys: u32, num_invalid: u32) {
         assert!(num_invalid <= num_keys);
-        let (cert_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(num_keys);
+        let (cert_keys, valmap) =
+            setup_sigcol_test::<SignatureType, SignatureCollectionType>(num_keys);
 
         let msg_hash = Hash([129_u8; 32]);
         let invalid_msg_hash = Hash([229_u8; 32]);
@@ -276,7 +300,7 @@ mod test {
 
     #[test]
     fn test_verify_invalid_signature() {
-        let (cert_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(5);
+        let (cert_keys, valmap) = setup_sigcol_test::<SignatureType, SignatureCollectionType>(5);
 
         let msg_hash = Hash([129_u8; 32]);
         let invalid_msg_hash = Hash([229_u8; 32]);
@@ -300,8 +324,8 @@ mod test {
 
     #[test]
     fn test_verify_non_validator_signer() {
-        let (cert_keys, valmap) = setup_sigcol_test::<SignatureCollectionType>(5);
-        let non_validator_cert_key = get_key(100);
+        let (cert_keys, valmap) = setup_sigcol_test::<SignatureType, SignatureCollectionType>(5);
+        let non_validator_cert_key = get_key::<SignatureType>(100);
 
         assert_eq!(
             valmap

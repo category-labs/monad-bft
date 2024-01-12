@@ -23,8 +23,10 @@ use monad_consensus_types::{
     txpool::TxPool,
 };
 use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    },
     hasher::Hash,
-    secp256k1::{KeyPair, PubKey},
 };
 use monad_eth_types::EthAddress;
 use monad_tracing_counter::inc_count;
@@ -45,9 +47,10 @@ pub mod command;
 pub mod wrapper;
 
 /// Interface to the core consensus algorithm
-pub trait ConsensusProcess<SCT>
+pub trait ConsensusProcess<ST, SCT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type BlockValidatorType;
 
@@ -63,18 +66,18 @@ where
     /// cert_keypair - keypair used for certificate level signing
     fn new(
         block_validator: Self::BlockValidatorType,
-        my_pubkey: PubKey,
+        my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
-        keypair: KeyPair,
+        keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self;
 
-    fn get_pubkey(&self) -> PubKey;
+    fn get_pubkey(&self) -> SCT::NodeIdPubKey;
 
     fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT>;
 
-    fn get_nodeid(&self) -> NodeId;
+    fn get_nodeid(&self) -> NodeId<SCT::NodeIdPubKey>;
 
     fn get_beneficiary(&self) -> EthAddress;
 
@@ -86,51 +89,66 @@ where
     /// handles proposal messages from other nodes
     /// validators and election are required as part of verifying the proposal certificates
     /// as well as determining the next leader
-    fn handle_proposal_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_proposal_message<VT, LT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection;
 
     /// collect votes from other nodes
-    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
+    fn handle_vote_message<VT, LT, TT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         v: VoteMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection,
+        TT: TxPool;
 
     /// handle timeout messages from other nodes
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
+    fn handle_timeout_message<VT, LT, TT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         tm: TimeoutMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection,
+        TT: TxPool;
 
     /// handle the response to a block sync message
-    fn handle_block_sync<VT: ValidatorSetType>(
+    fn handle_block_sync<VT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>;
 
     /// handler when a block sync request has timed out
-    fn handle_block_sync_tmo<VT: ValidatorSetType>(
+    fn handle_block_sync_tmo<VT>(
         &mut self,
         bid: BlockId,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>>;
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>;
 
     /// state root hashes are produced when blocks are executed. They can
     /// arrive after the delay-gap between execution so they need to be handled
@@ -139,14 +157,18 @@ where
 
     fn get_current_round(&self) -> Round;
 
-    fn get_keypair(&self) -> &KeyPair;
+    fn get_keypair(&self) -> &ST::KeyPairType;
 
     fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>>;
 }
 
-pub struct ConsensusState<SCT: SignatureCollection, BV, SVT> {
+pub struct ConsensusState<ST, SCT, BV, SVT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     /// This nodes public NodeId; what other nodes see in the validator set
-    nodeid: NodeId,
+    nodeid: NodeId<SCT::NodeIdPubKey>,
     /// Parameters for consensus algorithm behaviour
     config: ConsensusConfig,
     /// Prospective blocks are stored here while they wait to be
@@ -171,7 +193,7 @@ pub struct ConsensusState<SCT: SignatureCollection, BV, SVT> {
 
     // TODO-2 deprecate keypairs should probably have a different interface
     // so that users have options for securely storing their keys
-    keypair: KeyPair,
+    keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
 }
 
@@ -196,9 +218,10 @@ pub struct ConsensusConfig {
     pub delta: Duration,
 }
 
-impl<SCT, BVT, SVT> PartialEq for ConsensusState<SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT> PartialEq for ConsensusState<ST, SCT, BVT, SVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
@@ -211,11 +234,17 @@ where
             && self.block_sync_requester.eq(&other.block_sync_requester)
     }
 }
-impl<SCT, BVT, SVT> Eq for ConsensusState<SCT, BVT, SVT> where SCT: SignatureCollection {}
-
-impl<SCT, BVT, SVT> std::fmt::Debug for ConsensusState<SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT> Eq for ConsensusState<ST, SCT, BVT, SVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+}
+
+impl<ST, SCT, BVT, SVT> std::fmt::Debug for ConsensusState<ST, SCT, BVT, SVT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
@@ -231,9 +260,10 @@ where
     }
 }
 
-impl<SCT, BVT, SVT> ConsensusProcess<SCT> for ConsensusState<SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, BVT, SVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
     SVT: StateRootValidator,
 {
@@ -241,12 +271,12 @@ where
 
     fn new(
         block_validator: Self::BlockValidatorType,
-        my_pubkey: PubKey,
+        my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
 
         // TODO-2 deprecate
-        keypair: KeyPair,
+        keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
@@ -258,7 +288,7 @@ where
             // high_qc round is 0, so pacemaker round should start at 1
             pacemaker: Pacemaker::new(config.delta, Round(1), None),
             safety: Safety::default(),
-            nodeid: NodeId(my_pubkey),
+            nodeid: NodeId::new(my_pubkey),
             config,
 
             block_validator,
@@ -266,7 +296,7 @@ where
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
             // as 1 * delta for original ask, 2 * delta for reaction from peer
-            block_sync_requester: BlockSyncRequester::new(NodeId(my_pubkey), config.delta * 3),
+            block_sync_requester: BlockSyncRequester::new(NodeId::new(my_pubkey), config.delta * 3),
             keypair,
             cert_keypair,
             beneficiary,
@@ -290,14 +320,18 @@ where
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
     #[must_use]
-    fn handle_proposal_message<VT: ValidatorSetType, LT: LeaderElection>(
+    fn handle_proposal_message<VT, LT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection,
+    {
         debug!("Proposal Message: {:?}", p);
         inc_count!(handle_proposal);
         let mut cmds = Vec::new();
@@ -374,7 +408,7 @@ where
 
             let next_leader = election.get_leader(round + Round(1), epoch_manager, val_epoch_map);
             let send_cmd = ConsensusCommand::Publish {
-                target: RouterTarget::PointToPoint(NodeId(next_leader.0)),
+                target: RouterTarget::PointToPoint(next_leader),
                 message: ConsensusMessage::Vote(vote_msg),
             };
             debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
@@ -388,15 +422,20 @@ where
     /// handle votes at the vote_state state machine. When enough votes are collected,
     /// a QC is formed and broadcast to other nodes
     #[must_use]
-    fn handle_vote_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
+    fn handle_vote_message<VT, LT, TT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection,
+        TT: TxPool,
+    {
         debug!("Vote Message: {:?}", vote_msg);
         if vote_msg.vote.vote_info.round < self.pacemaker.get_current_round() {
             inc_count!(old_vote_received);
@@ -438,15 +477,20 @@ where
 
     /// handling remote timeout messages
     #[must_use]
-    fn handle_timeout_message<VT: ValidatorSetType, LT: LeaderElection, TT: TxPool>(
+    fn handle_timeout_message<VT, LT, TT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         tmo_msg: TimeoutMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
         election: &LT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        LT: LeaderElection,
+        TT: TxPool,
+    {
         let tm = &tmo_msg.timeout;
         let mut cmds = Vec::new();
         if tm.tminfo.round < self.pacemaker.get_current_round() {
@@ -525,12 +569,15 @@ where
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
     #[must_use]
-    fn handle_block_sync<VT: ValidatorSetType>(
+    fn handle_block_sync<VT>(
         &mut self,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let mut cmds = vec![];
 
         let bid = msg.get_block_id();
@@ -566,11 +613,14 @@ where
     }
 
     /// if a blocksync request timesout, try again with a different validator
-    fn handle_block_sync_tmo<VT: ValidatorSetType>(
+    fn handle_block_sync_tmo<VT>(
         &mut self,
         bid: BlockId,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         self.block_sync_requester.handle_timeout(bid, validators)
     }
 
@@ -578,11 +628,11 @@ where
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 
-    fn get_pubkey(&self) -> PubKey {
-        self.nodeid.0
+    fn get_pubkey(&self) -> SCT::NodeIdPubKey {
+        self.keypair.pubkey()
     }
 
-    fn get_nodeid(&self) -> NodeId {
+    fn get_nodeid(&self) -> NodeId<SCT::NodeIdPubKey> {
         self.nodeid
     }
 
@@ -598,7 +648,7 @@ where
         self.pacemaker.get_current_round()
     }
 
-    fn get_keypair(&self) -> &KeyPair {
+    fn get_keypair(&self) -> &ST::KeyPairType {
         &self.keypair
     }
 
@@ -617,9 +667,10 @@ pub enum ConsensusAction {
     Abstain,
 }
 
-impl<SCT, BVT, SVT> ConsensusState<SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT> ConsensusState<ST, SCT, BVT, SVT>
 where
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
     SVT: StateRootValidator,
 {
@@ -675,12 +726,15 @@ where
     }
 
     #[must_use]
-    fn process_certificate_qc<VT: ValidatorSetType>(
+    fn process_certificate_qc<VT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc, epoch_manager));
 
@@ -809,11 +863,14 @@ where
     }
 
     #[must_use]
-    fn request_block_if_missing_ancestor<VT: ValidatorSetType>(
+    fn request_block_if_missing_ancestor<VT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         if let Some(qc) = self.pending_block_tree.get_missing_ancestor(qc) {
             self.block_sync_requester.request::<VT>(&qc, validators)
         } else {
@@ -855,12 +912,15 @@ where
     }
 
     #[must_use]
-    fn proposal_certificate_handling<VT: ValidatorSetType>(
+    fn proposal_certificate_handling<VT>(
         &mut self,
         p: &ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
         validators: &VT,
-    ) -> Vec<ConsensusCommand<SCT>> {
+    ) -> Vec<ConsensusCommand<SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let mut cmds = vec![];
 
         let process_certificate_cmds =
@@ -882,13 +942,16 @@ where
     }
 
     #[must_use]
-    fn randao_validation<VT: ValidatorSetType>(
+    fn randao_validation<VT>(
         &self,
         p: &ProposalMessage<SCT>,
-        author: NodeId,
+        author: NodeId<SCT::NodeIdPubKey>,
         epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-    ) -> bool {
+    ) -> bool
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         let author_pubkey = val_epoch_map
             .get_cert_pubkeys(&epoch)
             .expect("proposal message was verified")
@@ -926,7 +989,6 @@ mod test {
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedBlock},
         block_validator::MockValidator,
-        certificate_signature::CertificateKeyPair,
         ledger::CommitResult,
         multi_sig::MultiSig,
         payload::{
@@ -938,7 +1000,13 @@ mod test {
         txpool::{EthTxPool, TxPool},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
-    use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
+    use monad_crypto::{
+        certificate_signature::{
+            CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+        },
+        hasher::Hash,
+        NopSignature,
+    };
     use monad_eth_types::EthAddress;
     use monad_testutil::{
         proposal::ProposalGen,
@@ -975,20 +1043,24 @@ mod test {
         };
     }
 
-    fn setup<SCT: SignatureCollection, SVT: StateRootValidator>(
+    fn setup<
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        SVT: StateRootValidator,
+    >(
         num_states: u32,
     ) -> (
-        Vec<KeyPair>,
+        Vec<ST::KeyPairType>,
         Vec<SignatureCollectionKeyPairType<SCT>>,
         EpochManager,
-        ValidatorsEpochMapping<ValidatorSet, SCT>,
-        Vec<ConsensusState<SCT, MockValidator, SVT>>,
+        ValidatorsEpochMapping<ValidatorSet<CertificateSignaturePubKey<ST>>, SCT>,
+        Vec<ConsensusState<ST, SCT, MockValidator, SVT>>,
     ) {
-        let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<SCT>(num_states);
+        let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<ST, SCT>(num_states);
         let val_stakes = Vec::from_iter(valset.get_members().clone());
         let val_cert_pubkeys = keys
             .iter()
-            .map(|k| NodeId(k.pubkey()))
+            .map(|k| NodeId::new(k.pubkey()))
             .zip(cert_keys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
         let mut val_epoch_map = ValidatorsEpochMapping::default();
@@ -1007,19 +1079,20 @@ mod test {
 
         let epoch_manager = EpochManager::new(SeqNum(100), Round(20));
 
-        let mut dupkeys = create_keys(num_states);
+        let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
         let consensus_states = keys
             .iter()
             .enumerate()
             .map(|(i, k)| {
-                let default_key = KeyPair::from_bytes(&mut [127; 32]).unwrap();
+                let default_key =
+                    <ST::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32]).unwrap();
                 let default_cert_key =
                     <SignatureCollectionKeyPairType<SCT> as CertificateKeyPair>::from_bytes(
                         &mut [127; 32],
                     )
                     .unwrap();
-                ConsensusState::<SCT, _, SVT>::new(
+                ConsensusState::<ST, SCT, _, SVT>::new(
                     MockValidator,
                     k.pubkey(),
                     ConsensusConfig {
@@ -1081,7 +1154,7 @@ mod test {
     #[test]
     fn lock_qc_high() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let mut empty_txpool = EthTxPool::new();
 
@@ -1146,7 +1219,7 @@ mod test {
     #[test]
     fn timeout_stops_voting() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1192,7 +1265,7 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1292,7 +1365,7 @@ mod test {
     #[test]
     fn duplicate_proposals() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1348,7 +1421,7 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1463,7 +1536,7 @@ mod test {
             ));
         }
 
-        let _self_id = NodeId(state.nodeid.0);
+        let _self_id = state.nodeid;
         let mut more_proposals = true;
 
         while more_proposals {
@@ -1538,7 +1611,7 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1622,7 +1695,7 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1722,7 +1795,7 @@ mod test {
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let valset = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         let election = SimpleRoundRobin::new();
         let mut empty_txpool = EthTxPool::new();
@@ -1801,7 +1874,7 @@ mod test {
         assert_ne!(p1_votes.vote, p2_votes.vote);
         let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
         // temp sub with a key that doesn't exists.
-        let mut routing_target = NodeId(get_key(100).pubkey());
+        let mut routing_target = NodeId::new(get_key::<NopSignature>(100).pubkey());
         // We Collected 4 votes, 3 of which are valid, 1 of which is not caused by byzantine leader.
         // First 3 (including a false vote) submitted would not cause a qc to form
         // but the last vote would cause a qc to form locally at second_state, thus causing
@@ -1816,15 +1889,9 @@ mod test {
                 &val_epoch_map,
                 &election,
             );
-            let res = cmds2.into_iter().find(|c| {
-                matches!(
-                    c,
-                    ConsensusCommand::RequestSync {
-                        peer: NodeId(_),
-                        block_id: BlockId(_)
-                    },
-                )
-            });
+            let res = cmds2
+                .into_iter()
+                .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
             if i < 3 {
                 assert!(res.is_none());
             } else {
@@ -1838,7 +1905,10 @@ mod test {
                 routing_target = target;
             }
         }
-        assert_ne!(routing_target, NodeId(get_key(100).pubkey()));
+        assert_ne!(
+            routing_target,
+            NodeId::new(get_key::<NopSignature>(100).pubkey())
+        );
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
         assert_eq!(second_state.high_qc.info.vote, votes[0].vote);
 
@@ -1872,15 +1942,9 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let res = cmds1.into_iter().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds1
+            .into_iter()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         assert!(res.is_none());
 
         // next correct proposal is created and we send it to the first two states.
@@ -1949,15 +2013,10 @@ mod test {
             &election,
         );
         // new block added should allow path_to_root properly, thus no more request sync
-        let res = cmds2.iter().clone().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds2
+            .iter()
+            .clone()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         assert!(res.is_none());
 
         let cmds1 = first_state.handle_proposal_message(
@@ -1994,15 +2053,10 @@ mod test {
         );
 
         assert_eq!(third_state.pending_block_tree.size(), 2);
-        let res = cmds3.iter().clone().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds3
+            .iter()
+            .clone()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         let Some(ConsensusCommand::RequestSync { peer, block_id }) = res else {
             panic!("request sync is not found")
         };
@@ -2012,15 +2066,10 @@ mod test {
         let cmds3 = third_state.handle_block_sync(author_2, mal_sync, valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 2);
-        let res = cmds3.iter().clone().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds3
+            .iter()
+            .clone()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         assert!(res.is_none());
 
         let sync = BlockSyncResponseMessage::BlockFound(block_3);
@@ -2028,15 +2077,10 @@ mod test {
         let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
-        let res = cmds3.iter().clone().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds3
+            .iter()
+            .clone()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         let Some(ConsensusCommand::RequestSync {
             peer: peer_2,
             block_id: _,
@@ -2048,15 +2092,10 @@ mod test {
         let cmds3 = third_state.handle_block_sync(*peer, sync, valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
-        let res = cmds3.iter().clone().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds3
+            .iter()
+            .clone()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         assert!(res.is_none());
 
         //arrival of proposal should also prevent block_sync_request from modifying the tree
@@ -2068,15 +2107,9 @@ mod test {
             &election,
         );
         assert_eq!(third_state.pending_block_tree.size(), 4);
-        let res = cmds2.into_iter().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds2
+            .into_iter()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         assert!(res.is_none());
 
         let sync = BlockSyncResponseMessage::BlockFound(block_2);
@@ -2084,15 +2117,10 @@ mod test {
         let cmds3 = third_state.handle_block_sync(*peer_2, sync, valset);
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
-        let res = cmds3.iter().clone().find(|c| {
-            matches!(
-                c,
-                ConsensusCommand::RequestSync {
-                    peer: NodeId(_),
-                    block_id: BlockId(_),
-                },
-            )
-        });
+        let res = cmds3
+            .iter()
+            .clone()
+            .find(|c| matches!(c, ConsensusCommand::RequestSync { .. },));
         assert!(res.is_none());
     }
 
@@ -2100,7 +2128,7 @@ mod test {
     #[test]
     fn test_receive_empty_block() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRoot>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
@@ -2144,7 +2172,7 @@ mod test {
     #[test]
     fn test_lagging_execution() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRoot>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
@@ -2190,7 +2218,7 @@ mod test {
         // MissingNextStateRoot forces the proposer's state root hash
         // to be unavailable
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, MissingNextStateRoot>(4);
+            setup::<SignatureType, SignatureCollectionType, MissingNextStateRoot>(4);
         let election = SimpleRoundRobin::new();
         let mut empty_txpool = EthTxPool::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
@@ -2271,7 +2299,7 @@ mod test {
     #[test]
     fn test_state_root_updates() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRoot>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4);
         let election = SimpleRoundRobin::new();
         let (state, _) = states.split_first_mut().unwrap();
 
@@ -2408,7 +2436,7 @@ mod test {
     #[test]
     fn test_fetch_uncommitted_block() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
         let (first_state, _) = states.split_first_mut().unwrap();
 
@@ -2515,7 +2543,9 @@ mod test {
     #[test_case(523; "523 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_state as u32,
+            );
 
         let election = SimpleRoundRobin::new();
         let mut empty_txpool = EthTxPool::new();
@@ -2541,15 +2571,9 @@ mod test {
                     &val_epoch_map,
                     &election,
                 );
-                let bsync_reqest = cmds.iter().find(|&c| {
-                    matches!(
-                        c,
-                        ConsensusCommand::RequestSync {
-                            peer: NodeId(_),
-                            block_id: BlockId(_)
-                        }
-                    )
-                });
+                let bsync_reqest = cmds
+                    .iter()
+                    .find(|&c| matches!(c, ConsensusCommand::RequestSync { .. }));
                 // observing a qc that link to root should not trigger anything
                 assert!(bsync_reqest.is_none());
                 assert_eq!(state.get_current_round(), Round(i + 1))
@@ -2614,7 +2638,7 @@ mod test {
                 &election,
             );
             if i == (num_state * 2 / 3) {
-                let req: Vec<(NodeId, BlockId)> = cmds
+                let req: Vec<(NodeId<_>, BlockId)> = cmds
                     .into_iter()
                     .filter_map(|c| match c {
                         ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
@@ -2640,7 +2664,9 @@ mod test {
     fn test_observe_qc_through_tmo() {
         let num_state = 5;
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_state as u32,
+            );
         let election = SimpleRoundRobin::new();
         let mut empty_txpool = EthTxPool::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -2665,15 +2691,9 @@ mod test {
                     &val_epoch_map,
                     &election,
                 );
-                let bsync_reqest = cmds.iter().find(|&c| {
-                    matches!(
-                        c,
-                        ConsensusCommand::RequestSync {
-                            peer: NodeId(_),
-                            block_id: BlockId(_)
-                        }
-                    )
-                });
+                let bsync_reqest = cmds
+                    .iter()
+                    .find(|&c| matches!(c, ConsensusCommand::RequestSync { .. }));
                 // observing a qc that link to root should not trigger anything
                 assert!(bsync_reqest.is_none());
             }
@@ -2703,7 +2723,7 @@ mod test {
             &election,
         );
 
-        let req: Vec<(NodeId, BlockId)> = cmds
+        let req: Vec<(NodeId<_>, BlockId)> = cmds
             .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
@@ -2718,7 +2738,9 @@ mod test {
     fn test_observe_qc_through_proposal() {
         let num_state = 5;
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_state as u32,
+            );
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -2754,7 +2776,7 @@ mod test {
             &val_epoch_map,
             &election,
         );
-        let req: Vec<(NodeId, BlockId)> = cmds
+        let req: Vec<(NodeId<_>, BlockId)> = cmds
             .into_iter()
             .filter_map(|c| match c {
                 ConsensusCommand::RequestSync { peer, block_id } => Some((peer, block_id)),
@@ -2779,7 +2801,9 @@ mod test {
     fn test_reject_non_leader_proposal() {
         let num_state = 4;
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_state as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_state as u32,
+            );
 
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -2818,7 +2842,7 @@ mod test {
         let (_, _, p2) = verified_p2.destructure();
 
         let invalid_author = election.get_leader(Round(4), &epoch_manager, &val_epoch_map);
-        assert!(invalid_author != NodeId(states[0].get_keypair().pubkey()));
+        assert!(invalid_author != NodeId::new(states[0].get_keypair().pubkey()));
         assert!(invalid_author != p2.block.0.author);
         let invalid_b2 = Block::new(
             invalid_author,
@@ -2849,7 +2873,9 @@ mod test {
     fn test_schedule_next_epoch() {
         let num_states = 2;
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_states as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+            );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let election = SimpleRoundRobin::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -2911,7 +2937,9 @@ mod test {
     fn test_advance_epoch_through_proposal_qc() {
         let num_states = 2;
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_states as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+            );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();
@@ -3048,7 +3076,9 @@ mod test {
     fn test_advance_epoch_through_proposal_tc() {
         let num_states = 2;
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_states as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+            );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();
@@ -3157,7 +3187,9 @@ mod test {
     fn test_advance_epoch_through_local_tc() {
         let num_states = 4;
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_states as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+            );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();
@@ -3297,7 +3329,9 @@ mod test {
     fn test_schedule_epoch_on_blocksync() {
         let num_states = 2;
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_states as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+            );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();
@@ -3513,7 +3547,9 @@ mod test {
     fn test_advance_epoch_with_blocksync() {
         let num_states = 2;
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureCollectionType, StateRootValidatorType>(num_states as u32);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+            );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();

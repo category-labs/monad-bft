@@ -7,8 +7,8 @@ use std::{
 };
 
 use monad_crypto::{
+    certificate_signature::PubKey,
     hasher::{Hash, Hashable, Hasher},
-    secp256k1::PubKey,
 };
 use serde::Deserialize;
 use zerocopy::AsBytes;
@@ -137,11 +137,29 @@ impl std::fmt::Debug for SeqNum {
 /// NodeId is the validator's pubkey identity in the consensus protocol
 #[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct NodeId(pub PubKey);
+pub struct NodeId<P: PubKey> {
+    pubkey: P,
+}
 
-impl std::fmt::Debug for NodeId {
+impl<P: PubKey> NodeId<P> {
+    pub fn new(pubkey: P) -> Self {
+        Self { pubkey }
+    }
+
+    pub fn pubkey(&self) -> P {
+        self.pubkey
+    }
+}
+
+impl<P: PubKey> std::fmt::Debug for NodeId<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.pubkey.fmt(f)
+    }
+}
+
+impl<P: PubKey> Hashable for NodeId<P> {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(self.pubkey.bytes())
     }
 }
 
@@ -238,9 +256,9 @@ impl<S: Clone> Deserializable<S> for S {
 /// RouterTarget specifies the particular node(s) that the router should send
 /// the message toward
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RouterTarget {
+pub enum RouterTarget<P: PubKey> {
     Broadcast,
-    PointToPoint(NodeId),
+    PointToPoint(NodeId<P>),
 }
 
 // FIXME-4: move to monad-executor-glue after spaghetti fixed

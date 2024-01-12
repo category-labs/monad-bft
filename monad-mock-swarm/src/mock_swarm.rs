@@ -7,8 +7,10 @@ use std::{
 use itertools::Itertools;
 use monad_consensus_state::ConsensusProcess;
 use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection, txpool::TxPool,
-    validator_data::ValidatorData,
+    signature_collection::SignatureCollection, txpool::TxPool, validator_data::ValidatorData,
+};
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor::{timed_event::TimedEvent, Executor, State};
 use monad_router_scheduler::RouterScheduler;
@@ -31,12 +33,15 @@ pub struct Node<S>
 where
     S: SwarmRelation,
 {
-    pub id: ID,
+    pub id: ID<CertificateSignaturePubKey<S::SignatureType>>,
     pub executor: MockExecutor<S>,
     pub state: S::State,
     pub logger: S::Logger,
     pub pipeline: S::Pipeline,
-    pub pending_inbound_messages: BTreeMap<Duration, VecDeque<LinkMessage<S::TransportMessage>>>,
+    pub pending_inbound_messages: BTreeMap<
+        Duration,
+        VecDeque<LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>>,
+    >,
     pub rng: ChaCha20Rng,
     pub current_seed: usize,
 }
@@ -74,7 +79,10 @@ where
     fn step_until(
         &mut self,
         until: Duration,
-        emitted_messages: &mut Vec<(Duration, LinkMessage<S::TransportMessage>)>,
+        emitted_messages: &mut Vec<(
+            Duration,
+            LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>,
+        )>,
     ) -> Option<(Duration, <S::State as State>::Event)> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
@@ -208,10 +216,10 @@ impl<S, CT, ST, SCT, VT, LT, TT> NodesTerminator<S> for UntilTerminator
 where
     S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, TT>>,
 
-    CT: ConsensusProcess<SCT> + PartialEq + Eq,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    CT: ConsensusProcess<ST, SCT> + PartialEq + Eq,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection,
     TT: TxPool,
 {
@@ -229,14 +237,14 @@ where
 }
 
 // observe and monitor progress of certain nodes until commit progress is achieved for all
-pub struct ProgressTerminator {
+pub struct ProgressTerminator<PT: PubKey> {
     // NodeId -> Ledger len
-    nodes_monitor: BTreeMap<ID, usize>,
+    nodes_monitor: BTreeMap<ID<PT>, usize>,
     timeout: Duration,
 }
 
-impl ProgressTerminator {
-    pub fn new(nodes_monitor: BTreeMap<ID, usize>, timeout: Duration) -> Self {
+impl<PT: PubKey> ProgressTerminator<PT> {
+    pub fn new(nodes_monitor: BTreeMap<ID<PT>, usize>, timeout: Duration) -> Self {
         ProgressTerminator {
             nodes_monitor,
             timeout,
@@ -251,7 +259,7 @@ impl ProgressTerminator {
     }
 }
 
-impl<S> NodesTerminator<S> for ProgressTerminator
+impl<S> NodesTerminator<S> for ProgressTerminator<CertificateSignaturePubKey<S::SignatureType>>
 where
     S: SwarmRelation,
 {
@@ -316,7 +324,7 @@ pub struct Nodes<S>
 where
     S: SwarmRelation,
 {
-    states: BTreeMap<ID, Node<S>>,
+    states: BTreeMap<ID<CertificateSignaturePubKey<S::SignatureType>>, Node<S>>,
     tick: Duration,
     must_deliver: bool,
     no_duplicate_peers: bool,
@@ -336,7 +344,7 @@ where
 {
     pub fn new(
         peers: Vec<(
-            ID,
+            ID<CertificateSignaturePubKey<S::SignatureType>>,
             <S::State as State>::Config,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
@@ -368,7 +376,13 @@ where
         self
     }
 
-    fn peek_event(&self) -> Option<(Duration, SwarmEventType, ID)> {
+    fn peek_event(
+        &self,
+    ) -> Option<(
+        Duration,
+        SwarmEventType,
+        ID<CertificateSignaturePubKey<S::SignatureType>>,
+    )> {
         self.states
             .iter()
             .filter_map(|(id, node)| {
@@ -440,8 +454,10 @@ where
                 return Some(self.tick);
             }
 
-            let mut emitted_messages: Vec<(Duration, LinkMessage<S::TransportMessage>)> =
-                Vec::new();
+            let mut emitted_messages: Vec<(
+                Duration,
+                LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>,
+            )> = Vec::new();
 
             emitted_messages.par_extend(self.states.par_iter_mut().flat_map_iter(|(_id, node)| {
                 let mut emitted = Vec::new();
@@ -466,18 +482,21 @@ where
         None
     }
 
-    pub fn states(&self) -> &BTreeMap<ID, Node<S>> {
+    pub fn states(&self) -> &BTreeMap<ID<CertificateSignaturePubKey<S::SignatureType>>, Node<S>> {
         &self.states
     }
 
-    pub fn remove_state(&mut self, peer_id: &ID) -> Option<Node<S>> {
+    pub fn remove_state(
+        &mut self,
+        peer_id: &ID<CertificateSignaturePubKey<S::SignatureType>>,
+    ) -> Option<Node<S>> {
         self.states.remove(peer_id)
     }
 
     pub fn add_state(
         &mut self,
         peer: (
-            ID,
+            ID<CertificateSignaturePubKey<S::SignatureType>>,
             <S::State as State>::Config,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
@@ -531,7 +550,11 @@ where
             node.pipeline = pipeline.clone();
         }
     }
-    pub fn update_pipeline(&mut self, id: &ID, pipeline: S::Pipeline) {
+    pub fn update_pipeline(
+        &mut self,
+        id: &ID<CertificateSignaturePubKey<S::SignatureType>>,
+        pipeline: S::Pipeline,
+    ) {
         self.states.get_mut(id).map(|node| node.pipeline = pipeline);
     }
 }

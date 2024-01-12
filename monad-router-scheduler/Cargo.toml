@@ -11,4 +11,5 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-crypto = { path = "../monad-crypto" }
 monad-types = { path = "../monad-types" }

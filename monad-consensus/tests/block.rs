@@ -5,17 +5,23 @@ use monad_consensus_types::{
     quorum_certificate::{QcInfo, QuorumCertificate},
     voting::{Vote, VoteInfo},
 };
-use monad_crypto::hasher::{Hash, Hasher, HasherType};
+use monad_crypto::{
+    certificate_signature::CertificateSignaturePubKey,
+    hasher::{Hash, Hasher, HasherType},
+    NopSignature,
+};
 use monad_eth_types::EthAddress;
 use monad_testutil::signing::{hash, node_id, MockSignatures};
 use monad_types::*;
 
+type SignatureType = NopSignature;
+
 #[test]
 fn block_hash_id() {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
-    let author = node_id();
+    let author = node_id::<SignatureType>();
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures>::new(
+    let qc = QuorumCertificate::<MockSignatures<CertificateSignaturePubKey<SignatureType>>>::new(
         QcInfo {
             vote: Vote {
                 vote_info: VoteInfo {
@@ -31,7 +37,7 @@ fn block_hash_id() {
         MockSignatures::with_pubkeys(&[]),
     );
 
-    let block = Block::<MockSignatures>::new(
+    let block = Block::<MockSignatures<CertificateSignaturePubKey<SignatureType>>>::new(
         author,
         round,
         &Payload {

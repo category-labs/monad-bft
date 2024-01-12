@@ -25,15 +25,15 @@ mod test {
             test_case.description,
         );
 
-        let get_lgr_cfg = |_: &ID, _: &Vec<ID>| MockWALoggerConfig;
-        let get_router_cfg = |_: &ID, ids: &Vec<ID>| NoSerRouterConfig {
+        let get_lgr_cfg = |_: &ID<_>, _: &Vec<ID<_>>| MockWALoggerConfig;
+        let get_router_cfg = |_: &ID<_>, ids: &Vec<ID<_>>| NoSerRouterConfig {
             all_peers: ids
                 .iter()
                 .map(|id| *id.get_peer_id())
                 .collect::<BTreeSet<_>>(),
         };
 
-        run_twins_test::<MonadMessageNoSerSwarm, _, _>(
+        run_twins_test::<_, MonadMessageNoSerSwarm, _, _>(
             get_lgr_cfg,
             get_router_cfg,
             TWIN_DEFAULT_SEED,
@@ -52,15 +52,15 @@ mod test {
             "running expected fail twins_testing, description: {:?}",
             test_case.description
         );
-        let get_lgr_cfg = |_: &ID, _: &Vec<ID>| MockWALoggerConfig;
-        let get_router_cfg = |_: &ID, ids: &Vec<ID>| NoSerRouterConfig {
+        let get_lgr_cfg = |_: &ID<_>, _: &Vec<ID<_>>| MockWALoggerConfig;
+        let get_router_cfg = |_: &ID<_>, ids: &Vec<ID<_>>| NoSerRouterConfig {
             all_peers: ids
                 .iter()
                 .map(|id| *id.get_peer_id())
                 .collect::<BTreeSet<_>>(),
         };
 
-        run_twins_test::<MonadMessageNoSerSwarm, _, _>(
+        run_twins_test::<_, MonadMessageNoSerSwarm, _, _>(
             get_lgr_cfg,
             get_router_cfg,
             TWIN_DEFAULT_SEED,

@@ -1,27 +1,30 @@
 use std::collections::BTreeMap;
 
-use monad_crypto::hasher::{Hashable, Hasher};
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, PubKey},
+    hasher::{Hashable, Hasher},
+};
 use monad_types::*;
 use zerocopy::AsBytes;
 
-use crate::{certificate_signature::CertificateKeyPair, ledger::CommitResult};
+use crate::ledger::CommitResult;
 
 /// Map validator NodeId to its Certificate PubKey
-pub struct ValidatorMapping<VKT: CertificateKeyPair> {
-    pub map: BTreeMap<NodeId, VKT::PubKeyType>,
+pub struct ValidatorMapping<PT: PubKey, VKT: CertificateKeyPair> {
+    pub map: BTreeMap<NodeId<PT>, VKT::PubKeyType>,
 }
 
-impl<VKT: CertificateKeyPair> ValidatorMapping<VKT> {
-    pub fn new(iter: impl IntoIterator<Item = (NodeId, VKT::PubKeyType)>) -> Self {
+impl<PT: PubKey, VKT: CertificateKeyPair> ValidatorMapping<PT, VKT> {
+    pub fn new(iter: impl IntoIterator<Item = (NodeId<PT>, VKT::PubKeyType)>) -> Self {
         Self {
             map: iter.into_iter().collect(),
         }
     }
 }
 
-impl<VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<VKT> {
-    type Item = (NodeId, VKT::PubKeyType);
-    type IntoIter = std::collections::btree_map::IntoIter<NodeId, VKT::PubKeyType>;
+impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, VKT> {
+    type Item = (NodeId<PT>, VKT::PubKeyType);
+    type IntoIter = std::collections::btree_map::IntoIter<NodeId<PT>, VKT::PubKeyType>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.into_iter()

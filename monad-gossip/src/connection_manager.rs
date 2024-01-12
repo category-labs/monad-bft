@@ -5,24 +5,25 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use bytes_utils::SegmentedBuf;
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
 
 use crate::{AppMessage, Gossip, GossipEvent, GossipMessage};
 
-pub enum ConnectionManagerEvent {
-    GossipEvent(GossipEvent),
+pub enum ConnectionManagerEvent<PT: PubKey> {
+    GossipEvent(GossipEvent<PT>),
 
     /// Ask executor to connect to given node
     /// Executor must call Gossip::connect after connection complete
     /// RequestConnect is idempotent
-    RequestConnect(NodeId),
+    RequestConnect(NodeId<PT>),
 }
 
-pub struct ConnectionManager<G> {
+pub struct ConnectionManager<G: Gossip> {
     max_message_size: u32,
 
     current_tick: Duration,
-    connections: HashMap<NodeId, Connection>,
+    connections: HashMap<NodeId<G::NodeIdPubKey>, Connection>,
     gossip: G,
 }
 
@@ -57,7 +58,7 @@ impl<G: Gossip> ConnectionManager<G> {
     }
 
     /// Tell Gossip implementation that a connection to a peer has been opened
-    pub fn connected(&mut self, time: Duration, peer: NodeId) {
+    pub fn connected(&mut self, time: Duration, peer: NodeId<G::NodeIdPubKey>) {
         assert!(time >= self.current_tick);
         self.current_tick = time;
         let removed = self.connections.insert(peer, Connection::new());
@@ -65,7 +66,7 @@ impl<G: Gossip> ConnectionManager<G> {
     }
 
     /// Tell Gossip implementation that the given peer has been disconnected
-    pub fn disconnected(&mut self, time: Duration, peer: NodeId) {
+    pub fn disconnected(&mut self, time: Duration, peer: NodeId<G::NodeIdPubKey>) {
         assert!(time >= self.current_tick);
         self.current_tick = time;
         let removed = self.connections.remove(&peer);
@@ -75,7 +76,7 @@ impl<G: Gossip> ConnectionManager<G> {
     /// Ask Gossip implementation to send given application message
     /// There are no delivery guarantees; the message may be dropped. A RequestConnect event may be
     /// emitted instead.
-    pub fn send(&mut self, time: Duration, to: RouterTarget, message: AppMessage) {
+    pub fn send(&mut self, time: Duration, to: RouterTarget<G::NodeIdPubKey>, message: AppMessage) {
         assert!(time >= self.current_tick);
         self.current_tick = time;
         self.gossip.send(time, to, message)
@@ -85,7 +86,7 @@ impl<G: Gossip> ConnectionManager<G> {
     pub fn handle_unframed_gossip_message(
         &mut self,
         time: Duration,
-        from: NodeId,
+        from: NodeId<G::NodeIdPubKey>,
         unframed_gossip_message: Bytes,
     ) {
         assert!(time >= self.current_tick);
@@ -140,7 +141,7 @@ impl<G: Gossip> ConnectionManager<G> {
     pub fn peek_tick(&self) -> Option<Duration> {
         self.gossip.peek_tick()
     }
-    pub fn poll(&mut self, time: Duration) -> Option<ConnectionManagerEvent> {
+    pub fn poll(&mut self, time: Duration) -> Option<ConnectionManagerEvent<G::NodeIdPubKey>> {
         assert!(time >= self.current_tick);
         self.current_tick = time;
 
@@ -173,8 +174,9 @@ mod tests {
 
     use bytes::Bytes;
     use monad_crypto::{
+        certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
         hasher::{Hasher, HasherType},
-        secp256k1::KeyPair,
+        NopSignature,
     };
     use monad_types::NodeId;
 
@@ -183,10 +185,13 @@ mod tests {
         ConnectionManager, ConnectionManagerEvent, GossipEvent,
     };
 
+    type SignatureType = NopSignature;
+
     struct Swarm {
-        connection_manager: ConnectionManager<MockGossip>,
-        me: NodeId,
-        other: NodeId,
+        connection_manager:
+            ConnectionManager<MockGossip<CertificateSignaturePubKey<SignatureType>>>,
+        me: NodeId<CertificateSignaturePubKey<SignatureType>>,
+        other: NodeId<CertificateSignaturePubKey<SignatureType>>,
     }
 
     impl Swarm {
@@ -200,8 +205,11 @@ mod tests {
                         hasher.update(idx.to_le_bytes());
                         hasher.hash().0
                     };
-                    let keypair = KeyPair::from_bytes(&mut secret).unwrap();
-                    NodeId(keypair.pubkey())
+                    let keypair = <SignatureType as CertificateSignature>::KeyPairType::from_bytes(
+                        &mut secret,
+                    )
+                    .unwrap();
+                    NodeId::new(keypair.pubkey())
                 })
                 .collect();
             let me = all_peers[0];

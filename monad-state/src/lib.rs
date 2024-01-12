@@ -15,7 +15,6 @@ use monad_consensus_state::{
 };
 use monad_consensus_types::{
     block::Block,
-    message_signature::MessageSignature,
     signature_collection::{
         SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
     },
@@ -24,7 +23,9 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::{KeyPair, PubKey};
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 use monad_eth_types::EthAddress;
 use monad_executor::State;
 use monad_executor_glue::{
@@ -46,9 +47,9 @@ pub mod convert;
 
 pub struct MonadState<CT, ST, SCT, VT, LT, TT>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
     /// Core consensus algorithm state machine
     consensus: CT,
@@ -69,10 +70,10 @@ where
 
 impl<CT, ST, SCT, VT, LT, TT> MonadState<CT, ST, SCT, VT, LT, TT>
 where
-    CT: ConsensusProcess<SCT>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    CT: ConsensusProcess<ST, SCT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     TT: TxPool,
 {
     pub fn consensus(&self) -> &CT {
@@ -83,7 +84,7 @@ where
         &self.epoch_manager
     }
 
-    pub fn pubkey(&self) -> PubKey {
+    pub fn pubkey(&self) -> SCT::NodeIdPubKey {
         self.consensus.get_pubkey()
     }
 
@@ -134,14 +135,20 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerifiedMonadMessage<ST, SCT: SignatureCollection> {
+pub enum VerifiedMonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
     BlockSyncRequest(Validated<RequestBlockSyncMessage>),
     BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
 }
 
-impl<ST, SCT: SignatureCollection> From<Verified<ST, Validated<ConsensusMessage<SCT>>>>
-    for VerifiedMonadMessage<ST, SCT>
+impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn from(value: Verified<ST, Validated<ConsensusMessage<SCT>>>) -> Self {
         Self::Consensus(value)
@@ -149,7 +156,11 @@ impl<ST, SCT: SignatureCollection> From<Verified<ST, Validated<ConsensusMessage<
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MonadMessage<ST, SCT: SignatureCollection> {
+pub enum MonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     /// Consensus protocol message
     Consensus(Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>),
 
@@ -160,18 +171,22 @@ pub enum MonadMessage<ST, SCT: SignatureCollection> {
     BlockSyncResponse(Unvalidated<BlockSyncResponseMessage<SCT>>),
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Serializable<Bytes>
-    for VerifiedMonadMessage<MS, SCT>
+impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_verified_monad_message(self)
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection>
-    monad_types::Serializable<MonadMessage<MS, SCT>> for VerifiedMonadMessage<MS, SCT>
+impl<ST, SCT> monad_types::Serializable<MonadMessage<ST, SCT>> for VerifiedMonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    fn serialize(&self) -> MonadMessage<MS, SCT> {
+    fn serialize(&self) -> MonadMessage<ST, SCT> {
         match self.clone() {
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
             VerifiedMonadMessage::BlockSyncRequest(msg) => {
@@ -184,8 +199,10 @@ impl<MS: MessageSignature, SCT: SignatureCollection>
     }
 }
 
-impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable<Bytes>
-    for MonadMessage<MS, SCT>
+impl<ST, SCT> monad_types::Deserializable<Bytes> for MonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -194,7 +211,11 @@ impl<MS: MessageSignature, SCT: SignatureCollection> monad_types::Deserializable
     }
 }
 
-impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT> {
+impl<ST, SCT> From<VerifiedMonadMessage<ST, SCT>> for MonadMessage<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     fn from(value: VerifiedMonadMessage<ST, SCT>) -> Self {
         match value {
             VerifiedMonadMessage::Consensus(msg) => MonadMessage::Consensus(msg.into()),
@@ -210,30 +231,31 @@ impl<ST, SCT: SignatureCollection> From<VerifiedMonadMessage<ST, SCT>> for Monad
 
 impl<ST, SCT> Message for MonadMessage<ST, SCT>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     type Event = MonadEvent<ST, SCT>;
 
-    fn event(self, from: NodeId) -> Self::Event {
+    fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
         // MUST assert that output is valid and came from the `from` NodeId
         // `from` must somehow be guaranteed to be staked at this point so that subsequent
         // malformed stuff (that gets added to event log) can be slashed? TODO
         match self {
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-                sender: from.0,
+                sender: from.pubkey(),
                 unverified_message: msg,
             }),
 
             MonadMessage::BlockSyncRequest(msg) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::BlockSyncRequest {
-                    sender: from.0,
+                    sender: from.pubkey(),
                     unvalidated_request: msg,
                 })
             }
             MonadMessage::BlockSyncResponse(msg) => {
                 MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncResponse {
-                    sender: from.0,
+                    sender: from.pubkey(),
                     unvalidated_response: msg,
                 })
             }
@@ -241,10 +263,14 @@ where
     }
 }
 
-pub struct MonadConfig<SCT: SignatureCollection, TV> {
+pub struct MonadConfig<ST, SCT, TV>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
     pub transaction_validator: TV,
-    pub validators: Vec<(PubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
-    pub key: KeyPair,
+    pub validators: Vec<(SCT::NodeIdPubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
+    pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub val_set_update_interval: SeqNum,
     pub epoch_start_delay: Round,
@@ -255,19 +281,20 @@ pub struct MonadConfig<SCT: SignatureCollection, TV> {
 
 impl<CT, ST, SCT, VT, LT, TT> State for MonadState<CT, ST, SCT, VT, LT, TT>
 where
-    CT: ConsensusProcess<SCT>,
-    ST: MessageSignature,
-    SCT: SignatureCollection,
-    VT: ValidatorSetType,
+    CT: ConsensusProcess<ST, SCT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     LT: LeaderElection,
     TT: TxPool,
 {
-    type Config = MonadConfig<SCT, CT::BlockValidatorType>;
+    type Config = MonadConfig<ST, SCT, CT::BlockValidatorType>;
     type Event = MonadEvent<ST, SCT>;
     type Message = MonadMessage<ST, SCT>;
     type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
     type Block = Block<SCT>;
     type Checkpoint = Checkpoint<SCT>;
+    type NodeIdSignature = ST;
     type SignatureCollection = SCT;
 
     fn init(
@@ -287,13 +314,13 @@ where
         let staking_list = config
             .validators
             .iter()
-            .map(|(pubkey, stake, _)| (NodeId(*pubkey), *stake))
+            .map(|(pubkey, stake, _)| (NodeId::new(*pubkey), *stake))
             .collect::<Vec<_>>();
 
         let voting_identities = config
             .validators
             .into_iter()
-            .map(|(pubkey, _, certpubkey)| (NodeId(pubkey), certpubkey))
+            .map(|(pubkey, _, certpubkey)| (NodeId::new(pubkey), certpubkey))
             .collect::<Vec<_>>();
 
         // create the initial validator set
@@ -466,7 +493,7 @@ where
                             .get_val_set(&current_epoch)
                             .expect("current validator set should be in the map");
                         self.consensus.handle_block_sync(
-                            NodeId(sender),
+                            NodeId::new(sender),
                             validated_response,
                             val_set,
                         )
@@ -474,7 +501,7 @@ where
                 };
 
                 let prepare_router_message =
-                    |target: RouterTarget, message: ConsensusMessage<SCT>| {
+                    |target: RouterTarget<_>, message: ConsensusMessage<SCT>| {
                         let signed_message = VerifiedMonadMessage::Consensus(
                             message.sign::<ST>(self.consensus.get_keypair()),
                         );
@@ -550,14 +577,14 @@ where
                     .into_inner();
                     let block_id = validated_request.block_id;
                     self.block_sync_respond.handle_request_block_sync_message(
-                        NodeId(sender),
+                        NodeId::new(sender),
                         validated_request,
                         self.consensus.fetch_uncommitted_block(&block_id),
                     )
                 }
                 BlockSyncEvent::FetchedBlock(fetched_block) => {
                     vec![Command::RouterCommand(RouterCommand::Publish {
-                        target: RouterTarget::PointToPoint(NodeId(fetched_block.requester.0)),
+                        target: RouterTarget::PointToPoint(fetched_block.requester),
                         message: VerifiedMonadMessage::BlockSyncResponse(Validated::new(
                             match fetched_block.unverified_block {
                                 Some(b) => BlockSyncResponseMessage::BlockFound(b),

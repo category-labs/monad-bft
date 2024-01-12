@@ -2,12 +2,14 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block,
     block_validator::{BlockValidator, MockValidator},
-    message_signature::MessageSignature,
     multi_sig::MultiSig,
     payload::StateRoot,
     signature_collection::SignatureCollection,
 };
-use monad_crypto::NopSignature;
+use monad_crypto::{
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
+    NopSignature,
+};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{Message, MonadEvent};
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterScheduler};
@@ -23,10 +25,14 @@ use monad_wal::{
 use crate::{mock_txpool::MockTxPool, transformer::MonadMessageTransformerPipeline};
 
 pub trait SwarmRelation {
-    type SignatureType: MessageSignature + Unpin;
-    type SignatureCollectionType: SignatureCollection + Unpin;
+    type SignatureType: CertificateSignatureRecoverable + Unpin;
+    type SignatureCollectionType: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
+        + Unpin;
 
-    type InboundMessage: Message<Event = <Self::State as State>::Event>;
+    type InboundMessage: Message<
+        NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
+        Event = <Self::State as State>::Event,
+    >;
     type OutboundMessage: Clone;
     type TransportMessage: PartialEq + Eq + Send;
 
@@ -34,8 +40,13 @@ pub trait SwarmRelation {
 
     type State: State<
         Block = Block<Self::SignatureCollectionType>,
-        Config = MonadConfig<Self::SignatureCollectionType, Self::TransactionValidator>,
+        Config = MonadConfig<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+        >,
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
+        NodeIdSignature = Self::SignatureType,
         SignatureCollection = Self::SignatureCollectionType,
         Message = Self::InboundMessage,
         OutboundMessage = Self::OutboundMessage,
@@ -43,13 +54,17 @@ pub trait SwarmRelation {
 
     type RouterSchedulerConfig;
     type RouterScheduler: RouterScheduler<
+        NodeIdPublicKey = CertificateSignaturePubKey<Self::SignatureType>,
         Config = Self::RouterSchedulerConfig,
         InboundMessage = Self::InboundMessage,
         OutboundMessage = Self::OutboundMessage,
         TransportMessage = Self::TransportMessage,
     >;
 
-    type Pipeline: Pipeline<Self::TransportMessage> + Clone;
+    type Pipeline: Pipeline<
+            Self::TransportMessage,
+            NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
+        > + Clone;
 
     type LoggerConfig: Clone;
     type Logger: PersistenceLogger<
@@ -77,18 +92,30 @@ impl SwarmRelation for NoSerSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = GenericTransformerPipeline<Self::TransportMessage>;
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
+    >;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =
@@ -113,18 +140,28 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type TransactionValidator = MockValidator;
 
     type State = MonadState<
-        ConsensusState<Self::SignatureCollectionType, Self::TransactionValidator, StateRoot>,
+        ConsensusState<
+            Self::SignatureType,
+            Self::SignatureCollectionType,
+            Self::TransactionValidator,
+            StateRoot,
+        >,
         Self::SignatureType,
         Self::SignatureCollectionType,
-        ValidatorSet,
+        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
         SimpleRoundRobin,
         MockTxPool,
     >;
 
-    type RouterSchedulerConfig = NoSerRouterConfig;
-    type RouterScheduler = NoSerRouterScheduler<Self::InboundMessage, Self::OutboundMessage>;
+    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
+    type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::InboundMessage,
+        Self::OutboundMessage,
+    >;
 
-    type Pipeline = MonadMessageTransformerPipeline;
+    type Pipeline =
+        MonadMessageTransformerPipeline<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type LoggerConfig = MockWALoggerConfig;
     type Logger =

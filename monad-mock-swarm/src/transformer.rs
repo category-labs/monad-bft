@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, ops::Deref, time::Duration};
+use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration};
 
 use itertools::Itertools;
 use monad_consensus::messages::consensus_message::ConsensusMessage;
-use monad_consensus_types::{
-    message_signature::MessageSignature, signature_collection::SignatureCollection,
+use monad_consensus_types::signature_collection::SignatureCollection;
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_state::VerifiedMonadMessage;
 use monad_transformer::{
@@ -13,33 +14,39 @@ use monad_transformer::{
 use monad_types::{NodeId, Round};
 
 #[derive(Debug, Clone)]
-pub struct FilterTransformer {
+pub struct FilterTransformer<PT: PubKey> {
     pub drop_proposal: bool,
     pub drop_vote: bool,
     pub drop_timeout: bool,
     pub drop_block_sync: bool,
+
+    pub _phantom: PhantomData<PT>,
 }
 
-impl Default for FilterTransformer {
+impl<PT: PubKey> Default for FilterTransformer<PT> {
     fn default() -> Self {
         Self {
             drop_proposal: false,
             drop_vote: false,
             drop_timeout: false,
             drop_block_sync: false,
+
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>> for FilterTransformer
+impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>>
+    for FilterTransformer<CertificateSignaturePubKey<ST>>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     fn transform(
         &mut self,
-        link_m: LinkMessage<VerifiedMonadMessage<ST, SCT>>,
-    ) -> TransformerStream<VerifiedMonadMessage<ST, SCT>> {
+        link_m: LinkMessage<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
+    ) -> TransformerStream<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>> {
         let should_drop = match &link_m.message {
             VerifiedMonadMessage::Consensus(consensus_msg) => match consensus_msg.deref().deref() {
                 ConsensusMessage::Proposal(_) => self.drop_proposal,
@@ -58,22 +65,22 @@ where
     }
 }
 #[derive(Debug, Clone)]
-pub struct TwinsTransformer {
+pub struct TwinsTransformer<PT: PubKey> {
     // NodeId -> All Duplicate
-    dups: BTreeMap<NodeId, Vec<usize>>,
+    dups: BTreeMap<NodeId<PT>, Vec<usize>>,
     // Round -> Deliver target
-    partition: BTreeMap<Round, Vec<ID>>,
+    partition: BTreeMap<Round, Vec<ID<PT>>>,
     // when rounds cannot be found within partition
-    default_part: Vec<ID>,
+    default_part: Vec<ID<PT>>,
     // block sync and associated message is dropped by default
     ban_block_sync: bool,
 }
 
-impl TwinsTransformer {
+impl<PT: PubKey> TwinsTransformer<PT> {
     pub fn new(
-        dups: BTreeMap<NodeId, Vec<usize>>,
-        partition: BTreeMap<Round, Vec<ID>>,
-        default_part: Vec<ID>,
+        dups: BTreeMap<NodeId<PT>, Vec<usize>>,
+        partition: BTreeMap<Round, Vec<ID<PT>>>,
+        default_part: Vec<ID<PT>>,
         ban_block_sync: bool,
     ) -> Self {
         Self {
@@ -85,20 +92,23 @@ impl TwinsTransformer {
     }
 }
 
-enum TwinsCapture {
-    Spread(NodeId),         // spread to all target given NodeId
-    Process(NodeId, Round), // spread to all target given NodeId and Round
-    Drop,                   // Drop the message
+enum TwinsCapture<PT: PubKey> {
+    Spread(NodeId<PT>),         // spread to all target given NodeId
+    Process(NodeId<PT>, Round), // spread to all target given NodeId and Round
+    Drop,                       // Drop the message
 }
-impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>> for TwinsTransformer
+impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>>
+    for TwinsTransformer<CertificateSignaturePubKey<ST>>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
+
     fn transform(
         &mut self,
-        message: LinkMessage<VerifiedMonadMessage<ST, SCT>>,
-    ) -> TransformerStream<VerifiedMonadMessage<ST, SCT>> {
+        message: LinkMessage<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>>,
+    ) -> TransformerStream<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>> {
         let LinkMessage {
             to,
             from,
@@ -178,25 +188,27 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub enum MonadMessageTransformer {
-    Latency(LatencyTransformer),
-    XorLatency(XorLatencyTransformer),
-    RandLatency(RandLatencyTransformer),
-    Twins(TwinsTransformer),
-    Filter(FilterTransformer),
-    Partition(PartitionTransformer),
-    Drop(DropTransformer),
+pub enum MonadMessageTransformer<PT: PubKey> {
+    Latency(LatencyTransformer<PT>),
+    XorLatency(XorLatencyTransformer<PT>),
+    RandLatency(RandLatencyTransformer<PT>),
+    Twins(TwinsTransformer<PT>),
+    Filter(FilterTransformer<PT>),
+    Partition(PartitionTransformer<PT>),
+    Drop(DropTransformer<PT>),
 }
 
-impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>> for MonadMessageTransformer
+impl<ST, SCT> Transformer<VerifiedMonadMessage<ST, SCT>>
+    for MonadMessageTransformer<CertificateSignaturePubKey<ST>>
 where
-    ST: MessageSignature,
-    SCT: SignatureCollection,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     fn transform(
         &mut self,
-        message: LinkMessage<VerifiedMonadMessage<ST, SCT>>,
-    ) -> TransformerStream<VerifiedMonadMessage<ST, SCT>> {
+        message: LinkMessage<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>>,
+    ) -> TransformerStream<Self::NodeIdPubKey, VerifiedMonadMessage<ST, SCT>> {
         match self {
             MonadMessageTransformer::Latency(t) => t.transform(message),
             MonadMessageTransformer::XorLatency(t) => t.transform(message),
@@ -210,37 +222,52 @@ where
 
     fn min_external_delay(&self) -> Option<Duration> {
         match self {
-            MonadMessageTransformer::Latency(t) => <LatencyTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
-            MonadMessageTransformer::XorLatency(t) => <XorLatencyTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
-            MonadMessageTransformer::RandLatency(t) => <RandLatencyTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
-            MonadMessageTransformer::Twins(t) => <TwinsTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
-            MonadMessageTransformer::Filter(t) => <FilterTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
-            MonadMessageTransformer::Drop(t) => <DropTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
-            MonadMessageTransformer::Partition(t) => <PartitionTransformer as Transformer<
-                VerifiedMonadMessage<ST, SCT>,
-            >>::min_external_delay(t),
+            MonadMessageTransformer::Latency(t) => {
+                <LatencyTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
+            MonadMessageTransformer::XorLatency(t) => {
+                <XorLatencyTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
+            MonadMessageTransformer::RandLatency(t) => {
+                <RandLatencyTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
+            MonadMessageTransformer::Twins(t) => {
+                <TwinsTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
+            MonadMessageTransformer::Filter(t) => {
+                <FilterTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
+            MonadMessageTransformer::Drop(t) => {
+                <DropTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
+            MonadMessageTransformer::Partition(t) => {
+                <PartitionTransformer<Self::NodeIdPubKey> as Transformer<
+                    VerifiedMonadMessage<ST, SCT>,
+                >>::min_external_delay(t)
+            }
         }
     }
 }
 
-pub type MonadMessageTransformerPipeline = Vec<MonadMessageTransformer>;
+pub type MonadMessageTransformerPipeline<PT> = Vec<MonadMessageTransformer<PT>>;
 
 #[cfg(test)]
 mod test {
     use std::{cmp::max, collections::HashSet, time::Duration};
 
+    use monad_crypto::NopSignature;
     use monad_testutil::signing::create_keys;
     use monad_transformer::{
         BytesSplitterTransformer, DropTransformer, GenericTransformer, LinkMessage,
@@ -256,7 +283,7 @@ mod test {
 
     #[test]
     fn test_latency_transformer() {
-        let mut t = LatencyTransformer(Duration::from_secs(1));
+        let mut t = LatencyTransformer::new(Duration::from_secs(1));
         let m = get_mock_message();
         let TransformerStream::Continue(c) = t.transform(m.clone()) else {
             panic!("latency_transformer returned wrong type")
@@ -269,7 +296,7 @@ mod test {
 
     #[test]
     fn test_xorlatency_transformer() {
-        let mut t = XorLatencyTransformer(Duration::from_secs(1));
+        let mut t = XorLatencyTransformer::new(Duration::from_secs(1));
         let m = get_mock_message();
         let TransformerStream::Continue(c) = t.transform(m.clone()) else {
             panic!("xorlatency_transformer returned wrong type")
@@ -298,9 +325,9 @@ mod test {
 
     #[test]
     fn test_partition_transformer() {
-        let keys = create_keys(2);
+        let keys = create_keys::<NopSignature>(2);
         let mut peers = HashSet::new();
-        peers.insert(ID::new(NodeId(keys[0].pubkey())));
+        peers.insert(ID::new(NodeId::new(keys[0].pubkey())));
         let mut t = PartitionTransformer(peers.clone());
         let m = get_mock_message();
         let TransformerStream::Continue(c) = t.transform(m.clone()) else {
@@ -324,7 +351,7 @@ mod test {
 
     #[test]
     fn test_drop_transformer() {
-        let mut t = DropTransformer();
+        let mut t = DropTransformer::new();
         let m = get_mock_message();
         let TransformerStream::Complete(c) = t.transform(m) else {
             panic!("drop_transformer returned wrong type")
@@ -404,7 +431,7 @@ mod test {
 
     #[test]
     fn test_bytes_splitter_transformer() {
-        let keys = create_keys(2);
+        let keys = create_keys::<NopSignature>(2);
 
         let mut t = BytesSplitterTransformer::new();
 
@@ -421,8 +448,8 @@ mod test {
             let bytes: Vec<u8> = (0..MESSAGE_LEN).map(|_| rng.gen()).collect();
             sent_stream.extend(bytes.iter().copied());
             let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
-                from: ID::new(NodeId(keys[0].pubkey())),
-                to: ID::new(NodeId(keys[1].pubkey())),
+                from: ID::new(NodeId::new(keys[0].pubkey())),
+                to: ID::new(NodeId::new(keys[1].pubkey())),
                 message: bytes.into(),
                 from_tick: Duration::from_millis(idx),
             }) else {
@@ -451,13 +478,13 @@ mod test {
 
         use crate::transformer::TwinsTransformer;
 
-        let keys = create_keys(2);
+        let keys = create_keys::<NopSignature>(2);
 
-        let pid = NodeId(keys[0].pubkey());
+        let pid = NodeId::new(keys[0].pubkey());
         let dups = (1..4)
             .map(|i| ID::new(pid).as_non_unique(i))
             .collect::<Vec<_>>();
-        let default_id: ID = ID::new(NodeId(keys[0].pubkey()));
+        let default_id = ID::new(NodeId::new(keys[0].pubkey()));
         let mut pid_to_dups = BTreeMap::new();
         pid_to_dups.insert(pid, (1..4).collect_vec());
         let mut filter = BTreeMap::new();
@@ -587,7 +614,7 @@ mod test {
         }
 
         // Sending Message to any round Key that is not logged will have no impact
-        let wrong_id: ID = ID::new(NodeId(keys[1].pubkey()));
+        let wrong_id: ID<_> = ID::new(NodeId::new(keys[1].pubkey()));
 
         for r in 0..30 {
             for msg in vec![
@@ -648,7 +675,7 @@ mod test {
 
     #[test]
     fn test_pipeline_basic_flow() {
-        let mut pipe = vec![LatencyTransformer(Duration::from_millis(30))];
+        let mut pipe = vec![LatencyTransformer::new(Duration::from_millis(30))];
 
         let mock_message = get_mock_message();
         // try to feed some message through, only some basic latency should be added to everything
@@ -660,22 +687,22 @@ mod test {
 
     #[test]
     fn test_pipeline_complex_flow() {
-        let keys = create_keys(5);
+        let keys = create_keys::<NopSignature>(5);
         let mut peers = HashSet::new();
-        peers.insert(ID::new(NodeId(keys[0].pubkey())));
+        peers.insert(ID::new(NodeId::new(keys[0].pubkey())));
 
         let mut pipe = vec![
-            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(30))),
+            GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(30))),
             GenericTransformer::Partition(PartitionTransformer(peers)),
             GenericTransformer::Periodic(PeriodicTransformer::new(
                 Duration::from_millis(2),
                 Duration::from_millis(7),
             )),
-            GenericTransformer::Latency(LatencyTransformer(Duration::from_millis(30))),
+            GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(30))),
         ];
         for idx in 0..1000 {
             let mut mock_message = get_mock_message();
-            mock_message.from = ID::new(NodeId(keys[3].pubkey()));
+            mock_message.from = ID::new(NodeId::new(keys[3].pubkey()));
             mock_message.from_tick = Duration::from_millis(idx);
             let result = pipe.process(mock_message.clone());
             assert_eq!(result.len(), 1);

@@ -6,6 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, Stream, TryFutureExt};
+use monad_crypto::certificate_signature::PubKey;
 use monad_types::NodeId;
 use quinn::{Connecting, ReadError, RecvStream, SendStream, WriteError};
 use quinn_proto::ConnectionError;
@@ -15,13 +16,13 @@ use crate::QuinnConfig;
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct ConnectionId(u64);
 
-pub(crate) enum Connection {
+pub(crate) enum Connection<PT: PubKey> {
     Pending(
         BoxFuture<
             'static,
             Result<
-                (quinn::Connection, NodeId, SendStream, RecvStream),
-                (Option<NodeId>, ConnectionFailure),
+                (quinn::Connection, NodeId<PT>, SendStream, RecvStream),
+                (Option<NodeId<PT>>, ConnectionFailure),
             >,
         >,
     ),
@@ -78,17 +79,20 @@ pub(crate) enum ConnectionFailure {
     RemoteStreamClosed,
 }
 
-pub(crate) enum ConnectionEvent {
+pub(crate) enum ConnectionEvent<PT: PubKey> {
     /// Contains a NodeId if it was an outbound connection failure
-    ConnectionFailure(Option<NodeId>, ConnectionFailure),
+    ConnectionFailure(Option<NodeId<PT>>, ConnectionFailure),
 
-    Connected(ConnectionId, NodeId, ConnectionWriter),
+    Connected(ConnectionId, NodeId<PT>, ConnectionWriter),
     InboundMessage(ConnectionId, Vec<Bytes>),
     Disconnected(ConnectionId, ConnectionFailure),
 }
 
-impl Connection {
-    pub fn outbound<QC: QuinnConfig>(connecting: Connecting, expected_peer_id: NodeId) -> Self {
+impl<PT: PubKey> Connection<PT> {
+    pub fn outbound<QC: QuinnConfig<NodeIdPubKey = PT>>(
+        connecting: Connecting,
+        expected_peer_id: NodeId<PT>,
+    ) -> Self {
         let fut = async move {
             tracing::info!("attempting to connect to={:?}", connecting.remote_address());
             let connection = connecting
@@ -119,7 +123,7 @@ impl Connection {
         .boxed();
         Self::Pending(fut)
     }
-    pub fn inbound<QC: QuinnConfig>(connecting: Connecting) -> Self {
+    pub fn inbound<QC: QuinnConfig<NodeIdPubKey = PT>>(connecting: Connecting) -> Self {
         let fut = async move {
             tracing::info!(
                 "inbound connection attempt from={:?}",
@@ -168,11 +172,11 @@ impl Connection {
     }
 }
 
-impl Stream for Connection
+impl<PT: PubKey> Stream for Connection<PT>
 where
     Self: Unpin,
 {
-    type Item = ConnectionEvent;
+    type Item = ConnectionEvent<PT>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
