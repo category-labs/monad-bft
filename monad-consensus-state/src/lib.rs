@@ -880,9 +880,9 @@ where
 
     #[must_use]
     fn state_root_hash_validation(&mut self, p: &ProposalMessage<SCT>) -> bool {
-        // TODO: this should also check that the payload header state root hash is the
-        // the empty hash (0x0)
-        if p.block.0.payload.txns == FullTransactionList::empty() {
+        if p.block.0.payload.txns == FullTransactionList::empty()
+            && p.block.0.payload.header.state_root == INITIAL_DELAY_STATE_ROOT_HASH
+        {
             debug!("Received empty block: block={:?}", p.block);
             inc_count!(rx_empty_block);
             return true;
