@@ -122,7 +122,7 @@ mod tests {
 
     use futures::{FutureExt, StreamExt};
     use monad_crypto::{
-        certificate_signature::{CertificateSignaturePubKey, PubKey},
+        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey, PubKey},
         hasher::Hash,
         NopSignature,
     };

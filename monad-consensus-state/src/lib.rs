@@ -347,10 +347,6 @@ where
 
         cmds.extend(self.proposal_certificate_handling(&p, epoch_manager, validator_set));
 
-        if !self.randao_validation(&p, author, epoch, val_epoch_map) {
-            return cmds;
-        }
-
         let Some(block) = Block::try_from_unverified(p.block, &self.block_validator) else {
             warn!("Transaction validation failed");
             inc_count!(failed_txn_validation);
@@ -378,6 +374,10 @@ where
                 block.get_author()
             );
             inc_count!(invalid_proposal_round_leader);
+            return cmds;
+        }
+
+        if !self.randao_validation(&block, author, epoch, val_epoch_map) {
             return cmds;
         }
 
@@ -944,7 +944,7 @@ where
     #[must_use]
     fn randao_validation<VT>(
         &self,
-        p: &ProposalMessage<SCT>,
+        block: &Block<SCT>,
         author: NodeId<SCT::NodeIdPubKey>,
         epoch: Epoch,
         val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
@@ -959,12 +959,10 @@ where
             .get(&author)
             .expect("proposal author exists in validator_mapping");
 
-        if let Err(e) = p
-            .block
-            .0
+        if let Err(e) = block
             .payload
             .randao_reveal
-            .verify::<SCT::SignatureType>(p.block.0.get_round(), author_pubkey)
+            .verify::<SCT::SignatureType>(block.get_round(), author_pubkey)
         {
             warn!("Invalid randao_reveal signature, reason: {:?}", e);
             inc_count!(failed_verify_randao_reveal_signature);
@@ -1029,7 +1027,7 @@ mod test {
     };
 
     type SignatureType = NopSignature;
-    type SignatureCollectionType = MultiSig<NopSignature>;
+    type SignatureCollectionType = MultiSig<SignatureType>;
     type StateRootValidatorType = NopStateRoot;
 
     macro_rules! assert_counter {
@@ -1874,13 +1872,13 @@ mod test {
         assert_ne!(p1_votes.vote, p2_votes.vote);
         let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
         // temp sub with a key that doesn't exists.
-        let mut routing_target = NodeId::new(get_key::<NopSignature>(100).pubkey());
+        let mut routing_target = NodeId::new(get_key::<SignatureType>(100).pubkey());
         // We Collected 4 votes, 3 of which are valid, 1 of which is not caused by byzantine leader.
         // First 3 (including a false vote) submitted would not cause a qc to form
         // but the last vote would cause a qc to form locally at second_state, thus causing
         // second state to realize its missing a block.
         for i in 0..4 {
-            let v = Verified::<NopSignature, VoteMessage<_>>::new(votes[i], &keys[i]);
+            let v = Verified::<SignatureType, VoteMessage<_>>::new(votes[i], &keys[i]);
             let cmds2 = second_state.handle_vote_message(
                 *v.author(),
                 *v,
@@ -1907,7 +1905,7 @@ mod test {
         }
         assert_ne!(
             routing_target,
-            NodeId::new(get_key::<NopSignature>(100).pubkey())
+            NodeId::new(get_key::<SignatureType>(100).pubkey())
         );
         // confirm that the votes lead to a QC forming (which leads to high_qc update)
         assert_eq!(second_state.high_qc.info.vote, votes[0].vote);
@@ -2274,10 +2272,35 @@ mod test {
         );
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
+        let next_leader = {
+            let node_id = *proposal_gen
+                .next_proposal(
+                    &keys,
+                    &certkeys,
+                    &epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                    FullTransactionList::empty(),
+                    ExecutionArtifacts::zero(),
+                )
+                .author();
+            if node_id == first_state.nodeid {
+                first_state
+            } else if node_id == second_state.nodeid {
+                second_state
+            } else if node_id == third_state.nodeid {
+                third_state
+            } else if node_id == fourth_state.nodeid {
+                fourth_state
+            } else {
+                unreachable!("next leader should be one of the 4 nodes")
+            }
+        };
+
         let votes = vec![p1_votes, p2_votes, p3_votes, p4_votes];
         for i in 0..4 {
-            let v = Verified::<NopSignature, VoteMessage<_>>::new(votes[i], &keys[i]);
-            let cmds = third_state.handle_vote_message(
+            let v = Verified::<SignatureType, VoteMessage<_>>::new(votes[i], &keys[i]);
+            let cmds = next_leader.handle_vote_message(
                 *v.author(),
                 *v,
                 &mut empty_txpool,
@@ -3216,7 +3239,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
+                let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state
                     .handle_proposal_message(
                         author,
                         verified_message.clone(),
@@ -3357,7 +3380,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
             for (state, epoch_manager) in states.iter_mut().zip(epoch_managers.iter_mut()) {
-                let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state
+                let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state
                     .handle_proposal_message(
                         author,
                         verified_message.clone(),
@@ -3399,7 +3422,7 @@ mod test {
 
             let (author, _, verified_message) = cp.destructure();
 
-            let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_1
+            let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state_1
                 .handle_proposal_message(
                     author,
                     verified_message.clone(),
@@ -3462,7 +3485,7 @@ mod test {
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2.handle_proposal_message(
+        let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state_2.handle_proposal_message(
             author,
             verified_message.clone(),
             epoch_manager_2,
@@ -3513,7 +3536,7 @@ mod test {
         );
 
         let (author, _, verified_message) = cp.destructure();
-        let cmds: Vec<ConsensusCommand<MultiSig<NopSignature>>> = state_2.handle_proposal_message(
+        let cmds: Vec<ConsensusCommand<MultiSig<SignatureType>>> = state_2.handle_proposal_message(
             author,
             verified_message,
             epoch_manager_2,

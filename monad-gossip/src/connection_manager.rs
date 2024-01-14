@@ -174,7 +174,9 @@ mod tests {
 
     use bytes::Bytes;
     use monad_crypto::{
-        certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+        certificate_signature::{
+            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        },
         hasher::{Hasher, HasherType},
         NopSignature,
     };

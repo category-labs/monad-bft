@@ -100,25 +100,11 @@ macro_rules! test_all_combination {
             #[test_case(1; "1 sig")]
             #[test_case(5; "5 sigs")]
             #[test_case(100; "100 sigs")]
-            fn secp_multi_sig_nop(num_keys: u32) {
-                invoke::<SecpSignature, MultiSig<NopSignature>>(num_keys);
-            }
-
-            #[test_case(1; "1 sig")]
-            #[test_case(5; "5 sigs")]
-            #[test_case(100; "100 sigs")]
             fn secp_bls(num_keys: u32) {
                 invoke::<
                     SecpSignature,
                     BlsSignatureCollection<CertificateSignaturePubKey<SecpSignature>>,
                 >(num_keys);
-            }
-
-            #[test_case(1; "1 sig")]
-            #[test_case(5; "5 sigs")]
-            #[test_case(100; "100 sigs")]
-            fn nop_multi_sig_secp(num_keys: u32) {
-                invoke::<NopSignature, MultiSig<SecpSignature>>(num_keys);
             }
 
             #[test_case(1; "1 sig")]
@@ -134,7 +120,7 @@ macro_rules! test_all_combination {
             fn nop_bls(num_keys: u32) {
                 invoke::<
                     NopSignature,
-                    BlsSignatureCollection<CertificateSignaturePubKey<SecpSignature>>,
+                    BlsSignatureCollection<CertificateSignaturePubKey<NopSignature>>,
                 >(num_keys);
             }
         }

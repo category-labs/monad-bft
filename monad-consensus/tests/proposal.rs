@@ -11,8 +11,7 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey, hasher::Hash, secp256k1::KeyPair,
-    NopSignature,
+    certificate_signature::CertificateSignaturePubKey, hasher::Hash, secp256k1::SecpSignature,
 };
 use monad_eth_types::EthAddress;
 use monad_testutil::{
@@ -26,7 +25,7 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-type SignatureType = NopSignature;
+type SignatureType = SecpSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 type SignatureCollectionType = MockSignatures<PubKeyType>;
 
@@ -190,7 +189,7 @@ fn test_proposal_invalid_author() {
     let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
-    let vmap: ValidatorMapping<PubKeyType, KeyPair> = ValidatorMapping::new(vec![(
+    let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(
         NodeId::new(author_keypair.pubkey()),
         author_keypair.pubkey(),
     )]);

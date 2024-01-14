@@ -129,23 +129,29 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
 
 #[cfg(test)]
 mod test {
-    use monad_crypto::{secp256k1::KeyPair, NopSignature};
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
+        NopSignature,
+    };
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 
     use super::ValidatorSet;
     use crate::validator_set::ValidatorSetType;
 
+    type SignatureType = NopSignature;
+    type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
+
     #[test]
     fn test_membership() {
         let seed1 = 7_u64;
         let seed2 = 8_u64;
-        let keypair1 = get_key::<NopSignature>(seed1);
+        let keypair1 = get_key::<SignatureType>(seed1);
 
         let v1 = (NodeId::new(keypair1.pubkey()), Stake(1));
         let v1_ = (NodeId::new(keypair1.pubkey()), Stake(2));
 
-        let keypair2 = get_key::<NopSignature>(seed2);
+        let keypair2 = get_key::<SignatureType>(seed2);
 
         let v2 = (NodeId::new(keypair2.pubkey()), Stake(2));
 
@@ -157,13 +163,13 @@ mod test {
         assert!(vs.is_member(&NodeId::new(keypair1.pubkey())));
 
         let mut pkey3: [u8; 32] = [102; 32];
-        let pubkey3 = KeyPair::from_bytes(&mut pkey3).unwrap().pubkey();
+        let pubkey3 = KeyPairType::from_bytes(&mut pkey3).unwrap().pubkey();
         assert!(!vs.is_member(&NodeId::new(pubkey3)));
     }
 
     #[test]
     fn test_super_maj() {
-        let keypairs = create_keys::<NopSignature>(3);
+        let keypairs = create_keys::<SignatureType>(3);
 
         let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(1));
         let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(3));
@@ -181,7 +187,7 @@ mod test {
 
     #[test]
     fn test_honest_vote() {
-        let keypairs = create_keys::<NopSignature>(2);
+        let keypairs = create_keys::<SignatureType>(2);
 
         let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(1));
         let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(2));

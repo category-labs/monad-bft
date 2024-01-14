@@ -1,6 +1,6 @@
 use std::{
     collections::hash_map::DefaultHasher,
-    fmt::Debug,
+    fmt::{Debug, Display},
     hash::{Hash, Hasher},
 };
 
@@ -8,20 +8,20 @@ use crate::{
     bls12_381::{BlsError, BlsKeyPair, BlsPubKey, BlsSignature},
     hasher::Hashable,
     secp256k1::{Error as SecpError, KeyPair as SecpKeyPair, PubKey as SecpPubKey, SecpSignature},
-    NopSignature,
+    NopKeyPair, NopPubKey, NopSignature,
 };
 
 pub trait PubKey:
     Debug + Eq + Hash + Ord + PartialOrd + Copy + Send + Sync + Unpin + 'static
 {
-    type Error: std::error::Error + Send + Sync;
+    type Error: Display + Debug + Send + Sync;
     fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error>;
     fn bytes(&self) -> Vec<u8>;
 }
 
 pub trait CertificateKeyPair: Send + Sized + Sync + 'static {
     type PubKeyType: PubKey;
-    type Error: std::error::Error + Send + Sync;
+    type Error: Display + Debug + Send + Sync;
 
     fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error>;
     fn pubkey(&self) -> Self::PubKeyType;
@@ -34,7 +34,7 @@ pub trait CertificateSignature:
     Copy + Clone + Eq + Hashable + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static
 {
     type KeyPairType: CertificateKeyPair;
-    type Error: std::error::Error + Send + Sync;
+    type Error: Display + Debug + Send + Sync;
 
     fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self;
     fn verify(
@@ -104,6 +104,37 @@ impl CertificateSignature for SecpSignature {
     }
 }
 
+impl PubKey for NopPubKey {
+    type Error = &'static str;
+
+    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self(
+            pubkey
+                .try_into()
+                .map_err(|_| "couldn't deserialize pubkey")?,
+        ))
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        self.0.to_vec()
+    }
+}
+
+impl CertificateKeyPair for NopKeyPair {
+    type PubKeyType = NopPubKey;
+    type Error = &'static str;
+
+    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error> {
+        Ok(Self {
+            pubkey: NopPubKey::from_bytes(secret)?,
+        })
+    }
+
+    fn pubkey(&self) -> Self::PubKeyType {
+        self.pubkey
+    }
+}
+
 impl CertificateSignatureRecoverable for SecpSignature {
     fn recover_pubkey(
         &self,
@@ -114,15 +145,15 @@ impl CertificateSignatureRecoverable for SecpSignature {
 }
 
 impl CertificateSignature for NopSignature {
-    type KeyPairType = SecpKeyPair;
-    type Error = SecpError;
+    type KeyPairType = NopKeyPair;
+    type Error = &'static str;
 
     fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
         let mut hasher = DefaultHasher::new();
         hasher.write(msg);
 
         NopSignature {
-            pubkey: keypair.pubkey(),
+            pubkey: keypair.pubkey,
             id: hasher.finish(),
         }
     }
@@ -130,9 +161,13 @@ impl CertificateSignature for NopSignature {
     fn verify(
         &self,
         _msg: &[u8],
-        _pubkey: &CertificateSignaturePubKey<Self>,
+        pubkey: &CertificateSignaturePubKey<Self>,
     ) -> Result<(), Self::Error> {
-        Ok(())
+        if &self.pubkey == pubkey {
+            Ok(())
+        } else {
+            Err("invalid pubkey")
+        }
     }
 
     fn serialize(&self) -> Vec<u8> {
@@ -145,7 +180,7 @@ impl CertificateSignature for NopSignature {
 
     fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
         let id = u64::from_le_bytes(signature[..8].try_into().unwrap());
-        let pubkey = SecpPubKey::from_slice(&signature[8..])?;
+        let pubkey = NopPubKey::from_bytes(&signature[8..])?;
         Ok(Self { pubkey, id })
     }
 }

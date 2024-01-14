@@ -103,7 +103,11 @@ mod test {
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
     };
-    use monad_crypto::{hasher::Hash, secp256k1::KeyPair, NopSignature};
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
+        hasher::Hash,
+        NopSignature,
+    };
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
@@ -111,7 +115,10 @@ mod test {
 
     #[test]
     fn encode_full_block_header_hash() {
-        let pubkey = KeyPair::from_bytes(&mut [127; 32]).unwrap().pubkey();
+        let pubkey =
+            <<NopSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32])
+                .unwrap()
+                .pubkey();
 
         let block = Block::<MultiSig<NopSignature>>::new(
             NodeId::new(pubkey),

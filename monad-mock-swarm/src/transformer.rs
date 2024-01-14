@@ -267,7 +267,7 @@ pub type MonadMessageTransformerPipeline<PT> = Vec<MonadMessageTransformer<PT>>;
 mod test {
     use std::{cmp::max, collections::HashSet, time::Duration};
 
-    use monad_crypto::NopSignature;
+    use monad_crypto::{certificate_signature::CertificateKeyPair, NopSignature};
     use monad_testutil::signing::create_keys;
     use monad_transformer::{
         BytesSplitterTransformer, DropTransformer, GenericTransformer, LinkMessage,

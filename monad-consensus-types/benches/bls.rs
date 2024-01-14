@@ -3,7 +3,7 @@ use monad_consensus_types::{
     bls::BlsSignatureCollection, signature_collection::SignatureCollection,
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey,
+    certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},
     NopSignature,
 };

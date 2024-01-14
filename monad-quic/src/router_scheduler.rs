@@ -7,7 +7,11 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_crypto::{rustls::TlsVerifier, secp256k1::KeyPair, NopSignature};
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, CertificateSignature},
+    rustls::TlsVerifier,
+    NopSignature,
+};
 use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -93,7 +97,10 @@ where
         let scratch_keypair = {
             let mut seed = [0; 32];
             rng.fill_bytes(&mut seed);
-            KeyPair::from_bytes(&mut seed).expect("valid keypair")
+            <<NopSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+                &mut seed,
+            )
+            .expect("valid keypair")
         };
 
         let mut seed = [0; 32];

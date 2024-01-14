@@ -184,7 +184,7 @@ mod tests {
     use std::time::Duration;
 
     use monad_crypto::{
-        certificate_signature::CertificateSignaturePubKey,
+        certificate_signature::{CertificateSignaturePubKey, PubKey},
         hasher::{Hasher, HasherType},
         NopSignature,
     };

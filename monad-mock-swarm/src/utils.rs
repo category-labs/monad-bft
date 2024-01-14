@@ -23,9 +23,10 @@ pub mod test_tool {
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
-        certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+        certificate_signature::{
+            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        },
         hasher::Hash,
-        secp256k1::KeyPair,
         NopSignature,
     };
     use monad_eth_types::EthAddress;
@@ -35,6 +36,7 @@ pub mod test_tool {
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     type ST = NopSignature;
+    type KeyPairType = <ST as CertificateSignature>::KeyPairType;
     type PubKeyType = CertificateSignaturePubKey<ST>;
     type SC = MultiSig<NopSignature>;
     type QC = QuorumCertificate<SC>;
@@ -52,7 +54,7 @@ pub mod test_tool {
 
     pub fn fake_node_id() -> NodeId<PubKeyType> {
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey).unwrap();
+        let keypair = KeyPairType::from_bytes(&mut privkey).unwrap();
         NodeId::new(keypair.pubkey())
     }
 
@@ -86,7 +88,7 @@ pub mod test_tool {
         Block::new(fake_node_id(), round, &payload, &fake_qc())
     }
 
-    pub fn fake_proposal_message(kp: &KeyPair, round: Round) -> VerifiedMonadMessage<ST, SC> {
+    pub fn fake_proposal_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = ProposalMessage {
             block: UnverifiedBlock(fake_block(round)),
             last_round_tc: None,
@@ -94,7 +96,7 @@ pub mod test_tool {
         ConsensusMessage::Proposal(internal_msg).sign(kp).into()
     }
 
-    pub fn fake_vote_message(kp: &KeyPair, round: Round) -> VerifiedMonadMessage<ST, SC> {
+    pub fn fake_vote_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let vote_info = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
             round,
@@ -112,7 +114,7 @@ pub mod test_tool {
         ConsensusMessage::Vote(internal_msg).sign(kp).into()
     }
 
-    pub fn fake_timeout_message(kp: &KeyPair) -> VerifiedMonadMessage<ST, SC> {
+    pub fn fake_timeout_message(kp: &KeyPairType) -> VerifiedMonadMessage<ST, SC> {
         let timeout_info = TimeoutInfo {
             round: Round(0),
             high_qc: fake_qc(),

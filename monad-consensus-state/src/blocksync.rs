@@ -280,7 +280,9 @@ mod test {
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
-        certificate_signature::CertificateSignaturePubKey, hasher::Hash, NopSignature,
+        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+        hasher::Hash,
+        NopSignature,
     };
     use monad_eth_types::EthAddress;
     use monad_testutil::{

@@ -10,7 +10,8 @@ use bytes::{Bytes, BytesMut};
 use clap::Parser;
 use futures_util::StreamExt;
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey, secp256k1::KeyPair, NopSignature,
+    certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
+    NopSignature,
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
@@ -46,10 +47,10 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     );
     assert!(message_len >= 1);
     let num_peers = addresses.len() as u8;
-    let keys: Vec<KeyPair> = (0..num_peers)
+    let keys: Vec<_> = (0..num_peers)
         .map(|idx| {
             let mut privkey: [u8; 32] = [1 + idx; 32];
-            KeyPair::from_bytes(&mut privkey).unwrap()
+            <<SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(&mut privkey).unwrap()
         })
         .collect();
 
