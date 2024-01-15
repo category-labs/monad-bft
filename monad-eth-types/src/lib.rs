@@ -1,6 +1,7 @@
+use alloy_primitives::{Address, FixedBytes, TxHash};
+use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use reth_primitives::{Address, TransactionSignedEcRecovered, TxHash, H160};
-use reth_rlp::{Decodable, Encodable};
+use reth_primitives::TransactionSignedEcRecovered;
 
 #[cfg(feature = "serde")]
 pub mod serde;
@@ -24,7 +25,7 @@ impl EthTransactionList {
         buf.into()
     }
 
-    pub fn rlp_decode(rlp_data: Bytes) -> Result<Self, reth_rlp::DecodeError> {
+    pub fn rlp_decode(rlp_data: Bytes) -> Result<Self, alloy_rlp::Error> {
         Vec::<EthTxHash>::decode(&mut rlp_data.as_ref()).map(Self)
     }
 }
@@ -43,7 +44,7 @@ impl EthFullTransactionList {
         buf.into()
     }
 
-    pub fn rlp_decode(rlp_data: Bytes) -> Result<Self, reth_rlp::DecodeError> {
+    pub fn rlp_decode(rlp_data: Bytes) -> Result<Self, alloy_rlp::Error> {
         Vec::<EthTransaction>::decode(&mut rlp_data.as_ref()).map(Self)
     }
 
@@ -59,12 +60,12 @@ pub struct EthAddress(pub Address);
 
 impl EthAddress {
     pub fn from_bytes(bytes: [u8; 20]) -> Self {
-        Self(H160(bytes))
+        Self(Address(FixedBytes(bytes)))
     }
 }
 
 impl AsRef<[u8]> for EthAddress {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
+        self.0.as_slice()
     }
 }

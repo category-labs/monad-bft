@@ -13,8 +13,9 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 reth-primitives = { workspace = true }
-reth-rlp = { workspace = true }
 
 [dev-dependencies]
 monad-types = { path = "../monad-types" }

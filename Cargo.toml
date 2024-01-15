@@ -40,8 +40,9 @@ opt-level = 1
 debug = true
 
 [workspace.dependencies]
-reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
-reth-rlp = { git = "https://github.com/paradigmxyz/reth.git", rev = "b701cbc" }
+reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "685d1c5", default-features = false }
+alloy-primitives = "0.6"
+alloy-rlp = "0.3"
 
 async-trait = "0.1"
 base64 = "0.21"

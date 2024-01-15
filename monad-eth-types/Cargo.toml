@@ -9,9 +9,10 @@ edition = "2021"
 bench = false
 
 [dependencies]
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 reth-primitives = { workspace = true }
-reth-rlp = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [features]

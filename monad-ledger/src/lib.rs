@@ -1,3 +1,5 @@
+use alloy_primitives::{keccak256, Bloom, Bytes, FixedBytes, U256};
+use alloy_rlp::Encodable;
 use monad_consensus_types::{
     block::Block as MonadBlock,
     payload::{ExecutionArtifacts, FullTransactionList},
@@ -5,8 +7,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::hasher::{Hasher, HasherType};
 use monad_eth_types::EthFullTransactionList;
-use reth_primitives::{keccak256, BlockBody, Bloom, Bytes, Header, H256, U256};
-use reth_rlp::Encodable;
+use reth_primitives::{BlockBody, Header};
 
 /// Create an RLP encoded Ethereum block from a Monad consensus block
 pub fn encode_full_block<SCT: SignatureCollection>(block: MonadBlock<SCT>) -> Vec<u8> {
@@ -68,14 +69,14 @@ fn generate_header<SCT: SignatureCollection>(
     randao_reveal_hasher.update(monad_block.payload.randao_reveal.0);
 
     Header {
-        parent_hash: H256(parent_hash.0),
+        parent_hash: FixedBytes(parent_hash.0),
         ommers_hash: block_body.calculate_ommers_root(),
         beneficiary: monad_block.payload.beneficiary.0,
-        state_root: H256(state_root.0),
-        transactions_root: H256(transactions_root.0),
-        receipts_root: H256(receipts_root.0),
+        state_root: FixedBytes(state_root.0),
+        transactions_root: FixedBytes(transactions_root.0),
+        receipts_root: FixedBytes(receipts_root.0),
         withdrawals_root: block_body.calculate_withdrawals_root(),
-        logs_bloom: Bloom(logs_bloom.0),
+        logs_bloom: Bloom(FixedBytes(logs_bloom.0)),
         difficulty: U256::ZERO,
         number: monad_block.payload.seq_num.0,
         // TODO-1: need to get the actual sum gas limit from the list of transactions being used

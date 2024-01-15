@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use reth_primitives::H160;
+use alloy_primitives::{Address, FixedBytes, U160};
 use serde::{de::Visitor, Deserializer};
 
 use crate::EthAddress;
@@ -23,7 +23,7 @@ where
         where
             E: serde::de::Error,
         {
-            Ok(EthAddress(H160::from_str(value).unwrap()))
+            Ok(EthAddress(Address(U160::from_str(value).unwrap().into())))
         }
 
         fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
@@ -44,7 +44,7 @@ where
                 ));
             }
 
-            Ok(EthAddress(H160(bytes)))
+            Ok(EthAddress(Address(FixedBytes(bytes))))
         }
     }
 
