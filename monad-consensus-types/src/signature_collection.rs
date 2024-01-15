@@ -127,7 +127,7 @@ mod test {
                 use test_case::test_case;
 
                 use super::*;
-                use crate::{bls::BlsSignatureCollection, multi_sig::*};
+                use crate::multi_sig::*;
 
                 fn invoke<
                     ST: CertificateSignatureRecoverable,
@@ -152,10 +152,12 @@ mod test {
                     invoke::<NopSignature, MultiSig<NopSignature>>(num_keys);
                 }
 
+                #[cfg(feature = "bls")]
                 #[test_case(1; "1 sig")]
                 #[test_case(5; "5 sigs")]
                 #[test_case(100; "100 sigs")]
                 fn bls(num_keys: u32) {
+                    use crate::bls::BlsSignatureCollection;
                     invoke::<
                         NopSignature,
                         BlsSignatureCollection<CertificateSignaturePubKey<NopSignature>>,

@@ -2,7 +2,12 @@ use std::cmp::Ordering;
 
 use zeroize::Zeroize;
 
-use crate::hasher::{Hashable, Hasher};
+use crate::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey, PubKey,
+    },
+    hasher::{Hashable, Hasher},
+};
 
 /// The cipher suite
 ///
@@ -474,6 +479,56 @@ impl std::hash::Hash for BlsAggregateSignature {
 impl Hashable for BlsAggregateSignature {
     fn hash(&self, state: &mut impl Hasher) {
         Hashable::hash(&self.as_signature(), state);
+    }
+}
+
+impl PubKey for BlsPubKey {
+    type Error = BlsError;
+
+    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
+        Self::deserialize(pubkey)
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        self.serialize()
+    }
+}
+
+impl CertificateKeyPair for BlsKeyPair {
+    type PubKeyType = BlsPubKey;
+    type Error = BlsError;
+
+    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(secret)
+    }
+
+    fn pubkey(&self) -> Self::PubKeyType {
+        self.pubkey()
+    }
+}
+
+impl CertificateSignature for BlsSignature {
+    type KeyPairType = BlsKeyPair;
+    type Error = BlsError;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
+        keypair.sign(msg)
+    }
+
+    fn verify(
+        &self,
+        msg: &[u8],
+        pubkey: &CertificateSignaturePubKey<Self>,
+    ) -> Result<(), Self::Error> {
+        self.verify(msg, pubkey)
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        self.serialize()
+    }
+
+    fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
+        Self::deserialize(signature)
     }
 }
 

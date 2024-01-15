@@ -228,11 +228,10 @@ where
     ValidatorEvent(ValidatorEvent<SCT>),
 }
 
-impl<ST: CertificateSignatureRecoverable> monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        ST,
-        monad_consensus_types::bls::BlsSignatureCollection<CertificateSignaturePubKey<ST>>,
-    >
+impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -241,29 +240,10 @@ impl<ST: CertificateSignatureRecoverable> monad_types::Deserializable<[u8]>
     }
 }
 
-impl<ST: CertificateSignatureRecoverable> monad_types::Serializable<Bytes>
-    for MonadEvent<
-        ST,
-        monad_consensus_types::bls::BlsSignatureCollection<CertificateSignaturePubKey<ST>>,
-    >
-{
-    fn serialize(&self) -> Bytes {
-        crate::convert::interface::serialize_event(self)
-    }
-}
-
-impl<ST: CertificateSignatureRecoverable> monad_types::Deserializable<[u8]>
-    for MonadEvent<ST, monad_consensus_types::multi_sig::MultiSig<ST>>
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
-    }
-}
-
-impl<ST: CertificateSignatureRecoverable> monad_types::Serializable<Bytes>
-    for MonadEvent<ST, monad_consensus_types::multi_sig::MultiSig<ST>>
+impl<ST, SCT> monad_types::Serializable<Bytes> for MonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)

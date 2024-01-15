@@ -27,6 +27,7 @@ tracing = { workspace = true }
 prost = { workspace = true }
 
 [dev-dependencies]
+monad-consensus-types = { path = "../monad-consensus-types", features = ["bls"] }
 monad-crypto = { path = "../monad-crypto", features = ["secp"] }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-testutil = { path = "../monad-testutil" }

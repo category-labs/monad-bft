@@ -1,5 +1,6 @@
 pub mod block;
 pub mod block_validator;
+#[cfg(feature = "bls")]
 pub mod bls;
 pub mod convert;
 pub mod ledger;

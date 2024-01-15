@@ -1,11 +1,11 @@
 use hasher::{Hashable, Hasher};
 
-#[cfg(feature = "rustls")]
-pub mod rustls;
-
+#[cfg(feature = "bls")]
 pub mod bls12_381;
 pub mod convert;
 pub mod hasher;
+#[cfg(feature = "rustls")]
+pub mod rustls;
 #[cfg(feature = "secp")]
 pub mod secp256k1;
 

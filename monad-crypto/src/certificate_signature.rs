@@ -4,11 +4,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use crate::{
-    bls12_381::{BlsError, BlsKeyPair, BlsPubKey, BlsSignature},
-    hasher::Hashable,
-    NopKeyPair, NopPubKey, NopSignature,
-};
+use crate::{hasher::Hashable, NopKeyPair, NopPubKey, NopSignature};
 
 pub trait PubKey:
     Debug + Eq + Hash + Ord + PartialOrd + Copy + Send + Sync + Unpin + 'static
@@ -134,65 +130,12 @@ impl CertificateSignatureRecoverable for NopSignature {
     }
 }
 
-impl PubKey for BlsPubKey {
-    type Error = BlsError;
-
-    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
-        Self::deserialize(pubkey)
-    }
-
-    fn bytes(&self) -> Vec<u8> {
-        self.serialize()
-    }
-}
-
-impl CertificateKeyPair for BlsKeyPair {
-    type PubKeyType = BlsPubKey;
-    type Error = BlsError;
-
-    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(secret)
-    }
-
-    fn pubkey(&self) -> Self::PubKeyType {
-        self.pubkey()
-    }
-}
-
-impl CertificateSignature for BlsSignature {
-    type KeyPairType = BlsKeyPair;
-    type Error = BlsError;
-
-    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
-        keypair.sign(msg)
-    }
-
-    fn verify(
-        &self,
-        msg: &[u8],
-        pubkey: &CertificateSignaturePubKey<Self>,
-    ) -> Result<(), Self::Error> {
-        self.verify(msg, pubkey)
-    }
-
-    fn serialize(&self) -> Vec<u8> {
-        self.serialize()
-    }
-
-    fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
-        Self::deserialize(signature)
-    }
-}
-
 #[cfg(test)]
 mod test {
     // valid certificate signature tests
-    use crate::{
-        bls12_381::BlsSignature,
-        certificate_signature::{
-            CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-            CertificateSignatureRecoverable,
-        },
+    use crate::certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
     };
     macro_rules! test_all_certificate_signature {
         ($test_name:ident, $test_code:block) => {
@@ -220,8 +163,10 @@ mod test {
                     invoke::<NopSignature>();
                 }
 
+                #[cfg(feature = "bls")]
                 #[test]
                 fn blssignature() {
+                    use crate::bls12_381::BlsSignature;
                     invoke::<BlsSignature>();
                 }
             }

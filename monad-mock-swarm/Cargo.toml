@@ -36,6 +36,7 @@ rayon = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-consensus-types = { path = "../monad-consensus-types", features = ["bls"] }
 monad-gossip = { path = "../monad-gossip" }
 monad-quic = { path = "../monad-quic" }
 monad-testutil = { path = "../monad-testutil" }
