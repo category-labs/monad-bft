@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::BlockType, block_validator::MockValidator, multi_sig::MultiSig, payload::NopStateRoot,
 };
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, secp256k1::SecpSignature};
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
@@ -27,7 +27,7 @@ use tempfile::tempdir;
 struct ReplaySwarm;
 
 impl SwarmRelation for ReplaySwarm {
-    type SignatureType = SecpSignature;
+    type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
 
     type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;

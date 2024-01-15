@@ -1,7 +1,13 @@
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
 
-use crate::hasher::{Hashable, Hasher, HasherType};
+use crate::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+        CertificateSignatureRecoverable,
+    },
+    hasher::{Hashable, Hasher, HasherType},
+};
 
 /// secp256k1 public key
 #[derive(Copy, Clone)]
@@ -171,11 +177,73 @@ impl Hashable for SecpSignature {
     }
 }
 
+impl crate::certificate_signature::PubKey for PubKey {
+    type Error = Error;
+
+    fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_slice(pubkey)
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        PubKey::bytes(self)
+    }
+}
+
+impl CertificateKeyPair for KeyPair {
+    type PubKeyType = PubKey;
+    type Error = Error;
+
+    fn from_bytes(secret: &mut [u8]) -> Result<Self, Self::Error> {
+        Self::from_bytes(secret)
+    }
+
+    fn pubkey(&self) -> Self::PubKeyType {
+        self.pubkey()
+    }
+}
+
+impl CertificateSignature for SecpSignature {
+    type KeyPairType = KeyPair;
+    type Error = Error;
+
+    fn sign(msg: &[u8], keypair: &Self::KeyPairType) -> Self {
+        keypair.sign(msg)
+    }
+
+    fn verify(
+        &self,
+        msg: &[u8],
+        pubkey: &CertificateSignaturePubKey<Self>,
+    ) -> Result<(), Self::Error> {
+        pubkey.verify(msg, self)
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        self.serialize().to_vec()
+    }
+
+    fn deserialize(signature: &[u8]) -> Result<Self, Self::Error> {
+        Self::deserialize(signature)
+    }
+}
+
+impl CertificateSignatureRecoverable for SecpSignature {
+    fn recover_pubkey(
+        &self,
+        msg: &[u8],
+    ) -> Result<CertificateSignaturePubKey<Self>, <Self as CertificateSignature>::Error> {
+        self.recover_pubkey(msg)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::ops::AddAssign;
+
     use tiny_keccak::Hasher;
 
     use super::{KeyPair, PubKey, SecpSignature};
+    use crate::certificate_signature::{CertificateKeyPair, CertificateSignature};
 
     #[test]
     fn test_pubkey_roundtrip() {
@@ -251,5 +319,40 @@ mod tests {
         let ser = signature.serialize();
         let deser = SecpSignature::deserialize(&ser);
         assert_eq!(signature, deser.unwrap());
+    }
+
+    // invalid certificate signature tests
+    #[test]
+    fn test_verify_error() {
+        let mut s = [127_u8; 32];
+        let certkey = <<SecpSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(s.as_mut_slice()).unwrap();
+
+        let msg = b"hello world";
+        let invalid_msg = b"bye world";
+        let sig = <SecpSignature as CertificateSignature>::sign(msg, &certkey);
+
+        assert!(<SecpSignature as CertificateSignature>::verify(
+            &sig,
+            invalid_msg,
+            &certkey.pubkey()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_deser_error() {
+        let mut s = [127_u8; 32];
+        let certkey = <<SecpSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(s.as_mut_slice()).unwrap();
+
+        let msg = b"hello world";
+        let sig = <SecpSignature as CertificateSignature>::sign(msg, &certkey);
+
+        let mut sig_bytes = <SecpSignature as CertificateSignature>::serialize(&sig);
+
+        // the last byte is the recoveryId
+        // recoveryId is 0..=3, adding 4 makes it invalid
+        sig_bytes.last_mut().unwrap().add_assign(5);
+
+        assert!(<SecpSignature as CertificateSignature>::deserialize(&sig_bytes).is_err());
     }
 }

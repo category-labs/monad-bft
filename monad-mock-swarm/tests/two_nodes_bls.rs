@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block_validator::MockValidator, bls::BlsSignatureCollection, payload::StateRoot,
 };
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, secp256k1::SecpSignature};
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
@@ -21,7 +21,7 @@ use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct BLSSwarm;
 impl SwarmRelation for BLSSwarm {
-    type SignatureType = SecpSignature;
+    type SignatureType = NopSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
 

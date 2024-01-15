@@ -26,6 +26,7 @@ zerocopy = { workspace = true }
 
 
 [dev-dependencies]
+monad-crypto = { path = "../monad-crypto", features = ["secp"] }
 monad-testutil = { path = "../monad-testutil" }
 
 criterion = { workspace = true }

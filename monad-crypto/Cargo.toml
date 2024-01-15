@@ -13,7 +13,7 @@ monad-proto = { path = "../monad-proto" }
 
 blake3 = { workspace = true }
 blst = { workspace = true }
-secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
+secp256k1 = { workspace = true, features = ["global-context", "recovery"], optional = true }
 sha2 = { workspace = true }
 zerocopy = { workspace = true }
 zeroize = { workspace = true }
@@ -30,6 +30,7 @@ tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
 rustls = ["dep:ring", "dep:rcgen", "dep:rustls", "dep:x509-parser"]
+secp = ["dep:secp256k1"]
 
 [[bench]]
 name = "hasher_bench"

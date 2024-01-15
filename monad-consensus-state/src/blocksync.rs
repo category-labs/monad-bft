@@ -295,7 +295,7 @@ mod test {
     use super::BlockSyncRequester;
     use crate::{command::ConsensusCommand, BlockSyncResponseMessage, BlockSyncResult};
     type ST = NopSignature;
-    type SC = MockSignatures<CertificateSignaturePubKey<ST>>;
+    type SC = MockSignatures<ST>;
     type VT = ValidatorSet<CertificateSignaturePubKey<ST>>;
     type QC = QuorumCertificate<SC>;
     type TV = MockValidator;

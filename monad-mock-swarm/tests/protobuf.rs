@@ -10,9 +10,9 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey,
+    certificate_signature::{CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey},
     hasher::{Hash, Hasher, HasherType},
-    secp256k1::SecpSignature,
+    NopSignature,
 };
 use monad_executor_glue::{
     convert::interface::{deserialize_event, serialize_event},
@@ -32,7 +32,7 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-type SignatureType = SecpSignature;
+type SignatureType = NopSignature;
 type SignatureCollectionType = MultiSig<SignatureType>;
 
 #[test]
@@ -68,7 +68,7 @@ fn test_consensus_message_event_vote_multisig() {
     let votemsg: ConsensusMessage<SignatureCollectionType> =
         ConsensusMessage::Vote(VoteMessage::new(vote, &certkeypair));
     let votemsg_hash = HasherType::hash_object(&votemsg);
-    let sig = keypair.sign(votemsg_hash.as_ref());
+    let sig = SignatureType::sign(votemsg_hash.as_ref(), &keypair);
 
     let unverified_votemsg = Unverified::new(Unvalidated::new(votemsg), sig);
 

@@ -6,6 +6,7 @@ pub mod rustls;
 pub mod bls12_381;
 pub mod convert;
 pub mod hasher;
+#[cfg(feature = "secp")]
 pub mod secp256k1;
 
 pub mod certificate_signature;

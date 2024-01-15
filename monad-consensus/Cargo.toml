@@ -21,6 +21,7 @@ tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+monad-crypto = { path = "../monad-crypto", features = ["secp"] }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
