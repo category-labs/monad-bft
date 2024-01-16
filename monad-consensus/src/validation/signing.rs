@@ -606,7 +606,6 @@ impl<PT: PubKey> ValidatorPubKey for PT {
 mod test {
     use monad_consensus_types::{
         ledger::CommitResult,
-        multi_sig::MultiSig,
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::{HighQcRound, HighQcRoundSigColTuple, Timeout, TimeoutCertificate, TimeoutInfo},
@@ -614,10 +613,13 @@ mod test {
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{
-        certificate_signature::{CertificateKeyPair, CertificateSignature},
+        certificate_signature::{
+            CertificateKeyPair, CertificateSignature, CertificateSignatureRecoverable,
+        },
         hasher::{Hash, Hashable, Hasher, HasherType},
-        secp256k1::{KeyPair, SecpSignature},
+        NopSignature,
     };
+    use monad_multi_sig::MultiSig;
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys, get_certificate_key, get_key},
         validators::create_keys_w_validators,
@@ -636,8 +638,8 @@ mod test {
         validation::signing::{Unvalidated, VoteMessage},
     };
 
-    type SignatureType = SecpSignature;
-    type SignatureCollectionType = MultiSig<SecpSignature>;
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
 
     // NOTE: the error is an invalid author error
     //       the receiver uses the round number from TC, in this case `round` to recover the pubkey
@@ -957,7 +959,9 @@ mod test {
         };
 
         let mut privkey: [u8; 32] = [127; 32];
-        let keypair = KeyPair::from_bytes(&mut privkey.clone()).unwrap();
+        let keypair =
+            <SignatureType as CertificateSignature>::KeyPairType::from_bytes(&mut privkey.clone())
+                .unwrap();
         let certkeypair = <SignatureCollectionKeyPairType<SignatureCollectionType> as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
 
         let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkeypair);

@@ -1,5 +1,6 @@
-use monad_crypto::{bls12_381::BlsPubKey, secp256k1::PubKey};
+use monad_bls::BlsPubKey;
 use monad_eth_types::{serde::deserialize_eth_address_from_str, EthAddress};
+use monad_secp::PubKey;
 use monad_types::Stake;
 use serde::Deserialize;
 

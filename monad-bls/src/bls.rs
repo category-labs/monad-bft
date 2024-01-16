@@ -1,8 +1,7 @@
 use std::cmp::Ordering;
 
+use monad_crypto::hasher::{Hashable, Hasher};
 use zeroize::Zeroize;
-
-use crate::hasher::{Hashable, Hasher};
 
 /// The cipher suite
 ///
@@ -468,12 +467,6 @@ impl Eq for BlsAggregateSignature {}
 impl std::hash::Hash for BlsAggregateSignature {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::hash::Hash::hash(&self.as_signature(), state)
-    }
-}
-
-impl Hashable for BlsAggregateSignature {
-    fn hash(&self, state: &mut impl Hasher) {
-        Hashable::hash(&self.as_signature(), state);
     }
 }
 

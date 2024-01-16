@@ -1,16 +1,16 @@
 use std::time::Duration;
 
+use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{
-    block_validator::MockValidator, bls::BlsSignatureCollection, payload::StateRoot,
-};
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, secp256k1::SecpSignature};
+use monad_consensus_types::{block_validator::MockValidator, payload::StateRoot};
+use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::UntilTerminator, mock_txpool::MockTxPool, swarm_relation::SwarmRelation,
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
+use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};

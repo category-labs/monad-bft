@@ -2,7 +2,6 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block,
     block_validator::{BlockValidator, MockValidator},
-    multi_sig::MultiSig,
     payload::StateRoot,
     signature_collection::SignatureCollection,
 };
@@ -12,6 +11,7 @@ use monad_crypto::{
 };
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::{Message, MonadEvent};
+use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};

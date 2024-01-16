@@ -333,9 +333,9 @@ mod tests {
 
     use bytes::{Buf, Bytes};
     use monad_crypto::{
+        certificate_signature::CertificateKeyPair,
         hasher::{Hasher, HasherType},
-        secp256k1::KeyPair,
-        NopSignature,
+        NopKeyPair, NopSignature,
     };
     use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
     use monad_types::{NodeId, RouterTarget};
@@ -354,7 +354,7 @@ mod tests {
         let peers: Vec<_> = (1..=2)
             .map(|idx| {
                 let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
+                let keypair = NopKeyPair::from_bytes(&mut key).unwrap();
                 NodeId::new(keypair.pubkey())
             })
             .collect();
@@ -392,7 +392,7 @@ mod tests {
         let peers: Vec<_> = (1..=2)
             .map(|idx| {
                 let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
+                let keypair = NopKeyPair::from_bytes(&mut key).unwrap();
                 NodeId::new(keypair.pubkey())
             })
             .collect();
@@ -462,7 +462,7 @@ mod tests {
         let peers: Vec<_> = (1..=2)
             .map(|idx| {
                 let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
+                let keypair = NopKeyPair::from_bytes(&mut key).unwrap();
                 NodeId::new(keypair.pubkey())
             })
             .collect();
@@ -528,7 +528,7 @@ mod tests {
         let peers: Vec<_> = (1..=1)
             .map(|idx| {
                 let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
+                let keypair = NopKeyPair::from_bytes(&mut key).unwrap();
                 NodeId::new(keypair.pubkey())
             })
             .collect();
@@ -569,7 +569,7 @@ mod tests {
         let mut peers: Vec<_> = (1..=20)
             .map(|idx| {
                 let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
+                let keypair = NopKeyPair::from_bytes(&mut key).unwrap();
                 NodeId::new(keypair.pubkey())
             })
             .collect();
@@ -607,7 +607,7 @@ mod tests {
         let mut peers: Vec<_> = (1..=15)
             .map(|idx| {
                 let mut key = [idx; 32];
-                let keypair = KeyPair::from_bytes(&mut key).unwrap();
+                let keypair = NopKeyPair::from_bytes(&mut key).unwrap();
                 NodeId::new(keypair.pubkey())
             })
             .collect();

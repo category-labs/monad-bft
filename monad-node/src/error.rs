@@ -20,10 +20,10 @@ pub enum NodeSetupError {
     IoError(#[from] std::io::Error),
 
     #[error(transparent)]
-    Secp256k1(#[from] monad_crypto::secp256k1::Error),
+    Secp256k1(#[from] monad_secp::Error),
 
     #[error(transparent)]
-    Bls12_381(#[from] monad_crypto::bls12_381::BlsError),
+    Bls12_381(#[from] monad_bls::BlsError),
 
     #[error(transparent)]
     SignatureCollectionError(

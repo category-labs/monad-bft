@@ -16,7 +16,9 @@ monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-quic = { path = "../monad-quic" }
+monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }

@@ -2,6 +2,7 @@
 
 members = [
     "monad-blocktree",
+    "monad-bls",
     "monad-compress",
     "monad-consensus",
     "monad-consensus-state",
@@ -16,8 +17,10 @@ members = [
     "monad-node",
     "monad-proto",
     "monad-quic",
+    "monad-multi-sig",
     "monad-randomized-tests",
     "monad-router-scheduler",
+    "monad-secp",
     "monad-state",
     "monad-testground",
     "monad-testutil",

@@ -22,6 +22,7 @@ zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-eth-types = { path = "../monad-eth-types" }
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 

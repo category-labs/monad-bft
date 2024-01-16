@@ -131,7 +131,7 @@ where
                 Err(
                     SignatureCollectionError::NodeIdNotInMapping(_)
                     | SignatureCollectionError::ConflictingSignatures(_)
-                    | SignatureCollectionError::InvalidSignaturesVerify(_)
+                    | SignatureCollectionError::InvalidSignaturesVerify
                     | SignatureCollectionError::DeserializeError(_),
                 ) => {
                     unreachable!("InvalidSignaturesCreate is only expected error from creating SC");
@@ -168,15 +168,15 @@ mod test {
 
     use monad_consensus_types::{
         ledger::CommitResult,
-        multi_sig::MultiSig,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{
-        certificate_signature::CertificateSignature,
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::{Hash, Hasher, HasherType},
-        secp256k1::SecpSignature,
+        NopSignature,
     };
+    use monad_multi_sig::MultiSig;
     use monad_testutil::{signing::*, validators::create_keys_w_validators};
     use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
@@ -184,7 +184,7 @@ mod test {
     use super::VoteState;
     use crate::messages::message::VoteMessage;
 
-    type SignatureType = SecpSignature;
+    type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
 
     fn create_vote_message<SCT: SignatureCollection>(

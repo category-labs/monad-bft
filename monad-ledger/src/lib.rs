@@ -99,7 +99,6 @@ mod test {
     use monad_consensus_types::{
         block::Block,
         ledger::CommitResult,
-        multi_sig::MultiSig,
         payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         voting::{Vote, VoteInfo},
@@ -110,6 +109,7 @@ mod test {
         NopSignature,
     };
     use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
+    use monad_multi_sig::MultiSig;
     use monad_types::{BlockId, NodeId, Round, SeqNum};
 
     use crate::encode_full_block;

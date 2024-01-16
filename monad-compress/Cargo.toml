@@ -13,9 +13,11 @@ flate2 = { workspace = true }
 lz4 = { workspace = true }
 
 [dev-dependencies]
+monad-bls = { path = "../monad-bls" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }

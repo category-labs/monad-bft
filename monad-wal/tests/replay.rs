@@ -3,10 +3,10 @@ mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
     use bytes::Bytes;
-    use monad_consensus_types::multi_sig::MultiSig;
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
     use monad_executor::State;
     use monad_executor_glue::Message;
+    use monad_multi_sig::MultiSig;
     use monad_testutil::block::MockBlock;
     use monad_types::{Deserializable, NodeId, Serializable};
     use monad_wal::{

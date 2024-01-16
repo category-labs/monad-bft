@@ -285,7 +285,6 @@ mod test {
 
     use monad_consensus_types::{
         ledger::CommitResult,
-        multi_sig::MultiSig,
         quorum_certificate::QcInfo,
         timeout::TimeoutInfo,
         voting::{Vote, VoteInfo},
@@ -293,8 +292,9 @@ mod test {
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignature},
         hasher::{Hash, Hasher, HasherType},
-        secp256k1::SecpSignature,
+        NopSignature,
     };
+    use monad_multi_sig::MultiSig;
     use monad_testutil::{
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
@@ -305,7 +305,7 @@ mod test {
 
     use super::*;
 
-    type SignatureType = SecpSignature;
+    type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
 
     fn get_high_qc<SCT: SignatureCollection>(

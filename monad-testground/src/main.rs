@@ -8,19 +8,17 @@ use executor::{MonadP2PGossipConfig, StateRootHashConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    multi_sig::MultiSig,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     validator_data::ValidatorData,
 };
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
-    },
-    secp256k1::SecpSignature,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor::{Executor, State};
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
+use monad_multi_sig::MultiSig;
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
+use monad_secp::SecpSignature;
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::local_router::LocalRouterConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};

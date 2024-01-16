@@ -235,8 +235,8 @@ mod test {
 
     type SignatureType = NopSignature;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
-    type Block = ConsensusBlock<MockSignatures<PubKeyType>>;
-    type QC = QuorumCertificate<MockSignatures<PubKeyType>>;
+    type Block = ConsensusBlock<MockSignatures<SignatureType>>;
+    type QC = QuorumCertificate<MockSignatures<SignatureType>>;
 
     fn node_id() -> NodeId<PubKeyType> {
         let mut privkey: [u8; 32] = [127; 32];

@@ -1,0 +1,20 @@
+[package]
+name = "monad-secp"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dependencies]
+monad-crypto = { path = "../monad-crypto" }
+monad-proto = { path = "../monad-proto" }
+
+secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+tiny-keccak = { workspace = true, features = ["keccak"] }

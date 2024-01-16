@@ -225,8 +225,8 @@ impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
 #[cfg(test)]
 mod test {
     use bytes::Bytes;
-    use monad_consensus_types::multi_sig::MultiSig;
     use monad_crypto::NopSignature;
+    use monad_multi_sig::MultiSig;
     use monad_types::{Deserializable, Serializable};
     use reth_primitives::hex_literal::hex;
 

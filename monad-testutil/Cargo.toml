@@ -26,5 +26,6 @@ zerocopy = { workspace = true }
 [dev-dependencies]
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-wal = { path = "../monad-wal" }

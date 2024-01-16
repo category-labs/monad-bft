@@ -986,7 +986,6 @@ mod test {
         block::{Block, BlockType, UnverifiedBlock},
         block_validator::MockValidator,
         ledger::CommitResult,
-        multi_sig::MultiSig,
         payload::{
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, MissingNextStateRoot,
             NopStateRoot, StateRoot, StateRootValidator,
@@ -1004,6 +1003,7 @@ mod test {
         NopSignature,
     };
     use monad_eth_types::EthAddress;
+    use monad_multi_sig::MultiSig;
     use monad_testutil::{
         proposal::ProposalGen,
         signing::{create_certificate_keys, create_keys, get_key},

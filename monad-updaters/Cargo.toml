@@ -36,6 +36,8 @@ tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-bls = { path = "../monad-bls" }
+monad-secp = { path = "../monad-secp" }
 monad-testutil = { path = "../monad-testutil" }
 
 clap = { workspace = true, features = ["derive"] }

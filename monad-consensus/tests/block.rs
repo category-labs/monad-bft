@@ -6,7 +6,6 @@ use monad_consensus_types::{
     voting::{Vote, VoteInfo},
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey,
     hasher::{Hash, Hasher, HasherType},
     NopSignature,
 };
@@ -21,7 +20,7 @@ fn block_hash_id() {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let author = node_id::<SignatureType>();
     let round = Round(234);
-    let qc = QuorumCertificate::<MockSignatures<CertificateSignaturePubKey<SignatureType>>>::new(
+    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
             vote: Vote {
                 vote_info: VoteInfo {
@@ -37,7 +36,7 @@ fn block_hash_id() {
         MockSignatures::with_pubkeys(&[]),
     );
 
-    let block = Block::<MockSignatures<CertificateSignaturePubKey<SignatureType>>>::new(
+    let block = Block::<MockSignatures<SignatureType>>::new(
         author,
         round,
         &Payload {

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    block_validator::MockValidator, multi_sig::MultiSig, payload::StateRoot,
-    signature_collection::SignatureCollection, txpool::TxPool,
+    block_validator::MockValidator, payload::StateRoot, signature_collection::SignatureCollection,
+    txpool::TxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
@@ -17,6 +17,7 @@ use monad_mock_swarm::{
     mock_txpool::MockTxPool,
     swarm_relation::SwarmRelation,
 };
+use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};

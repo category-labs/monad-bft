@@ -1,8 +1,9 @@
 use std::{collections::HashSet, time::Duration};
 
-use monad_consensus_types::{block_validator::MockValidator, multi_sig::MultiSig};
+use monad_consensus_types::block_validator::MockValidator;
 use monad_crypto::NopSignature;
 use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
+use monad_multi_sig::MultiSig;
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, get_configs, run_nodes_until, SwarmTestConfig};
 use monad_transformer::{

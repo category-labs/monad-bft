@@ -6,20 +6,18 @@ use std::{
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
+use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block_validator::MockValidator, bls::BlsSignatureCollection, payload::NopStateRoot,
-    txpool::EthTxPool, validator_data::ValidatorData,
+    block_validator::MockValidator, payload::NopStateRoot, txpool::EthTxPool,
+    validator_data::ValidatorData,
 };
-use monad_crypto::{
-    bls12_381::BlsPubKey,
-    certificate_signature::CertificateSignaturePubKey,
-    secp256k1::{KeyPair, PubKey, SecpSignature},
-};
+use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
+use monad_secp::{KeyPair, PubKey, SecpSignature};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{

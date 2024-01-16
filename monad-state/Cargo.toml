@@ -27,6 +27,9 @@ tracing = { workspace = true }
 prost = { workspace = true }
 
 [dev-dependencies]
+monad-bls = { path = "../monad-bls" }
+monad-multi-sig = { path = "../monad-multi-sig" }
+monad-secp = { path = "../monad-secp" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-testutil = { path = "../monad-testutil" }
 

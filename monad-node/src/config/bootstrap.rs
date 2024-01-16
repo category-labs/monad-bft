@@ -1,4 +1,4 @@
-use monad_crypto::secp256k1::PubKey;
+use monad_secp::PubKey;
 use serde::Deserialize;
 
 use super::util::deserialize_secp256k1_pubkey;

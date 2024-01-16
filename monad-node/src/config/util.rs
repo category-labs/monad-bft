@@ -1,4 +1,5 @@
-use monad_crypto::{bls12_381::BlsPubKey, secp256k1::PubKey};
+use monad_bls::BlsPubKey;
+use monad_secp::PubKey;
 use serde::{de::Error, Deserialize, Deserializer};
 
 pub fn deserialize_secp256k1_pubkey<'de, D>(deserializer: D) -> Result<PubKey, D::Error>

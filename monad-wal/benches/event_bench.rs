@@ -12,7 +12,6 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::UnverifiedBlock,
     ledger::CommitResult,
-    multi_sig::MultiSig,
     payload::{ExecutionArtifacts, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
@@ -22,9 +21,10 @@ use monad_consensus_types::{
 use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hash, Hasher, HasherType},
-    secp256k1::SecpSignature,
 };
 use monad_executor_glue::{ConsensusEvent, MonadEvent};
+use monad_multi_sig::MultiSig;
+use monad_secp::SecpSignature;
 use monad_testutil::{
     block::setup_block,
     signing::{get_certificate_key, get_key},

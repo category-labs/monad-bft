@@ -11,6 +11,7 @@ edition = "2021"
 bench = false
 
 [dev-dependencies]
+monad-bls = { path = "../monad-bls" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
@@ -18,6 +19,7 @@ monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-quic = { path = "../monad-quic" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-state = { path = "../monad-state" }

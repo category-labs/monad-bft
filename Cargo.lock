@@ -3042,6 +3042,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-bls"
+version = "0.1.0"
+dependencies = [
+ "bitvec",
+ "blst",
+ "criterion",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-proto",
+ "monad-testutil",
+ "monad-types",
+ "prost",
+ "rand",
+ "serde_cbor",
+ "test-case",
+ "zeroize",
+]
+
+[[package]]
 name = "monad-compress"
 version = "0.1.0"
 dependencies = [
@@ -3050,9 +3069,11 @@ dependencies = [
  "criterion",
  "flate2",
  "lz4",
+ "monad-bls",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-secp",
  "monad-state",
  "monad-testutil",
  "monad-types",
@@ -3069,6 +3090,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-multi-sig",
  "monad-proto",
  "monad-state",
  "monad-testutil",
@@ -3090,6 +3112,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-multi-sig",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -3104,18 +3127,14 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
- "bitvec",
  "bytes",
- "criterion",
  "monad-crypto",
  "monad-eth-types",
  "monad-proto",
- "monad-testutil",
  "monad-types",
  "prost",
  "rand",
  "rand_chacha",
- "serde_cbor",
  "test-case",
  "tracing",
  "zerocopy 0.6.5",
@@ -3126,16 +3145,12 @@ name = "monad-crypto"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "blst",
  "criterion",
- "hex",
  "monad-proto",
  "rcgen",
  "ring 0.17.6",
  "rustls",
- "secp256k1 0.26.0",
  "sha2",
- "tiny-keccak",
  "x509-parser",
  "zerocopy 0.6.5",
  "zeroize",
@@ -3173,6 +3188,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-multi-sig",
  "monad-proto",
  "monad-types",
  "prost",
@@ -3208,6 +3224,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
+ "monad-multi-sig",
  "monad-types",
  "reth-primitives",
 ]
@@ -3220,6 +3237,7 @@ dependencies = [
  "criterion",
  "futures",
  "itertools 0.10.5",
+ "monad-bls",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -3228,8 +3246,10 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
+ "monad-multi-sig",
  "monad-quic",
  "monad-router-scheduler",
+ "monad-secp",
  "monad-state",
  "monad-testutil",
  "monad-tracing-counter",
@@ -3252,6 +3272,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-multi-sig"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-proto",
+ "monad-testutil",
+ "monad-types",
+ "prost",
+ "rand",
+ "rand_chacha",
+ "test-case",
+ "tracing",
+]
+
+[[package]]
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
@@ -3261,6 +3297,7 @@ dependencies = [
  "futures-util",
  "hex",
  "log",
+ "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -3269,6 +3306,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-quic",
+ "monad-secp",
  "monad-state",
  "monad-types",
  "monad-updaters",
@@ -3326,6 +3364,7 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-mock-swarm",
+ "monad-multi-sig",
  "monad-router-scheduler",
  "monad-testutil",
  "monad-transformer",
@@ -3343,11 +3382,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-secp"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "monad-crypto",
+ "monad-proto",
+ "secp256k1 0.26.0",
+ "tiny-keccak",
+ "zeroize",
+]
+
+[[package]]
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "monad-blocktree",
+ "monad-bls",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -3355,7 +3407,9 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-multi-sig",
  "monad-proto",
+ "monad-secp",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
@@ -3385,7 +3439,9 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-mock-swarm",
+ "monad-multi-sig",
  "monad-quic",
+ "monad-secp",
  "monad-state",
  "monad-types",
  "monad-updaters",
@@ -3413,6 +3469,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-multi-sig",
  "monad-router-scheduler",
  "monad-state",
  "monad-transformer",
@@ -3505,12 +3562,14 @@ dependencies = [
  "alloy-rlp",
  "clap 4.4.10",
  "futures",
+ "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-ledger",
+ "monad-secp",
  "monad-testutil",
  "monad-types",
  "ntest",
@@ -3542,6 +3601,7 @@ name = "monad-virtual-bench"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -3549,6 +3609,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-mock-swarm",
+ "monad-multi-sig",
  "monad-quic",
  "monad-router-scheduler",
  "monad-state",
@@ -3575,6 +3636,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-multi-sig",
  "monad-router-scheduler",
  "monad-state",
  "monad-testutil",
@@ -3597,6 +3659,8 @@ dependencies = [
  "monad-crypto",
  "monad-executor",
  "monad-executor-glue",
+ "monad-multi-sig",
+ "monad-secp",
  "monad-state",
  "monad-testutil",
  "monad-types",

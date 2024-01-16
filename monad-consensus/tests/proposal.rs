@@ -11,7 +11,9 @@ use monad_consensus_types::{
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey, hasher::Hash, secp256k1::SecpSignature,
+    certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+    hasher::Hash,
+    NopSignature,
 };
 use monad_eth_types::EthAddress;
 use monad_testutil::{
@@ -25,16 +27,16 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-type SignatureType = SecpSignature;
+type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
-type SignatureCollectionType = MockSignatures<PubKeyType>;
+type SignatureCollectionType = MockSignatures<SignatureType>;
 
 fn setup_block(
     author: NodeId<PubKeyType>,
     block_round: Round,
     qc_round: Round,
     signers: &[PubKeyType],
-) -> UnverifiedBlock<MockSignatures<PubKeyType>> {
+) -> UnverifiedBlock<MockSignatures<SignatureType>> {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
@@ -43,7 +45,7 @@ fn setup_block(
         parent_round: Round(0),
         seq_num: SeqNum(0),
     };
-    let qc = QuorumCertificate::<MockSignatures<PubKeyType>>::new(
+    let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
             vote: Vote {
                 vote_info: vi,
@@ -53,7 +55,7 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    let b = Block::<MockSignatures<PubKeyType>>::new(
+    let b = Block::<MockSignatures<SignatureType>>::new(
         author,
         block_round,
         &Payload {
@@ -94,7 +96,7 @@ fn test_proposal_hash() {
         last_round_tc: None,
     });
 
-    let sp = TestSigner::sign_object(proposal, &keypairs[0]);
+    let sp = TestSigner::<SignatureType>::sign_object(proposal, &keypairs[0]);
 
     assert!(sp
         .verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
@@ -159,7 +161,7 @@ fn test_proposal_author_not_sender() {
         last_round_tc: None,
     });
 
-    let sp = TestSigner::sign_object(proposal, author_keypair);
+    let sp = TestSigner::<SignatureType>::sign_object(proposal, author_keypair);
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
             .unwrap_err(),
@@ -186,7 +188,7 @@ fn test_proposal_invalid_author() {
         last_round_tc: None,
     });
 
-    let sp = TestSigner::sign_object(proposal, &non_valdiator_keypair);
+    let sp = TestSigner::<SignatureType>::sign_object(proposal, &non_valdiator_keypair);
 
     let vset = ValidatorSet::new(vlist).unwrap();
     let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(

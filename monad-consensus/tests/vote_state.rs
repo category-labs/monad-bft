@@ -1,27 +1,27 @@
 use monad_consensus::{messages::message::VoteMessage, vote_state::VoteState};
 use monad_consensus_types::{
     ledger::CommitResult,
-    multi_sig::MultiSig,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::{ValidatorMapping, Vote, VoteInfo},
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignaturePubKey,
+    certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     hasher::Hash,
-    secp256k1::{KeyPair, SecpSignature},
+    NopKeyPair, NopSignature,
 };
+use monad_multi_sig::MultiSig;
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::{BlockId, NodeId, Round, SeqNum};
 use monad_validator::validator_set::ValidatorSet;
 use test_case::test_case;
 
-type SignatureType = SecpSignature;
+type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 type SignatureCollectionType = MultiSig<SignatureType>;
 
 fn create_vote_message(
-    key: &KeyPair,
+    key: &NopKeyPair,
     certkey: &SignatureCollectionKeyPairType<SignatureCollectionType>,
     vote_round: Round,
 ) -> (NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>) {
@@ -47,7 +47,7 @@ fn setup_ctx(
     num_nodes: u32,
     num_rounds: u64,
 ) -> (
-    Vec<KeyPair>,
+    Vec<NopKeyPair>,
     ValidatorSet<PubKeyType>,
     ValidatorMapping<PubKeyType, SignatureCollectionKeyPairType<SignatureCollectionType>>,
     Vec<(NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>)>,

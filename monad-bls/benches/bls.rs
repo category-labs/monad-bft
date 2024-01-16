@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_consensus_types::{
-    bls::BlsSignatureCollection, signature_collection::SignatureCollection,
-};
+use monad_bls::BlsSignatureCollection;
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
     hasher::{Hasher, HasherType},

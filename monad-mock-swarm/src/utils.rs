@@ -16,7 +16,6 @@ pub mod test_tool {
     use monad_consensus_types::{
         block::{Block, UnverifiedBlock},
         ledger::CommitResult,
-        multi_sig::MultiSig,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         timeout::{Timeout, TimeoutInfo},
@@ -30,6 +29,7 @@ pub mod test_tool {
         NopSignature,
     };
     use monad_eth_types::EthAddress;
+    use monad_multi_sig::MultiSig;
     use monad_state::VerifiedMonadMessage;
     use monad_testutil::signing::create_keys;
     use monad_transformer::{LinkMessage, ID};

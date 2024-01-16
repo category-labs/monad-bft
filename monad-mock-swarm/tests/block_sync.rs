@@ -6,13 +6,14 @@ mod test {
         time::Duration,
     };
 
-    use monad_consensus_types::{block_validator::MockValidator, multi_sig::MultiSig};
+    use monad_consensus_types::block_validator::MockValidator;
     use monad_crypto::NopSignature;
     use monad_mock_swarm::{
         mock_swarm::{Nodes, ProgressTerminator, UntilTerminator},
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm, SwarmRelation},
         transformer::{FilterTransformer, MonadMessageTransformer},
     };
+    use monad_multi_sig::MultiSig;
     use monad_router_scheduler::NoSerRouterConfig;
     use monad_testutil::swarm::{get_configs, node_ledger_verification, run_nodes_until};
     use monad_transformer::{

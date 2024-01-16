@@ -9,6 +9,7 @@ edition = "2021"
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-testutil = { path = "../monad-testutil" }
 monad-transformer = { path = "../monad-transformer" }

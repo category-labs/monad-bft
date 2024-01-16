@@ -10,10 +10,11 @@ use std::{
 use alloy_rlp::Decodable;
 use clap::Parser;
 use futures::{Sink, SinkExt, StreamExt};
-use monad_consensus_types::bls::BlsSignatureCollection;
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, secp256k1::SecpSignature};
+use monad_bls::BlsSignatureCollection;
+use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_types::EthTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
+use monad_secp::SecpSignature;
 use monad_updaters::ipc::IpcReceiver;
 use reth_primitives::{hex_literal::hex, Address};
 use tokio::net::UnixStream;

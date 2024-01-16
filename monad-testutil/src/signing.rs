@@ -13,14 +13,13 @@ use monad_crypto::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hash, Hashable, Hasher, HasherType},
-    secp256k1::{KeyPair, SecpSignature},
 };
 use monad_types::NodeId;
 use zerocopy::AsBytes;
 
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
-pub struct MockSignatures<PT: PubKey> {
-    pubkey: Vec<PT>,
+pub struct MockSignatures<ST: CertificateSignatureRecoverable> {
+    pubkey: Vec<CertificateSignaturePubKey<ST>>,
 }
 
 #[derive(Debug)]
@@ -34,21 +33,21 @@ impl std::fmt::Display for MockSignatureError {
 
 impl std::error::Error for MockSignatureError {}
 
-impl<PT: PubKey> MockSignatures<PT> {
-    pub fn with_pubkeys(pubkeys: &[PT]) -> Self {
+impl<ST: CertificateSignatureRecoverable> MockSignatures<ST> {
+    pub fn with_pubkeys(pubkeys: &[CertificateSignaturePubKey<ST>]) -> Self {
         Self {
             pubkey: pubkeys.to_vec(),
         }
     }
 }
 
-impl<PT: PubKey> Hashable for MockSignatures<PT> {
+impl<ST: CertificateSignatureRecoverable> Hashable for MockSignatures<ST> {
     fn hash(&self, _state: &mut impl Hasher) {}
 }
 
-impl<PT: PubKey> SignatureCollection for MockSignatures<PT> {
-    type NodeIdPubKey = PT;
-    type SignatureType = SecpSignature;
+impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures<ST> {
+    type NodeIdPubKey = CertificateSignaturePubKey<ST>;
+    type SignatureType = ST;
 
     fn new(
         _sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,
@@ -173,13 +172,10 @@ pub struct TestSigner<S> {
     _p: PhantomData<S>,
 }
 
-impl TestSigner<SecpSignature> {
-    pub fn sign_object<T: Hashable>(
-        o: T,
-        key: &KeyPair,
-    ) -> Unverified<SecpSignature, Unvalidated<T>> {
+impl<ST: CertificateSignatureRecoverable> TestSigner<ST> {
+    pub fn sign_object<T: Hashable>(o: T, key: &ST::KeyPairType) -> Unverified<ST, Unvalidated<T>> {
         let msg = HasherType::hash_object(&o);
-        let sig = key.sign(msg.as_ref());
+        let sig = ST::sign(msg.as_ref(), key);
 
         Unverified::new(Unvalidated::new(o), sig)
     }

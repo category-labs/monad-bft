@@ -12,7 +12,6 @@ use monad_consensus::{
 use monad_consensus_types::{
     block::UnverifiedBlock,
     ledger::CommitResult,
-    multi_sig::MultiSig,
     payload::{ExecutionArtifacts, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -26,6 +25,7 @@ use monad_crypto::{
     },
     hasher::{Hash, Hasher, HasherType},
 };
+use monad_multi_sig::MultiSig;
 use monad_state::{
     convert::interface::{deserialize_monad_message, serialize_verified_monad_message},
     MonadMessage, VerifiedMonadMessage,
@@ -73,8 +73,9 @@ fn make_tc<
 macro_rules! test_all_combination {
     ($test_name:ident, $test_code:expr) => {
         mod $test_name {
-            use monad_consensus_types::bls::BlsSignatureCollection;
-            use monad_crypto::{secp256k1::SecpSignature, NopSignature};
+            use monad_bls::BlsSignatureCollection;
+            use monad_crypto::NopSignature;
+            use monad_secp::SecpSignature;
             use test_case::test_case;
 
             use super::*;

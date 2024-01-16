@@ -1,12 +1,12 @@
 use bytes::Bytes;
+use monad_bls::BlsSignatureCollection;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
 use monad_consensus::messages::consensus_message::ConsensusMessage;
 use monad_consensus_types::{
-    bls::BlsSignatureCollection,
     payload::{ExecutionArtifacts, FullTransactionList},
     voting::ValidatorMapping,
 };
-use monad_crypto::secp256k1::SecpSignature;
+use monad_secp::SecpSignature;
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
 use monad_types::{Epoch, Round, SeqNum, Serializable};

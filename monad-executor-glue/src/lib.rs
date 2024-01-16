@@ -16,7 +16,7 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
 };
 use monad_crypto::{
-    certificate_signature::{CertificateSignatureRecoverable, PubKey},
+    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     hasher::Hash as ConsensusHash,
 };
 use monad_eth_types::EthTransaction;
@@ -236,11 +236,10 @@ where
     MempoolEvent(MempoolEvent),
 }
 
-impl monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        monad_crypto::NopSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
-    >
+impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type ReadError = monad_proto::error::ProtoError;
 
@@ -249,59 +248,10 @@ impl monad_types::Deserializable<[u8]>
     }
 }
 
-impl monad_types::Serializable<Bytes>
-    for MonadEvent<
-        monad_crypto::NopSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::NopSignature>,
-    >
-{
-    fn serialize(&self) -> Bytes {
-        crate::convert::interface::serialize_event(self)
-    }
-}
-
-impl<PT: PubKey> monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::bls::BlsSignatureCollection<PT>,
-    >
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
-    }
-}
-
-impl<PT: PubKey> monad_types::Serializable<Bytes>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::bls::BlsSignatureCollection<PT>,
-    >
-{
-    fn serialize(&self) -> Bytes {
-        crate::convert::interface::serialize_event(self)
-    }
-}
-
-impl monad_types::Deserializable<[u8]>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
-    >
-{
-    type ReadError = monad_proto::error::ProtoError;
-
-    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
-        crate::convert::interface::deserialize_event(data)
-    }
-}
-
-impl monad_types::Serializable<Bytes>
-    for MonadEvent<
-        monad_crypto::secp256k1::SecpSignature,
-        monad_consensus_types::multi_sig::MultiSig<monad_crypto::secp256k1::SecpSignature>,
-    >
+impl<ST, SCT> monad_types::Serializable<Bytes> for MonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)

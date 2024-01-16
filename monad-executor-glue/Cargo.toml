@@ -23,4 +23,6 @@ bytes = { workspace = true }
 prost = { workspace = true }
 
 [dev-dependencies]
+monad-multi-sig = { path = "../monad-multi-sig" }
+
 reth-primitives = { workspace = true }

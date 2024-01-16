@@ -1,7 +1,6 @@
+use monad_crypto::hasher::{Hasher, HasherType};
 use secp256k1::Secp256k1;
 use zeroize::Zeroize;
-
-use crate::hasher::{Hashable, Hasher, HasherType};
 
 /// secp256k1 public key
 #[derive(Copy, Clone)]
@@ -159,15 +158,6 @@ impl SecpSignature {
         Ok(SecpSignature(
             secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
         ))
-    }
-}
-
-/// Faster to use the transmuted memory values, but might not be stable across
-/// library versions
-impl Hashable for SecpSignature {
-    fn hash(&self, state: &mut impl Hasher) {
-        let slice = unsafe { std::mem::transmute::<Self, [u8; 65]>(*self) };
-        state.update(slice)
     }
 }
 

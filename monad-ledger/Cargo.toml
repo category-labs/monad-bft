@@ -19,3 +19,4 @@ reth-primitives = { workspace = true }
 
 [dev-dependencies]
 monad-types = { path = "../monad-types" }
+monad-multi-sig = { path = "../monad-multi-sig" }
