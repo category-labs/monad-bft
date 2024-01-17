@@ -1,24 +1,25 @@
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::NopStateRoot,
-    signature_collection::SignatureCollection, txpool::EthTxPool, validator_data::ValidatorData,
+    signature_collection::SignatureCollection, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor, State};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MonadEvent, RouterCommand, StateRootHashCommand,
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
+use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::{Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
-    execution_ledger::MonadFileLedger,
     ipc::MockIpcReceiver,
     ledger::MockLedger,
     local_router::LocalPeerRouter,

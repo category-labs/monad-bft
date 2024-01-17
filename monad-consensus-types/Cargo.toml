@@ -18,10 +18,10 @@ monad-types = { path = "../monad-types" }
 
 bytes = { workspace = true }
 prost = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
-rand = { workspace = true }
-rand_chacha = { workspace = true }
 test-case = { workspace = true }

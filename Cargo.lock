@@ -3157,13 +3157,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-eth-types"
+name = "monad-eth-tx"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "reth-primitives",
+]
+
+[[package]]
+name = "monad-eth-txpool"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "monad-consensus-types",
+ "monad-eth-tx",
+]
+
+[[package]]
+name = "monad-eth-types"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
  "serde",
 ]
 
@@ -3216,6 +3232,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-ipc"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "clap 4.4.10",
+ "futures",
+ "monad-bls",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-tx",
+ "monad-executor-glue",
+ "monad-secp",
+ "reth-primitives",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-ledger"
 version = "0.1.0"
 dependencies = [
@@ -3223,10 +3259,14 @@ dependencies = [
  "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-tx",
  "monad-eth-types",
+ "monad-executor",
+ "monad-executor-glue",
  "monad-multi-sig",
  "monad-types",
  "reth-primitives",
+ "tempfile",
 ]
 
 [[package]]
@@ -3301,10 +3341,12 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
+ "monad-ledger",
  "monad-quic",
  "monad-secp",
  "monad-state",
@@ -3417,7 +3459,6 @@ dependencies = [
  "prost",
  "rand",
  "rand_chacha",
- "tempfile",
  "test-case",
  "tracing",
  "tracing-core",
@@ -3434,10 +3475,12 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
+ "monad-ledger",
  "monad-mock-swarm",
  "monad-multi-sig",
  "monad-quic",
@@ -3560,29 +3603,21 @@ name = "monad-updaters"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
- "clap 4.4.10",
  "futures",
- "monad-bls",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
- "monad-ledger",
- "monad-secp",
  "monad-testutil",
  "monad-types",
  "ntest",
  "rand",
  "rand_chacha",
- "reth-primitives",
- "tempfile",
  "test-case",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

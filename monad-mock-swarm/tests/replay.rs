@@ -2,14 +2,13 @@ use std::{collections::HashMap, fs::create_dir_all, time::Duration};
 
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block::BlockType, block_validator::MockValidator, payload::NopStateRoot,
+    block::BlockType, block_validator::MockValidator, payload::NopStateRoot, txpool::MockTxPool,
 };
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::{Nodes, UntilTerminator},
-    mock_txpool::MockTxPool,
     swarm_relation::SwarmRelation,
 };
 use monad_multi_sig::MultiSig;

@@ -12,10 +12,10 @@ use clap::Parser;
 use futures::{Sink, SinkExt, StreamExt};
 use monad_bls::BlsSignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_eth_types::EthTransaction;
+use monad_eth_tx::EthTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
+use monad_ipc::IpcReceiver;
 use monad_secp::SecpSignature;
-use monad_updaters::ipc::IpcReceiver;
 use reth_primitives::{hex_literal::hex, Address};
 use tokio::net::UnixStream;
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
@@ -133,6 +133,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match monad_event {
             MonadEvent::MempoolEvent(event) => match event {
                 MempoolEvent::UserTx(tx) => {
+                    let tx =
+                        EthTransaction::decode(&mut tx.as_ref()).expect("must be valid eth tx");
+
                     let signer = tx.signer();
                     assert_eq!(signer, author_address);
                     assert_eq!(tx.transaction, eth_tx.transaction);

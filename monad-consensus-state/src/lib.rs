@@ -992,7 +992,7 @@ mod test {
         },
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
-        txpool::{EthTxPool, TxPool},
+        txpool::{MockTxPool, TxPool},
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{
@@ -1175,7 +1175,7 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let election = SimpleRoundRobin::new();
-        let mut empty_txpool = EthTxPool::new();
+        let mut empty_txpool = MockTxPool::new();
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.get_round(), Round(0));
@@ -1808,7 +1808,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
         let valset = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         let election = SimpleRoundRobin::new();
-        let mut empty_txpool = EthTxPool::new();
+        let mut empty_txpool = MockTxPool::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -2230,7 +2230,7 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, MissingNextStateRoot>(4);
         let election = SimpleRoundRobin::new();
-        let mut empty_txpool = EthTxPool::new();
+        let mut empty_txpool = MockTxPool::new();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -2583,7 +2583,7 @@ mod test {
             );
 
         let election = SimpleRoundRobin::new();
-        let mut empty_txpool = EthTxPool::new();
+        let mut empty_txpool = MockTxPool::new();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         for i in 0..8 {
@@ -2706,7 +2706,7 @@ mod test {
                 num_state as u32,
             );
         let election = SimpleRoundRobin::new();
-        let mut empty_txpool = EthTxPool::new();
+        let mut empty_txpool = MockTxPool::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -3231,7 +3231,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::new();
-        let mut empty_txpool = EthTxPool::new();
+        let mut empty_txpool = MockTxPool::new();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 

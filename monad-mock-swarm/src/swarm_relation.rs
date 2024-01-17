@@ -4,6 +4,7 @@ use monad_consensus_types::{
     block_validator::{BlockValidator, MockValidator},
     payload::StateRoot,
     signature_collection::SignatureCollection,
+    txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
@@ -22,7 +23,7 @@ use monad_wal::{
     PersistenceLogger,
 };
 
-use crate::{mock_txpool::MockTxPool, transformer::MonadMessageTransformerPipeline};
+use crate::transformer::MonadMessageTransformerPipeline;
 
 pub trait SwarmRelation {
     type SignatureType: CertificateSignatureRecoverable + Unpin;

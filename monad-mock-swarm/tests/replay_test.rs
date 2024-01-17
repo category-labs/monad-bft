@@ -2,8 +2,10 @@ use std::time::Duration;
 
 use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, signature_collection::SignatureCollection,
-    txpool::TxPool,
+    block_validator::MockValidator,
+    payload::StateRoot,
+    signature_collection::SignatureCollection,
+    txpool::{MockTxPool, TxPool},
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
@@ -14,7 +16,6 @@ use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::MockExecutor,
     mock_swarm::{Node, Nodes, UntilTerminator},
-    mock_txpool::MockTxPool,
     swarm_relation::SwarmRelation,
 };
 use monad_multi_sig::MultiSig;

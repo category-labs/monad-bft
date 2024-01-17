@@ -1,8 +1,5 @@
-use alloy_rlp::Decodable;
-use bytes::BytesMut;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
-use monad_eth_types::EthTransaction;
 use monad_proto::{error::ProtoError, proto::event::*};
 use monad_types::convert::{proto_to_pubkey, pubkey_to_proto};
 
@@ -193,9 +190,7 @@ impl From<&MempoolEvent> for ProtoMempoolEvent {
     fn from(value: &MempoolEvent) -> Self {
         let event = match value {
             MempoolEvent::UserTx(tx) => {
-                let mut buf = BytesMut::new();
-                tx.encode_enveloped(&mut buf);
-                proto_mempool_event::Event::Usertx(ProtoUserTx { tx: buf.into() })
+                proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
             }
         };
         Self { event: Some(event) }
@@ -207,12 +202,7 @@ impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
 
     fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
-            Some(proto_mempool_event::Event::Usertx(tx)) => {
-                let eth_tx = EthTransaction::decode(&mut tx.tx.as_ref())
-                    .map_err(|e| ProtoError::DeserializeError(format!("{:?}", e)))?;
-
-                MempoolEvent::UserTx(eth_tx)
-            }
+            Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTx(tx.tx),
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,
@@ -238,13 +228,11 @@ mod test {
     #[test]
     fn test_mempool_event_roundtrip() {
         // https://etherscan.io/tx/0xc97438c9ac71f94040abec76967bcaf16445ff747bcdeb383e5b94033cbed201
-        let raw_tx = hex!("02f871018302877a8085070adf56b2825208948880bb98e7747f73b52a9cfa34dab9a4a06afa3887eecbb1ada2fad280c080a0d5e6f03b507cc86b59bed88c201f98c9ca6514dc5825f41aa923769cf0402839a0563f21850c0c212ce6f402f140acdcebbb541c9bb6a051070851efec99e4dd8d");
-
-        let eth_tx = EthTransaction::decode(&mut &raw_tx[..]).unwrap();
+        let tx = hex!("02f871018302877a8085070adf56b2825208948880bb98e7747f73b52a9cfa34dab9a4a06afa3887eecbb1ada2fad280c080a0d5e6f03b507cc86b59bed88c201f98c9ca6514dc5825f41aa923769cf0402839a0563f21850c0c212ce6f402f140acdcebbb541c9bb6a051070851efec99e4dd8d").as_slice().into();
 
         let mempool_event =
             MonadEvent::<MessageSignatureType, SignatureCollectionType>::MempoolEvent(
-                MempoolEvent::UserTx(eth_tx),
+                MempoolEvent::UserTx(tx),
             );
 
         let mempool_event_bytes: Bytes = mempool_event.serialize();

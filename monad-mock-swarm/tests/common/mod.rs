@@ -1,11 +1,13 @@
 use bytes::Bytes;
 use monad_consensus_state::ConsensusState;
-use monad_consensus_types::{block_validator::MockValidator, payload::StateRoot};
+use monad_consensus_types::{
+    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+};
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor::{timed_event::TimedEvent, State};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::MockGossip;
-use monad_mock_swarm::{mock_txpool::MockTxPool, swarm_relation::SwarmRelation};
+use monad_mock_swarm::swarm_relation::SwarmRelation;
 use monad_multi_sig::MultiSig;
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};

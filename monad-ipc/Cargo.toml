@@ -1,0 +1,31 @@
+[package]
+name = "monad-ipc"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+
+alloy-rlp = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "net",
+    "rt",
+]}
+tokio-util = { workspace = true, features = ["codec"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+monad-bls = { path = "../monad-bls" }
+monad-secp = { path = "../monad-secp" }
+
+clap = { workspace = true, features = ["derive"] }
+reth-primitives = { workspace = true }
+tracing-subscriber = { workspace = true }

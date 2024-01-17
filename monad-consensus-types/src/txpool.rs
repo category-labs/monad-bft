@@ -1,13 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
-
-use monad_eth_types::{EthFullTransactionList, EthTransaction, EthTxHash};
+use bytes::Bytes;
 
 use crate::payload::FullTransactionList;
 
 pub trait TxPool {
     fn new() -> Self;
 
-    fn insert_tx(&mut self, tx: EthTransaction);
+    fn insert_tx(&mut self, tx: Bytes);
 
     fn create_proposal(
         &mut self,
@@ -17,55 +15,39 @@ pub trait TxPool {
     ) -> FullTransactionList;
 }
 
-pub struct EthTxPool(BTreeMap<EthTxHash, EthTransaction>);
+use rand::RngCore;
+use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
-impl TxPool for EthTxPool {
+const MOCK_DEFAULT_SEED: u64 = 1;
+const TXN_SIZE: usize = 32;
+
+pub struct MockTxPool {
+    rng: ChaCha20Rng,
+}
+
+impl TxPool for MockTxPool {
     fn new() -> Self {
-        Self(BTreeMap::new())
+        Self {
+            rng: ChaCha20Rng::seed_from_u64(MOCK_DEFAULT_SEED),
+        }
     }
 
-    fn insert_tx(&mut self, tx: EthTransaction) {
-        // TODO have another datastructure to keep sorted by gas limit for proposal creation
-        self.0.insert(tx.hash, tx);
-    }
+    fn insert_tx(&mut self, _tx: Bytes) {}
 
     fn create_proposal(
         &mut self,
         tx_limit: usize,
-        gas_limit: u64,
-        pending_txs: Vec<FullTransactionList>,
+        _gas_limit: u64,
+        _pending_txs: Vec<FullTransactionList>,
     ) -> FullTransactionList {
-        // TODO: we should enhance the pending block tree to hold tx hashses so that
-        // we don't have to calculate it here on the critical path of proposal creation
-        let mut pending_tx_hashes: Vec<EthTxHash> = Vec::new();
-        for x in pending_txs {
-            let y = EthFullTransactionList::rlp_decode(x.bytes().clone()).expect(
-                "transactions in blocks must have been verified and rlp decoded \
-                before being put in the pending blocktree",
-            );
-            pending_tx_hashes.extend(y.get_hashes());
+        if tx_limit == 0 {
+            FullTransactionList::empty()
+        } else {
+            // Random non-empty value with size = num_fetch_txs * hash_size
+            let mut buf = Vec::with_capacity(tx_limit * TXN_SIZE);
+            buf.resize(tx_limit * TXN_SIZE, 0);
+            self.rng.fill_bytes(buf.as_mut_slice());
+            FullTransactionList::new(buf.into())
         }
-
-        let pending_blocktree_txs: HashSet<EthTxHash> = HashSet::from_iter(pending_tx_hashes);
-
-        let mut txs = Vec::new();
-        let mut total_gas = 0;
-
-        for tx in self.0.values() {
-            if pending_blocktree_txs.contains(&tx.hash) {
-                continue;
-            }
-
-            if txs.len() == tx_limit || (total_gas + tx.gas_limit()) > gas_limit {
-                break;
-            }
-            total_gas += tx.gas_limit();
-            txs.push(tx.clone());
-        }
-
-        // TODO cascading behaviour for leftover txns
-        self.0.clear();
-
-        FullTransactionList::new(EthFullTransactionList(txs).rlp_encode())
     }
 }

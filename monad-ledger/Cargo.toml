@@ -11,12 +11,16 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
-monad-eth-types = { path = "../monad-eth-types" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 reth-primitives = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
-monad-types = { path = "../monad-types" }
+monad-eth-types = { path = "../monad-eth-types" }
 monad-multi-sig = { path = "../monad-multi-sig" }
+monad-types = { path = "../monad-types" }

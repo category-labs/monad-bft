@@ -1,0 +1,10 @@
+[package]
+name = "monad-eth-tx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+reth-primitives = { workspace = true }

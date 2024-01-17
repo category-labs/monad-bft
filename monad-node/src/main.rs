@@ -9,20 +9,20 @@ use futures_util::{FutureExt, StreamExt};
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_consensus_state::{ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::NopStateRoot, txpool::EthTxPool,
-    validator_data::ValidatorData,
+    block_validator::MockValidator, payload::NopStateRoot, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_eth_txpool::EthTxPool;
 use monad_executor::{Executor, State};
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
+use monad_ledger::MonadFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, PubKey, SecpSignature};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
-    execution_ledger::MonadFileLedger,
     ipc::MockIpcReceiver,
     ledger::MockLedger,
     parent::ParentExecutor,

@@ -5,13 +5,14 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus_state::{ConsensusProcess, ConsensusState};
-    use monad_consensus_types::{block_validator::MockValidator, payload::StateRoot};
+    use monad_consensus_types::{
+        block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    };
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
     use monad_executor::{timed_event::TimedEvent, State};
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         mock_swarm::{Node, Nodes, UntilTerminator},
-        mock_txpool::MockTxPool,
         swarm_relation::{NoSerSwarm, SwarmRelation},
     };
     use monad_multi_sig::MultiSig;

@@ -1,0 +1,10 @@
+[package]
+name = "monad-eth-txpool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+
+bytes = { workspace = true }
