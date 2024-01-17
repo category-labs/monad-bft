@@ -1,0 +1,10 @@
+schema: '../pkg/schema.graphql'
+documents: './src/graphql/**/*.graphql'
+extensions:
+  codegen:
+    generates:
+      ./src/generated/graphql.ts:
+        plugins:
+          - typescript
+          - typescript-operations
+          - typed-document-node

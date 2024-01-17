@@ -81,7 +81,7 @@ fn two_nodes_metrics() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 1024);

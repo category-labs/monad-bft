@@ -11,7 +11,7 @@ pub trait NodesTerminator<S>
 where
     S: SwarmRelation,
 {
-    fn should_terminate(&self, nodes: &Nodes<S>) -> bool;
+    fn should_terminate(&mut self, nodes: &Nodes<S>, next_tick: Duration) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -19,6 +19,7 @@ pub struct UntilTerminator {
     until_tick: Duration,
     until_block: usize,
     until_round: Round,
+    until_step: usize,
 }
 
 impl Default for UntilTerminator {
@@ -33,6 +34,7 @@ impl UntilTerminator {
             until_tick: Duration::MAX,
             until_block: usize::MAX,
             until_round: Round(u64::MAX),
+            until_step: usize::MAX,
         }
     }
 
@@ -50,14 +52,24 @@ impl UntilTerminator {
         self.until_round = round;
         self
     }
+
+    /// run for N number of steps
+    /// note that this behavior might differ for step_batch
+    /// this is because multiple events may be emitted per logical "step"
+    pub fn until_step(mut self, step: usize) -> Self {
+        assert!(step >= 1);
+        self.until_step = step;
+        self
+    }
 }
 
 impl<S> NodesTerminator<S> for UntilTerminator
 where
     S: SwarmRelation,
 {
-    fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
-        nodes.tick > self.until_tick
+    fn should_terminate(&mut self, nodes: &Nodes<S>, next_tick: Duration) -> bool {
+        let should_terminate = self.until_step == 0
+            || next_tick > self.until_tick
             || nodes
                 .states
                 .values()
@@ -65,11 +77,14 @@ where
             || nodes
                 .states
                 .values()
-                .any(|node| node.state.consensus().get_current_round() > self.until_round)
+                .any(|node| node.state.consensus().get_current_round() > self.until_round);
+        self.until_step -= 1;
+        should_terminate
     }
 }
 
 // observe and monitor progress of certain nodes until commit progress is achieved for all
+#[derive(Clone)]
 pub struct ProgressTerminator<PT: PubKey> {
     // NodeId -> Ledger len
     nodes_monitor: BTreeMap<ID<PT>, usize>,
@@ -96,7 +111,7 @@ impl<S> NodesTerminator<S> for ProgressTerminator<CertificateSignaturePubKey<S::
 where
     S: SwarmRelation,
 {
-    fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
+    fn should_terminate(&mut self, nodes: &Nodes<S>, _next_tick: Duration) -> bool {
         if nodes.tick > self.timeout {
             panic!(
                 "ProgressTerminator timed-out, expecting nodes 

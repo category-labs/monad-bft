@@ -115,7 +115,7 @@ mod test {
         let mut terminator = UntilTerminator::new().until_tick(Duration::from_secs(2));
 
         // first run for 2 seconds, all but first node makes progress
-        while swarm.step_until(&terminator).is_some() {}
+        while swarm.step_until(&mut terminator).is_some() {}
 
         verify_but_first(&swarm);
 
@@ -126,7 +126,7 @@ mod test {
         // run for 5 sec to allow the blackout node to be aware of the world state,
         // however, it start to attempting block sync, but will not succeed
         terminator = terminator.until_tick(Duration::from_secs(5));
-        while swarm.step_until(&terminator).is_some() {}
+        while swarm.step_until(&mut terminator).is_some() {}
 
         verify_but_first(&swarm);
         // remove the block sync filter
@@ -135,7 +135,7 @@ mod test {
 
         // run for sufficiently long
         terminator = terminator.until_tick(Duration::from_secs(30));
-        while swarm.step_until(&terminator).is_some() {}
+        while swarm.step_until(&mut terminator).is_some() {}
 
         // first node should have caught up
         verify_all(&swarm);
@@ -200,7 +200,7 @@ mod test {
 
         let mut swarm = swarm_config.build();
         while swarm
-            .step_until(&ProgressTerminator::new(
+            .step_until(&mut ProgressTerminator::new(
                 all_peers
                     .iter()
                     .map(|k| (ID::new(*k), 1))
@@ -279,7 +279,7 @@ mod test {
 
         let mut swarm = swarm_config.build();
         while swarm
-            .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(4)))
+            .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)))
             .is_some()
         {}
         swarm_ledger_verification(&swarm, 20);
@@ -366,7 +366,7 @@ mod test {
 
         let mut swarm = swarm_config.build();
         while swarm
-            .step_until(&UntilTerminator::new().until_tick(until))
+            .step_until(&mut UntilTerminator::new().until_tick(until))
             .is_some()
         {}
         swarm_ledger_verification(&swarm, 20);

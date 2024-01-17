@@ -75,11 +75,11 @@ where
     Node<S>: Send,
 {
     let mut max_tick = start_tick;
-    let terminator = UntilTerminator::new()
+    let mut terminator = UntilTerminator::new()
         .until_tick(until_tick)
         .until_block(until_block);
 
-    while let Some(tick) = nodes.step_until(&terminator) {
+    while let Some((tick, _, _)) = nodes.step_until(&mut terminator) {
         assert!(tick >= max_tick);
         max_tick = tick;
     }

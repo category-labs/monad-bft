@@ -69,7 +69,7 @@ fn many_nodes_noser() {
     );
 
     let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&UntilTerminator::new().until_tick(Duration::from_secs(4)));
+    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)));
     swarm_ledger_verification(&swarm, 1024);
 }
 
@@ -131,7 +131,7 @@ fn many_nodes_quic() {
     );
 
     let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&UntilTerminator::new().until_tick(Duration::from_secs(4)));
+    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)));
     swarm_ledger_verification(&swarm, 10);
 }
 
@@ -196,7 +196,7 @@ fn many_nodes_quic_bw() {
     );
 
     let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&UntilTerminator::new().until_tick(Duration::from_secs(100)));
+    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(100)));
 
     swarm_ledger_verification(&swarm, 95);
 }

@@ -4,8 +4,9 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{NodeId, RouterTarget};
+use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 
 #[derive(Debug)]
 pub enum RouterEvent<PT: PubKey, InboundMessage, TransportMessage> {
@@ -161,6 +162,117 @@ where
                 .map(|(time, _)| *time)
                 .unwrap_or(Duration::ZERO)
         );
+        match to {
+            RouterTarget::Broadcast => {
+                self.events.extend(
+                    self.all_peers
+                        .iter()
+                        .map(|to| (time, RouterEvent::Tx(*to, message.clone()))),
+                );
+            }
+            RouterTarget::PointToPoint(to) => {
+                self.events.push_back((time, RouterEvent::Tx(to, message)));
+            }
+        }
+    }
+
+    fn peek_tick(&self) -> Option<Duration> {
+        self.events.front().map(|(tick, _)| *tick)
+    }
+
+    fn step_until(
+        &mut self,
+        until: Duration,
+    ) -> Option<RouterEvent<Self::NodeIdPublicKey, Self::InboundMessage, Self::TransportMessage>>
+    {
+        if self.peek_tick().unwrap_or(Duration::MAX) <= until {
+            let (_, event) = self.events.pop_front().expect("must exist");
+            Some(event)
+        } else {
+            None
+        }
+    }
+}
+
+pub struct BytesRouterScheduler<PT: PubKey, IM, OM> {
+    all_peers: BTreeSet<NodeId<PT>>,
+    events: VecDeque<(Duration, RouterEvent<PT, IM, Bytes>)>,
+    _phantom: PhantomData<OM>,
+}
+
+#[derive(Clone)]
+pub struct BytesRouterConfig<PT: PubKey, IM, OM> {
+    pub all_peers: BTreeSet<NodeId<PT>>,
+    _phantom: PhantomData<(IM, OM)>,
+}
+
+impl<PT: PubKey, IM, OM> BytesRouterConfig<PT, IM, OM> {
+    pub fn new(all_peers: BTreeSet<NodeId<PT>>) -> Self {
+        Self {
+            all_peers,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<PT: PubKey, IM, OM> RouterSchedulerBuilder for BytesRouterConfig<PT, IM, OM>
+where
+    IM: Deserializable<Bytes>,
+    OM: Serializable<Bytes>,
+{
+    type RouterScheduler = BytesRouterScheduler<PT, IM, OM>;
+
+    fn build(self) -> Self::RouterScheduler {
+        Self::RouterScheduler {
+            all_peers: self.all_peers,
+            events: Default::default(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<PT: PubKey, IM, OM> RouterScheduler for BytesRouterScheduler<PT, IM, OM>
+where
+    IM: Deserializable<Bytes>,
+    OM: Serializable<Bytes>,
+{
+    type NodeIdPublicKey = PT;
+    type TransportMessage = Bytes;
+    type InboundMessage = IM;
+    type OutboundMessage = OM;
+
+    fn process_inbound(
+        &mut self,
+        time: Duration,
+        from: NodeId<Self::NodeIdPublicKey>,
+        message: Self::TransportMessage,
+    ) {
+        assert!(
+            time >= self
+                .events
+                .back()
+                .map(|(time, _)| *time)
+                .unwrap_or(Duration::ZERO)
+        );
+        let message = IM::deserialize(&message).unwrap();
+        self.events
+            .push_back((time, RouterEvent::Rx(from, message)))
+    }
+
+    fn send_outbound(
+        &mut self,
+        time: Duration,
+        to: RouterTarget<Self::NodeIdPublicKey>,
+        message: Self::OutboundMessage,
+    ) {
+        assert!(
+            time >= self
+                .events
+                .back()
+                .map(|(time, _)| *time)
+                .unwrap_or(Duration::ZERO)
+        );
+        let message = message.serialize();
         match to {
             RouterTarget::Broadcast => {
                 self.events.extend(

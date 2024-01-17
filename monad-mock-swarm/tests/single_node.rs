@@ -75,7 +75,7 @@ fn two_nodes() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 1024);
@@ -140,7 +140,7 @@ fn two_nodes_quic() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 256);
@@ -221,7 +221,7 @@ fn two_nodes_quic_bw() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 100);

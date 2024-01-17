@@ -173,15 +173,15 @@ mod test {
 
         let update_block_num = val_set_update_interval;
 
-        let term_before_update_block =
+        let mut term_before_update_block =
             UntilTerminator::new().until_block((update_block_num.0 - 2) as usize);
-        while nodes.step_until(&term_before_update_block).is_some() {}
+        while nodes.step_until(&mut term_before_update_block).is_some() {}
         // all nodes must still be in this epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
 
-        let term_on_schedule_epoch =
+        let mut term_on_schedule_epoch =
             UntilTerminator::new().until_block(update_block_num.0 as usize);
-        while nodes.step_until(&term_on_schedule_epoch).is_some() {}
+        while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
@@ -191,8 +191,8 @@ mod test {
             Epoch(2),
         );
 
-        let term_on_new_epoch = UntilTerminator::new().until_round(epoch_start_round);
-        while nodes.step_until(&term_on_new_epoch).is_some() {}
+        let mut term_on_new_epoch = UntilTerminator::new().until_round(epoch_start_round);
+        while nodes.step_until(&mut term_on_new_epoch).is_some() {}
 
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
@@ -250,9 +250,9 @@ mod test {
 
         let update_block_num = val_set_update_interval;
 
-        let term_before_update_block =
+        let mut term_before_update_block =
             UntilTerminator::new().until_block((update_block_num.0 - 1) as usize);
-        while nodes.step_until(&term_before_update_block).is_some() {}
+        while nodes.step_until(&mut term_before_update_block).is_some() {}
         // verify all nodes are in epoch 1
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
 
@@ -266,9 +266,9 @@ mod test {
         ];
         nodes.update_pipeline_for_all(blackout_pipeline);
 
-        let term_on_schedule_epoch =
+        let mut term_on_schedule_epoch =
             UntilTerminator::new().until_block(update_block_num.0 as usize);
-        while nodes.step_until(&term_on_schedule_epoch).is_some() {}
+        while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         let nodes_vec = nodes.states().values().collect_vec();
         let (blackout_node, running_nodes) = nodes_vec.split_first().unwrap();
@@ -289,9 +289,9 @@ mod test {
         nodes.update_pipeline_for_all(regular_pipeline);
 
         // run sufficiently long for the blackout node to finish blocksync
-        let term_on_schedule_epoch_2 =
+        let mut term_on_schedule_epoch_2 =
             UntilTerminator::new().until_block((update_block_num.0 + 10) as usize);
-        while nodes.step_until(&term_on_schedule_epoch_2).is_some() {}
+        while nodes.step_until(&mut term_on_schedule_epoch_2).is_some() {}
 
         // verify all nodes have scheduled next epoch (including blackout node)
         verify_nodes_scheduled_epoch(
@@ -352,7 +352,7 @@ mod test {
 
         let mut swarm = swarm_config.build();
         while swarm
-            .step_until(&UntilTerminator::new().until_block(until_block))
+            .step_until(&mut UntilTerminator::new().until_block(until_block))
             .is_some()
         {}
         swarm_ledger_verification(&swarm, until_block);

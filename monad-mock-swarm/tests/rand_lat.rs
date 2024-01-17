@@ -104,7 +104,7 @@ fn nodes_with_random_latency(seed: u64) {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(60 * 60)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(60 * 60)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 2048);

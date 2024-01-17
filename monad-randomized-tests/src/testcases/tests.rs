@@ -68,7 +68,7 @@ fn random_latency_test(seed: u64) {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 2048);
@@ -130,7 +130,7 @@ fn delayed_message_test(seed: u64) {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(2)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(2)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 20);

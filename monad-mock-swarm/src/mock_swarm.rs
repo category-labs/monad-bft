@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_executor_glue::MonadEvent;
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use rayon::prelude::*;
 
@@ -63,12 +64,16 @@ where
     }
 
     // step until exactly the next event, either internal or external event out of all the nodes.
-    pub fn step_until<Terminator: NodesTerminator<S>>(
+    pub fn step_until(
         &mut self,
-        terminator: &Terminator,
-    ) -> Option<Duration> {
+        terminator: &mut impl NodesTerminator<S>,
+    ) -> Option<(
+        Duration,
+        ID<CertificateSignaturePubKey<S::SignatureType>>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+    )> {
         while let Some((tick, _event_type, id)) = self.peek_event() {
-            if terminator.should_terminate(self) {
+            if terminator.should_terminate(self, tick) {
                 break;
             }
 
@@ -82,6 +87,7 @@ where
             self.tick = tick;
 
             for (sched_tick, message) in emitted_messages {
+                assert_ne!(message.from, message.to);
                 let node = self.states.get_mut(&message.to);
                 // if message must be delivered, then node must exists
                 assert!(!self.must_deliver || node.is_some());
@@ -92,16 +98,16 @@ where
                         .push_back(message);
                 };
             }
-            if let Some((tick, _)) = emitted_event {
-                return Some(tick);
+            if let Some((tick, event)) = emitted_event {
+                return Some((tick, id, event));
             }
         }
         None
     }
 
-    pub fn batch_step_until<Terminator: NodesTerminator<S>>(
+    pub fn batch_step_until(
         &mut self,
-        terminator: &Terminator,
+        terminator: &mut impl NodesTerminator<S>,
     ) -> Option<Duration> {
         while let Some(tick) = {
             self.peek_event().map(|(min_tick, _, id)| {
@@ -116,7 +122,7 @@ where
                 min_unsafe_tick - Duration::from_nanos(1)
             })
         } {
-            if terminator.should_terminate(self) {
+            if terminator.should_terminate(self, tick) {
                 return Some(self.tick);
             }
 

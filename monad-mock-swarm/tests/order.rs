@@ -115,7 +115,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(1)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(1)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 20);

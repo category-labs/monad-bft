@@ -60,14 +60,14 @@ fn two_nodes_virtual() -> u128 {
     );
 
     let mut swarm = swarm_config.build();
-    let mut max_duration = Duration::ZERO;
-    while let Some(duration) =
-        swarm.step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+    let mut max_tick = Duration::ZERO;
+    while let Some((tick, _, _)) =
+        swarm.step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
     {
-        max_duration = duration;
+        max_tick = tick;
     }
     swarm_ledger_verification(&swarm, 1024);
-    max_duration.as_millis()
+    max_tick.as_millis()
 }
 
 monad_virtual_bench::virtual_bench_main! {two_nodes_virtual}

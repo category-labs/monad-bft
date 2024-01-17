@@ -1,0 +1,9 @@
+query EventLog {
+  eventLog {
+    tick
+    id
+    event {
+      __typename
+    }
+  }
+}

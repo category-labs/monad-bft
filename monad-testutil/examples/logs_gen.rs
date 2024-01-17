@@ -114,7 +114,7 @@ pub fn generate_log(
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&UntilTerminator::new().until_block(num_blocks))
+        .step_until(&mut UntilTerminator::new().until_block(num_blocks))
         .is_some()
     {}
 }

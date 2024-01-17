@@ -132,8 +132,8 @@ pub fn recover_nodes_msg_delays(
     );
 
     let mut nodes = swarm_config.build();
-    let term = UntilTerminator::new().until_block(num_blocks_before);
-    while nodes.step_until(&term).is_some() {}
+    let mut term = UntilTerminator::new().until_block(num_blocks_before);
+    while nodes.step_until(&mut term).is_some() {}
 
     // can skip this verification so we don't have two cases failing for the same reason
     let node_ledger_before = nodes
@@ -209,8 +209,8 @@ pub fn recover_nodes_msg_delays(
         .collect::<HashMap<_, _>>();
 
     assert_eq!(node_ledger_before, node_ledger_recovered);
-    let term = UntilTerminator::new().until_block(num_blocks_before + num_block_after);
-    while nodes_recovered.step_until(&term).is_some() {}
+    let mut term = UntilTerminator::new().until_block(num_blocks_before + num_block_after);
+    while nodes_recovered.step_until(&mut term).is_some() {}
 
     swarm_ledger_verification(&nodes_recovered, 1);
 }

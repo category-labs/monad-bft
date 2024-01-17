@@ -1,0 +1,30 @@
+[package]
+name = "monad-debugger"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
+monad-state = { path = "../monad-state" }
+monad-testutil = { path = "../monad-testutil" }
+monad-transformer = { path = "../monad-transformer" }
+monad-types = { path = "../monad-types" }
+monad-updaters = { path = "../monad-updaters" }
+monad-validator = { path = "../monad-validator" }
+monad-wal = { path = "../monad-wal" }
+wasm-bindgen = { workspace = true }
+
+console_error_panic_hook = { workspace = true }
+
+async-graphql = { workspace = true }
+futures = { workspace = true }
+getrandom = { workspace = true, features = ["js"] }
+hex = { workspace = true }
+serde_json = { workspace = true }

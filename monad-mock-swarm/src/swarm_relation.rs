@@ -13,7 +13,7 @@ use monad_crypto::{
 };
 use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_multi_sig::MultiSig;
-use monad_router_scheduler::{NoSerRouterScheduler, RouterScheduler};
+use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_updaters::state_root_hash::{MockStateRootHashNop, MockableStateRootHash};
@@ -171,6 +171,40 @@ impl SwarmRelation for NoSerSwarm {
     type TxPool = MockTxPool;
 
     type RouterScheduler = NoSerRouterScheduler<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+    >;
+
+    type Pipeline = GenericTransformerPipeline<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::TransportMessage,
+    >;
+
+    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
+
+    type StateRootHashExecutor = MockStateRootHashNop<
+        Block<Self::SignatureCollectionType>,
+        Self::SignatureType,
+        Self::SignatureCollectionType,
+    >;
+}
+
+pub struct BytesSwarm;
+impl SwarmRelation for BytesSwarm {
+    type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<Self::SignatureType>;
+
+    type TransportMessage = Bytes;
+
+    type BlockValidator = MockValidator;
+    type StateRootValidator = StateRoot;
+    type ValidatorSetTypeFactory =
+        ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type TxPool = MockTxPool;
+
+    type RouterScheduler = BytesRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,

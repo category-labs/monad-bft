@@ -94,7 +94,7 @@ where
         ));
     }
 
-    while swarm.step_until(&terminator).is_some() {}
+    while swarm.step_until(&mut terminator.clone()).is_some() {}
 
     if let Some(liveness_length) = liveness {
         let liveness_transformer =
@@ -110,6 +110,6 @@ where
         // extend the expected termination condition
         terminator.extend_all(liveness_length);
         // run all nodes all connected until expected_block + liveness block check is achieved
-        while swarm.step_until(&terminator).is_some() {}
+        while swarm.step_until(&mut terminator.clone()).is_some() {}
     }
 }

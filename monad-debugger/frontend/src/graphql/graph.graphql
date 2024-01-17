@@ -1,0 +1,12 @@
+query Graph {
+  currentTick
+  nodes {
+    id
+    pendingMessages {
+      fromId
+      fromTick
+      rxTick
+      size
+    }
+  }
+}
