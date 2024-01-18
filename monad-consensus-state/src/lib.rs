@@ -1183,20 +1183,6 @@ mod test {
                 _ => None,
             })
             .expect("proposal")
-
-        // cmds.into_iter()
-        //     .filter_map(|c| match c {
-        //         ConsensusCommand::Publish {
-        //             target: RouterTarget::Broadcast,
-        //             message,
-        //         } => match message.into_inner() {
-        //             ConsensusMessage::Proposal(proposal) => Some(proposal),
-        //             _ => None,
-        //         },
-        //         _ => None,
-        //     })
-        //     .collect::<Vec<_>>()
-        //     .remove(0)
     }
 
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
@@ -1462,10 +1448,16 @@ mod test {
 
     #[test]
     fn test_out_of_order_proposals() {
-        let perms = (0..4).permutations(4).collect::<Vec<_>>();
-
-        for perm in perms {
-            out_of_order_proposals(perm);
+        // Permutation of 1 message isn't interesting to test. Plus p4 can
+        // commit p2 before p3 is received
+        //
+        // 2..=5 enumerates all possible leader cases as we have 4 validators
+        // in a round-robin
+        for n in 2..=5 {
+            let perms = (0..n).permutations(n).collect::<Vec<_>>();
+            for perm in perms {
+                out_of_order_proposals(perm);
+            }
         }
     }
 
@@ -1568,7 +1560,12 @@ mod test {
             &election,
         );
 
-        // confirm the size of the pending_block_tree (p1, p2, p_fut)
+        // was in Round(2) and skipped over perms.len() proposals. Handling
+        // p_fut should be at Round(3+perms.len())
+        assert_eq!(
+            state.pacemaker.get_current_round(),
+            Round(3 + perms.len() as u64)
+        );
         assert_eq!(state.pending_block_tree.size(), 3);
 
         // missed proposals now arrive
@@ -1582,51 +1579,6 @@ mod test {
                 &val_epoch_map,
                 &election,
             ));
-        }
-
-        let _self_id = state.nodeid;
-        let mut more_proposals = true;
-
-        // FIXME: revisit this block: unicast proposal doesn't make sense
-        while more_proposals {
-            cmds = cmds
-                .into_iter()
-                .filter(|m| match m {
-                    ConsensusCommand::Publish { target, message } => {
-                        matches!(target, RouterTarget::PointToPoint(_))
-                            && matches!(message.deref().deref(), ConsensusMessage::Proposal(_))
-                    }
-                    _ => false,
-                })
-                .collect::<Vec<_>>();
-
-            let mut proposals = Vec::new();
-            let c = if cmds.is_empty() {
-                break;
-            } else {
-                cmds.remove(0)
-            };
-
-            match c {
-                ConsensusCommand::Publish {
-                    target: RouterTarget::PointToPoint(_self_id),
-                    message,
-                } => {
-                    if let ConsensusMessage::Proposal(m) = message.deref().deref() {
-                        proposals.extend(state.handle_proposal_message(
-                            m.block.0.author,
-                            m.clone(),
-                            &mut epoch_manager,
-                            &val_epoch_map,
-                            &election,
-                        ));
-                    } else {
-                        more_proposals = false;
-                    }
-                }
-                _ => more_proposals = false,
-            }
-            cmds.extend(proposals);
         }
 
         // next proposal will trigger everything to be committed if there is
