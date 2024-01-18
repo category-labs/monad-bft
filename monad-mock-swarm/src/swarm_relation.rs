@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use monad_async_state_verify::{AsyncStateVerifyProcess, LocalAsyncStateVerify};
 use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block,
@@ -38,6 +39,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
     <S as SwarmRelation>::TxPool,
+    <S as SwarmRelation>::AsyncStateRootVerify,
 >;
 pub trait SwarmRelation
 where
@@ -63,6 +65,10 @@ where
         + Sync
         + Unpin;
     type TxPool: TxPool + Send + Sync + Unpin;
+    type AsyncStateRootVerify: AsyncStateVerifyProcess<CertificateSignaturePubKey<Self::SignatureType>>
+        + Send
+        + Sync
+        + Unpin;
 
     type RouterScheduler: RouterScheduler<
             NodeIdPublicKey = CertificateSignaturePubKey<Self::SignatureType>,
@@ -113,6 +119,12 @@ impl SwarmRelation for DebugSwarmRelation {
             + Sync,
     >;
     type TxPool = Box<dyn TxPool + Send + Sync>;
+    type AsyncStateRootVerify = Box<
+        dyn AsyncStateVerifyProcess<CertificateSignaturePubKey<Self::SignatureType>>
+            + Send
+            + Sync
+            + Unpin,
+    >;
 
     type RouterScheduler = Box<
         dyn RouterScheduler<
@@ -169,6 +181,8 @@ impl SwarmRelation for NoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify =
+        LocalAsyncStateVerify<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -238,6 +252,8 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify =
+        LocalAsyncStateVerify<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,

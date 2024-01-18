@@ -18,6 +18,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     transaction_pool: impl Fn() -> S::TxPool,
     block_validator: impl Fn() -> S::BlockValidator,
     state_root_validator: impl Fn() -> S::StateRootValidator,
+    async_state_verify: impl Fn() -> S::AsyncStateRootVerify,
 
     delta: Duration,
     proposal_txn_limit: usize,
@@ -32,6 +33,7 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::TxPool,
         S::BlockValidator,
         S::StateRootValidator,
+        S::AsyncStateRootVerify,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -62,6 +64,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             transaction_pool: transaction_pool(),
             block_validator: block_validator(),
             state_root_validator: state_root_validator(),
+            async_state_verify: async_state_verify(),
             validators: validator_data.clone(),
 
             key,

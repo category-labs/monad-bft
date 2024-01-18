@@ -25,6 +25,8 @@ where
                 }
                 VerifiedMonadMessage::CascadeTxns(msg) => {
                     proto_monad_message::OneofMessage::CascadeTxns(msg.into())
+                VerifiedMonadMessage::PeerStateRootMessage(msg) => {
+                    proto_monad_message::OneofMessage::PeerStateRoot(msg.into())
                 }
             }),
         }
@@ -51,6 +53,8 @@ where
             }
             Some(proto_monad_message::OneofMessage::CascadeTxns(msg)) => {
                 MonadMessage::CascadeTxns(msg.try_into()?)
+            Some(proto_monad_message::OneofMessage::PeerStateRoot(msg)) => {
+                MonadMessage::PeerStateRoot(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

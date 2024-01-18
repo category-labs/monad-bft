@@ -4,15 +4,15 @@ use monad_consensus_types::{
     convert::signing::{certificate_signature_to_proto, proto_to_certificate_signature},
     signature_collection::SignatureCollection,
 };
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{error::ProtoError, proto::message::*};
 
 use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncResponseMessage, CascadeTxMessage, ProposalMessage, RequestBlockSyncMessage,
-            TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage, ProposalMessage,
+            RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
         },
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
@@ -224,5 +224,54 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
             Self::Error::MissingRequiredField("Unverified<ConsensusMessage>.signature".to_owned()),
         )?)?;
         Ok(Unverified::new(Unvalidated::new(message), signature))
+    }
+}
+
+// TODO-2: PeerStateRootMessage doesn't belong to monad-consensus. Create a new
+// crate for it?
+impl<P: PubKey> From<&Validated<PeerStateRootMessage<P>>> for ProtoPeerStateRootMessage {
+    fn from(value: &Validated<PeerStateRootMessage<P>>) -> Self {
+        let msg = value.deref();
+        Self {
+            peer: Some((&msg.peer).into()),
+            seq_num: Some((&msg.seq_num).into()),
+            round: Some((&msg.round).into()),
+            state_root: Some((&msg.state_root).into()),
+        }
+    }
+}
+
+impl<P: PubKey> TryFrom<ProtoPeerStateRootMessage> for Unvalidated<PeerStateRootMessage<P>> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoPeerStateRootMessage) -> Result<Self, Self::Error> {
+        let msg = PeerStateRootMessage {
+            peer: value
+                .peer
+                .ok_or(ProtoError::MissingRequiredField(
+                    "PeerStateRootMessage.peer".to_owned(),
+                ))?
+                .try_into()?,
+            seq_num: value
+                .seq_num
+                .ok_or(ProtoError::MissingRequiredField(
+                    "PeerStateRootMessage.seq_num".to_owned(),
+                ))?
+                .try_into()?,
+            round: value
+                .round
+                .ok_or(ProtoError::MissingRequiredField(
+                    "PeerStateRootMessage.round".to_owned(),
+                ))?
+                .try_into()?,
+            state_root: value
+                .state_root
+                .ok_or(ProtoError::MissingRequiredField(
+                    "PeerStateRootMessage.state_root_hash".to_owned(),
+                ))?
+                .try_into()?,
+        };
+
+        Ok(Unvalidated::new(msg))
     }
 }

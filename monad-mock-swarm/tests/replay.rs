@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block::{Block, BlockType},
     block_validator::MockValidator,
@@ -47,6 +48,8 @@ impl SwarmRelation for ReplaySwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify =
+        LocalAsyncStateVerify<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -88,6 +91,7 @@ pub fn recover_nodes_msg_delays(
         MockTxPool::default,
         || MockValidator,
         || NopStateRoot,
+        LocalAsyncStateVerify::new,
         Duration::from_millis(101), // delta
         proposal_size,              // proposal_tx_limit
         val_set_update_interval,    // val_set_update_interval
@@ -162,6 +166,7 @@ pub fn recover_nodes_msg_delays(
         MockTxPool::default,
         || MockValidator,
         || NopStateRoot,
+        LocalAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         proposal_size,            // proposal_tx_limit
         val_set_update_interval,  // val_set_update_interval

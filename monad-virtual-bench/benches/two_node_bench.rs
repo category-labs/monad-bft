@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -28,6 +29,7 @@ fn two_nodes_virtual() -> u128 {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval

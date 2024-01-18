@@ -1,9 +1,11 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_crypto::certificate_signature::{CertificateSignatureRecoverable, PubKey};
 use monad_proto::{error::ProtoError, proto::event::*};
 use monad_types::convert::{proto_to_pubkey, pubkey_to_proto};
 
-use crate::{BlockSyncEvent, FetchedBlock, MempoolEvent, MonadEvent, ValidatorEvent};
+use crate::{
+    AsyncStateVerifyEvent, BlockSyncEvent, FetchedBlock, MempoolEvent, MonadEvent, ValidatorEvent,
+};
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
     fn from(value: &FetchedBlock<SCT>) -> Self {
@@ -59,6 +61,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
                 proto_monad_event::Event::ValidatorEvent(event.into())
             }
             MonadEvent::MempoolEvent(event) => proto_monad_event::Event::MempoolEvent(event.into()),
+            MonadEvent::AsyncStateVerifyEvent(event) => {
+                proto_monad_event::Event::AsyncStateVerifyEvent(event.into())
+            }
         };
         Self { event: Some(event) }
     }
@@ -81,6 +86,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::MempoolEvent(event)) => {
                 MonadEvent::MempoolEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::AsyncStateVerifyEvent(event)) => {
+                MonadEvent::AsyncStateVerifyEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -225,6 +233,87 @@ impl<SCT: SignatureCollection> TryFrom<ProtoMempoolEvent> for MempoolEvent<SCT> 
             ))?,
         };
 
+        Ok(event)
+    }
+}
+
+impl<P: PubKey> From<&AsyncStateVerifyEvent<P>> for ProtoAsyncStateVerifyEvent {
+    fn from(value: &AsyncStateVerifyEvent<P>) -> Self {
+        let event = match value {
+            AsyncStateVerifyEvent::PeerStateRoot {
+                sender,
+                unvalidated_message,
+            } => proto_async_state_verify_event::Event::PeerStateRoot(
+                ProtoPeerStateUpdateWithSender {
+                    sender: Some(pubkey_to_proto(sender)),
+                    message: Some(unvalidated_message.into()),
+                },
+            ),
+            AsyncStateVerifyEvent::LocalStateRoot {
+                seq_num,
+                round,
+                state_root,
+            } => proto_async_state_verify_event::Event::LocalStateRoot(ProtoStateUpdateEvent {
+                seq_num: Some(seq_num.into()),
+                round: Some(round.into()),
+                state_root_hash: Some(state_root.into()),
+            }),
+        };
+        Self { event: Some(event) }
+    }
+}
+
+impl<P: PubKey> TryFrom<ProtoAsyncStateVerifyEvent> for AsyncStateVerifyEvent<P> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoAsyncStateVerifyEvent) -> Result<Self, Self::Error> {
+        let event = match value.event {
+            Some(proto_async_state_verify_event::Event::PeerStateRoot(event)) => {
+                let sender =
+                    proto_to_pubkey(event.sender.ok_or(ProtoError::MissingRequiredField(
+                        "AsyncStateVerifyEvent.PeerStateRoot.sender".to_owned(),
+                    ))?)?;
+                let unvalidated_message = event
+                    .message
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "AsyncStateVerifyEvent.PeerStateRoot.message".to_owned(),
+                    ))?
+                    .try_into()?;
+                AsyncStateVerifyEvent::PeerStateRoot {
+                    sender,
+                    unvalidated_message,
+                }
+            }
+            Some(proto_async_state_verify_event::Event::LocalStateRoot(event)) => {
+                let seq_num = event
+                    .seq_num
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "AsyncStateVerifyEvent.LocalStateRoot.seq_num".to_owned(),
+                    ))?
+                    .try_into()?;
+                let round = event
+                    .round
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "AsyncStateVerifyEvent.LocalStateRoot.round".to_owned(),
+                    ))?
+                    .try_into()?;
+                let state_root = event
+                    .state_root_hash
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "AsyncStateVerifyEvent.LocalStateRoot.state_root".to_owned(),
+                    ))?
+                    .try_into()?;
+
+                AsyncStateVerifyEvent::LocalStateRoot {
+                    seq_num,
+                    round,
+                    state_root,
+                }
+            }
+            None => Err(ProtoError::MissingRequiredField(
+                "AsyncStateVerifyEvent.event".to_owned(),
+            ))?,
+        };
         Ok(event)
     }
 }

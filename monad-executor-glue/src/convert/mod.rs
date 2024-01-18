@@ -41,12 +41,15 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
                     })
                 }
             },
-            ConsensusEvent::StateUpdate((seq_num, hash)) => {
-                proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
-                    seq_num: Some(seq_num.into()),
-                    state_root_hash: Some(hash.into()),
-                })
-            }
+            ConsensusEvent::StateUpdate {
+                seq_num,
+                round,
+                state_root,
+            } => proto_consensus_event::Event::StateUpdate(ProtoStateUpdateEvent {
+                seq_num: Some(seq_num.into()),
+                round: Some(round.into()),
+                state_root_hash: Some(state_root.into()),
+            }),
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
@@ -96,20 +99,30 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                 })
             }
             Some(proto_consensus_event::Event::StateUpdate(event)) => {
-                let h = event
+                let state_root = event
                     .state_root_hash
                     .ok_or(ProtoError::MissingRequiredField(
                         "ConsensusEvent::StateUpdate::state_root_hash".to_owned(),
                     ))?
                     .try_into()?;
-                let s = event
+                let seq_num = event
                     .seq_num
                     .ok_or(ProtoError::MissingRequiredField(
                         "ConsensusEvent::StateUpdate::seq_num".to_owned(),
                     ))?
                     .try_into()?;
+                let round = event
+                    .round
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::StateUpdate::round".to_owned(),
+                    ))?
+                    .try_into()?;
 
-                ConsensusEvent::StateUpdate((s, h))
+                ConsensusEvent::StateUpdate {
+                    seq_num,
+                    round,
+                    state_root,
+                }
             }
             Some(proto_consensus_event::Event::BlockSyncResp(event)) => {
                 let sender =

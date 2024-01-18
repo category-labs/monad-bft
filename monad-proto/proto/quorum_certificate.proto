@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package monad_proto.quorum_certificate;
 
-import "ledger.proto";
 import "signing.proto";
 import "voting.proto";
 

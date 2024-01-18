@@ -6,6 +6,7 @@ use std::{
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
@@ -133,6 +134,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         transaction_pool: EthTxPool::default(),
         block_validator: MockValidator,
         state_root_validator: NopStateRoot {},
+        async_state_verify: LocalAsyncStateVerify::new(),
         validators,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,

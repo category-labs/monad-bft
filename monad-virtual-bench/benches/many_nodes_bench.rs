@@ -4,6 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
@@ -48,6 +49,8 @@ impl SwarmRelation for NopSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify =
+        LocalAsyncStateVerify<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type RouterScheduler = QuicRouterScheduler<
         MockGossip<NodeIdPubKey>,
@@ -80,6 +83,8 @@ impl SwarmRelation for BlsSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify =
+        LocalAsyncStateVerify<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type RouterScheduler = QuicRouterScheduler<
         MockGossip<NodeIdPubKey>,
@@ -111,6 +116,7 @@ fn many_nodes_nop_timeout() -> u128 {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(20), // delta
         0,                         // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
@@ -179,6 +185,7 @@ fn many_nodes_bls_timeout() -> u128 {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(20), // delta
         0,                         // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval

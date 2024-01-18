@@ -716,6 +716,9 @@ where
             if !blocks_to_commit.is_empty() {
                 for block in blocks_to_commit.iter() {
                     epoch_manager.schedule_epoch_start(block.get_seq_num(), block.get_round());
+                    if block.payload.txns == FullTransactionList::empty() {
+                        inc_count!(commit_empty_block);
+                    }
                 }
 
                 cmds.extend(

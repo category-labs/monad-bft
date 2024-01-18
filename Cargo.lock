@@ -2267,6 +2267,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-async-state-verify"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "monad-proto",
+ "monad-types",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -2326,6 +2335,7 @@ name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -2557,6 +2567,7 @@ dependencies = [
  "criterion",
  "futures",
  "itertools 0.10.5",
+ "monad-async-state-verify",
  "monad-bls",
  "monad-consensus",
  "monad-consensus-state",
@@ -2618,6 +2629,7 @@ dependencies = [
  "futures-util",
  "hex",
  "log",
+ "monad-async-state-verify",
  "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -2685,6 +2697,7 @@ name = "monad-randomized-tests"
 version = "0.1.0"
 dependencies = [
  "inventory",
+ "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
  "monad-mock-swarm",
@@ -2725,6 +2738,7 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-async-state-verify",
  "monad-blocktree",
  "monad-bls",
  "monad-consensus",
@@ -2756,6 +2770,7 @@ dependencies = [
  "clap 4.4.10",
  "env_logger",
  "futures-util",
+ "monad-async-state-verify",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -2789,6 +2804,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "monad-async-state-verify",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -2860,6 +2876,7 @@ name = "monad-twins-utils"
 version = "0.1.0"
 dependencies = [
  "itertools 0.10.5",
+ "monad-async-state-verify",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -2928,6 +2945,7 @@ name = "monad-virtual-bench"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-async-state-verify",
  "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",

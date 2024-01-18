@@ -39,3 +39,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true, features = ["log"] }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
+monad-async-state-verify = { path = "../monad-async-state-verify" }

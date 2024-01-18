@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
@@ -35,6 +36,8 @@ impl SwarmRelation for BLSSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify =
+        LocalAsyncStateVerify<CertificateSignaturePubKey<Self::SignatureType>>;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -71,6 +74,7 @@ fn two_nodes_bls() {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval

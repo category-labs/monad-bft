@@ -1,4 +1,5 @@
 mod common;
+
 use std::{collections::BTreeSet, time::Duration};
 
 use monad_async_state_verify::LocalAsyncStateVerify;
@@ -12,35 +13,20 @@ use monad_mock_swarm::{
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_tracing_counter::{
-    counter::{CounterLayer, MetricFilter},
-    counter_status,
-};
+use monad_tracing_counter::counter::counter_get;
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::mock::MockWALoggerConfig;
-use tracing_core::LevelFilter;
-use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 
+use crate::common::setup_counter;
 #[test]
-fn many_nodes_metrics() {
-    let fmt_layer = tracing_subscriber::fmt::layer();
-    let counter_layer = CounterLayer::default();
-
-    let subscriber = Registry::default()
-        .with(
-            fmt_layer
-                .with_filter(MetricFilter {})
-                .with_filter(Targets::new().with_default(LevelFilter::INFO)),
-        )
-        .with(counter_layer);
-
-    tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
+fn two_nodes_noser() {
+    let counter = setup_counter();
 
     let state_configs = make_state_configs::<NoSerSwarm>(
-        100, // num_nodes
+        2, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         MockTxPool::default,
@@ -52,7 +38,7 @@ fn many_nodes_metrics() {
         },
         LocalAsyncStateVerify::new,
         Duration::from_millis(2), // delta
-        0,                        // proposal_tx_limit
+        10,                       // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
     );
@@ -83,10 +69,11 @@ fn many_nodes_metrics() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)))
+        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
     swarm_ledger_verification(&swarm, 1024);
 
-    counter_status!();
+    let empty_blocks = counter_get(counter, None, "commit_empty_block");
+    assert!(empty_blocks.is_none());
 }

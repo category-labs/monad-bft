@@ -5,6 +5,7 @@ use std::{
 };
 
 use common::QuicSwarm;
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -38,6 +39,7 @@ fn many_nodes_noser() {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
@@ -88,6 +90,7 @@ fn many_nodes_quic() {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(10), // delta
         150,                       // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
@@ -150,6 +153,7 @@ fn many_nodes_quic_bw() {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::new,
         Duration::from_millis(300), // delta
         5000,                       // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval

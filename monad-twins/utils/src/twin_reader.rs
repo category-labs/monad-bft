@@ -7,6 +7,7 @@ use std::{
 };
 
 use itertools::{izip, Itertools};
+use monad_async_state_verify::AsyncStateVerifyProcess;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block_validator::BlockValidator,
@@ -67,7 +68,7 @@ struct TwinsTestCaseRaw {
     expected_block: Option<BTreeMap<String, usize>>,
 }
 
-pub struct FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>
+pub struct FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -76,9 +77,10 @@ where
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    ASVT: AsyncStateVerifyProcess<CertificateSignaturePubKey<ST>>,
 {
     id: ID<CertificateSignaturePubKey<ST>>,
-    state_config: MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT>,
+    state_config: MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
     partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 
@@ -90,7 +92,8 @@ where
     is_honest: bool,
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT> Clone for FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> Clone
+    for FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -99,6 +102,7 @@ where
     TT: TxPool + Default,
     BVT: BlockValidator + Clone,
     SVT: StateRootValidator + Clone,
+    ASVT: AsyncStateVerifyProcess<CertificateSignaturePubKey<ST>> + Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -109,6 +113,7 @@ where
                 transaction_pool: TT::default(),
                 block_validator: self.state_config.block_validator.clone(),
                 state_root_validator: self.state_config.state_root_validator.clone(),
+                async_state_verify: self.state_config.async_state_verify.clone(),
 
                 validators: self.state_config.validators.clone(),
                 key: CertificateKeyPair::from_bytes(&mut self.key_secret.clone()).unwrap(),
@@ -135,7 +140,8 @@ where
     }
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT> Debug for FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> Debug
+    for FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -144,6 +150,7 @@ where
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    ASVT: AsyncStateVerifyProcess<CertificateSignaturePubKey<ST>>,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -154,7 +161,7 @@ where
     }
 }
 
-pub struct TwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>
+pub struct TwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -163,15 +170,17 @@ where
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    ASVT: AsyncStateVerifyProcess<CertificateSignaturePubKey<ST>>,
 {
     pub id: ID<CertificateSignaturePubKey<ST>>,
-    pub state_config: MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT>,
+    pub state_config: MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
     pub partition: BTreeMap<Round, Vec<ID<CertificateSignaturePubKey<ST>>>>,
     pub default_partition: Vec<ID<CertificateSignaturePubKey<ST>>>,
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT> From<FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>>
-    for TwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+    From<FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>>
+    for TwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -180,8 +189,9 @@ where
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    ASVT: AsyncStateVerifyProcess<CertificateSignaturePubKey<ST>>,
 {
-    fn from(value: FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT>) -> Self {
+    fn from(value: FullTwinsNodeConfig<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>) -> Self {
         let FullTwinsNodeConfig {
             id,
             state_config,
@@ -219,6 +229,7 @@ where
             S::TxPool,
             S::BlockValidator,
             S::StateRootValidator,
+            S::AsyncStateRootVerify,
         >,
     >,
 }
@@ -230,6 +241,7 @@ where
     S::LeaderElection: Default + Clone,
     S::TxPool: Default,
     S::BlockValidator: Default + Clone,
+    S::AsyncStateRootVerify: Default + Clone,
 {
     let raw_str = fs::read_to_string(path).expect("unable to read file in twins testing");
 
@@ -300,12 +312,14 @@ where
             S::TxPool,
             S::BlockValidator,
             S::StateRootValidator,
+            S::AsyncStateRootVerify,
         > {
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
             transaction_pool: S::TxPool::default(),
             block_validator: S::BlockValidator::default(),
             state_root_validator: StateRoot::new(monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
+            async_state_verify: S::AsyncStateRootVerify::default(),
             validators: validator_data.clone(),
 
             key,

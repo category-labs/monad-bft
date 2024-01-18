@@ -21,6 +21,7 @@ use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand, MonadEvent,
     RouterCommand, StateRootHashCommand, TimerCommand,
 };
+use monad_tracing_counter::inc_count;
 use monad_types::{NodeId, RouterTarget, TimeoutVariant};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
@@ -29,7 +30,7 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT>
+pub(super) struct ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -43,10 +44,10 @@ where
     leader_election: &'a LT,
     txpool: &'a mut TT,
 
-    _phantom: PhantomData<ST>,
+    _phantom: PhantomData<(ST, ASVT)>,
 }
 
-impl<'a, CP, ST, SCT, VTF, LT, TT> ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT>
+impl<'a, CP, ST, SCT, VTF, LT, TT, ASVT> ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT, ASVT>
 where
     CP: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
@@ -55,7 +56,7 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VTF, LT, TT>) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VTF, LT, TT, ASVT>) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
             epoch_manager: &mut monad_state.epoch_manager,
@@ -153,8 +154,13 @@ where
                 }
             },
 
-            ConsensusEvent::StateUpdate((seq_num, root_hash)) => {
-                self.consensus.handle_state_root_update(seq_num, root_hash);
+            ConsensusEvent::StateUpdate {
+                seq_num,
+                round: _round,
+                state_root,
+            } => {
+                inc_count!(state_root_update);
+                self.consensus.handle_state_root_update(seq_num, state_root);
                 Vec::new()
             }
 
@@ -186,7 +192,7 @@ where
         };
         consensus_cmds
             .into_iter()
-            .map(|cmd| WrappedConsensusCommand(cmd))
+            .map(WrappedConsensusCommand)
             .collect::<Vec<_>>()
     }
 }

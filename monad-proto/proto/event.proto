@@ -45,7 +45,8 @@ message ProtoUpdateValidatorsEvent {
 
 message ProtoStateUpdateEvent {
   monad_proto.basic.ProtoSeqNum seq_num = 1;
-  monad_proto.basic.ProtoHash state_root_hash = 2;
+  monad_proto.basic.ProtoRound round = 2;
+  monad_proto.basic.ProtoHash state_root_hash = 3;
 }
 
 message ProtoBlockSyncRequestWithSender {
@@ -96,11 +97,25 @@ message ProtoMempoolEvent {
   }
 }
 
+message ProtoPeerStateUpdateWithSender {
+  monad_proto.basic.ProtoPubkey sender = 1;
+  monad_proto.message.ProtoPeerStateRootMessage message = 2;  
+}
+
+
+message ProtoAsyncStateVerifyEvent {
+  oneof event {
+    ProtoPeerStateUpdateWithSender peer_state_root = 1;
+    ProtoStateUpdateEvent local_state_root = 2;
+  }
+}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
+    ProtoAsyncStateVerifyEvent async_state_verify_event = 5 ;
   }
 }

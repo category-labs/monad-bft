@@ -1,3 +1,4 @@
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::NopStateRoot,
@@ -136,6 +137,7 @@ type MonadStateType<ST, SCT> = MonadState<
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     EthTxPool,
+    LocalAsyncStateVerify<CertificateSignaturePubKey<ST>>,
 >;
 
 pub struct StateConfig<ST, SCT>
@@ -178,6 +180,7 @@ where
         transaction_pool: EthTxPool::default(),
         block_validator: MockValidator {},
         state_root_validator: NopStateRoot::default(),
+        async_state_verify: LocalAsyncStateVerify::new(),
         validators: config.validators,
         key: config.key,
         certkey: config.cert_key,

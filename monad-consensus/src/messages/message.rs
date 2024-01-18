@@ -6,10 +6,10 @@ use monad_consensus_types::{
     voting::Vote,
 };
 use monad_crypto::{
-    certificate_signature::CertificateSignature,
-    hasher::{Hashable, Hasher, HasherType},
+    certificate_signature::{CertificateSignature, PubKey},
+    hasher::{Hash as ConsensusHash, Hashable, Hasher, HasherType},
 };
-use monad_types::{BlockId, EnumDiscriminant};
+use monad_types::{BlockId, EnumDiscriminant, NodeId, Round, SeqNum};
 
 /// Consensus protocol vote message
 ///
@@ -149,4 +149,12 @@ impl Hashable for CascadeTxMessage {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(&self.txns);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerStateRootMessage<P: PubKey> {
+    pub peer: NodeId<P>,
+    pub seq_num: SeqNum,
+    pub round: Round,
+    pub state_root: ConsensusHash,
 }
