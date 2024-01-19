@@ -2242,9 +2242,7 @@ name = "monad-executor"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "monad-consensus-types",
  "monad-crypto",
- "monad-executor-glue",
  "monad-types",
 ]
 
@@ -2501,7 +2499,6 @@ dependencies = [
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
- "monad-executor",
  "monad-executor-glue",
  "monad-multi-sig",
  "monad-proto",

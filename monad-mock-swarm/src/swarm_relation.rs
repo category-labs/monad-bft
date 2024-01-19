@@ -2,22 +2,26 @@ use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block,
     block_validator::{BlockValidator, MockValidator},
-    payload::StateRoot,
+    payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
-    txpool::MockTxPool,
+    txpool::{MockTxPool, TxPool},
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
-use monad_executor::{timed_event::TimedEvent, State};
-use monad_executor_glue::{Message, MonadEvent};
+use monad_executor::timed_event::TimedEvent;
+use monad_executor_glue::MonadEvent;
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterScheduler};
-use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_updaters::state_root_hash::{MockStateRootHashNop, MockableStateRootHash};
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{
+    leader_election::LeaderElection,
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSet, ValidatorSetType},
+};
 use monad_wal::{
     mock::{MockWALogger, MockWALoggerConfig},
     PersistenceLogger,
@@ -25,40 +29,40 @@ use monad_wal::{
 
 use crate::transformer::MonadMessageTransformerPipeline;
 
+pub type SwarmRelationStateType<S> = MonadState<
+    ConsensusState<
+        <S as SwarmRelation>::SignatureType,
+        <S as SwarmRelation>::SignatureCollectionType,
+        <S as SwarmRelation>::BlockValidator,
+        <S as SwarmRelation>::StateRootValidator,
+    >,
+    <S as SwarmRelation>::SignatureType,
+    <S as SwarmRelation>::SignatureCollectionType,
+    <S as SwarmRelation>::ValidatorSet,
+    <S as SwarmRelation>::LeaderElection,
+    <S as SwarmRelation>::TxPool,
+>;
 pub trait SwarmRelation {
     type SignatureType: CertificateSignatureRecoverable + Unpin;
     type SignatureCollectionType: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
         + Unpin;
 
-    type InboundMessage: Message<
+    type TransportMessage: PartialEq + Eq + Send + Sync;
+
+    type BlockValidator: BlockValidator + Clone;
+    type StateRootValidator: StateRootValidator;
+    type ValidatorSet: ValidatorSetType<
         NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
-        Event = <Self::State as State>::Event,
     >;
-    type OutboundMessage: Clone;
-    type TransportMessage: PartialEq + Eq + Send;
-
-    type TransactionValidator: BlockValidator + Clone;
-
-    type State: State<
-        Block = Block<Self::SignatureCollectionType>,
-        Config = MonadConfig<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            Self::TransactionValidator,
-        >,
-        Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
-        NodeIdSignature = Self::SignatureType,
-        SignatureCollection = Self::SignatureCollectionType,
-        Message = Self::InboundMessage,
-        OutboundMessage = Self::OutboundMessage,
-    >;
+    type LeaderElection: LeaderElection;
+    type TxPool: TxPool;
 
     type RouterSchedulerConfig;
     type RouterScheduler: RouterScheduler<
         NodeIdPublicKey = CertificateSignaturePubKey<Self::SignatureType>,
         Config = Self::RouterSchedulerConfig,
-        InboundMessage = Self::InboundMessage,
-        OutboundMessage = Self::OutboundMessage,
+        InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         TransportMessage = Self::TransportMessage,
     >;
 
@@ -74,7 +78,7 @@ pub trait SwarmRelation {
     >;
 
     type StateRootHashExecutor: MockableStateRootHash<
-        Block = <Self::State as State>::Block,
+        Block = Block<Self::SignatureCollectionType>,
         Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
         SignatureCollection = Self::SignatureCollectionType,
     >;
@@ -86,31 +90,20 @@ impl SwarmRelation for NoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
 
-    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::OutboundMessage;
+    type TransportMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type TransactionValidator = MockValidator;
-
-    type State = MonadState<
-        ConsensusState<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            Self::TransactionValidator,
-            StateRoot,
-        >,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
-        SimpleRoundRobin,
-        MockTxPool,
-    >;
+    type BlockValidator = MockValidator;
+    type StateRootValidator = StateRoot;
+    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin;
+    type TxPool = MockTxPool;
 
     type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        Self::InboundMessage,
-        Self::OutboundMessage,
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -123,7 +116,7 @@ impl SwarmRelation for NoSerSwarm {
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
-        <Self::State as State>::Block,
+        Block<Self::SignatureCollectionType>,
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;
@@ -134,31 +127,20 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
 
-    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::OutboundMessage;
+    type TransportMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type TransactionValidator = MockValidator;
-
-    type State = MonadState<
-        ConsensusState<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            Self::TransactionValidator,
-            StateRoot,
-        >,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
-        SimpleRoundRobin,
-        MockTxPool,
-    >;
+    type BlockValidator = MockValidator;
+    type StateRootValidator = StateRoot;
+    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin;
+    type TxPool = MockTxPool;
 
     type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        Self::InboundMessage,
-        Self::OutboundMessage,
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline =
@@ -169,7 +151,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
-        <Self::State as State>::Block,
+        Block<Self::SignatureCollectionType>,
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;

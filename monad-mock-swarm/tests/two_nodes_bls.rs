@@ -1,17 +1,16 @@
 use std::time::Duration;
 
 use monad_bls::BlsSignatureCollection;
-use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_executor::{timed_event::TimedEvent, State};
+use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::SwarmRelation};
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
 use monad_secp::SecpSignature;
-use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
 use monad_types::{Round, SeqNum};
@@ -25,31 +24,20 @@ impl SwarmRelation for BLSSwarm {
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
 
-    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::OutboundMessage;
+    type TransportMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type TransactionValidator = MockValidator;
-
-    type State = MonadState<
-        ConsensusState<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            MockValidator,
-            StateRoot,
-        >,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
-        SimpleRoundRobin,
-        MockTxPool,
-    >;
+    type BlockValidator = MockValidator;
+    type StateRootValidator = StateRoot;
+    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin;
+    type TxPool = MockTxPool;
 
     type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        Self::InboundMessage,
-        Self::OutboundMessage,
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -62,7 +50,7 @@ impl SwarmRelation for BLSSwarm {
         MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
-        <Self::State as State>::Block,
+        Block<Self::SignatureCollectionType>,
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;

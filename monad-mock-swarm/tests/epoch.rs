@@ -4,12 +4,12 @@ mod test {
     use std::{collections::HashSet, time::Duration};
 
     use itertools::Itertools;
-    use monad_consensus_state::{ConsensusProcess, ConsensusState};
+    use monad_consensus_state::ConsensusProcess;
     use monad_consensus_types::{
-        block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+        block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
-    use monad_executor::{timed_event::TimedEvent, State};
+    use monad_executor::timed_event::TimedEvent;
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
         mock_swarm::{Node, Nodes, UntilTerminator},
@@ -17,7 +17,7 @@ mod test {
     };
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
-    use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+    use monad_state::{MonadMessage, VerifiedMonadMessage};
     use monad_testutil::swarm::{create_and_run_nodes, get_configs, SwarmTestConfig};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
@@ -34,33 +34,21 @@ mod test {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
 
-        type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-        type OutboundMessage =
+        type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-        type TransportMessage = Self::OutboundMessage;
 
-        type TransactionValidator = MockValidator;
-
-        type State = MonadState<
-            ConsensusState<
-                Self::SignatureType,
-                Self::SignatureCollectionType,
-                Self::TransactionValidator,
-                StateRoot,
-            >,
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
-            SimpleRoundRobin,
-            MockTxPool,
-        >;
+        type BlockValidator = MockValidator;
+        type StateRootValidator = StateRoot;
+        type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
+        type LeaderElection = SimpleRoundRobin;
+        type TxPool = MockTxPool;
 
         type RouterSchedulerConfig =
             NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
-            Self::InboundMessage,
-            Self::OutboundMessage,
+            MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+            VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         >;
 
         type Pipeline = GenericTransformerPipeline<
@@ -74,7 +62,7 @@ mod test {
         >;
 
         type StateRootHashExecutor = MockStateRootHashSwap<
-            <Self::State as State>::Block,
+            Block<Self::SignatureCollectionType>,
             Self::SignatureType,
             Self::SignatureCollectionType,
         >;

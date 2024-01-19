@@ -41,7 +41,7 @@ pub fn get_configs<
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
 >(
-    tvt: BVT,
+    bvt: BVT,
     num_nodes: u16,
     delta: Duration,
     state_root_delay: u64,
@@ -55,7 +55,7 @@ pub fn get_configs<
     let (keys, cert_keys, _validators, validator_mapping) =
         create_keys_w_validators::<ST, SCT>(num_nodes as u32);
     complete_config::<ST, SCT, BVT>(
-        tvt,
+        bvt,
         keys,
         cert_keys,
         validator_mapping,
@@ -68,7 +68,7 @@ pub fn get_configs<
 }
 
 pub fn complete_config<ST, SCT, BVT>(
-    tvt: BVT,
+    bvt: BVT,
     keys: Vec<ST::KeyPairType>,
     cert_keys: Vec<SignatureCollectionKeyPairType<SCT>>,
     validator_mapping: ValidatorMapping<
@@ -98,7 +98,7 @@ where
         .into_iter()
         .zip(cert_keys)
         .map(|(key, certkey)| MonadConfig {
-            block_validator: tvt.clone(),
+            block_validator: bvt.clone(),
             key,
             certkey,
             val_set_update_interval,
@@ -153,7 +153,7 @@ pub fn node_ledger_verification<O: BlockType + PartialEq>(
 }
 
 pub fn create_and_run_nodes<S, R, T>(
-    tvt: S::TransactionValidator,
+    bvt: S::BlockValidator,
     router_scheduler_config: R,
     logger_config: S::LoggerConfig,
     pipeline: S::Pipeline,
@@ -172,8 +172,8 @@ where
     T: NodesTerminator<S>,
 {
     let (peers, state_configs) =
-        get_configs::<S::SignatureType, S::SignatureCollectionType, S::TransactionValidator>(
-            tvt,
+        get_configs::<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>(
+            bvt,
             swarm_config.num_nodes,
             swarm_config.consensus_delta,
             swarm_config.state_root_delay,
@@ -197,7 +197,7 @@ where
 pub fn run_nodes_until<S, R, T>(
     pubkeys: Vec<CertificateSignaturePubKey<S::SignatureType>>,
     state_configs: Vec<
-        MonadConfig<S::SignatureType, S::SignatureCollectionType, S::TransactionValidator>,
+        MonadConfig<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>,
     >,
     router_scheduler_config: R,
     logger_config: S::LoggerConfig,

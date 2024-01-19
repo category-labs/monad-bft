@@ -1,17 +1,10 @@
 use std::time::Duration;
 
-use monad_consensus_state::{ConsensusProcess, ConsensusState};
 use monad_consensus_types::{
-    block_validator::MockValidator,
-    payload::StateRoot,
-    signature_collection::SignatureCollection,
-    txpool::{MockTxPool, TxPool},
+    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
-    NopSignature,
-};
-use monad_executor::{timed_event::TimedEvent, State};
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
+use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock::MockExecutor,
@@ -20,16 +13,12 @@ use monad_mock_swarm::{
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
-use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
+use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_testutil::swarm::{get_configs, node_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{
-    leader_election::LeaderElection,
-    simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetType},
-};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
 use monad_wal::{
     mock::{MockMemLogger, MockMemLoggerConfig},
     PersistenceLogger,
@@ -42,31 +31,20 @@ impl SwarmRelation for ReplaySwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
 
-    type InboundMessage = MonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type OutboundMessage = VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
-    type TransportMessage = Self::OutboundMessage;
+    type TransportMessage =
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type TransactionValidator = MockValidator;
-
-    type State = MonadState<
-        ConsensusState<
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-            MockValidator,
-            StateRoot,
-        >,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-        ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>,
-        SimpleRoundRobin,
-        MockTxPool,
-    >;
+    type BlockValidator = MockValidator;
+    type StateRootValidator = StateRoot;
+    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin;
+    type TxPool = MockTxPool;
 
     type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
-        Self::InboundMessage,
-        Self::OutboundMessage,
+        MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
+        VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
 
     type Pipeline = GenericTransformerPipeline<
@@ -79,28 +57,20 @@ impl SwarmRelation for ReplaySwarm {
         MockMemLogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
-        <Self::State as State>::Block,
+        Block<Self::SignatureCollectionType>,
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;
 }
 
-fn run_nodes_until<S, CT, ST, SCT, VT, LT, TT>(
+fn run_nodes_until<S>(
     nodes: &mut Nodes<S>,
     start_tick: Duration,
     until_tick: Duration,
     until_block: usize,
 ) -> Duration
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, TT>>,
-
-    CT: ConsensusProcess<ST, SCT> + PartialEq + Eq,
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    LT: LeaderElection,
-    TT: TxPool,
-
+    S: SwarmRelation,
     MockExecutor<S>: Unpin,
     Node<S>: Send,
 {

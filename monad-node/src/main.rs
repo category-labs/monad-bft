@@ -13,13 +13,13 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_txpool::EthTxPool;
-use monad_executor::{Executor, State};
+use monad_executor::Executor;
 use monad_executor_glue::Message;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
 use monad_ledger::MonadFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, PubKey, SecpSignature};
-use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_state::{MonadConfig, MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
@@ -68,7 +68,6 @@ type MonadState = monad_state::MonadState<
     SimpleRoundRobin,
     EthTxPool,
 >;
-type MonadConfig = <MonadState as State>::Config;
 
 fn main() {
     let mut cmd = Cli::command();

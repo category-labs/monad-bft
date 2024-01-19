@@ -26,7 +26,6 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthAddress;
-use monad_executor::State;
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message, MonadEvent, ValidatorEvent,
 };
@@ -269,7 +268,7 @@ where
     pub consensus_config: ConsensusConfig,
 }
 
-impl<CT, ST, SCT, VT, LT, TT> State for MonadState<CT, ST, SCT, VT, LT, TT>
+impl<CT, ST, SCT, VT, LT, TT> MonadState<CT, ST, SCT, VT, LT, TT>
 where
     CT: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
@@ -278,26 +277,17 @@ where
     LT: LeaderElection,
     TT: TxPool,
 {
-    type Config = MonadConfig<ST, SCT, CT::BlockValidatorType>;
-    type Event = MonadEvent<ST, SCT>;
-    type Message = MonadMessage<ST, SCT>;
-    type OutboundMessage = VerifiedMonadMessage<ST, SCT>;
-    type Block = Block<SCT>;
-    type Checkpoint = Checkpoint<SCT>;
-    type NodeIdSignature = ST;
-    type SignatureCollection = SCT;
-
-    fn init(
-        config: Self::Config,
+    pub fn init(
+        config: MonadConfig<ST, SCT, CT::BlockValidatorType>,
     ) -> (
         Self,
         Vec<
             Command<
-                Self::Event,
-                Self::OutboundMessage,
-                Self::Block,
-                Self::Checkpoint,
-                Self::SignatureCollection,
+                MonadEvent<ST, SCT>,
+                VerifiedMonadMessage<ST, SCT>,
+                Block<SCT>,
+                Checkpoint<SCT>,
+                SCT,
             >,
         >,
     ) {
@@ -350,16 +340,16 @@ where
         (monad_state, init_cmds)
     }
 
-    fn update(
+    pub fn update(
         &mut self,
-        event: Self::Event,
+        event: MonadEvent<ST, SCT>,
     ) -> Vec<
         Command<
-            Self::Event,
-            Self::OutboundMessage,
-            Self::Block,
-            Self::Checkpoint,
-            Self::SignatureCollection,
+            MonadEvent<ST, SCT>,
+            VerifiedMonadMessage<ST, SCT>,
+            Block<SCT>,
+            Checkpoint<SCT>,
+            SCT,
         >,
     > {
         let _event_span = tracing::info_span!("event_span", ?event).entered();

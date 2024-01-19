@@ -172,11 +172,11 @@ where
     pub duplicates: BTreeMap<NodeId<CertificateSignaturePubKey<S::SignatureType>>, Vec<usize>>,
     pub nodes: BTreeMap<
         ID<CertificateSignaturePubKey<S::SignatureType>>,
-        TwinsNodeConfig<S::SignatureType, S::SignatureCollectionType, S::TransactionValidator>,
+        TwinsNodeConfig<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>,
     >,
 }
 
-pub fn read_twins_test<S>(tvt: S::TransactionValidator, path: &str) -> TwinsTestCase<S>
+pub fn read_twins_test<S>(tvt: S::BlockValidator, path: &str) -> TwinsTestCase<S>
 where
     S: SwarmRelation,
 {

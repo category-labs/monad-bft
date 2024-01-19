@@ -3,19 +3,11 @@ mod test {
     use std::{array::TryFromSliceError, fs::OpenOptions};
 
     use bytes::Bytes;
-    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
-    use monad_executor::State;
-    use monad_executor_glue::Message;
-    use monad_multi_sig::MultiSig;
-    use monad_testutil::block::MockBlock;
-    use monad_types::{Deserializable, NodeId, Serializable};
+    use monad_types::{Deserializable, Serializable};
     use monad_wal::{
         wal::{WALogger, WALoggerConfig},
         PersistenceLogger,
     };
-
-    type SignatureType = NopSignature;
-    type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestEvent {
@@ -39,75 +31,14 @@ mod test {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Eq, Default)]
     struct VecState {
         events: Vec<TestEvent>,
     }
 
-    impl PartialEq for VecState {
-        fn eq(&self, other: &Self) -> bool {
-            self.events.eq(&other.events)
-        }
-    }
-
-    impl Eq for VecState {}
-
-    struct VecStateConfig {}
-
-    #[derive(Clone)]
-    struct MockMessage;
-
-    impl Message for MockMessage {
-        type NodeIdPubKey = PubKeyType;
-        type Event = TestEvent;
-
-        fn event(self, _from: NodeId<Self::NodeIdPubKey>) -> Self::Event {
-            TestEvent { data: 0 }
-        }
-    }
-
-    impl State for VecState {
-        type Config = VecStateConfig;
-        type Event = TestEvent;
-        type OutboundMessage = MockMessage;
-        type Message = MockMessage;
-        type Block = MockBlock<PubKeyType>;
-        type Checkpoint = ();
-        type NodeIdSignature = SignatureType;
-        type SignatureCollection = MultiSig<SignatureType>;
-
-        fn init(
-            _config: Self::Config,
-        ) -> (
-            Self,
-            Vec<
-                monad_executor_glue::Command<
-                    Self::Event,
-                    Self::OutboundMessage,
-                    Self::Block,
-                    Self::Checkpoint,
-                    Self::SignatureCollection,
-                >,
-            >,
-        ) {
-            let state = VecState { events: Vec::new() };
-            (state, Vec::new())
-        }
-
-        fn update(
-            &mut self,
-            event: Self::Event,
-        ) -> Vec<
-            monad_executor_glue::Command<
-                Self::Event,
-                Self::OutboundMessage,
-                Self::Block,
-                Self::Checkpoint,
-                Self::SignatureCollection,
-            >,
-        > {
+    impl VecState {
+        fn update(&mut self, event: TestEvent) {
             self.events.push(event);
-            Vec::new()
         }
     }
 
@@ -142,7 +73,7 @@ mod test {
         let (mut logger1, events1): (WALogger<TestEvent>, _) =
             WALogger::new(logger1_config).unwrap();
         assert!(events1.is_empty());
-        let (mut state1, _) = VecState::init(VecStateConfig {});
+        let mut state1 = VecState::default();
         for event in events1 {
             state1.update(event);
         }
@@ -189,7 +120,7 @@ mod test {
 
         let (mut logger2, events2) = WALogger::new(logger2_config).unwrap();
         assert!(!events2.is_empty());
-        let (mut state2, _) = VecState::init(VecStateConfig {});
+        let mut state2 = VecState::default();
         for event in events2 {
             state2.update(event);
         }
@@ -213,7 +144,7 @@ mod test {
 
         let (_, events3) = WALogger::new(logger3_config).unwrap();
         assert!(!events3.is_empty());
-        let (mut state3, _) = VecState::init(VecStateConfig {});
+        let mut state3 = VecState::default();
         for event in events3 {
             state3.update(event);
         }

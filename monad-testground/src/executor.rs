@@ -8,7 +8,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
-use monad_executor::{BoxExecutor, Executor, State};
+use monad_executor::{BoxExecutor, Executor};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MonadEvent, RouterCommand, StateRootHashCommand,
 };

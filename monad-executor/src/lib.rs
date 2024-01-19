@@ -1,13 +1,6 @@
-pub mod replay_nodes;
 pub mod timed_event;
 
 use std::{ops::DerefMut, pin::Pin};
-
-use monad_consensus_types::{block::BlockType, signature_collection::SignatureCollection};
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
-};
-use monad_executor_glue::{Command, Message};
 
 /// An Executor executes Commands
 /// Commands generally are output by State
@@ -55,52 +48,7 @@ where
 
 pub type BoxExecutor<'a, C> = Pin<Box<dyn Executor<Command = C> + Send + Unpin + 'a>>;
 
-/// State is updated by an event and can output a list of commands in order to apply
-/// side-effects of the update.
-/// Commands are executed by Executors
-/// Generally, updaters produce an Event to update State
-pub trait State: Sized {
-    type Config;
-    type Message: Message<
-        NodeIdPubKey = CertificateSignaturePubKey<Self::NodeIdSignature>,
-        Event = Self::Event,
-    >;
-
-    type Event: Clone;
-    type OutboundMessage: Clone + Into<Self::Message>;
-    type Block: BlockType;
-    type Checkpoint;
-    type NodeIdSignature: CertificateSignatureRecoverable;
-    type SignatureCollection: SignatureCollection<
-        NodeIdPubKey = CertificateSignaturePubKey<Self::NodeIdSignature>,
-    >;
-
-    /// Create the initial State and any initial Commands for executors
-    fn init(
-        config: Self::Config,
-    ) -> (
-        Self,
-        Vec<
-            Command<
-                Self::Event,
-                Self::OutboundMessage,
-                Self::Block,
-                Self::Checkpoint,
-                Self::SignatureCollection,
-            >,
-        >,
-    );
-    /// Deliver an Event to State and returns a list of Commands for executors
-    fn update(
-        &mut self,
-        event: Self::Event,
-    ) -> Vec<
-        Command<
-            Self::Event,
-            Self::OutboundMessage,
-            Self::Block,
-            Self::Checkpoint,
-            Self::SignatureCollection,
-        >,
-    >;
-}
+// State is updated by an event and can output a list of commands in order to apply
+// side-effects of the update.
+// Commands are executed by Executors
+// Generally, updaters produce an Event to update State

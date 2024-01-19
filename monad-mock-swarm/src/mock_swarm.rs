@@ -6,18 +6,14 @@ use std::{
 
 use itertools::Itertools;
 use monad_consensus_state::ConsensusProcess;
-use monad_consensus_types::{
-    signature_collection::SignatureCollection, txpool::TxPool, validator_data::ValidatorData,
-};
-use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
-};
-use monad_executor::{timed_event::TimedEvent, Executor, State};
+use monad_consensus_types::validator_data::ValidatorData;
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
+use monad_executor::{timed_event::TimedEvent, Executor};
+use monad_executor_glue::MonadEvent;
 use monad_router_scheduler::RouterScheduler;
-use monad_state::MonadState;
+use monad_state::{MonadConfig, MonadState};
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use monad_types::Round;
-use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 use monad_wal::PersistenceLogger;
 use rand::{Rng, SeedableRng};
 use rand_chacha::{ChaCha20Rng, ChaChaRng};
@@ -26,7 +22,7 @@ use tracing::info_span;
 
 use crate::{
     mock::{MockExecutor, MockExecutorEvent},
-    swarm_relation::SwarmRelation,
+    swarm_relation::{SwarmRelation, SwarmRelationStateType},
 };
 
 pub struct Node<S>
@@ -35,7 +31,7 @@ where
 {
     pub id: ID<CertificateSignaturePubKey<S::SignatureType>>,
     pub executor: MockExecutor<S>,
-    pub state: S::State,
+    pub state: SwarmRelationStateType<S>,
     pub logger: S::Logger,
     pub pipeline: S::Pipeline,
     pub pending_inbound_messages: BTreeMap<
@@ -83,7 +79,10 @@ where
             Duration,
             LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>,
         )>,
-    ) -> Option<(Duration, <S::State as State>::Event)> {
+    ) -> Option<(
+        Duration,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+    )> {
         while let Some((tick, event_type)) = self.peek_event() {
             if tick > until {
                 break;
@@ -212,16 +211,9 @@ impl UntilTerminator {
     }
 }
 
-impl<S, CT, ST, SCT, VT, LT, TT> NodesTerminator<S> for UntilTerminator
+impl<S> NodesTerminator<S> for UntilTerminator
 where
-    S: SwarmRelation<State = MonadState<CT, ST, SCT, VT, LT, TT>>,
-
-    CT: ConsensusProcess<ST, SCT> + PartialEq + Eq,
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    LT: LeaderElection,
-    TT: TxPool,
+    S: SwarmRelation,
 {
     fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
         nodes.tick > self.until_tick
@@ -345,7 +337,7 @@ where
     pub fn new(
         peers: Vec<(
             ID<CertificateSignaturePubKey<S::SignatureType>>,
-            <S::State as State>::Config,
+            MonadConfig<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
             S::Pipeline,
@@ -497,7 +489,7 @@ where
         &mut self,
         peer: (
             ID<CertificateSignaturePubKey<S::SignatureType>>,
-            <S::State as State>::Config,
+            MonadConfig<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>,
             S::LoggerConfig,
             S::RouterSchedulerConfig,
             S::Pipeline,
@@ -520,7 +512,7 @@ where
             self.tick,
         );
         let (wal, replay_events) = S::Logger::new(logger_config).unwrap();
-        let (mut state, init_commands) = S::State::init(state_config);
+        let (mut state, init_commands) = MonadState::init(state_config);
 
         executor.exec(init_commands);
 

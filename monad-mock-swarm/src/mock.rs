@@ -9,13 +9,17 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
+use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
-    signature_collection::SignatureCollection, validator_data::ValidatorData,
+    block::Block, signature_collection::SignatureCollection, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
-use monad_executor::{Executor, State};
-use monad_executor_glue::{Command, ExecutionLedgerCommand, Message, RouterCommand, TimerCommand};
+use monad_executor::Executor;
+use monad_executor_glue::{
+    Command, ExecutionLedgerCommand, Message, MonadEvent, RouterCommand, TimerCommand,
+};
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
+use monad_state::VerifiedMonadMessage;
 use monad_types::{NodeId, SeqNum, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockableStateRootHash,
@@ -30,15 +34,18 @@ where
 {
     ledger: MockLedger<
         CertificateSignaturePubKey<S::SignatureType>,
-        <S::State as State>::Block,
-        <S::State as State>::Event,
+        Block<S::SignatureCollectionType>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
     >,
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
-    checkpoint: MockCheckpoint<<S::State as State>::Checkpoint>,
+    checkpoint: MockCheckpoint<Checkpoint<S::SignatureCollectionType>>,
     state_root_hash: S::StateRootHashExecutor,
     tick: Duration,
 
-    timer: PriorityQueue<TimerEvent<<S::State as State>::Event>, Reverse<Duration>>,
+    timer: PriorityQueue<
+        TimerEvent<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
+        Reverse<Duration>,
+    >,
     router: S::RouterScheduler,
 }
 
@@ -160,11 +167,11 @@ where
     S: SwarmRelation,
 {
     type Command = Command<
-        <S::State as State>::Event,
-        <S::State as State>::OutboundMessage,
-        <S::State as State>::Block,
-        <S::State as State>::Checkpoint,
-        <S::State as State>::SignatureCollection,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
+        VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>,
+        Block<S::SignatureCollectionType>,
+        Checkpoint<S::SignatureCollectionType>,
+        S::SignatureCollectionType,
     >;
 
     fn replay(&mut self, commands: Vec<Self::Command>) {
@@ -265,7 +272,7 @@ where
         until: Duration,
     ) -> Option<
         MockExecutorEvent<
-            <S::State as State>::Event,
+            MonadEvent<S::SignatureType, S::SignatureCollectionType>,
             CertificateSignaturePubKey<S::SignatureType>,
             S::TransportMessage,
         >,
@@ -317,8 +324,8 @@ where
         &self,
     ) -> &MockLedger<
         CertificateSignaturePubKey<S::SignatureType>,
-        <S::State as State>::Block,
-        <S::State as State>::Event,
+        Block<S::SignatureCollectionType>,
+        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
     > {
         &self.ledger
     }

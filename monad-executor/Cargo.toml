@@ -10,8 +10,6 @@ bench = false
 
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-executor-glue = { path = "../monad-executor-glue" }
 monad-types = { path = "../monad-types" }
 
 bytes = { workspace = true }
