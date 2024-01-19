@@ -34,7 +34,6 @@ members = [
     "monad-updaters",
     "monad-validator",
     "monad-virtual-bench",
-    "monad-viz",
     "monad-wal",
 ]
 resolver = "2"
@@ -67,9 +66,6 @@ flate2 = "1.0"
 futures = "0.3"
 futures-util = "0.3"
 hex = "0.4"
-iced = "0.9"
-iced_lazy = "0.6"
-iced_native = "0.10"
 inventory = "0.3"
 itertools = "0.10"
 log = "0.4"
