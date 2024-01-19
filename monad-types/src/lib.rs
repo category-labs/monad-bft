@@ -238,7 +238,7 @@ impl<S: Clone> Serializable<S> for S {
 
 /// Deserialize from S, usually bytes
 pub trait Deserializable<S: ?Sized>: Sized {
-    type ReadError: Error + Send + Sync;
+    type ReadError: Error + Send + Sync + 'static;
 
     fn deserialize(message: &S) -> Result<Self, Self::ReadError>;
 }

@@ -107,7 +107,9 @@ where
         let round_pending_votes = round_state.pending_votes.entry(vote_idx).or_default();
         round_pending_votes.insert(*author, vote_msg.sig);
 
-        while validators.has_super_majority_votes(round_pending_votes.keys()) {
+        while validators
+            .has_super_majority_votes(&round_pending_votes.keys().copied().collect::<Vec<_>>())
+        {
             assert!(round >= self.earliest_round);
             match SCT::new(
                 round_pending_votes
@@ -179,7 +181,7 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_testutil::{signing::*, validators::create_keys_w_validators};
     use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+    use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
 
     use super::VoteState;
     use crate::messages::message::VoteMessage;
@@ -219,8 +221,11 @@ mod test {
     #[test]
     fn clean_older_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (keys, cert_keys, valset, val_map) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keys, cert_keys, valset, val_map) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
 
         // add one vote for rounds 0-3
         let mut votes = Vec::new();
@@ -270,8 +275,11 @@ mod test {
     #[test]
     fn handle_future_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (keys, cert_keys, valset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keys, cert_keys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
 
         // add one vote for rounds 0-3 and 5-8
         for i in 0..4 {
@@ -302,8 +310,11 @@ mod test {
     #[test]
     fn duplicate_votes() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (keys, certkeys, valset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
 
         // create a vote for round 0 from one node, but add it supermajority number of times
         // this should not result in QC creation
@@ -320,8 +331,11 @@ mod test {
     #[test]
     fn invalid_votes_no_qc() {
         let mut votestate = VoteState::<SignatureCollectionType>::default();
-        let (keys, certkeys, valset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
         let vote_round = Round(0);
 
         let v0_valid = create_vote_message(&certkeys[0], vote_round, true);
@@ -400,7 +414,9 @@ mod test {
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
-        let valset = ValidatorSet::new(staking_list).expect("create validator set");
+        let valset = ValidatorSetFactory::default()
+            .create(staking_list)
+            .expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
         let vote_round = Round(0);

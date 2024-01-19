@@ -17,19 +17,14 @@ use monad_ipc::{generate_uds_path, IpcReceiver};
 use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
-use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
-use monad_types::{Round, SeqNum, Stake};
+use monad_state::{MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
+use monad_types::{Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint,
-    ledger::MockLedger,
-    local_router::LocalPeerRouter,
-    loopback::LoopbackExecutor,
-    parent::ParentExecutor,
-    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
-    timer::TokioTimer,
-    BoxUpdater, Updater,
+    checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
+    loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
+    timer::TokioTimer, BoxUpdater, Updater,
 };
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 
 pub enum MonadP2PGossipConfig<PT: PubKey> {
     Simple(MockGossipConfig<PT>),
@@ -138,8 +133,8 @@ type MonadStateType<ST, SCT> = MonadState<
     ConsensusState<ST, SCT, MockValidator, NopStateRoot>,
     ST,
     SCT,
-    ValidatorSet<CertificateSignaturePubKey<ST>>,
-    SimpleRoundRobin,
+    ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
+    SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     EthTxPool,
 >;
 
@@ -155,11 +150,7 @@ where
     pub val_set_update_interval: SeqNum,
     pub epoch_start_delay: Round,
 
-    pub genesis_peers: Vec<(
-        SCT::NodeIdPubKey,
-        Stake,
-        CertificateSignaturePubKey<SCT::SignatureType>,
-    )>,
+    pub validators: ValidatorData<SCT>,
     pub consensus_config: ConsensusConfig,
 }
 
@@ -181,14 +172,19 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    MonadStateType::init(MonadConfig {
+    MonadStateBuilder {
+        validator_set_factory: ValidatorSetFactory::default(),
+        leader_election: SimpleRoundRobin::default(),
+        transaction_pool: EthTxPool::default(),
         block_validator: MockValidator {},
-        validators: config.genesis_peers,
+        state_root_validator: NopStateRoot::default(),
+        validators: config.validators,
         key: config.key,
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
         consensus_config: config.consensus_config,
-    })
+    }
+    .build()
 }

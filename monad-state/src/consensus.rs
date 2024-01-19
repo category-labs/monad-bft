@@ -20,39 +20,39 @@ use monad_executor_glue::{
 };
 use monad_types::{NodeId, RouterTarget, TimeoutVariant};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
-    validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection,
+    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, CP, ST, SCT, VT, LT, TT>
+pub(super) struct ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     consensus: &'a mut CP,
 
     /// Consensus needs these states to process messages
     epoch_manager: &'a mut EpochManager,
-    val_epoch_map: &'a ValidatorsEpochMapping<VT, SCT>,
+    val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     leader_election: &'a LT,
     txpool: &'a mut TT,
 
     _phantom: PhantomData<ST>,
 }
 
-impl<'a, CP, ST, SCT, VT, LT, TT> ConsensusChildState<'a, CP, ST, SCT, VT, LT, TT>
+impl<'a, CP, ST, SCT, VTF, LT, TT> ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT>
 where
     CP: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    LT: LeaderElection,
-    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VT, LT, TT>) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VTF, LT, TT>) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
             epoch_manager: &mut monad_state.epoch_manager,

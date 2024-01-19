@@ -23,7 +23,7 @@ use monad_testutil::{
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::{
     epoch_manager::EpochManager,
-    validator_set::{ValidatorSet, ValidatorSetType},
+    validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
@@ -72,14 +72,19 @@ fn setup_block(
 
 #[test]
 fn test_proposal_hash() {
-    let (keypairs, _certkeys, vset, vmap) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(1);
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map: ValidatorsEpochMapping<
-        ValidatorSet<PubKeyType>,
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
         SignatureCollectionType,
-    > = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), vset, vmap);
+        _,
+    >(1, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map: ValidatorsEpochMapping<ValidatorSetFactory<_>, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
     let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = ConsensusMessage::Proposal(ProposalMessage {
@@ -105,11 +110,18 @@ fn test_proposal_hash() {
 
 #[test]
 fn test_proposal_missing_tc() {
-    let (keypairs, _certkeys, vset, vmap) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(1);
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(1, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), vset, vmap);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
     let author = NodeId::new(keypairs[0].pubkey());
 
     let proposal = Unvalidated::new(ProposalMessage {
@@ -134,14 +146,19 @@ fn test_proposal_missing_tc() {
 
 #[test]
 fn test_proposal_author_not_sender() {
-    let (keypairs, _certkeys, vset, vmap) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(2);
-    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map: ValidatorsEpochMapping<
-        ValidatorSet<PubKeyType>,
+    let (keypairs, _certkeys, vset, vmap) = create_keys_w_validators::<
+        SignatureType,
         SignatureCollectionType,
-    > = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), vset, vmap);
+        _,
+    >(2, ValidatorSetFactory::default());
+    let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
+    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
 
     let author_keypair = &keypairs[0];
     let sender_keypair = &keypairs[1];
@@ -190,17 +207,19 @@ fn test_proposal_invalid_author() {
 
     let sp = TestSigner::<SignatureType>::sign_object(proposal, &non_valdiator_keypair);
 
-    let vset = ValidatorSet::new(vlist).unwrap();
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
     let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(
         NodeId::new(author_keypair.pubkey()),
         author_keypair.pubkey(),
     )]);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map: ValidatorsEpochMapping<
-        ValidatorSet<PubKeyType>,
-        SignatureCollectionType,
-    > = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), vset, vmap);
+    let mut val_epoch_map: ValidatorsEpochMapping<_, SignatureCollectionType> =
+        ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &author.pubkey())
             .unwrap_err(),
@@ -228,7 +247,7 @@ fn test_proposal_invalid_qc() {
         last_round_tc: None,
     });
 
-    let vset = ValidatorSet::new(vlist).unwrap();
+    let vset = ValidatorSetFactory::default().create(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
         (
             NodeId::new(staked_keypair.pubkey()),
@@ -240,8 +259,12 @@ fn test_proposal_invalid_qc() {
         ),
     ]);
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), vset, vmap);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+        vmap,
+    );
 
     let validate_result = proposal.validate(&epoch_manager, &val_epoch_map);
 

@@ -8,6 +8,7 @@ use monad_crypto::{
 };
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::NodeId;
+use monad_validator::validator_set::ValidatorSetFactory;
 
 const N: u32 = 1000;
 
@@ -15,8 +16,11 @@ type SignatureType = NopSignature;
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let (keys, certkeys, _, validator_mapping) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(N);
+    let (keys, certkeys, _, validator_mapping) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(N, ValidatorSetFactory::default());
     let mut hasher = HasherType::new();
     hasher.update(b"hello world");
     let data = hasher.hash();

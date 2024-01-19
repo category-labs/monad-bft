@@ -1,13 +1,7 @@
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeSet;
-
-    use monad_consensus_types::block_validator::MockValidator;
     use monad_mock_swarm::swarm_relation::MonadMessageNoSerSwarm;
-    use monad_router_scheduler::NoSerRouterConfig;
-    use monad_transformer::ID;
     use monad_twins_utils::{run_twins_test, twin_reader::read_twins_test};
-    use monad_wal::mock::MockWALoggerConfig;
     use test_case::test_case;
 
     const TWIN_DEFAULT_SEED: u64 = 1;
@@ -18,27 +12,14 @@ mod test {
     #[test_case("./tests/make_progress.json"; "make_progress")]
 
     fn twins_testing(path: &str) {
-        let test_case = read_twins_test::<MonadMessageNoSerSwarm>(MockValidator, path);
+        let test_case = read_twins_test::<MonadMessageNoSerSwarm>(path);
 
         println!(
             "running twins_testing, description: {:?}",
             test_case.description,
         );
 
-        let get_lgr_cfg = |_: &ID<_>, _: &Vec<ID<_>>| MockWALoggerConfig;
-        let get_router_cfg = |_: &ID<_>, ids: &Vec<ID<_>>| NoSerRouterConfig {
-            all_peers: ids
-                .iter()
-                .map(|id| *id.get_peer_id())
-                .collect::<BTreeSet<_>>(),
-        };
-
-        run_twins_test::<_, MonadMessageNoSerSwarm, _, _>(
-            get_lgr_cfg,
-            get_router_cfg,
-            TWIN_DEFAULT_SEED,
-            test_case,
-        )
+        run_twins_test::<_, _, MonadMessageNoSerSwarm>(TWIN_DEFAULT_SEED, test_case)
     }
 
     #[should_panic]
@@ -47,24 +28,12 @@ mod test {
     #[test_case("./tests/mal_formed.json"; "mal_formed json")]
 
     fn twins_should_fail_testing(path: &str) {
-        let test_case = read_twins_test::<MonadMessageNoSerSwarm>(MockValidator, path);
+        let test_case = read_twins_test::<MonadMessageNoSerSwarm>(path);
         println!(
             "running expected fail twins_testing, description: {:?}",
             test_case.description
         );
-        let get_lgr_cfg = |_: &ID<_>, _: &Vec<ID<_>>| MockWALoggerConfig;
-        let get_router_cfg = |_: &ID<_>, ids: &Vec<ID<_>>| NoSerRouterConfig {
-            all_peers: ids
-                .iter()
-                .map(|id| *id.get_peer_id())
-                .collect::<BTreeSet<_>>(),
-        };
 
-        run_twins_test::<_, MonadMessageNoSerSwarm, _, _>(
-            get_lgr_cfg,
-            get_router_cfg,
-            TWIN_DEFAULT_SEED,
-            test_case,
-        )
+        run_twins_test::<_, _, MonadMessageNoSerSwarm>(TWIN_DEFAULT_SEED, test_case)
     }
 }

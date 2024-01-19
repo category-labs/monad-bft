@@ -2,42 +2,48 @@ pub mod twin_reader;
 
 use std::collections::BTreeMap;
 
+use monad_consensus_types::{
+    block::Block, payload::StateRoot, signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock::MockExecutor,
-    mock_swarm::{Node, Nodes},
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
     swarm_relation::SwarmRelation,
     transformer::{MonadMessageTransformer, MonadMessageTransformerPipeline, TwinsTransformer},
 };
-use monad_transformer::{RandLatencyTransformer, ID};
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
+use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_transformer::RandLatencyTransformer;
+use monad_types::NodeId;
+use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
+use twin_reader::TWINS_STATE_ROOT_DELAY;
 
 use crate::twin_reader::{TwinsNodeConfig, TwinsTestCase};
 
-pub fn run_twins_test<ST, S, L, R>(
-    get_logger_config: L,
-    get_router_cfg: R,
-    seed: u64,
-    test_case: TwinsTestCase<S>,
-) where
+pub fn run_twins_test<ST, SCT, S>(seed: u64, test_case: TwinsTestCase<S>)
+where
     ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     S: SwarmRelation<
         SignatureType = ST,
+        SignatureCollectionType = SCT,
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
+        Logger = MockWALogger<MonadEvent<ST, SCT>>,
+        RouterScheduler = NoSerRouterScheduler<
+            CertificateSignaturePubKey<ST>,
+            MonadMessage<ST, SCT>,
+            VerifiedMonadMessage<ST, SCT>,
+        >,
+        StateRootValidator = StateRoot,
+        StateRootHashExecutor = MockStateRootHashNop<Block<SCT>, ST, SCT>,
     >,
-    MockExecutor<S>: Unpin,
-    Node<S>: Send,
-    L: Fn(
-        &ID<CertificateSignaturePubKey<ST>>,
-        &Vec<ID<CertificateSignaturePubKey<ST>>>,
-    ) -> S::LoggerConfig,
-    R: Fn(
-        &ID<CertificateSignaturePubKey<ST>>,
-        &Vec<ID<CertificateSignaturePubKey<ST>>>,
-    ) -> S::RouterSchedulerConfig,
 {
     let TwinsTestCase {
         description: _,
@@ -51,7 +57,7 @@ pub fn run_twins_test<ST, S, L, R>(
 
     let ids = nodes.keys().copied().collect::<Vec<_>>();
     let mut rng = ChaChaRng::seed_from_u64(seed);
-    let mut swarm = Nodes::<S>::new(vec![]).can_have_duplicate_peer();
+    let mut swarm = SwarmBuilder::<S>(vec![]).build().can_have_duplicate_peer();
 
     for TwinsNodeConfig {
         id,
@@ -71,8 +77,21 @@ pub fn run_twins_test<ST, S, L, R>(
             MonadMessageTransformer::Twins(twins_transformer),
             MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(rng.gen(), delta)),
         ];
-        let (lgr_cfg, router_cfg) = (get_logger_config(&id, &ids), get_router_cfg(&id, &ids));
-        swarm.add_state((id, state_config, lgr_cfg, router_cfg, pipeline, seed));
+        let validators = state_config.validators.clone();
+        swarm.add_state(NodeBuilder::<S>::new(
+            id,
+            state_config,
+            MockWALoggerConfig::default(),
+            NoSerRouterConfig::new(
+                ids.iter()
+                    .map(|id| NodeId::new(id.get_peer_id().pubkey()))
+                    .collect(),
+            )
+            .build(),
+            MockStateRootHashNop::new(validators, monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
+            pipeline,
+            seed,
+        ));
     }
 
     while swarm.step_until(&terminator).is_some() {}

@@ -16,10 +16,12 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-state = { path = "../monad-state" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
+monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters" }
 monad-validator = { path = "../monad-validator" }
+monad-wal = { path = "../monad-wal" }
 
 zerocopy = { workspace = true }
 
@@ -27,5 +29,3 @@ zerocopy = { workspace = true }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-multi-sig = { path = "../monad-multi-sig" }
-monad-router-scheduler = { path = "../monad-router-scheduler" }
-monad-wal = { path = "../monad-wal" }

@@ -14,7 +14,7 @@ use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetType},
+    validator_set::{ValidatorSetFactory, ValidatorSetType},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use peak_alloc::PeakAlloc;
@@ -30,20 +30,18 @@ fn main() {
     let mut rng = rand_chacha::ChaCha8Rng::from_entropy();
     rng.fill_bytes(&mut transactions);
 
-    let (keys, cert_keys, valset, valmap) =
-        create_keys_w_validators::<SecpSignature, BlsSignatureCollection<_>>(10);
+    let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<
+        SecpSignature,
+        BlsSignatureCollection<_>,
+        _,
+    >(10, ValidatorSetFactory::default());
 
     let validator_stakes = Vec::from_iter(valset.get_members().clone());
 
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(
-        Epoch(1),
-        ValidatorSet::new(validator_stakes)
-            .expect("ValidatorData should not have duplicates or invalid entries"),
-        ValidatorMapping::new(valmap),
-    );
-    let election = SimpleRoundRobin::new();
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(Epoch(1), validator_stakes, ValidatorMapping::new(valmap));
+    let election = SimpleRoundRobin::default();
     let mut propgen: ProposalGen<_, _> =
         ProposalGen::<SecpSignature, BlsSignatureCollection<_>>::new();
 
@@ -60,14 +58,15 @@ fn main() {
         .destructure()
         .2;
 
+    let epoch = epoch_manager.get_epoch(proposal.block.0.round);
+    let proposer_leader = election.get_leader(
+        proposal.block.0.round,
+        epoch,
+        val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
+    );
     let leader_key = keys
         .iter()
-        .find(|k| {
-            k.pubkey()
-                == election
-                    .get_leader(proposal.block.0.round, &epoch_manager, &val_epoch_map)
-                    .pubkey()
-        })
+        .find(|k| k.pubkey() == proposer_leader.pubkey())
         .expect("key in valset");
 
     let proposal: VerifiedMonadMessage<_, _> = ConsensusMessage::Proposal(proposal)

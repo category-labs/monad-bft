@@ -31,9 +31,10 @@ use monad_testutil::{
     validators::create_keys_w_validators,
 };
 use monad_types::{BlockId, NodeId, Round, SeqNum, Serializable, TimeoutVariant};
+use monad_validator::validator_set::ValidatorSetFactory;
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
-    PersistenceLogger,
+    PersistenceLoggerBuilder,
 };
 use tempfile::{tempdir, TempDir};
 
@@ -54,17 +55,16 @@ impl MonadEventBencher {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let file_path = tmpdir.path().join("wal");
-        let config = WALoggerConfig {
-            file_path,
-            sync: false,
-        };
+        let config = WALoggerConfig::new(
+            file_path, false, // sync
+        );
         println!(
             "size of event: {}",
             Serializable::<Bytes>::serialize(&event).len()
         );
         Self {
             event,
-            logger: WALogger::<BenchEvent>::new(config).unwrap().0,
+            logger: config.build().unwrap().0,
             _tmpdir: tmpdir,
         }
     }
@@ -76,8 +76,9 @@ impl MonadEventBencher {
 
 fn bench_proposal(c: &mut Criterion) {
     let txns = FullTransactionList::new(vec![0x23_u8; 32 * 10000].into());
+    let validator_factory = ValidatorSetFactory::default();
     let (keypairs, _certkeypairs, _validators, validator_mapping) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(1);
+        create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(1, validator_factory);
     let author_keypair = &keypairs[0];
 
     let blk = setup_block::<SignatureType, SignatureCollectionType>(
@@ -150,8 +151,12 @@ fn bench_vote(c: &mut Criterion) {
 }
 
 fn bench_timeout(c: &mut Criterion) {
+    let validator_factory = ValidatorSetFactory::default();
     let (keypairs, cert_keys, _validators, validator_mapping) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(N_VALIDATORS as u32);
+        create_keys_w_validators::<SignatureType, SignatureCollectionType, _>(
+            N_VALIDATORS as u32,
+            validator_factory,
+        );
     let author_keypair = &keypairs[0];
     let author_certkey = &cert_keys[0];
 

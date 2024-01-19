@@ -13,12 +13,14 @@ use monad_consensus::{
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusProcess};
+use monad_consensus_state::{
+    command::Checkpoint, ConsensusConfig, ConsensusProcess, ConsensusState,
+};
 use monad_consensus_types::{
     block::Block,
-    signature_collection::{
-        SignatureCollection, SignatureCollectionKeyPairType, SignatureCollectionPubKeyType,
-    },
+    block_validator::BlockValidator,
+    payload::StateRootValidator,
+    signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     txpool::TxPool,
     validation,
     validator_data::ValidatorData,
@@ -31,10 +33,10 @@ use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, Message, MonadEvent, ValidatorEvent,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{Epoch, NodeId, Round, SeqNum, Stake, TimeoutVariant};
+use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
-    validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager, leader_election::LeaderElection,
+    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::blocksync::BlockSyncResponder;
@@ -77,11 +79,11 @@ pub(crate) fn handle_validation_error(e: validation::Error) {
     };
 }
 
-pub struct MonadState<CT, ST, SCT, VT, LT, TT>
+pub struct MonadState<CT, ST, SCT, VTF, LT, TT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     /// Core consensus algorithm state machine
     consensus: CT,
@@ -93,19 +95,19 @@ where
     /// Track the information for epochs
     epoch_manager: EpochManager,
     /// Maps the epoch number to validator stakes and certificate pubkeys
-    val_epoch_map: ValidatorsEpochMapping<VT, SCT>,
+    val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
     /// Transaction pool is the source of Proposals
     txpool: TT,
 
     _pd: PhantomData<ST>,
 }
 
-impl<CT, ST, SCT, VT, LT, TT> MonadState<CT, ST, SCT, VT, LT, TT>
+impl<CT, ST, SCT, VTF, LT, TT> MonadState<CT, ST, SCT, VTF, LT, TT>
 where
     CT: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
 {
     pub fn consensus(&self) -> &CT {
@@ -254,13 +256,22 @@ where
     }
 }
 
-pub struct MonadConfig<ST, SCT, BV>
+pub struct MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    TT: TxPool,
+    BVT: BlockValidator,
+    SVT: StateRootValidator,
 {
-    pub block_validator: BV,
-    pub validators: Vec<(SCT::NodeIdPubKey, Stake, SignatureCollectionPubKeyType<SCT>)>,
+    pub validator_set_factory: VTF,
+    pub leader_election: LT,
+    pub transaction_pool: TT,
+    pub block_validator: BVT,
+    pub state_root_validator: SVT,
+    pub validators: ValidatorData<SCT>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub val_set_update_interval: SeqNum,
@@ -270,19 +281,20 @@ where
     pub consensus_config: ConsensusConfig,
 }
 
-impl<CT, ST, SCT, VT, LT, TT> MonadState<CT, ST, SCT, VT, LT, TT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT> MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT>
 where
-    CT: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-    LT: LeaderElection,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
+    BVT: BlockValidator,
+    SVT: StateRootValidator,
 {
-    pub fn init(
-        config: MonadConfig<ST, SCT, CT::BlockValidatorType>,
+    pub fn build(
+        self,
     ) -> (
-        Self,
+        MonadState<ConsensusState<ST, SCT, BVT, SVT>, ST, SCT, VTF, LT, TT>,
         Vec<
             Command<
                 MonadEvent<ST, SCT>,
@@ -293,44 +305,32 @@ where
             >,
         >,
     ) {
-        let validator_data = ValidatorData(
-            config
-                .validators
-                .into_iter()
-                .map(|(pubkey, stake, certpubkey)| (NodeId::new(pubkey), stake, certpubkey))
-                .collect::<Vec<_>>(),
+        let val_epoch_map = ValidatorsEpochMapping::new(self.validator_set_factory);
+
+        let consensus_process = ConsensusState::new(
+            self.block_validator,
+            self.state_root_validator,
+            self.key.pubkey(),
+            self.consensus_config,
+            self.beneficiary,
+            self.key,
+            self.certkey,
         );
 
-        let val_epoch_map = ValidatorsEpochMapping::default();
-
-        let election = LT::new();
-
-        let consensus_process = CT::new(
-            config.block_validator,
-            config.key.pubkey(),
-            config.consensus_config,
-            config.beneficiary,
-            config.key,
-            config.certkey,
-        );
-
-        let mut monad_state: MonadState<CT, ST, SCT, VT, LT, TT> = Self {
-            epoch_manager: EpochManager::new(
-                config.val_set_update_interval,
-                config.epoch_start_delay,
-            ),
+        let mut monad_state = MonadState {
+            epoch_manager: EpochManager::new(self.val_set_update_interval, self.epoch_start_delay),
             val_epoch_map,
-            leader_election: election,
+            leader_election: self.leader_election,
             consensus: consensus_process,
             block_sync_responder: BlockSyncResponder {},
-            txpool: TT::new(),
+            txpool: self.transaction_pool,
 
             _pd: PhantomData,
         };
 
         let mut init_cmds = Vec::new();
         init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
-            ValidatorEvent::UpdateValidators((validator_data, Epoch(1))),
+            ValidatorEvent::UpdateValidators((self.validators, Epoch(1))),
         )));
 
         init_cmds.extend(
@@ -341,7 +341,17 @@ where
 
         (monad_state, init_cmds)
     }
+}
 
+impl<CT, ST, SCT, VTF, LT, TT> MonadState<CT, ST, SCT, VTF, LT, TT>
+where
+    CT: ConsensusProcess<ST, SCT>,
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    TT: TxPool,
+{
     pub fn update(
         &mut self,
         event: MonadEvent<ST, SCT>,

@@ -55,7 +55,6 @@ struct Args {
 }
 
 struct TestgroundArgs {
-    state_root_delay: u64,        // default 0
     simulation_length_s: u64,     // default 10
     delta_ms: u64,                // default 1000
     proposal_size: usize,         // default 5000
@@ -135,7 +134,6 @@ async fn main() {
     type SignatureCollectionTypeConfig = MultiSig<SignatureTypeConfig>;
     // TODO parse this from CLI args
     let testground_args = TestgroundArgs {
-        state_root_delay: 0,
         simulation_length_s: 10,
         delta_ms: 75,
         proposal_size: 5_000,
@@ -216,20 +214,31 @@ where
     .take(addresses.len())
     .collect::<Vec<_>>();
 
-    let genesis_peers = configs
+    let validators = ValidatorData(
+        configs
+            .iter()
+            .map(|(keypair, cert_keypair)| {
+                (
+                    NodeId::new(keypair.pubkey()),
+                    Stake(1),
+                    cert_keypair.pubkey(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    let all_peers: Vec<NodeId<_>> = validators
+        .0
         .iter()
-        .map(|(keypair, cert_keypair)| (keypair.pubkey(), Stake(1), cert_keypair.pubkey()))
-        .collect::<Vec<_>>();
+        .map(|(peer_id, _, _)| *peer_id)
+        .collect();
 
     let mut maybe_local_routers = match args.router {
         RouterArgs::Local {
             external_latency_ms,
         } => {
             let local_routers = LocalRouterConfig {
-                all_peers: genesis_peers
-                    .iter()
-                    .map(|(peer_id, _, _)| NodeId::new(*peer_id))
-                    .collect(),
+                all_peers: all_peers.clone(),
                 external_latency: Duration::from_millis(external_latency_ms),
             }
             .build();
@@ -275,9 +284,10 @@ where
                             gossip_config: match gossip {
                                 GossipArgs::Simple => {
                                     MonadP2PGossipConfig::Simple(MockGossipConfig {
-                                        all_peers: genesis_peers
+                                        all_peers: validators
+                                            .0
                                             .iter()
-                                            .map(|(pubkey, _, _)| NodeId::new(*pubkey))
+                                            .map(|(node_id, _, _)| *node_id)
                                             .collect(),
                                         me,
                                     })
@@ -286,10 +296,7 @@ where
                                     MonadP2PGossipConfig::Gossipsub(UnsafeGossipsubConfig {
                                         seed: rand::random(),
                                         me,
-                                        all_peers: genesis_peers
-                                            .iter()
-                                            .map(|(pubkey, _, _)| NodeId::new(*pubkey))
-                                            .collect(),
+                                        all_peers: all_peers.clone(),
                                         fanout: *fanout,
                                     })
                                 }
@@ -301,7 +308,7 @@ where
                         ExecutionLedgerArgs::File => ExecutionLedgerConfig::File,
                     },
                     state_root_hash_config: StateRootHashConfig::Mock {
-                        genesis_validator_data: ValidatorData::new(genesis_peers.clone()),
+                        genesis_validator_data: validators.clone(),
                         val_set_update_interval: SeqNum(args.val_set_update_interval),
                     },
                 },
@@ -310,11 +317,10 @@ where
                     cert_key: cert_keypair,
                     val_set_update_interval: SeqNum(args.val_set_update_interval),
                     epoch_start_delay: Round(args.epoch_start_delay),
-                    genesis_peers: genesis_peers.clone(),
+                    validators: validators.clone(),
                     consensus_config: ConsensusConfig {
                         proposal_txn_limit: args.proposal_size,
                         proposal_gas_limit: 8_000_000,
-                        state_root_delay: SeqNum(args.state_root_delay),
                         propose_with_missing_blocks: false,
                         delta: Duration::from_millis(args.delta_ms),
                     },

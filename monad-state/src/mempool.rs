@@ -8,7 +8,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_executor_glue::{Command, MempoolEvent, MonadEvent};
-use monad_validator::validator_set::ValidatorSetType;
+use monad_validator::validator_set::ValidatorSetTypeFactory;
 
 use crate::{MonadState, VerifiedMonadMessage};
 
@@ -24,7 +24,7 @@ impl<'a, CP, ST, SCT, VT, LT, TT> MempoolChildState<'a, CP, ST, SCT, VT, LT, TT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    VT: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
     TT: TxPool,
 {
     pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VT, LT, TT>) -> Self {

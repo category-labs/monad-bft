@@ -23,11 +23,17 @@ pub trait MockableStateRootHash:
     type Event;
     type SignatureCollection: SignatureCollection;
 
-    fn new(
-        genesis_validator_data: ValidatorData<Self::SignatureCollection>,
-        val_set_update_interval: SeqNum,
-    ) -> Self;
     fn ready(&self) -> bool;
+}
+
+impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
+    type Block = T::Block;
+    type Event = T::Event;
+    type SignatureCollection = T::SignatureCollection;
+
+    fn ready(&self) -> bool {
+        (**self).ready()
+    }
 }
 
 /// An updater that immediately creates a StateRootHash update and
@@ -49,17 +55,11 @@ pub struct MockStateRootHashNop<B, ST, SCT: SignatureCollection> {
     phantom: PhantomData<(B, ST)>,
 }
 
-impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashNop<B, ST, SCT>
-where
-    B: BlockType + Unpin,
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
-{
-    type Block = B;
-    type Event = MonadEvent<ST, SCT>;
-    type SignatureCollection = SCT;
-
-    fn new(genesis_validator_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
+impl<B, ST, SCT: SignatureCollection> MockStateRootHashNop<B, ST, SCT> {
+    pub fn new(
+        genesis_validator_data: ValidatorData<SCT>,
+        val_set_update_interval: SeqNum,
+    ) -> Self {
         Self {
             epoch: Epoch(1),
             state_root_update: None,
@@ -70,6 +70,17 @@ where
             phantom: PhantomData,
         }
     }
+}
+
+impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashNop<B, ST, SCT>
+where
+    B: BlockType + Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
+    SCT: SignatureCollection + Unpin,
+{
+    type Block = B;
+    type Event = MonadEvent<ST, SCT>;
+    type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
         self.state_root_update.is_some() || self.next_val_data.is_some()
@@ -179,17 +190,11 @@ pub struct MockStateRootHashSwap<B, ST, SCT: SignatureCollection> {
     phantom: PhantomData<(B, ST)>,
 }
 
-impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashSwap<B, ST, SCT>
-where
-    B: BlockType + Unpin,
-    ST: CertificateSignatureRecoverable + Unpin,
-    SCT: SignatureCollection + Unpin,
-{
-    type Block = B;
-    type Event = MonadEvent<ST, SCT>;
-    type SignatureCollection = SCT;
-
-    fn new(genesis_validator_data: ValidatorData<SCT>, val_set_update_interval: SeqNum) -> Self {
+impl<B, ST, SCT: SignatureCollection> MockStateRootHashSwap<B, ST, SCT> {
+    pub fn new(
+        genesis_validator_data: ValidatorData<SCT>,
+        val_set_update_interval: SeqNum,
+    ) -> Self {
         let num_validators = genesis_validator_data.0.len();
         let mut val_data_1 = genesis_validator_data.0;
         let mut val_data_2 = val_data_1.clone();
@@ -216,6 +221,17 @@ where
             phantom: PhantomData,
         }
     }
+}
+
+impl<B, ST, SCT> MockableStateRootHash for MockStateRootHashSwap<B, ST, SCT>
+where
+    B: BlockType + Unpin,
+    ST: CertificateSignatureRecoverable + Unpin,
+    SCT: SignatureCollection + Unpin,
+{
+    type Block = B;
+    type Event = MonadEvent<ST, SCT>;
+    type SignatureCollection = SCT;
 
     fn ready(&self) -> bool {
         self.state_root_update.is_some() || self.next_val_data.is_some()

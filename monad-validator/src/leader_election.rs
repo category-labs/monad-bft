@@ -1,21 +1,28 @@
-use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_types::{NodeId, Round};
+use std::collections::BTreeMap;
 
-use crate::{
-    epoch_manager::EpochManager, validator_set::ValidatorSetType,
-    validators_epoch_mapping::ValidatorsEpochMapping,
-};
+use monad_crypto::certificate_signature::PubKey;
+use monad_types::{Epoch, NodeId, Round, Stake};
 
 // VotingPower is i64
 pub trait LeaderElection {
-    fn new() -> Self;
-    fn get_leader<VT, SCT>(
+    type NodeIdPubKey: PubKey;
+    fn get_leader(
         &self,
         round: Round,
-        epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-    ) -> NodeId<VT::NodeIdPubKey>
-    where
-        VT: ValidatorSetType,
-        SCT: SignatureCollection;
+        epoch: Epoch,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
+    ) -> NodeId<Self::NodeIdPubKey>;
+}
+
+impl<T: LeaderElection + ?Sized> LeaderElection for Box<T> {
+    type NodeIdPubKey = T::NodeIdPubKey;
+
+    fn get_leader(
+        &self,
+        round: Round,
+        epoch: Epoch,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
+    ) -> NodeId<Self::NodeIdPubKey> {
+        (**self).get_leader(round, epoch, validators)
+    }
 }

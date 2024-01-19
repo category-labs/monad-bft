@@ -3,8 +3,6 @@ use bytes::Bytes;
 use crate::payload::FullTransactionList;
 
 pub trait TxPool {
-    fn new() -> Self;
-
     fn insert_tx(&mut self, tx: Bytes);
 
     fn create_proposal(
@@ -13,6 +11,21 @@ pub trait TxPool {
         gas_limit: u64,
         pending_txs: Vec<FullTransactionList>,
     ) -> FullTransactionList;
+}
+
+impl<T: TxPool + ?Sized> TxPool for Box<T> {
+    fn insert_tx(&mut self, tx: Bytes) {
+        (**self).insert_tx(tx)
+    }
+
+    fn create_proposal(
+        &mut self,
+        tx_limit: usize,
+        gas_limit: u64,
+        pending_txs: Vec<FullTransactionList>,
+    ) -> FullTransactionList {
+        (**self).create_proposal(tx_limit, gas_limit, pending_txs)
+    }
 }
 
 use rand::RngCore;
@@ -25,13 +38,15 @@ pub struct MockTxPool {
     rng: ChaCha20Rng,
 }
 
-impl TxPool for MockTxPool {
-    fn new() -> Self {
+impl Default for MockTxPool {
+    fn default() -> Self {
         Self {
             rng: ChaCha20Rng::seed_from_u64(MOCK_DEFAULT_SEED),
         }
     }
+}
 
+impl TxPool for MockTxPool {
     fn insert_tx(&mut self, _tx: Bytes) {}
 
     fn create_proposal(

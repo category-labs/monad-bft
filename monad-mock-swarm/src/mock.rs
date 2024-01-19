@@ -10,9 +10,7 @@ use std::{
 
 use futures::{Stream, StreamExt};
 use monad_consensus_state::command::Checkpoint;
-use monad_consensus_types::{
-    block::Block, signature_collection::SignatureCollection, validator_data::ValidatorData,
-};
+use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor::Executor;
 use monad_executor_glue::{
@@ -20,7 +18,7 @@ use monad_executor_glue::{
 };
 use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
-use monad_types::{NodeId, SeqNum, TimeoutVariant};
+use monad_types::{NodeId, TimeoutVariant};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
     state_root_hash::MockableStateRootHash,
@@ -29,10 +27,7 @@ use priority_queue::PriorityQueue;
 
 use crate::swarm_relation::SwarmRelation;
 
-pub struct MockExecutor<S>
-where
-    S: SwarmRelation,
-{
+pub struct MockExecutor<S: SwarmRelation> {
     ledger: MockLedger<
         CertificateSignaturePubKey<S::SignatureType>,
         Block<S::SignatureCollectionType>,
@@ -94,25 +89,19 @@ enum ExecutorEventType {
     Loopback,
 }
 
-impl<S> MockExecutor<S>
-where
-    S: SwarmRelation,
-{
+impl<S: SwarmRelation> MockExecutor<S> {
     pub fn new(
         router: S::RouterScheduler,
-        genesis_validator_data: ValidatorData<S::SignatureCollectionType>,
-        val_set_update_interval: SeqNum,
+        state_root_hash: S::StateRootHashExecutor,
         tick: Duration,
     ) -> Self {
         Self {
             checkpoint: Default::default(),
             ledger: Default::default(),
             execution_ledger: Default::default(),
-            state_root_hash: <S::StateRootHashExecutor as MockableStateRootHash>::new(
-                genesis_validator_data,
-                val_set_update_interval,
-            ),
+            state_root_hash,
             loopback: Default::default(),
+
             tick,
 
             timer: PriorityQueue::new(),
@@ -170,10 +159,7 @@ where
     }
 }
 
-impl<S> Executor for MockExecutor<S>
-where
-    S: SwarmRelation,
-{
+impl<S: SwarmRelation> Executor for MockExecutor<S> {
     type Command = Command<
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
         VerifiedMonadMessage<S::SignatureType, S::SignatureCollectionType>,
@@ -275,10 +261,7 @@ pub enum MockExecutorEvent<E, PT: PubKey, TransportMessage> {
     Send(NodeId<PT>, TransportMessage),
 }
 
-impl<S> MockExecutor<S>
-where
-    S: SwarmRelation,
-{
+impl<S: SwarmRelation> MockExecutor<S> {
     pub fn step_until(
         &mut self,
         until: Duration,
@@ -332,10 +315,7 @@ where
     }
 }
 
-impl<S> MockExecutor<S>
-where
-    S: SwarmRelation,
-{
+impl<S: SwarmRelation> MockExecutor<S> {
     pub fn ledger(
         &self,
     ) -> &MockLedger<

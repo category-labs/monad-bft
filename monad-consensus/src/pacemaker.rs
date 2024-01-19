@@ -300,7 +300,7 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, SeqNum, Stake};
-    use monad_validator::validator_set::ValidatorSet;
+    use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
     use zerocopy::AsBytes;
 
     use super::*;
@@ -372,8 +372,11 @@ mod test {
             Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
-        let (keys, certkeys, valset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
             Round(0),
@@ -449,8 +452,11 @@ mod test {
             Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
-        let (keys, certkeys, valset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
             Round(0),
@@ -528,7 +534,9 @@ mod test {
             .zip(certkeys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
 
-        let valset = ValidatorSet::new(staking_list).expect("create validator set");
+        let valset = ValidatorSetFactory::default()
+            .create(staking_list)
+            .expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
         let timeout_round = Round(1);

@@ -25,6 +25,7 @@ monad-secp = { path = "../monad-secp" }
 monad-state = { path = "../monad-state" }
 monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
 
 criterion = { workspace = true }
 tempfile = { workspace = true }

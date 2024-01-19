@@ -13,7 +13,7 @@ use monad_executor_glue::{
     BlockSyncEvent, Command, FetchedBlock, LedgerCommand, MonadEvent, RouterCommand,
 };
 use monad_types::{BlockId, NodeId, RouterTarget};
-use monad_validator::validator_set::ValidatorSetType;
+use monad_validator::validator_set::ValidatorSetTypeFactory;
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
@@ -62,11 +62,11 @@ impl BlockSyncResponder {
     }
 }
 
-pub(super) struct BlockSyncChildState<'a, CP, ST, SCT, VT, LT, TT>
+pub(super) struct BlockSyncChildState<'a, CP, ST, SCT, VTF, LT, TT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     block_sync_responder: &'a BlockSyncResponder,
 
@@ -74,17 +74,17 @@ where
     /// BlockSyncRequest
     consensus: &'a CP,
 
-    _phantom: PhantomData<(ST, SCT, VT, LT, TT)>,
+    _phantom: PhantomData<(ST, SCT, VTF, LT, TT)>,
 }
 
-impl<'a, CP, ST, SCT, VT, LT, TT> BlockSyncChildState<'a, CP, ST, SCT, VT, LT, TT>
+impl<'a, CP, ST, SCT, VTF, LT, TT> BlockSyncChildState<'a, CP, ST, SCT, VTF, LT, TT>
 where
     CP: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VT, LT, TT>) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VTF, LT, TT>) -> Self {
         Self {
             block_sync_responder: &monad_state.block_sync_responder,
             consensus: &monad_state.consensus,

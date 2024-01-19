@@ -1,37 +1,73 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
-use monad_consensus_types::block_validator::MockValidator;
-use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
-use monad_router_scheduler::NoSerRouterConfig;
-use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
-use monad_transformer::{GenericTransformer, LatencyTransformer};
-use monad_types::{Round, SeqNum};
+use monad_consensus_types::{
+    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+};
+use monad_crypto::certificate_signature::CertificateKeyPair;
+use monad_mock_swarm::{
+    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
+    terminator::UntilTerminator,
+};
+use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
+use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
+use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
+use monad_types::{NodeId, Round, SeqNum};
+use monad_updaters::state_root_hash::MockStateRootHashNop;
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::mock::MockWALoggerConfig;
 
 fn two_nodes_virtual() -> u128 {
-    create_and_run_nodes::<NoSerSwarm, _, _>(
-        MockValidator,
-        |all_peers, _| NoSerRouterConfig {
-            all_peers: all_peers.into_iter().collect(),
+    let state_configs = make_state_configs::<NoSerSwarm>(
+        2, // num_nodes
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        MockTxPool::default,
+        || MockValidator,
+        || {
+            StateRoot::new(
+                SeqNum(4), // state_root_delay
+            )
         },
-        MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer::new(
-            Duration::from_millis(1),
-        ))],
-        UntilTerminator::new().until_tick(Duration::from_secs(10)),
-        SwarmTestConfig {
-            num_nodes: 2,
-            consensus_delta: Duration::from_millis(2),
-            parallelize: false,
-            expected_block: 1024,
-            state_root_delay: 4,
-            seed: 1,
-            proposal_size: 0,
-            val_set_update_interval: SeqNum(2000),
-            epoch_start_delay: Round(50),
-        },
-    )
-    .as_millis()
+        Duration::from_millis(2), // delta
+        0,                        // proposal_tx_limit
+        SeqNum(2000),             // val_set_update_interval
+        Round(50),                // epoch_start_delay
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<NoSerSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let validators = state_builder.validators.clone();
+                let me = NodeId::new(state_builder.key.pubkey());
+                NodeBuilder::new(
+                    ID::new(me),
+                    state_builder,
+                    MockWALoggerConfig::default(),
+                    NoSerRouterConfig::new(all_peers.clone()).build(),
+                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_millis(1),
+                    ))],
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
+    );
+
+    let mut swarm = swarm_config.build();
+    let mut max_duration = Duration::ZERO;
+    while let Some(duration) =
+        swarm.step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+    {
+        max_duration = duration;
+    }
+    swarm_ledger_verification(&swarm, 1024);
+    max_duration.as_millis()
 }
 
 monad_virtual_bench::virtual_bench_main! {two_nodes_virtual}

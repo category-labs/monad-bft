@@ -1,23 +1,25 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
-use monad_executor::timed_event::TimedEvent;
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+    NopSignature,
+};
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock_swarm::{Nodes, UntilTerminator},
-    swarm_relation::SwarmRelation,
+    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
+    terminator::UntilTerminator,
 };
 use monad_multi_sig::MultiSig;
-use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_testutil::swarm::get_configs;
+use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
 pub struct LogSwarm;
@@ -31,11 +33,11 @@ impl SwarmRelation for LogSwarm {
 
     type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
-    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin;
+    type ValidatorSetTypeFactory =
+        ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
 
-    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
@@ -47,9 +49,7 @@ impl SwarmRelation for LogSwarm {
         Self::TransportMessage,
     >;
 
-    type LoggerConfig = WALoggerConfig;
-    type Logger =
-        WALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type Logger = WALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         Block<Self::SignatureCollectionType>,
@@ -67,49 +67,56 @@ pub fn generate_log(
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
 ) {
-    let (pubkeys, state_configs) = get_configs::<
-        <LogSwarm as SwarmRelation>::SignatureType,
-        <LogSwarm as SwarmRelation>::SignatureCollectionType,
-        _,
-    >(
-        MockValidator,
-        num_nodes,
-        delta,
-        state_root_delay,
-        proposal_size,
-        val_set_update_interval,
-        epoch_start_delay,
-    );
-    let file_path_vec = pubkeys.iter().map(|pubkey| WALoggerConfig {
-        file_path: PathBuf::from(format!("{:?}.log", pubkey)),
-        sync: false,
-    });
-    let pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
-        Duration::from_millis(100),
-    ))];
-    let peers = pubkeys
-        .iter()
-        .copied()
-        .zip(state_configs)
-        .zip(file_path_vec)
-        .map(|((a, b), c)| {
-            (
-                ID::new(NodeId::new(a)),
-                b,
-                c,
-                NoSerRouterConfig {
-                    all_peers: pubkeys.iter().map(|pubkey| NodeId::new(*pubkey)).collect(),
-                },
-                pipeline.clone(),
-                1,
+    let state_configs = make_state_configs::<LogSwarm>(
+        num_nodes, // num_nodes
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        MockTxPool::default,
+        || MockValidator,
+        || {
+            StateRoot::new(
+                SeqNum(state_root_delay), // state_root_delay
             )
-        })
-        .collect::<Vec<_>>();
-    let mut nodes = Nodes::<LogSwarm>::new(peers);
+        },
+        delta,                   // delta
+        proposal_size,           // proposal_tx_limit
+        val_set_update_interval, // val_set_update_interval
+        epoch_start_delay,       // epoch_start_delay
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<LogSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let pubkey = state_builder.key.pubkey();
+                let validators = state_builder.validators.clone();
+                NodeBuilder::<LogSwarm>::new(
+                    ID::new(NodeId::new(pubkey)),
+                    state_builder,
+                    WALoggerConfig::new(
+                        PathBuf::from(format!("{:?}.log", pubkey)),
+                        false, // sync
+                    ),
+                    NoSerRouterConfig::new(all_peers.clone()).build(),
+                    MockStateRootHashNop::new(validators, val_set_update_interval),
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_millis(100),
+                    ))],
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
+    );
 
-    let term = UntilTerminator::new().until_block(num_blocks);
-
-    while nodes.step_until(&term).is_some() {}
+    let mut swarm = swarm_config.build();
+    while swarm
+        .step_until(&UntilTerminator::new().until_block(num_blocks))
+        .is_some()
+    {}
 }
 
 fn main() {

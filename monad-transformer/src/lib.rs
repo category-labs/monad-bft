@@ -709,6 +709,29 @@ pub trait Pipeline<M> {
     fn min_external_delay(&self) -> Duration;
 }
 
+impl<T: Pipeline<M> + ?Sized, M> Pipeline<M> for Box<T> {
+    type NodeIdPubKey = T::NodeIdPubKey;
+
+    fn process(
+        &mut self,
+        message: LinkMessage<Self::NodeIdPubKey, M>,
+    ) -> Vec<(Duration, LinkMessage<Self::NodeIdPubKey, M>)> {
+        (**self).process(message)
+    }
+
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+
+    fn min_external_delay(&self) -> Duration {
+        (**self).min_external_delay()
+    }
+}
+
 // unlike regular transformer, pipeline's job is simply organizing various form of transformer and feed them through
 impl<T, M> Pipeline<M> for Vec<T>
 where

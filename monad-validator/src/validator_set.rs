@@ -1,6 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     error, fmt,
+    marker::PhantomData,
 };
 
 use monad_crypto::certificate_signature::PubKey;
@@ -27,84 +28,167 @@ impl<PT: PubKey> error::Error for ValidatorSetError<PT> {
     }
 }
 
-pub trait ValidatorSetType {
+pub trait ValidatorSetTypeFactory {
+    type NodeIdPubKey: PubKey;
+    type ValidatorSetType: ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>;
+    fn create(
+        &self,
+        validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
+    ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey>;
+}
+
+/// Helper trait that's only used for dynamic dispatch boxing
+/// This trait is necessary so that the ValidatorSetType associated type can be erased
+trait ValidatorSetTypeFactoryHelper {
     type NodeIdPubKey: PubKey;
 
-    fn new(
+    fn create(
+        &self,
         validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
-    ) -> Result<Self, Self::NodeIdPubKey>
+    ) -> Result<Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>, Self::NodeIdPubKey>;
+}
+
+impl<T> ValidatorSetTypeFactoryHelper for T
+where
+    T: ValidatorSetTypeFactory + ?Sized,
+    T::ValidatorSetType: Send + Sync + 'static,
+{
+    type NodeIdPubKey = T::NodeIdPubKey;
+
+    fn create(
+        &self,
+        validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
+    ) -> Result<Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>, Self::NodeIdPubKey>
+    {
+        let validator_set = self.create(validators)?;
+        Ok(Box::new(validator_set))
+    }
+}
+
+pub struct BoxedValidatorSetTypeFactory<PT: PubKey>(
+    Box<dyn ValidatorSetTypeFactoryHelper<NodeIdPubKey = PT> + Send + Sync>,
+);
+
+impl<PT: PubKey> BoxedValidatorSetTypeFactory<PT> {
+    pub fn new<T>(factory: T) -> Self
     where
-        Self: Sized;
-    fn get_members(&self) -> &HashMap<NodeId<Self::NodeIdPubKey>, Stake>;
-    fn get_list(&self) -> &Vec<NodeId<Self::NodeIdPubKey>>;
+        T: ValidatorSetTypeFactory<NodeIdPubKey = PT> + Send + Sync + 'static,
+    {
+        Self(Box::new(factory))
+    }
+}
+
+impl<PT: PubKey> ValidatorSetTypeFactory for BoxedValidatorSetTypeFactory<PT> {
+    type NodeIdPubKey = PT;
+    type ValidatorSetType = Box<dyn ValidatorSetType<NodeIdPubKey = Self::NodeIdPubKey>>;
+
+    fn create(
+        &self,
+        validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
+    ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey> {
+        self.0.create(validators)
+    }
+}
+
+pub trait ValidatorSetType: Send + Sync {
+    type NodeIdPubKey: PubKey;
+
+    fn get_members(&self) -> &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
     fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool;
-    fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
-    where
-        I: IntoIterator<Item = &'a NodeId<Self::NodeIdPubKey>>;
+    fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
     fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
+}
+
+impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
+    type NodeIdPubKey = T::NodeIdPubKey;
+
+    fn get_members(&self) -> &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake> {
+        (**self).get_members()
+    }
+
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+
+    fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool {
+        (**self).is_member(addr)
+    }
+
+    fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
+        (**self).has_super_majority_votes(addrs)
+    }
+
+    fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
+        (**self).has_honest_vote(addrs)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ValidatorSetFactory<PT: PubKey>(PhantomData<PT>);
+impl<PT: PubKey> Default for ValidatorSetFactory<PT> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
+    type NodeIdPubKey = PT;
+    type ValidatorSetType = ValidatorSet<PT>;
+
+    fn create(
+        &self,
+        validators: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>,
+    ) -> Result<Self::ValidatorSetType, Self::NodeIdPubKey> {
+        let mut vmap = BTreeMap::new();
+        let mut total_stake = Stake(0);
+        for (node_id, stake) in validators.into_iter() {
+            // TODO disallow unstaked?
+            let duplicate = vmap.insert(node_id, stake);
+            if duplicate.is_some() {
+                return Err(ValidatorSetError::DuplicateValidator(node_id));
+            }
+            total_stake += stake;
+        }
+
+        Ok(ValidatorSet {
+            validators: vmap,
+            total_stake,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct ValidatorSet<PT: PubKey> {
-    validators: HashMap<NodeId<PT>, Stake>,
-    validator_list: Vec<NodeId<PT>>,
+    validators: BTreeMap<NodeId<PT>, Stake>,
     total_stake: Stake,
 }
 
 impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
     type NodeIdPubKey = PT;
 
-    fn new(validators: Vec<(NodeId<PT>, Stake)>) -> Result<Self, PT> {
-        let mut vmap = HashMap::new();
-        let mut vlist = Vec::new();
-        for (node_id, stake) in validators.into_iter() {
-            let entry = vmap.entry(node_id).or_insert(stake);
-            if *entry != stake {
-                return Err(ValidatorSetError::DuplicateValidator(node_id));
-            }
-
-            if stake != Stake(0) {
-                vlist.push(node_id);
-            }
-        }
-
-        vlist.sort();
-
-        let total_stake: Stake = vmap.values().copied().sum();
-
-        Ok(ValidatorSet {
-            validators: vmap,
-            validator_list: vlist,
-            total_stake,
-        })
-    }
-
-    fn get_members(&self) -> &HashMap<NodeId<PT>, Stake> {
+    fn get_members(&self) -> &BTreeMap<NodeId<PT>, Stake> {
         &self.validators
     }
 
-    fn get_list(&self) -> &Vec<NodeId<PT>> {
-        &self.validator_list
-    }
-
     fn len(&self) -> usize {
-        self.validator_list.len()
+        self.validators.len()
     }
 
     fn is_empty(&self) -> bool {
-        self.validator_list.is_empty()
+        self.validators.is_empty()
     }
 
     fn is_member(&self, addr: &NodeId<PT>) -> bool {
         self.validators.contains_key(addr)
     }
 
-    fn has_super_majority_votes<'a, I>(&self, addrs: I) -> bool
-    where
-        I: IntoIterator<Item = &'a NodeId<PT>>,
-    {
+    fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
         let mut duplicates = HashSet::new();
 
         let mut voter_stake: Stake = Stake(0);
@@ -136,8 +220,7 @@ mod test {
     use monad_testutil::signing::{create_keys, get_key};
     use monad_types::{NodeId, Stake};
 
-    use super::ValidatorSet;
-    use crate::validator_set::ValidatorSetType;
+    use crate::validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory};
 
     type SignatureType = NopSignature;
     type KeyPairType = <SignatureType as CertificateSignature>::KeyPairType;
@@ -156,10 +239,12 @@ mod test {
         let v2 = (NodeId::new(keypair2.pubkey()), Stake(2));
 
         let validators_duplicate = vec![v1, v1_];
-        let _vs_err = ValidatorSet::new(validators_duplicate).unwrap_err();
+        let _vs_err = ValidatorSetFactory::default()
+            .create(validators_duplicate)
+            .unwrap_err();
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::new(validators).unwrap();
+        let vs = ValidatorSetFactory::default().create(validators).unwrap();
         assert!(vs.is_member(&NodeId::new(keypair1.pubkey())));
 
         let mut pkey3: [u8; 32] = [102; 32];
@@ -177,7 +262,7 @@ mod test {
         let pubkey3 = keypairs[2].pubkey();
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::new(validators).unwrap();
+        let vs = ValidatorSetFactory::default().create(validators).unwrap();
         assert!(vs.has_super_majority_votes(&[v2.0]));
         assert!(!vs.has_super_majority_votes(&[v1.0]));
         assert!(vs.has_super_majority_votes(&[v2.0, NodeId::new(pubkey3)]));
@@ -193,7 +278,7 @@ mod test {
         let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(2));
 
         let validators = vec![v1, v2];
-        let vs = ValidatorSet::new(validators).unwrap();
+        let vs = ValidatorSetFactory::default().create(validators).unwrap();
         assert!(!vs.has_honest_vote(&[v1.0]));
         assert!(vs.has_honest_vote(&[v2.0]));
     }

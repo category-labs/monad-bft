@@ -1,38 +1,27 @@
-use monad_consensus_types::signature_collection::SignatureCollection;
-use monad_types::{NodeId, Round};
+use std::{collections::BTreeMap, marker::PhantomData};
 
-use crate::{
-    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
-    validators_epoch_mapping::ValidatorsEpochMapping,
-};
+use monad_crypto::certificate_signature::PubKey;
+use monad_types::{Epoch, NodeId, Round, Stake};
 
-pub struct SimpleRoundRobin {}
-impl LeaderElection for SimpleRoundRobin {
-    fn new() -> Self {
-        Self {}
+use crate::leader_election::LeaderElection;
+
+#[derive(Clone)]
+pub struct SimpleRoundRobin<PT>(PhantomData<PT>);
+impl<PT> Default for SimpleRoundRobin<PT> {
+    fn default() -> Self {
+        Self(PhantomData)
     }
+}
 
-    fn get_leader<VT, SCT>(
+impl<PT: PubKey> LeaderElection for SimpleRoundRobin<PT> {
+    type NodeIdPubKey = PT;
+    fn get_leader(
         &self,
         round: Round,
-        epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
-    ) -> NodeId<VT::NodeIdPubKey>
-    where
-        VT: ValidatorSetType,
-        SCT: SignatureCollection,
-    {
-        let round_epoch = epoch_manager.get_epoch(round);
-
-        if let Some(validator_set) = val_epoch_map.get_val_set(&round_epoch) {
-            let validator_list = validator_set.get_list();
-            validator_list[round.0 as usize % validator_list.len()]
-        } else {
-            // TODO: fix panic
-            panic!(
-                "validator set for epoch #{} not in validator set mapping",
-                round_epoch.0
-            )
-        }
+        _epoch: Epoch,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
+    ) -> NodeId<PT> {
+        let validators: Vec<_> = validators.keys().collect();
+        *validators[round.0 as usize % validators.len()]
     }
 }

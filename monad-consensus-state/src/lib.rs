@@ -32,7 +32,9 @@ use monad_eth_types::EthAddress;
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 use tracing::{debug, trace, warn};
@@ -53,6 +55,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     type BlockValidatorType;
+    type StateRootValidatorType;
 
     /// Create the core consensus state
     ///
@@ -66,6 +69,7 @@ where
     /// cert_keypair - keypair used for certificate level signing
     fn new(
         block_validator: Self::BlockValidatorType,
+        state_root_validator: Self::StateRootValidatorType,
         my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
@@ -89,46 +93,46 @@ where
     /// handles proposal messages from other nodes
     /// validators and election are required as part of verifying the proposal certificates
     /// as well as determining the next leader
-    fn handle_proposal_message<VT, LT>(
+    fn handle_proposal_message<VTF, LT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        LT: LeaderElection;
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>;
 
     /// collect votes from other nodes
-    fn handle_vote_message<VT, LT, TT>(
+    fn handle_vote_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         v: VoteMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        LT: LeaderElection,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool;
 
     /// handle timeout messages from other nodes
-    fn handle_timeout_message<VT, LT, TT>(
+    fn handle_timeout_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         tm: TimeoutMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        LT: LeaderElection,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool;
 
     /// handle the response to a block sync message
@@ -204,9 +208,6 @@ pub struct ConsensusConfig {
     pub proposal_txn_limit: usize,
     /// Maximum cumulative gas allowed for all transactions in a proposal
     pub proposal_gas_limit: u64,
-    /// The gap between the current SeqNum and the SeqNum of the state-root-hash
-    /// included in a proposal
-    pub state_root_delay: SeqNum,
     /// If the current leader has the highest qc but is missing some blocks in the
     /// pending blocktree (ie, there isn't a path to the root of the tree from the
     /// highest qc), this bool controls whether we still try to propose a block with
@@ -268,9 +269,11 @@ where
     SVT: StateRootValidator,
 {
     type BlockValidatorType = BVT;
+    type StateRootValidatorType = SVT;
 
     fn new(
         block_validator: Self::BlockValidatorType,
+        state_root_validator: Self::StateRootValidatorType,
         my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
@@ -284,7 +287,7 @@ where
             pending_block_tree: BlockTree::new(genesis_qc.clone()),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
-            state_root_validator: SVT::new(config.state_root_delay),
+            state_root_validator,
             // high_qc round is 0, so pacemaker round should start at 1
             pacemaker: Pacemaker::new(config.delta, Round(1), None),
             safety: Safety::default(),
@@ -320,17 +323,17 @@ where
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
     #[must_use]
-    fn handle_proposal_message<VT, LT>(
+    fn handle_proposal_message<VTF, LT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        LT: LeaderElection,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         debug!("Proposal Message: {:?}", p);
         inc_count!(handle_proposal);
@@ -356,7 +359,7 @@ where
         // author, leader, round checks
         let round = self.pacemaker.get_current_round();
         let block_round_leader =
-            election.get_leader(block.get_round(), epoch_manager, val_epoch_map);
+            election.get_leader(block.get_round(), epoch, validator_set.get_members());
         if block.get_round() > round
             || author != block_round_leader
             || block.get_author() != block_round_leader
@@ -406,7 +409,8 @@ where
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new(v, &self.cert_keypair);
 
-            let next_leader = election.get_leader(round + Round(1), epoch_manager, val_epoch_map);
+            let next_leader =
+                election.get_leader(round + Round(1), epoch, validator_set.get_members());
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(next_leader),
                 message: ConsensusMessage::Vote(vote_msg).sign(&self.keypair),
@@ -422,18 +426,18 @@ where
     /// handle votes at the vote_state state machine. When enough votes are collected,
     /// a QC is formed and broadcast to other nodes
     #[must_use]
-    fn handle_vote_message<VT, LT, TT>(
+    fn handle_vote_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        LT: LeaderElection,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool,
     {
         debug!("Vote Message: {:?}", vote_msg);
@@ -465,8 +469,8 @@ where
             if self.nodeid
                 == election.get_leader(
                     self.pacemaker.get_current_round(),
-                    epoch_manager,
-                    val_epoch_map,
+                    epoch,
+                    validator_set.get_members(),
                 )
             {
                 cmds.extend(self.process_new_round_event(tx_pool, None));
@@ -477,18 +481,18 @@ where
 
     /// handling remote timeout messages
     #[must_use]
-    fn handle_timeout_message<VT, LT, TT>(
+    fn handle_timeout_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         tmo_msg: TimeoutMessage<SCT>,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        LT: LeaderElection,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool,
     {
         let tm = &tmo_msg.timeout;
@@ -525,14 +529,16 @@ where
             cmds.extend(advance_round_cmds);
         }
 
-        let (tc, remote_timeout_cmds) = self.pacemaker.process_remote_timeout::<VT>(
-            validator_set,
-            validator_mapping,
-            &mut self.safety,
-            &self.high_qc,
-            author,
-            tmo_msg,
-        );
+        let (tc, remote_timeout_cmds) = self
+            .pacemaker
+            .process_remote_timeout::<VTF::ValidatorSetType>(
+                validator_set,
+                validator_mapping,
+                &mut self.safety,
+                &self.high_qc,
+                author,
+                tmo_msg,
+            );
 
         cmds.extend(remote_timeout_cmds.into_iter().map(|cmd| {
             ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
@@ -548,8 +554,8 @@ where
             if self.nodeid
                 == election.get_leader(
                     self.pacemaker.get_current_round(),
-                    epoch_manager,
-                    val_epoch_map,
+                    epoch,
+                    validator_set.get_members(),
                 )
             {
                 cmds.extend(self.process_new_round_event(tx_pool, Some(tc)));
@@ -940,15 +946,15 @@ where
     }
 
     #[must_use]
-    fn randao_validation<VT>(
+    fn randao_validation<VTF>(
         &self,
         block: &Block<SCT>,
         author: NodeId<SCT::NodeIdPubKey>,
         epoch: Epoch,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     ) -> bool
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
         let author_pubkey = val_epoch_map
             .get_cert_pubkeys(&epoch)
@@ -992,7 +998,7 @@ mod test {
         },
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
-        txpool::{MockTxPool, TxPool},
+        txpool::MockTxPool,
         voting::{ValidatorMapping, Vote, VoteInfo},
     };
     use monad_crypto::{
@@ -1014,7 +1020,7 @@ mod test {
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
         simple_round_robin::SimpleRoundRobin,
-        validator_set::{ValidatorSet, ValidatorSetType},
+        validator_set::{ValidatorSetFactory, ValidatorSetType},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
@@ -1045,31 +1051,31 @@ mod test {
         SVT: StateRootValidator,
     >(
         num_states: u32,
+        state_root: impl Fn() -> SVT,
     ) -> (
         Vec<ST::KeyPairType>,
         Vec<SignatureCollectionKeyPairType<SCT>>,
         EpochManager,
-        ValidatorsEpochMapping<ValidatorSet<CertificateSignaturePubKey<ST>>, SCT>,
+        ValidatorsEpochMapping<ValidatorSetFactory<CertificateSignaturePubKey<ST>>, SCT>,
         Vec<ConsensusState<ST, SCT, MockValidator, SVT>>,
     ) {
-        let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<ST, SCT>(num_states);
+        let (keys, cert_keys, valset, valmap) =
+            create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
         let val_stakes = Vec::from_iter(valset.get_members().clone());
         let val_cert_pubkeys = keys
             .iter()
             .map(|k| NodeId::new(k.pubkey()))
             .zip(cert_keys.iter().map(|k| k.pubkey()))
             .collect::<Vec<_>>();
-        let mut val_epoch_map = ValidatorsEpochMapping::default();
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(
             Epoch(1),
-            ValidatorSet::new(val_stakes.clone())
-                .expect("ValidatorData should not have duplicates or invalid entries"),
+            val_stakes.clone(),
             ValidatorMapping::new(val_cert_pubkeys.clone()),
         );
         val_epoch_map.insert(
             Epoch(2),
-            ValidatorSet::new(val_stakes)
-                .expect("ValidatorData should not have duplicates or invalid entries"),
+            val_stakes,
             ValidatorMapping::new(val_cert_pubkeys),
         );
 
@@ -1090,11 +1096,11 @@ mod test {
                     .unwrap();
                 ConsensusState::<ST, SCT, _, SVT>::new(
                     MockValidator,
+                    state_root(),
                     k.pubkey(),
                     ConsensusConfig {
                         proposal_txn_limit: 5000,
                         proposal_gas_limit: 8_000_000,
-                        state_root_delay: SeqNum(1),
                         propose_with_missing_blocks: false,
                         delta: Duration::from_secs(1),
                     },
@@ -1173,9 +1179,11 @@ mod test {
     #[test]
     fn lock_qc_high() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
-        let mut empty_txpool = MockTxPool::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.get_round(), Round(0));
@@ -1238,8 +1246,10 @@ mod test {
     #[test]
     fn timeout_stops_voting() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let p1 = propgen.next_proposal(
@@ -1282,8 +1292,10 @@ mod test {
     #[test]
     fn enter_proposalmsg_round() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
 
@@ -1378,8 +1390,10 @@ mod test {
     #[test]
     fn duplicate_proposals() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
 
@@ -1432,8 +1446,10 @@ mod test {
 
     fn out_of_order_proposals(perms: Vec<usize>) {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
@@ -1621,8 +1637,10 @@ mod test {
     #[test]
     fn test_commit_rule_consecutive() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
@@ -1705,8 +1723,10 @@ mod test {
     #[test]
     fn test_commit_rule_non_consecutive() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
@@ -1805,10 +1825,12 @@ mod test {
     #[test]
     fn test_malicious_proposal_and_block_recovery() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
         let valset = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
-        let election = SimpleRoundRobin::new();
-        let mut empty_txpool = MockTxPool::new();
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -2138,8 +2160,10 @@ mod test {
     #[test]
     fn test_receive_empty_block() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRoot>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
+                StateRoot::new(SeqNum(1))
+            });
+        let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
 
         let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
@@ -2182,8 +2206,10 @@ mod test {
     #[test]
     fn test_lagging_execution() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRoot>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
+                StateRoot::new(SeqNum(1))
+            });
+        let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
 
         let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
@@ -2228,9 +2254,11 @@ mod test {
         // MissingNextStateRoot forces the proposer's state root hash
         // to be unavailable
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, MissingNextStateRoot>(4);
-        let election = SimpleRoundRobin::new();
-        let mut empty_txpool = MockTxPool::new();
+            setup::<SignatureType, SignatureCollectionType, MissingNextStateRoot>(4, || {
+                MissingNextStateRoot::default()
+            });
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -2334,8 +2362,10 @@ mod test {
     #[test]
     fn test_state_root_updates() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRoot>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
+                StateRoot::new(SeqNum(1))
+            });
+        let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
 
         // delay gap in setup is 1
@@ -2471,8 +2501,10 @@ mod test {
     #[test]
     fn test_fetch_uncommitted_block() {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
-            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4);
-        let election = SimpleRoundRobin::new();
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
         let (first_state, _) = states.split_first_mut().unwrap();
 
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
@@ -2580,10 +2612,11 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_state as u32,
+                || NopStateRoot,
             );
 
-        let election = SimpleRoundRobin::new();
-        let mut empty_txpool = MockTxPool::new();
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
 
         for i in 0..8 {
@@ -2617,7 +2650,12 @@ mod test {
         for state in states.iter() {
             assert_eq!(state.get_current_round(), Round(8));
         }
-        let next_leader = election.get_leader(Round(10), &epoch_manager, &val_epoch_map);
+        let epoch = epoch_manager.get_epoch(Round(10));
+        let next_leader = election.get_leader(
+            Round(10),
+            epoch,
+            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
+        );
         let mut leader_index = 0;
         // test when observing a qc through vote message, and qc points to a block that doesn't exists yet
         let cp = correct_proposal_gen.next_proposal(
@@ -2704,9 +2742,10 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_state as u32,
+                || NopStateRoot,
             );
-        let election = SimpleRoundRobin::new();
-        let mut empty_txpool = MockTxPool::new();
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -2778,8 +2817,9 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_state as u32,
+                || NopStateRoot,
             );
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -2841,9 +2881,10 @@ mod test {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_state as u32,
+                || NopStateRoot,
             );
 
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         let verified_p1 = propgen.next_proposal(
@@ -2879,7 +2920,12 @@ mod test {
 
         let (_, _, p2) = verified_p2.destructure();
 
-        let invalid_author = election.get_leader(Round(4), &epoch_manager, &val_epoch_map);
+        let epoch = epoch_manager.get_epoch(Round(4));
+        let invalid_author = election.get_leader(
+            Round(4),
+            epoch,
+            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
+        );
         assert!(invalid_author != NodeId::new(states[0].get_keypair().pubkey()));
         assert!(invalid_author != p2.block.0.author);
         let invalid_b2 = Block::new(
@@ -2913,9 +2959,10 @@ mod test {
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
+                || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -2977,10 +3024,11 @@ mod test {
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
+                || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3116,10 +3164,11 @@ mod test {
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
+                || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3227,11 +3276,12 @@ mod test {
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
+                || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::new();
-        let mut empty_txpool = MockTxPool::new();
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3369,10 +3419,11 @@ mod test {
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
+                || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3589,10 +3640,11 @@ mod test {
         let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
+                || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::new();
+        let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 

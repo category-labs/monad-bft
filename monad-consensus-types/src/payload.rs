@@ -186,11 +186,6 @@ impl Hashable for Payload {
 
 /// Provides methods for Consensus to validate state root hashes
 pub trait StateRootValidator {
-    /// Create a new StateRootValidator with the size of the expected
-    /// delay gap between the current Proposal's state root and the state
-    /// root to check against
-    fn new(delay: SeqNum) -> Self;
-
     /// Add the state root hash that corresponds to the sequence number
     fn add_state_root(&mut self, seq_num: SeqNum, root_hash: Hash);
 
@@ -205,6 +200,24 @@ pub trait StateRootValidator {
     /// Check the validity of the state root hash in a Proposal from the sequence
     /// number and state root hash it includes
     fn validate(&self, seq_num: SeqNum, block_state_root_hash: Hash) -> StateRootResult;
+}
+
+impl<T: StateRootValidator + ?Sized> StateRootValidator for Box<T> {
+    fn add_state_root(&mut self, seq_num: SeqNum, root_hash: Hash) {
+        (**self).add_state_root(seq_num, root_hash)
+    }
+
+    fn get_next_state_root(&self, seq_num: SeqNum) -> Option<Hash> {
+        (**self).get_next_state_root(seq_num)
+    }
+
+    fn remove_old_roots(&mut self, latest_seq_num: SeqNum) {
+        (**self).remove_old_roots(latest_seq_num)
+    }
+
+    fn validate(&self, seq_num: SeqNum, block_state_root_hash: Hash) -> StateRootResult {
+        (**self).validate(seq_num, block_state_root_hash)
+    }
 }
 
 /// The outcomes of validating state root hashes
@@ -240,16 +253,20 @@ pub struct StateRoot {
     pub delay: SeqNum,
 }
 
-impl StateRootValidator for StateRoot {
-    /// creates StateRoot with an initial root hash entry for the genesis block which
-    /// hash sequence number 0
-    fn new(delay: SeqNum) -> Self {
-        StateRoot {
+impl StateRoot {
+    /// `delay` is the expected delay gap between the current Proposal's state root and the delay
+    /// to check against
+    pub fn new(delay: SeqNum) -> Self {
+        // creates StateRoot with an initial root hash entry for the genesis block which
+        // hash sequence number 0
+        Self {
             root_hashes: BTreeMap::from([(SeqNum(0), INITIAL_DELAY_STATE_ROOT_HASH)]),
             delay,
         }
     }
+}
 
+impl StateRootValidator for StateRoot {
     fn add_state_root(&mut self, seq_num: SeqNum, root_hash: Hash) {
         self.root_hashes.insert(seq_num, root_hash);
     }
@@ -310,14 +327,10 @@ impl StateRootValidator for StateRoot {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct NopStateRoot {}
+#[derive(Debug, Clone, Default)]
+pub struct NopStateRoot;
 
 impl StateRootValidator for NopStateRoot {
-    fn new(_delay: SeqNum) -> Self {
-        Self {}
-    }
-
     fn add_state_root(&mut self, _seq_num: SeqNum, _root_hash: Hash) {}
 
     fn get_next_state_root(&self, _seq_num: SeqNum) -> Option<Hash> {
@@ -331,14 +344,10 @@ impl StateRootValidator for NopStateRoot {
     fn remove_old_roots(&mut self, _latest_seq_num: SeqNum) {}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MissingNextStateRoot {}
 
 impl StateRootValidator for MissingNextStateRoot {
-    fn new(_delay: SeqNum) -> Self {
-        Self {}
-    }
-
     fn add_state_root(&mut self, _seq_num: SeqNum, _root_hash: Hash) {}
 
     fn get_next_state_root(&self, _seq_num: SeqNum) -> Option<Hash> {
@@ -357,8 +366,8 @@ mod test {
     use monad_crypto::hasher::Hash;
     use monad_types::SeqNum;
 
-    use super::{StateRoot, StateRootValidator};
-    use crate::payload::StateRootResult;
+    use super::StateRootValidator;
+    use crate::payload::{StateRoot, StateRootResult};
 
     #[test]
     fn state_root_impl_test() {

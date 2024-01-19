@@ -1,31 +1,40 @@
 mod common;
 
 mod test {
-    use std::{collections::HashSet, time::Duration};
+    use std::{
+        collections::{BTreeSet, HashSet},
+        time::Duration,
+    };
 
     use itertools::Itertools;
     use monad_consensus_state::ConsensusProcess;
     use monad_consensus_types::{
         block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
     };
-    use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
-    use monad_executor::timed_event::TimedEvent;
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+        NopSignature,
+    };
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
-        mock_swarm::{Node, Nodes, UntilTerminator},
+        mock_swarm::SwarmBuilder,
+        node::{Node, NodeBuilder},
         swarm_relation::{NoSerSwarm, SwarmRelation},
+        terminator::UntilTerminator,
     };
     use monad_multi_sig::MultiSig;
-    use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
+    use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
     use monad_state::{MonadMessage, VerifiedMonadMessage};
-    use monad_testutil::swarm::{create_and_run_nodes, get_configs, SwarmTestConfig};
+    use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,
     };
     use monad_types::{Epoch, NodeId, Round, SeqNum};
-    use monad_updaters::state_root_hash::MockStateRootHashSwap;
-    use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+    use monad_updaters::state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap};
+    use monad_validator::{
+        simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
+    };
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
     use test_case::test_case;
 
@@ -39,12 +48,11 @@ mod test {
 
         type BlockValidator = MockValidator;
         type StateRootValidator = StateRoot;
-        type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
-        type LeaderElection = SimpleRoundRobin;
+        type ValidatorSetTypeFactory =
+            ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
+        type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
 
-        type RouterSchedulerConfig =
-            NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
             MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
@@ -56,10 +64,7 @@ mod test {
             Self::TransportMessage,
         >;
 
-        type LoggerConfig = MockWALoggerConfig;
-        type Logger = MockWALogger<
-            TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>,
-        >;
+        type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
         type StateRootHashExecutor = MockStateRootHashSwap<
             Block<Self::SignatureCollectionType>,
@@ -121,43 +126,50 @@ mod test {
 
     #[test]
     fn schedule_and_advance_epoch() {
-        let num_nodes = 4;
-
-        let delta = Duration::from_millis(2);
         let val_set_update_interval = SeqNum(1000);
-        let epoch_start_delay = Round(20);
 
-        let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
-            MockValidator,
-            num_nodes,
-            delta,
-            u64::MAX,
-            0,
-            val_set_update_interval,
-            epoch_start_delay,
+        let state_configs = make_state_configs::<NoSerSwarm>(
+            4, // num_nodes
+            ValidatorSetFactory::default,
+            SimpleRoundRobin::default,
+            MockTxPool::default,
+            || MockValidator,
+            || {
+                StateRoot::new(
+                    SeqNum(u64::MAX), // state_root_delay
+                )
+            },
+            Duration::from_millis(2), // delta
+            0,                        // proposal_tx_limit
+            val_set_update_interval,  // val_set_update_interval
+            Round(20),                // epoch_start_delay
         );
-
-        let mut nodes = Nodes::<NoSerSwarm>::new(
-            pubkeys
-                .iter()
-                .copied()
-                .zip(state_configs)
-                .map(|(pubkey, state_config)| {
-                    (
-                        ID::new(NodeId::new(pubkey)),
-                        state_config,
-                        MockWALoggerConfig,
-                        NoSerRouterConfig {
-                            all_peers: pubkeys.iter().copied().map(NodeId::new).collect(),
-                        },
+        let all_peers: BTreeSet<_> = state_configs
+            .iter()
+            .map(|state_config| NodeId::new(state_config.key.pubkey()))
+            .collect();
+        let swarm_config = SwarmBuilder::<NoSerSwarm>(
+            state_configs
+                .into_iter()
+                .enumerate()
+                .map(|(seed, state_builder)| {
+                    let validators = state_builder.validators.clone();
+                    NodeBuilder::<NoSerSwarm>::new(
+                        ID::new(NodeId::new(state_builder.key.pubkey())),
+                        state_builder,
+                        MockWALoggerConfig::default(),
+                        NoSerRouterConfig::new(all_peers.clone()).build(),
+                        MockStateRootHashNop::new(validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(1),
                         ))],
-                        1,
+                        seed.try_into().unwrap(),
                     )
                 })
                 .collect(),
         );
+
+        let mut nodes = swarm_config.build();
 
         let update_block_num = val_set_update_interval;
 
@@ -188,47 +200,53 @@ mod test {
 
     #[test]
     fn schedule_epoch_after_blocksync() {
-        let num_nodes = 4;
-        // need atleast 4 nodes (1 blackout node)
-        assert!(num_nodes >= 4, "need atleast 4 nodes");
-
-        let delta = Duration::from_millis(2);
         let val_set_update_interval = SeqNum(1000);
-        let epoch_start_delay = Round(20);
 
-        let (pubkeys, state_configs) = get_configs::<NopSignature, MultiSig<NopSignature>, _>(
-            MockValidator,
-            num_nodes,
-            delta,
-            u64::MAX,
-            0,
-            val_set_update_interval,
-            epoch_start_delay,
+        let state_configs = make_state_configs::<NoSerSwarm>(
+            4, // num_nodes
+            ValidatorSetFactory::default,
+            SimpleRoundRobin::default,
+            MockTxPool::default,
+            || MockValidator,
+            || {
+                StateRoot::new(
+                    SeqNum(u64::MAX), // state_root_delay
+                )
+            },
+            Duration::from_millis(2), // delta
+            0,                        // proposal_tx_limit
+            val_set_update_interval,  // val_set_update_interval
+            Round(20),                // epoch_start_delay
         );
+        let all_peers: BTreeSet<_> = state_configs
+            .iter()
+            .map(|state_config| NodeId::new(state_config.key.pubkey()))
+            .collect();
 
         let regular_pipeline = vec![GenericTransformer::Latency(LatencyTransformer::new(
             Duration::from_millis(1),
         ))];
 
-        let mut nodes = Nodes::<NoSerSwarm>::new(
-            pubkeys
-                .iter()
-                .copied()
-                .zip(state_configs)
-                .map(|(pubkey, state_config)| {
-                    (
-                        ID::new(NodeId::new(pubkey)),
-                        state_config,
-                        MockWALoggerConfig,
-                        NoSerRouterConfig {
-                            all_peers: pubkeys.iter().copied().map(NodeId::new).collect(),
-                        },
+        let swarm_config = SwarmBuilder::<NoSerSwarm>(
+            state_configs
+                .into_iter()
+                .enumerate()
+                .map(|(seed, state_builder)| {
+                    let validators = state_builder.validators.clone();
+                    NodeBuilder::<NoSerSwarm>::new(
+                        ID::new(NodeId::new(state_builder.key.pubkey())),
+                        state_builder,
+                        MockWALoggerConfig::default(),
+                        NoSerRouterConfig::new(all_peers.clone()).build(),
+                        MockStateRootHashNop::new(validators, val_set_update_interval),
                         regular_pipeline.clone(),
-                        1,
+                        seed.try_into().unwrap(),
                     )
                 })
                 .collect(),
         );
+
+        let mut nodes = swarm_config.build();
 
         let update_block_num = val_set_update_interval;
 
@@ -291,27 +309,52 @@ mod test {
         epoch_start_delay: Round,
         until_block: usize,
     ) {
-        create_and_run_nodes::<ValidatorSwapSwarm, _, _>(
-            MockValidator,
-            |all_peers, _| NoSerRouterConfig {
-                all_peers: all_peers.into_iter().collect(),
+        let state_configs = make_state_configs::<ValidatorSwapSwarm>(
+            4, // num_nodes
+            ValidatorSetFactory::default,
+            SimpleRoundRobin::default,
+            MockTxPool::default,
+            || MockValidator,
+            || {
+                StateRoot::new(
+                    SeqNum(4), // state_root_delay
+                )
             },
-            MockWALoggerConfig,
-            vec![GenericTransformer::Latency(LatencyTransformer::new(
-                Duration::from_millis(1),
-            ))],
-            UntilTerminator::new().until_block(until_block),
-            SwarmTestConfig {
-                num_nodes: 4,
-                consensus_delta: Duration::from_millis(2),
-                parallelize: false,
-                expected_block: until_block,
-                state_root_delay: 4,
-                seed: 1,
-                proposal_size: 0,
-                val_set_update_interval,
-                epoch_start_delay,
-            },
+            Duration::from_millis(2), // delta
+            0,                        // proposal_tx_limit
+            val_set_update_interval,  // val_set_update_interval
+            epoch_start_delay,        // epoch_start_delay
         );
+        let all_peers: BTreeSet<_> = state_configs
+            .iter()
+            .map(|state_config| NodeId::new(state_config.key.pubkey()))
+            .collect();
+        let swarm_config = SwarmBuilder::<ValidatorSwapSwarm>(
+            state_configs
+                .into_iter()
+                .enumerate()
+                .map(|(seed, state_builder)| {
+                    let validators = state_builder.validators.clone();
+                    NodeBuilder::<ValidatorSwapSwarm>::new(
+                        ID::new(NodeId::new(state_builder.key.pubkey())),
+                        state_builder,
+                        MockWALoggerConfig::default(),
+                        NoSerRouterConfig::new(all_peers.clone()).build(),
+                        MockStateRootHashSwap::new(validators, val_set_update_interval),
+                        vec![GenericTransformer::Latency(LatencyTransformer::new(
+                            Duration::from_millis(1),
+                        ))],
+                        seed.try_into().unwrap(),
+                    )
+                })
+                .collect(),
+        );
+
+        let mut swarm = swarm_config.build();
+        while swarm
+            .step_until(&UntilTerminator::new().until_block(until_block))
+            .is_some()
+        {}
+        swarm_ledger_verification(&swarm, until_block);
     }
 }

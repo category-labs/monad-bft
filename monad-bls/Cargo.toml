@@ -13,6 +13,7 @@ monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
 
 bitvec = { workspace = true, features = ["serde"] }
 blst = { workspace = true }

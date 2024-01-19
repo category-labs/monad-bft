@@ -23,7 +23,9 @@ use monad_crypto::{
 use monad_eth_types::EthAddress;
 use monad_types::{NodeId, Round, SeqNum};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection, validator_set::ValidatorSetType,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
@@ -62,14 +64,14 @@ where
     }
 
     pub fn next_proposal<
-        VT: ValidatorSetType<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        LT: LeaderElection,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     >(
         &mut self,
         keys: &[ST::KeyPairType],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         txns: FullTransactionList,
         execution_header: ExecutionArtifacts,
@@ -87,9 +89,14 @@ where
             .iter()
             .zip(certkeys)
             .find(|(k, _)| {
+                let epoch = epoch_manager.get_epoch(self.round);
                 k.pubkey()
                     == election
-                        .get_leader(self.round, epoch_manager, val_epoch_map)
+                        .get_leader(
+                            self.round,
+                            epoch,
+                            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
+                        )
                         .pubkey()
             })
             .expect("key not in valset");
@@ -140,7 +147,7 @@ where
             .iter()
             .map(|keypair| NodeId::new(keypair.pubkey()))
             .collect::<Vec<_>>();
-        if !valset.has_super_majority_votes(node_ids.iter()) {
+        if !valset.has_super_majority_votes(&node_ids) {
             return Vec::new();
         }
 

@@ -1,69 +1,38 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
-use monad_executor::timed_event::TimedEvent;
+use monad_crypto::{
+    certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
+    NopSignature,
+};
 use monad_executor_glue::MonadEvent;
 use monad_gossip::mock::{MockGossip, MockGossipConfig};
-use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::SwarmRelation};
+use monad_mock_swarm::{
+    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
+    terminator::UntilTerminator,
+};
 use monad_multi_sig::MultiSig;
 use monad_quic::{QuicRouterScheduler, QuicRouterSchedulerConfig};
+use monad_router_scheduler::RouterSchedulerBuilder;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{
-    BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer,
+    BwTransformer, BytesTransformer, BytesTransformerPipeline, LatencyTransformer, ID,
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 type SignatureType = NopSignature;
 type NodeIdPubKey = CertificateSignaturePubKey<NopSignature>;
-
-fn setup() -> (
-    SwarmTestConfig,
-    impl Fn(
-        Vec<NodeId<NodeIdPubKey>>,
-        NodeId<NodeIdPubKey>,
-    ) -> QuicRouterSchedulerConfig<MockGossip<NodeIdPubKey>>,
-    Vec<BytesTransformer<NodeIdPubKey>>,
-    UntilTerminator,
-) {
-    let zero_instant = Instant::now();
-    let stc = SwarmTestConfig {
-        num_nodes: 20,
-        // intentially smaller than latency so nodes keep timing out
-        consensus_delta: Duration::from_millis(30),
-        parallelize: false,
-        expected_block: 0,
-        state_root_delay: u64::MAX,
-        seed: 1,
-        proposal_size: 0,
-        val_set_update_interval: SeqNum(2000),
-        epoch_start_delay: Round(50),
-    };
-    let rsc = move |all_peers: Vec<NodeId<NodeIdPubKey>>, me: NodeId<NodeIdPubKey>| {
-        QuicRouterSchedulerConfig {
-            zero_instant,
-            all_peers: all_peers.iter().cloned().collect(),
-            me,
-            master_seed: 7,
-            gossip: MockGossipConfig { all_peers, me }.build(),
-        }
-    };
-    let xfmrs = vec![
-        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(100))),
-        BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
-    ];
-    let terminator = UntilTerminator::new().until_round(Round(10));
-
-    (stc, rsc, xfmrs, terminator)
-}
 
 struct NopSwarm;
 
@@ -75,11 +44,11 @@ impl SwarmRelation for NopSwarm {
 
     type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
-    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin;
+    type ValidatorSetTypeFactory =
+        ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
 
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip<NodeIdPubKey>>;
     type RouterScheduler = QuicRouterScheduler<
         MockGossip<NodeIdPubKey>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
@@ -88,9 +57,7 @@ impl SwarmRelation for NopSwarm {
 
     type Pipeline = BytesTransformerPipeline<NodeIdPubKey>;
 
-    type LoggerConfig = MockWALoggerConfig;
-    type Logger =
-        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         Block<Self::SignatureCollectionType>,
@@ -109,8 +76,9 @@ impl SwarmRelation for BlsSwarm {
 
     type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
-    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin;
+    type ValidatorSetTypeFactory =
+        ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
 
     type RouterScheduler = QuicRouterScheduler<
@@ -118,13 +86,10 @@ impl SwarmRelation for BlsSwarm {
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
     >;
-    type RouterSchedulerConfig = QuicRouterSchedulerConfig<MockGossip<NodeIdPubKey>>;
 
     type Pipeline = BytesTransformerPipeline<NodeIdPubKey>;
 
-    type LoggerConfig = MockWALoggerConfig;
-    type Logger =
-        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         Block<Self::SignatureCollectionType>,
@@ -134,33 +99,135 @@ impl SwarmRelation for BlsSwarm {
 }
 
 fn many_nodes_nop_timeout() -> u128 {
-    let (stc, rsc, xfmrs, terminator) = setup();
-
-    let duration = create_and_run_nodes::<NopSwarm, _, _>(
-        MockValidator,
-        rsc,
-        MockWALoggerConfig,
-        xfmrs,
-        terminator,
-        stc,
+    let zero_instant = Instant::now();
+    let state_configs = make_state_configs::<NopSwarm>(
+        40, // num_nodes
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        MockTxPool::default,
+        || MockValidator,
+        || {
+            StateRoot::new(
+                SeqNum(u64::MAX), // state_root_delay
+            )
+        },
+        Duration::from_millis(20), // delta
+        0,                         // proposal_tx_limit
+        SeqNum(2000),              // val_set_update_interval
+        Round(50),                 // epoch_start_delay
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<NopSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let validators = state_builder.validators.clone();
+                let me = NodeId::new(state_builder.key.pubkey());
+                NodeBuilder::<NopSwarm>::new(
+                    ID::new(me),
+                    state_builder,
+                    MockWALoggerConfig::default(),
+                    QuicRouterSchedulerConfig::new(
+                        zero_instant,
+                        all_peers.iter().cloned().collect(),
+                        me,
+                        7,
+                        MockGossipConfig {
+                            all_peers: all_peers.iter().cloned().collect(),
+                            me,
+                        }
+                        .build(),
+                    )
+                    .build(),
+                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    vec![
+                        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
+                            100,
+                        ))),
+                        BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
+                    ],
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
     );
 
-    duration.as_millis()
+    let mut swarm = swarm_config.build();
+    let mut max_duration = Duration::ZERO;
+    while let Some(duration) = swarm.step_until(&UntilTerminator::new().until_round(Round(10))) {
+        max_duration = duration;
+    }
+    max_duration.as_millis()
 }
 
 fn many_nodes_bls_timeout() -> u128 {
-    let (stc, rsc, xfmrs, terminator) = setup();
-
-    let duration = create_and_run_nodes::<BlsSwarm, _, _>(
-        MockValidator,
-        rsc,
-        MockWALoggerConfig,
-        xfmrs,
-        terminator,
-        stc,
+    let zero_instant = Instant::now();
+    let state_configs = make_state_configs::<BlsSwarm>(
+        40, // num_nodes
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        MockTxPool::default,
+        || MockValidator,
+        || {
+            StateRoot::new(
+                SeqNum(u64::MAX), // state_root_delay
+            )
+        },
+        Duration::from_millis(20), // delta
+        0,                         // proposal_tx_limit
+        SeqNum(2000),              // val_set_update_interval
+        Round(50),                 // epoch_start_delay
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<BlsSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let validators = state_builder.validators.clone();
+                let me = NodeId::new(state_builder.key.pubkey());
+                NodeBuilder::<BlsSwarm>::new(
+                    ID::new(me),
+                    state_builder,
+                    MockWALoggerConfig::default(),
+                    QuicRouterSchedulerConfig::new(
+                        zero_instant,
+                        all_peers.iter().cloned().collect(),
+                        me,
+                        7,
+                        MockGossipConfig {
+                            all_peers: all_peers.iter().cloned().collect(),
+                            me,
+                        }
+                        .build(),
+                    )
+                    .build(),
+                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    vec![
+                        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
+                            100,
+                        ))),
+                        BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
+                    ],
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
     );
 
-    duration.as_millis()
+    let mut swarm = swarm_config.build();
+    let mut max_duration = Duration::ZERO;
+    while let Some(duration) = swarm.step_until(&UntilTerminator::new().until_round(Round(10))) {
+        max_duration = duration;
+    }
+    max_duration.as_millis()
 }
 
 monad_virtual_bench::virtual_bench_main! {many_nodes_nop_timeout, many_nodes_bls_timeout}

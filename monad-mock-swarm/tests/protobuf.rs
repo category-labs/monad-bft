@@ -26,9 +26,8 @@ use monad_testutil::{
 use monad_types::{BlockId, Epoch, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
-    leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
-    validator_set::{ValidatorSet, ValidatorSetType},
+    validator_set::{ValidatorSetFactory, ValidatorSetType},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
@@ -85,19 +84,20 @@ fn test_consensus_message_event_vote_multisig() {
 
 #[test]
 fn test_consensus_message_event_proposal_bls() {
+    let validator_set_factory = ValidatorSetFactory::default();
     let (keys, cert_keys, valset, valmap) = create_keys_w_validators::<
         SignatureType,
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,
-    >(10);
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
+        _,
+    >(10, validator_set_factory);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(validator_set_factory);
     val_epoch_map.insert(
         Epoch(1),
-        ValidatorSet::new(Vec::from_iter(valset.get_members().clone()))
-            .expect("ValidatorData should not have duplicates or invalid entries"),
+        Vec::from_iter(valset.get_members().clone()),
         ValidatorMapping::new(valmap),
     );
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let election = SimpleRoundRobin::new();
+    let election = SimpleRoundRobin::default();
     let mut propgen: ProposalGen<
         SignatureType,
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,

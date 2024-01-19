@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Deref};
+use std::{collections::BTreeMap, ops::Deref};
 
 use monad_consensus_types::{
     block::BlockType,
@@ -23,7 +23,8 @@ use monad_proto::proto::message::{
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::{
-    epoch_manager::EpochManager, validator_set::ValidatorSetType,
+    epoch_manager::EpochManager,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
@@ -145,13 +146,14 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn verify<VT>(
+    pub fn verify<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         sender: &SCT::NodeIdPubKey,
     ) -> Result<Verified<ST, Unvalidated<ConsensusMessage<SCT>>>, Error>
     where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         let msg = HasherType::hash_object(&self.obj);
@@ -238,12 +240,13 @@ impl<M: Hashable> Hashable for Unvalidated<M> {
 }
 
 impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
-    pub fn validate<VT>(
+    pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     ) -> Result<Validated<ConsensusMessage<SCT>>, Error>
     where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         Ok(match self.obj {
@@ -272,12 +275,13 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
 impl<SCT: SignatureCollection> Unvalidated<ProposalMessage<SCT>> {
     // A verified proposal is one which is well-formed and has valid
     // signatures for the present TC or QC
-    pub fn validate<VT>(
+    pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     ) -> Result<Validated<ProposalMessage<SCT>>, Error>
     where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         self.well_formed_proposal()?;
@@ -335,12 +339,13 @@ impl<SCT: SignatureCollection> Unvalidated<VoteMessage<SCT>> {
 
 impl<SCT: SignatureCollection> Unvalidated<TimeoutMessage<SCT>> {
     /// A valid timeout message is well-formed, and carries valid QC/TC
-    pub fn validate<VT>(
+    pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     ) -> Result<Validated<TimeoutMessage<SCT>>, Error>
     where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         self.well_formed_timeout()?;
@@ -374,12 +379,13 @@ impl Unvalidated<RequestBlockSyncMessage> {
 
 impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
     /// If the block sync response message carries a full block, the certificates on it need to be valid
-    pub fn validate<VT>(
+    pub fn validate<VTF, VT>(
         self,
         epoch_manager: &EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     ) -> Result<Validated<BlockSyncResponseMessage<SCT>>, Error>
     where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
@@ -390,14 +396,15 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
     }
 }
 
-fn verify_certificates<SCT, VT>(
+fn verify_certificates<SCT, VTF, VT>(
     epoch_manager: &EpochManager,
-    val_epoch_map: &ValidatorsEpochMapping<VT, SCT>,
+    val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
     tc: &Option<TimeoutCertificate<SCT>>,
     qc: &QuorumCertificate<SCT>,
 ) -> Result<(), Error>
 where
     SCT: SignatureCollection,
+    VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
     if let Some(tc) = tc {
@@ -457,7 +464,7 @@ where
         node_ids.extend(signers);
     }
 
-    if !validators.has_super_majority_votes(node_ids.iter()) {
+    if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
     }
 
@@ -489,7 +496,7 @@ where
         .verify(validator_mapping, qc_msg.as_ref())
         .map_err(|_| Error::InvalidSignature)?;
 
-    if !validators.has_super_majority_votes(node_ids.iter()) {
+    if !validators.has_super_majority_votes(&node_ids) {
         return Err(Error::InsufficientStake);
     }
 
@@ -499,7 +506,7 @@ where
 /// Verify that the message is signed by the sender and that the sender is a
 /// staked validator
 fn verify_author<ST: CertificateSignatureRecoverable>(
-    validators: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
+    validators: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Stake>,
     sender: &CertificateSignaturePubKey<ST>,
     msg: &Hash,
     sig: &ST,
@@ -581,7 +588,7 @@ trait ValidatorPubKey {
     /// PubKey is valid if it is in the validator set
     fn valid_pubkey(
         self,
-        validators: &HashMap<NodeId<Self::NodeIdPubKey>, Stake>,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> Result<Self, Error>
     where
         Self: Sized;
@@ -592,7 +599,7 @@ impl<PT: PubKey> ValidatorPubKey for PT {
     /// Validate that pubkey is in the validator set
     fn valid_pubkey(
         self,
-        validators: &HashMap<NodeId<Self::NodeIdPubKey>, Stake>,
+        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> Result<Self, Error> {
         if validators.contains_key(&NodeId::new(self)) {
             Ok(self)
@@ -627,7 +634,7 @@ mod test {
     use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Stake};
     use monad_validator::{
         epoch_manager::EpochManager,
-        validator_set::{ValidatorSet, ValidatorSetType},
+        validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
     use test_case::test_case;
@@ -650,8 +657,11 @@ mod test {
     #[test_case(6 => matches Err(_); "TC has a newer round")]
     #[test_case(5 => matches Ok(()); "TC has the correct round")]
     fn tc_comprised_of_old_tmo(round: u64) -> Result<(), Error> {
-        let (keypairs, certkeys, vset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(3);
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(3, ValidatorSetFactory::default());
 
         let high_qc_rounds = [
             HighQcRound { qc_round: Round(1) },
@@ -702,7 +712,7 @@ mod test {
         let stake_list = vec![(NodeId::new(keypair.pubkey()), Stake(1))];
         let voting_identity = vec![(NodeId::new(keypair.pubkey()), cert_keypair.pubkey())];
 
-        let vset = ValidatorSet::new(stake_list).unwrap();
+        let vset = ValidatorSetFactory::default().create(stake_list).unwrap();
         let val_mapping = ValidatorMapping::new(voting_identity);
 
         let vote = Vote {
@@ -758,7 +768,7 @@ mod test {
             (NodeId::new(keypairs[1].pubkey()), Stake(2)),
         ];
 
-        let vset = ValidatorSet::new(vlist).unwrap();
+        let vset = ValidatorSetFactory::default().create(vlist).unwrap();
 
         let cert_keys = create_certificate_keys::<SignatureCollectionType>(2);
         let voting_identity = keypairs
@@ -786,8 +796,11 @@ mod test {
 
     #[test]
     fn test_tc_verify_insufficient_stake() {
-        let (keypairs, certkeys, vset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(4);
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
 
         let round = Round(5);
 
@@ -831,8 +844,11 @@ mod test {
     /// error
     #[test]
     fn empty_tc() {
-        let (keypairs, certkeys, vset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(2);
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(2, ValidatorSetFactory::default());
 
         // TC doesn't have any signatures
         let tc = TimeoutCertificate {
@@ -880,8 +896,12 @@ mod test {
         ));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-        let mut val_epoch_map = ValidatorsEpochMapping::default();
-        val_epoch_map.insert(Epoch(1), vset, vmap);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+            vmap,
+        );
 
         let err = unvalidated_tmo_msg.validate(&epoch_manager, &val_epoch_map);
 
@@ -892,8 +912,11 @@ mod test {
     /// TimeoutMsg verification to yield "not wellformed" error
     #[test]
     fn old_high_qc_in_timeout_msg() {
-        let (keypairs, certkeys, vset, vmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(2);
+        let (keypairs, certkeys, vset, vmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(2, ValidatorSetFactory::default());
 
         let tmo_round = Round(5);
 
@@ -937,8 +960,12 @@ mod test {
         >::new(tmo, &certkeys[0]));
 
         let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-        let mut val_epoch_map = ValidatorsEpochMapping::default();
-        val_epoch_map.insert(Epoch(1), vset, vmap);
+        let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+        val_epoch_map.insert(
+            Epoch(1),
+            vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
+            vmap,
+        );
 
         let err = unvalidated_byzantine_tmo_msg.validate(&epoch_manager, &val_epoch_map);
         assert!(matches!(err, Err(Error::NotWellFormed)));

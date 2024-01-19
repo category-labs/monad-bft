@@ -187,7 +187,16 @@ where
         debug!("Block sync request: bid={:?}, qc={:?}", id, qc);
         inc_count!(block_sync_request);
 
-        let (req_peer, cnt) = self.choose_peer(validator_set.get_list(), req_cnt);
+        let (req_peer, cnt) = self.choose_peer(
+            // FIXME stake-weighted?
+            // FIXME dont build vector every time
+            &validator_set
+                .get_members()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            req_cnt,
+        );
         let req = InFlightRequest::new(req_peer, cnt, qc.clone());
         let req_cmd = self.create_request_command(&req);
         self.requests.insert(id, req);
@@ -289,6 +298,7 @@ mod test {
     use core::panic;
     use std::time::Duration;
 
+    use itertools::Itertools;
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedBlock},
         block_validator::MockValidator,
@@ -311,7 +321,7 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::{BlockId, NodeId, Round, SeqNum, TimeoutVariant};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType};
+    use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory, ValidatorSetType};
 
     use super::BlockSyncRequester;
     use crate::{command::ConsensusCommand, BlockSyncResponseMessage, BlockSyncResult};
@@ -339,7 +349,8 @@ mod test {
         let keypair = get_key::<ST>(6);
         let mut manager =
             BlockSyncRequester::<ST, SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
-        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(4);
+        let (_, _, valset, _) =
+            create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
 
         let qc = &QC::new(
             QcInfo {
@@ -365,7 +376,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
 
-        assert!(peer == valset.get_list()[0]);
+        assert!(&peer == valset.get_members().iter().next().unwrap().0);
         assert!(bid == qc.get_block_id());
 
         // repeated request would yield no result
@@ -397,7 +408,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
 
-        assert!(peer == valset.get_list()[0]);
+        assert!(&peer == valset.get_members().iter().next().unwrap().0);
         assert!(bid == qc.get_block_id());
     }
 
@@ -406,7 +417,8 @@ mod test {
         let keypair = get_key::<ST>(6);
         let mut manager =
             BlockSyncRequester::<ST, SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
-        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(4);
+        let (_, _, valset, _) =
+            create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let transaction_validator = TV::default();
 
         let payload = Payload {
@@ -505,7 +517,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
 
-        assert!(peer_1 == valset.get_list()[0]);
+        assert!(&peer_1 == valset.get_members().iter().next().unwrap().0);
         assert!(bid == qc_1.get_block_id());
 
         // second qc
@@ -533,7 +545,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
 
-        assert!(peer_2 == valset.get_list()[0]);
+        assert!(&peer_2 == valset.get_members().iter().next().unwrap().0);
         assert!(bid == qc_2.get_block_id());
 
         // third request
@@ -561,7 +573,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
 
-        assert!(peer_3 == valset.get_list()[0]);
+        assert!(&peer_3 == valset.get_members().iter().next().unwrap().0);
         assert!(bid == qc_3.get_block_id());
 
         let msg_no_block_1 = BlockSyncResponseMessage::<SC>::NotAvailable(block_1.get_id());
@@ -672,8 +684,10 @@ mod test {
 
     #[test]
     fn test_never_request_to_self() {
-        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(30);
-        let my_id = valset.get_list()[0];
+        let (_, _, valset, _) =
+            create_keys_w_validators::<ST, SC, _>(30, ValidatorSetFactory::default());
+        let members = valset.get_members().iter().map(|(a, _)| *a).collect_vec();
+        let my_id = members[0];
         let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
 
         let qc = &QC::new(
@@ -700,7 +714,7 @@ mod test {
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
         // should have skipped self
-        assert!(peer == valset.get_list()[1]);
+        assert!(peer == members[1]);
         assert!(bid == qc.get_block_id());
         let transaction_validator = TV::default();
         let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
@@ -726,10 +740,10 @@ mod test {
                 peer = p;
 
                 if i % valset.len() == 0 {
-                    assert_eq!(peer, valset.get_list()[1]);
+                    assert!(peer == members[1]);
                     assert_eq!(bid, qc.get_block_id());
                 } else {
-                    assert_eq!(peer, valset.get_list()[i % valset.len()]);
+                    assert_eq!(peer, members[i % members.len()]);
                     assert_eq!(bid, qc.get_block_id());
                 }
             }
@@ -740,8 +754,9 @@ mod test {
     fn test_proper_emit_timeout() {
         // Total of 3 cases of timeout
         // Request, Failed, natural timeout
-        let (_, _, valset, _) = create_keys_w_validators::<ST, SC>(30);
-        let my_id = valset.get_list()[0];
+        let (_, _, valset, _) =
+            create_keys_w_validators::<ST, SC, _>(30, ValidatorSetFactory::default());
+        let my_id = *valset.get_members().iter().next().unwrap().0;
         let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
 
         let block = {
@@ -769,7 +784,12 @@ mod test {
                 SC::with_pubkeys(&[]),
             );
 
-            Block::new(valset.get_list()[0], Round(0), &payload, qc)
+            Block::new(
+                *valset.get_members().iter().next().unwrap().0,
+                Round(0),
+                &payload,
+                qc,
+            )
         };
 
         let qc = &QC::new(
@@ -796,7 +816,7 @@ mod test {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
-        assert!(peer == valset.get_list()[1]);
+        assert!(&peer == valset.get_members().iter().map(|(a, _)| a).collect_vec()[1]);
         assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match cmds[1] {
@@ -828,7 +848,7 @@ mod test {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
-        assert!(peer == valset.get_list()[2]);
+        assert!(&peer == valset.get_members().iter().map(|(a, _)| a).collect_vec()[2]);
         assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match retry_command[1] {
@@ -860,7 +880,7 @@ mod test {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
-        assert!(peer == valset.get_list()[3]);
+        assert!(&peer == valset.get_members().iter().map(|(a, _)| a).collect_vec()[3]);
         assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match retry_command[2] {

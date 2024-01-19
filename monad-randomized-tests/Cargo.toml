@@ -12,8 +12,10 @@ monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-router-scheduler = { path = "../monad-router-scheduler" }
 monad-testutil = { path = "../monad-testutil" }
+monad-updaters = { path = "../monad-updaters" }
 monad-transformer = { path = "../monad-transformer" }
 monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
 inventory = { workspace = true }

@@ -1,21 +1,23 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_executor::timed_event::TimedEvent;
 use monad_executor_glue::MonadEvent;
-use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::SwarmRelation};
-use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler};
+use monad_mock_swarm::{
+    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
+    terminator::UntilTerminator,
+};
+use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
-use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer};
-use monad_types::{Round, SeqNum};
+use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
+use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct BLSSwarm;
@@ -29,11 +31,11 @@ impl SwarmRelation for BLSSwarm {
 
     type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
-    type ValidatorSet = ValidatorSet<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin;
+    type ValidatorSetTypeFactory =
+        ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
 
-    type RouterSchedulerConfig = NoSerRouterConfig<CertificateSignaturePubKey<Self::SignatureType>>;
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
         MonadMessage<Self::SignatureType, Self::SignatureCollectionType>,
@@ -45,9 +47,7 @@ impl SwarmRelation for BLSSwarm {
         Self::TransportMessage,
     >;
 
-    type LoggerConfig = MockWALoggerConfig;
-    type Logger =
-        MockWALogger<TimedEvent<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>>;
+    type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
     type StateRootHashExecutor = MockStateRootHashNop<
         Block<Self::SignatureCollectionType>,
@@ -60,26 +60,51 @@ impl SwarmRelation for BLSSwarm {
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
-    create_and_run_nodes::<BLSSwarm, _, _>(
-        MockValidator,
-        |all_peers, _| NoSerRouterConfig {
-            all_peers: all_peers.into_iter().collect(),
+    let state_configs = make_state_configs::<BLSSwarm>(
+        2, // num_nodes
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        MockTxPool::default,
+        || MockValidator,
+        || {
+            StateRoot::new(
+                SeqNum(4), // state_root_delay
+            )
         },
-        MockWALoggerConfig,
-        vec![GenericTransformer::Latency(LatencyTransformer::new(
-            Duration::from_millis(1),
-        ))],
-        UntilTerminator::new().until_tick(Duration::from_secs(10)),
-        SwarmTestConfig {
-            num_nodes: 2,
-            consensus_delta: Duration::from_millis(2),
-            parallelize: false,
-            expected_block: 128,
-            state_root_delay: 4,
-            seed: 1,
-            proposal_size: 0,
-            val_set_update_interval: SeqNum(2000),
-            epoch_start_delay: Round(50),
-        },
+        Duration::from_millis(2), // delta
+        0,                        // proposal_tx_limit
+        SeqNum(2000),             // val_set_update_interval
+        Round(50),                // epoch_start_delay
     );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<BLSSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let validators = state_builder.validators.clone();
+                NodeBuilder::<BLSSwarm>::new(
+                    ID::new(NodeId::new(state_builder.key.pubkey())),
+                    state_builder,
+                    MockWALoggerConfig::default(),
+                    NoSerRouterConfig::new(all_peers.clone()).build(),
+                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_millis(1),
+                    ))],
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
+    );
+
+    let mut swarm = swarm_config.build();
+    while swarm
+        .step_until(&UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .is_some()
+    {}
+    swarm_ledger_verification(&swarm, 128);
 }

@@ -6,8 +6,8 @@ use std::{
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
-use monad_bls::{BlsPubKey, BlsSignatureCollection};
-use monad_consensus_state::{ConsensusConfig, ConsensusState};
+use monad_bls::BlsSignatureCollection;
+use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::NopStateRoot, validator_data::ValidatorData,
 };
@@ -19,22 +19,15 @@ use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
-use monad_secp::{KeyPair, PubKey, SecpSignature};
-use monad_state::{MonadConfig, MonadMessage, VerifiedMonadMessage};
-use monad_types::{NodeId, Round, SeqNum, Stake};
+use monad_secp::{KeyPair, SecpSignature};
+use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
-    checkpoint::MockCheckpoint,
-    ledger::MockLedger,
-    loopback::LoopbackExecutor,
-    parent::ParentExecutor,
-    state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
-    timer::TokioTimer,
+    checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
+    parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
 };
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSet};
-use monad_wal::{
-    wal::{WALogger, WALoggerConfig},
-    PersistenceLogger,
-};
+use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -52,23 +45,6 @@ use state::NodeState;
 
 type SignatureType = SecpSignature;
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
-// FIXME real tx validator
-type BlockValidatorType = MockValidator;
-type StateRootValidatorType = NopStateRoot;
-type MonadState = monad_state::MonadState<
-    ConsensusState<
-        SignatureType,
-        SignatureCollectionType,
-        BlockValidatorType,
-        StateRootValidatorType,
-    >,
-    SignatureType,
-    SignatureCollectionType,
-    ValidatorSet<CertificateSignaturePubKey<SignatureType>>,
-    // FIXME weighted round robin
-    SimpleRoundRobin,
-    EthTxPool,
->;
 
 fn main() {
     let mut cmd = Cli::command();
@@ -114,12 +90,20 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     )
     .await;
 
-    let validators: Vec<(PubKey, Stake, BlsPubKey)> = node_state
-        .genesis_config
-        .validators
-        .into_iter()
-        .map(|peer| (peer.secp256k1_pubkey, peer.stake, peer.bls12_381_pubkey))
-        .collect();
+    let validators = ValidatorData(
+        node_state
+            .genesis_config
+            .validators
+            .into_iter()
+            .map(|peer| {
+                (
+                    NodeId::new(peer.secp256k1_pubkey),
+                    peer.stake,
+                    peer.bls12_381_pubkey,
+                )
+            })
+            .collect(),
+    );
     let val_set_update_interval = SeqNum(2000);
 
     let mut executor = ParentExecutor {
@@ -128,18 +112,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         ledger: MockLedger::default(),
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
-        state_root_hash: MockStateRootHashNop::new(
-            ValidatorData::new(validators.clone()),
-            val_set_update_interval,
-        ),
+        state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
     };
 
-    let Ok((mut wal, wal_events)) = WALogger::new(WALoggerConfig {
-        sync: true,
-        file_path: node_state.wal_path.clone(),
-    }) else {
+    let logger_config = WALoggerConfig::new(node_state.wal_path.clone(), true);
+    let Ok((mut wal, wal_events)) = logger_config.build() else {
         event!(
             Level::ERROR,
             path = node_state.wal_path.as_path().display().to_string(),
@@ -148,8 +127,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         return Err(());
     };
 
-    let (mut state, init_commands) = MonadState::init(MonadConfig {
-        block_validator: MockValidator {},
+    let builder = MonadStateBuilder {
+        validator_set_factory: ValidatorSetFactory::default(),
+        leader_election: SimpleRoundRobin::default(),
+        transaction_pool: EthTxPool::default(),
+        block_validator: MockValidator,
+        state_root_validator: NopStateRoot {},
         validators,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
@@ -159,11 +142,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 5000,
             proposal_gas_limit: 8_000_000,
-            state_root_delay: SeqNum(0),
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
         },
-    });
+    };
+    let (mut state, init_commands) = builder.build();
     executor.exec(init_commands);
 
     for wal_event in wal_events {

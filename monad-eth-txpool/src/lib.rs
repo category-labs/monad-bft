@@ -5,13 +5,10 @@ use bytes::Bytes;
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
 
+#[derive(Default)]
 pub struct EthTxPool(BTreeMap<EthTxHash, EthTransaction>);
 
 impl TxPool for EthTxPool {
-    fn new() -> Self {
-        Self(BTreeMap::new())
-    }
-
     fn insert_tx(&mut self, tx: Bytes) {
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary

@@ -2107,6 +2107,7 @@ dependencies = [
  "monad-proto",
  "monad-testutil",
  "monad-types",
+ "monad-validator",
  "prost",
  "rand",
  "serde_cbor",
@@ -2374,6 +2375,7 @@ dependencies = [
  "monad-proto",
  "monad-testutil",
  "monad-types",
+ "monad-validator",
  "prost",
  "rand",
  "rand_chacha",
@@ -2466,6 +2468,8 @@ dependencies = [
  "monad-testutil",
  "monad-transformer",
  "monad-types",
+ "monad-updaters",
+ "monad-validator",
  "monad-wal",
  "simple-xml-builder",
 ]
@@ -2630,13 +2634,20 @@ name = "monad-twins-utils"
 version = "0.1.0"
 dependencies = [
  "itertools 0.10.5",
+ "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-types",
+ "monad-executor-glue",
  "monad-mock-swarm",
+ "monad-router-scheduler",
  "monad-state",
  "monad-testutil",
  "monad-transformer",
  "monad-types",
+ "monad-updaters",
+ "monad-validator",
+ "monad-wal",
  "rand",
  "rand_chacha",
  "serde",
@@ -2728,6 +2739,7 @@ dependencies = [
  "monad-state",
  "monad-testutil",
  "monad-types",
+ "monad-validator",
  "tempfile",
 ]
 

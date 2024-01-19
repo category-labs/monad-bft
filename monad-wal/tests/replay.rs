@@ -6,7 +6,7 @@ mod test {
     use monad_types::{Deserializable, Serializable};
     use monad_wal::{
         wal::{WALogger, WALoggerConfig},
-        PersistenceLogger,
+        PersistenceLoggerBuilder,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,13 +65,12 @@ mod test {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let log1_path = tmpdir.path().join("wal1");
-        let logger1_config = WALoggerConfig {
-            file_path: log1_path.clone(),
-            sync: false,
-        };
+        let logger1_config = WALoggerConfig::new(
+            log1_path.clone(),
+            false, // sync
+        );
 
-        let (mut logger1, events1): (WALogger<TestEvent>, _) =
-            WALogger::new(logger1_config).unwrap();
+        let (mut logger1, events1): (WALogger<TestEvent>, _) = logger1_config.build().unwrap();
         assert!(events1.is_empty());
         let mut state1 = VecState::default();
         for event in events1 {
@@ -113,12 +112,12 @@ mod test {
         let log2_path = tmpdir.path().join("wal2");
         let copied = fs::copy(&log1_path, &log2_path).unwrap();
         assert_eq!(log1_len, copied);
-        let logger2_config = WALoggerConfig {
-            file_path: log2_path.clone(),
-            sync: false,
-        };
+        let logger2_config = WALoggerConfig::new(
+            log2_path.clone(),
+            false, // sync
+        );
 
-        let (mut logger2, events2) = WALogger::new(logger2_config).unwrap();
+        let (mut logger2, events2) = logger2_config.build().unwrap();
         assert!(!events2.is_empty());
         let mut state2 = VecState::default();
         for event in events2 {
@@ -137,12 +136,11 @@ mod test {
         let log3_path = tmpdir.path().join("wal3");
         let copied = fs::copy(&log2_path, &log3_path).unwrap();
         assert_eq!(log2_len, copied);
-        let logger3_config = WALoggerConfig {
-            file_path: log3_path,
-            sync: false,
-        };
+        let logger3_config = WALoggerConfig::new(
+            log3_path, false, // sync
+        );
 
-        let (_, events3) = WALogger::new(logger3_config).unwrap();
+        let (_, events3) = logger3_config.build().unwrap();
         assert!(!events3.is_empty());
         let mut state3 = VecState::default();
         for event in events3 {

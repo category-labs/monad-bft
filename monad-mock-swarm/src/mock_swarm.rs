@@ -1,329 +1,28 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    time::Duration,
-    usize,
-};
+use std::{collections::BTreeMap, time::Duration};
 
-use itertools::Itertools;
-use monad_consensus_state::ConsensusProcess;
-use monad_consensus_types::validator_data::ValidatorData;
-use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
-use monad_executor::{timed_event::TimedEvent, Executor};
-use monad_executor_glue::MonadEvent;
-use monad_router_scheduler::RouterScheduler;
-use monad_state::{MonadConfig, MonadState};
+use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_transformer::{LinkMessage, Pipeline, ID};
-use monad_types::Round;
-use monad_wal::PersistenceLogger;
-use rand::{Rng, SeedableRng};
-use rand_chacha::{ChaCha20Rng, ChaChaRng};
 use rayon::prelude::*;
-use tracing::info_span;
 
 use crate::{
-    mock::{MockExecutor, MockExecutorEvent},
-    swarm_relation::{SwarmRelation, SwarmRelationStateType},
+    mock::MockExecutor,
+    node::{Node, NodeBuilder},
+    swarm_relation::{DebugSwarmRelation, SwarmRelation},
+    terminator::NodesTerminator,
 };
-
-pub struct Node<S>
-where
-    S: SwarmRelation,
-{
-    pub id: ID<CertificateSignaturePubKey<S::SignatureType>>,
-    pub executor: MockExecutor<S>,
-    pub state: SwarmRelationStateType<S>,
-    pub logger: S::Logger,
-    pub pipeline: S::Pipeline,
-    pub pending_inbound_messages: BTreeMap<
-        Duration,
-        VecDeque<LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>>,
-    >,
-    pub rng: ChaCha20Rng,
-    pub current_seed: usize,
-}
-
-impl<S> Node<S>
-where
-    S: SwarmRelation,
-
-    MockExecutor<S>: Unpin,
-{
-    fn update_rng(&mut self) {
-        self.current_seed = self.rng.gen();
-    }
-
-    fn peek_event(&self) -> Option<(Duration, SwarmEventType)> {
-        // avoid modification of the original rng
-        let events = std::iter::empty()
-            .chain(
-                self.executor
-                    .peek_tick()
-                    .iter()
-                    .map(|tick| (*tick, SwarmEventType::ExecutorEvent)),
-            )
-            .chain(self.pending_inbound_messages.first_key_value().map(
-                |(min_scheduled_tick, _)| (*min_scheduled_tick, SwarmEventType::ScheduledMessage),
-            ))
-            .min_set();
-        if !events.is_empty() {
-            Some(events[self.current_seed % events.len()])
-        } else {
-            None
-        }
-    }
-
-    fn step_until(
-        &mut self,
-        until: Duration,
-        emitted_messages: &mut Vec<(
-            Duration,
-            LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>,
-        )>,
-    ) -> Option<(
-        Duration,
-        MonadEvent<S::SignatureType, S::SignatureCollectionType>,
-    )> {
-        while let Some((tick, event_type)) = self.peek_event() {
-            if tick > until {
-                break;
-            }
-            // polling event, thus update the rng
-            self.update_rng();
-            let event = match event_type {
-                SwarmEventType::ExecutorEvent => {
-                    let executor_event = self.executor.step_until(tick);
-                    match executor_event {
-                        None => continue,
-                        Some(MockExecutorEvent::Event(event)) => {
-                            let timed_event = TimedEvent {
-                                timestamp: tick,
-                                event: event.clone(),
-                            };
-                            self.logger.push(&timed_event).unwrap(); // FIXME-4: propagate the error
-                            let node_span = info_span!("node", id = ?self.id);
-                            let _guard = node_span.enter();
-                            let commands = self.state.update(event.clone());
-
-                            self.executor.exec(commands);
-
-                            (tick, event)
-                        }
-                        Some(MockExecutorEvent::Send(to, serialized)) => {
-                            let lm = LinkMessage {
-                                from: self.id,
-                                to: ID::new(to),
-                                message: serialized,
-
-                                from_tick: tick,
-                            };
-                            let transformed = self.pipeline.process(lm);
-                            for (delay, msg) in transformed {
-                                let sched_tick = tick + delay;
-
-                                // FIXME-3: do we need to transform msg to self?
-                                if msg.to == self.id {
-                                    self.pending_inbound_messages
-                                        .entry(sched_tick)
-                                        .or_default()
-                                        .push_back(msg)
-                                } else {
-                                    emitted_messages.push((sched_tick, msg))
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                }
-                SwarmEventType::ScheduledMessage => {
-                    let mut entry = self
-                        .pending_inbound_messages
-                        .first_entry()
-                        .expect("logic error, should be nonempty");
-
-                    let scheduled_tick = *entry.key();
-                    let msgs = entry.get_mut();
-
-                    assert_eq!(tick, scheduled_tick);
-
-                    let message = msgs.pop_front().expect("logic error, should be nonempty");
-
-                    if msgs.is_empty() {
-                        entry.remove_entry();
-                    }
-
-                    self.executor.send_message(
-                        scheduled_tick,
-                        *message.from.get_peer_id(),
-                        message.message,
-                    );
-
-                    continue;
-                }
-            };
-            return Some(event);
-        }
-        None
-    }
-}
-
-pub trait NodesTerminator<S>
-where
-    S: SwarmRelation,
-{
-    fn should_terminate(&self, nodes: &Nodes<S>) -> bool;
-}
-
-#[derive(Clone, Copy)]
-pub struct UntilTerminator {
-    until_tick: Duration,
-    until_block: usize,
-    until_round: Round,
-}
-
-impl Default for UntilTerminator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl UntilTerminator {
-    pub fn new() -> Self {
-        UntilTerminator {
-            until_tick: Duration::MAX,
-            until_block: usize::MAX,
-            until_round: Round(u64::MAX),
-        }
-    }
-
-    pub fn until_tick(mut self, tick: Duration) -> Self {
-        self.until_tick = tick;
-        self
-    }
-
-    pub fn until_block(mut self, b_cnt: usize) -> Self {
-        self.until_block = b_cnt;
-        self
-    }
-
-    pub fn until_round(mut self, round: Round) -> Self {
-        self.until_round = round;
-        self
-    }
-}
-
-impl<S> NodesTerminator<S> for UntilTerminator
-where
-    S: SwarmRelation,
-{
-    fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
-        nodes.tick > self.until_tick
-            || nodes
-                .states
-                .values()
-                .any(|node| node.executor.ledger().get_blocks().len() > self.until_block)
-            || nodes
-                .states
-                .values()
-                .any(|node| node.state.consensus().get_current_round() > self.until_round)
-    }
-}
-
-// observe and monitor progress of certain nodes until commit progress is achieved for all
-pub struct ProgressTerminator<PT: PubKey> {
-    // NodeId -> Ledger len
-    nodes_monitor: BTreeMap<ID<PT>, usize>,
-    timeout: Duration,
-}
-
-impl<PT: PubKey> ProgressTerminator<PT> {
-    pub fn new(nodes_monitor: BTreeMap<ID<PT>, usize>, timeout: Duration) -> Self {
-        ProgressTerminator {
-            nodes_monitor,
-            timeout,
-        }
-    }
-
-    pub fn extend_all(&mut self, progress: usize) {
-        // extend the required termination progress of all monitor
-        for original_progress in self.nodes_monitor.values_mut() {
-            *original_progress += progress;
-        }
-    }
-}
-
-impl<S> NodesTerminator<S> for ProgressTerminator<CertificateSignaturePubKey<S::SignatureType>>
-where
-    S: SwarmRelation,
-{
-    fn should_terminate(&self, nodes: &Nodes<S>) -> bool {
-        if nodes.tick > self.timeout {
-            panic!(
-                "ProgressTerminator timed-out, expecting nodes 
-                to reach following progress before timeout: {:?},
-                but the actual progress is: {:?}",
-                self.nodes_monitor,
-                nodes
-                    .states
-                    .iter()
-                    .map(|(id, nodes)| (id, nodes.executor.ledger().get_blocks().len()))
-                    .collect::<BTreeMap<_, _>>()
-            );
-        }
-
-        let mut block_ref = None;
-        for (peer_id, expected_len) in &self.nodes_monitor {
-            let blocks = nodes
-                .states
-                .get(peer_id)
-                .expect("node must exists")
-                .executor
-                .ledger()
-                .get_blocks();
-            if blocks.len() < *expected_len {
-                return false;
-            }
-            match block_ref {
-                None => block_ref = Some(blocks),
-                Some(reference) => {
-                    if reference.len() < blocks.len() {
-                        block_ref = Some(blocks);
-                    }
-                }
-            }
-        }
-
-        // reference to the longest ledger
-        let block_ref = block_ref.expect("must have at least 1 entry");
-        // once termination condition is met, all the ledger should also have identical blocks
-        for (peer_id, expected_len) in &self.nodes_monitor {
-            let blocks = nodes
-                .states
-                .get(peer_id)
-                .expect("node must exists")
-                .executor
-                .ledger()
-                .get_blocks();
-            for i in 0..(*expected_len) {
-                assert!(block_ref[i] == blocks[i]);
-            }
-        }
-
-        true
-    }
-}
 
 pub struct Nodes<S>
 where
     S: SwarmRelation,
 {
-    states: BTreeMap<ID<CertificateSignaturePubKey<S::SignatureType>>, Node<S>>,
-    tick: Duration,
+    pub(crate) states: BTreeMap<ID<CertificateSignaturePubKey<S::SignatureType>>, Node<S>>,
+    pub(crate) tick: Duration,
     must_deliver: bool,
     no_duplicate_peers: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum SwarmEventType {
+pub enum SwarmEventType {
     ExecutorEvent,
     ScheduledMessage,
 }
@@ -332,32 +31,7 @@ impl<S> Nodes<S>
 where
     S: SwarmRelation,
     MockExecutor<S>: Unpin,
-    Node<S>: Send,
 {
-    pub fn new(
-        peers: Vec<(
-            ID<CertificateSignaturePubKey<S::SignatureType>>,
-            MonadConfig<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>,
-            S::LoggerConfig,
-            S::RouterSchedulerConfig,
-            S::Pipeline,
-            u64,
-        )>,
-    ) -> Self {
-        let mut nodes = Self {
-            states: BTreeMap::new(),
-            tick: Duration::ZERO,
-            must_deliver: true,
-            no_duplicate_peers: true,
-        };
-
-        for peer in peers {
-            nodes.add_state(peer);
-        }
-
-        nodes
-    }
-
     pub fn can_fail_deliver(mut self) -> Self {
         self.must_deliver = false;
         self
@@ -485,59 +159,21 @@ where
         self.states.remove(peer_id)
     }
 
-    pub fn add_state(
-        &mut self,
-        peer: (
-            ID<CertificateSignaturePubKey<S::SignatureType>>,
-            MonadConfig<S::SignatureType, S::SignatureCollectionType, S::BlockValidator>,
-            S::LoggerConfig,
-            S::RouterSchedulerConfig,
-            S::Pipeline,
-            u64,
-        ),
-    ) {
-        let (id, state_config, logger_config, router_scheduler_config, pipeline, seed) = peer;
+    pub fn add_state(&mut self, peer: NodeBuilder<S>) {
+        let node = peer.build(self.tick);
 
         // No duplicate ID insertion should be allowed
-        assert!(!self.states.contains_key(&id));
+        assert!(!self.states.contains_key(&node.id));
         // if nodes only want to run with unique ids
-        assert!(!self.no_duplicate_peers || id.is_unique());
+        assert!(!self.no_duplicate_peers || node.id.is_unique());
 
-        let genesis_validator_data = ValidatorData::new(state_config.validators.clone());
-
-        let mut executor: MockExecutor<S> = MockExecutor::new(
-            <S::RouterScheduler as RouterScheduler>::new(router_scheduler_config),
-            genesis_validator_data,
-            state_config.val_set_update_interval,
-            self.tick,
-        );
-        let (wal, replay_events) = S::Logger::new(logger_config).unwrap();
-        let (mut state, init_commands) = MonadState::init(state_config);
-
-        executor.exec(init_commands);
-
-        for event in replay_events {
-            executor.replay(state.update(event.event));
-        }
-
-        let mut rng = ChaChaRng::seed_from_u64(seed);
-
-        self.states.insert(
-            id,
-            Node {
-                id,
-                executor,
-                state,
-                logger: wal,
-                pipeline,
-                pending_inbound_messages: Default::default(),
-                rng: ChaCha20Rng::seed_from_u64(rng.gen()),
-                current_seed: rng.gen(),
-            },
-        );
+        self.states.insert(node.id, node);
     }
 
-    pub fn update_pipeline_for_all(&mut self, pipeline: S::Pipeline) {
+    pub fn update_pipeline_for_all(&mut self, pipeline: S::Pipeline)
+    where
+        S::Pipeline: Clone,
+    {
         for node in &mut self.states.values_mut() {
             node.pipeline = pipeline.clone();
         }
@@ -548,5 +184,40 @@ where
         pipeline: S::Pipeline,
     ) {
         self.states.get_mut(id).map(|node| node.pipeline = pipeline);
+    }
+}
+
+pub struct SwarmBuilder<S: SwarmRelation>(pub Vec<NodeBuilder<S>>);
+impl<S> SwarmBuilder<S>
+where
+    S: SwarmRelation,
+    MockExecutor<S>: Unpin,
+    Node<S>: Send,
+{
+    pub fn debug(self) -> SwarmBuilder<DebugSwarmRelation>
+    where
+        S: SwarmRelation<
+            SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
+            SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
+                TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+        > + 'static,
+    // FIXME can this be deleted?
+        S::RouterScheduler: Sync,
+    {
+        SwarmBuilder(self.0.into_iter().map(NodeBuilder::debug).collect())
+    }
+    pub fn build(self) -> Nodes<S> {
+        let mut nodes = Nodes {
+            states: BTreeMap::new(),
+            tick: Duration::ZERO,
+            must_deliver: true,
+            no_duplicate_peers: true,
+        };
+
+        for peer in self.0 {
+            nodes.add_state(peer);
+        }
+
+        nodes
     }
 }

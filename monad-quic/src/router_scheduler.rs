@@ -13,7 +13,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
-use monad_router_scheduler::{RouterEvent, RouterScheduler};
+use monad_router_scheduler::{RouterEvent, RouterScheduler, RouterSchedulerBuilder};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
     ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
@@ -23,7 +23,7 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 
 use crate::timeout_queue::TimeoutQueue;
 
-pub struct QuicRouterSchedulerConfig<G: Gossip> {
+pub struct QuicRouterSchedulerConfig<G: Gossip, IM, OM> {
     pub zero_instant: Instant,
 
     pub all_peers: BTreeSet<NodeId<G::NodeIdPubKey>>,
@@ -32,6 +32,117 @@ pub struct QuicRouterSchedulerConfig<G: Gossip> {
     pub master_seed: u64,
 
     pub gossip: G,
+
+    _phantom: PhantomData<(IM, OM)>,
+}
+
+impl<G: Gossip, IM, OM> QuicRouterSchedulerConfig<G, IM, OM> {
+    pub fn new(
+        zero_instant: Instant,
+        all_peers: BTreeSet<NodeId<G::NodeIdPubKey>>,
+        me: NodeId<G::NodeIdPubKey>,
+        master_seed: u64,
+        gossip: G,
+    ) -> Self {
+        Self {
+            zero_instant,
+            all_peers,
+            me,
+            master_seed,
+            gossip,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<G, IM, OM> RouterSchedulerBuilder for QuicRouterSchedulerConfig<G, IM, OM>
+where
+    G: Gossip,
+    IM: Deserializable<Bytes>,
+    OM: Serializable<Bytes>,
+{
+    type RouterScheduler = QuicRouterScheduler<G, IM, OM>;
+    fn build(self) -> Self::RouterScheduler {
+        let mut rng = StdRng::seed_from_u64(self.master_seed);
+        let transport_config = {
+            let mut config = TransportConfig::default();
+            config.max_idle_timeout(None);
+            // TODO-1 reasonable initial window sizes
+            Arc::new(config)
+        };
+
+        // We can generate a random keypair here, because we don't need to verify the sources of
+        // messages using the TLS baked into quic
+        let scratch_keypair = {
+            let mut seed = [0; 32];
+            rng.fill_bytes(&mut seed);
+            <<NopSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
+                &mut seed,
+            )
+            .expect("valid keypair")
+        };
+
+        let mut seed = [0; 32];
+        rng.fill_bytes(&mut seed);
+        let endpoint = quinn_proto::Endpoint::new(
+            Arc::new(EndpointConfig::default()),
+            Some(Arc::new(
+                {
+                    let mut server_config = quinn_proto::ServerConfig::with_crypto(Arc::new(
+                        // We can use NopSignature here, because we don't need to verify the sources of
+                        // messages using the TLS baked into quic
+                        TlsVerifier::<NopSignature>::make_server_config(&scratch_keypair),
+                    ));
+                    server_config.transport_config(transport_config.clone());
+                    server_config
+                }, // TODO use_retry ?
+            )),
+            false,
+            Some(seed),
+        );
+
+        let peer_ids: HashMap<_, _> = self
+            .all_peers
+            .iter()
+            .enumerate()
+            .filter(|(_, peer)| peer != &&self.me)
+            .map(|(idx, peer)| {
+                (
+                    *peer,
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000 + idx as u16)),
+                )
+            })
+            .collect();
+        let addresses = peer_ids.iter().map(|(x, y)| (*y, *x)).collect();
+
+        QuicRouterScheduler {
+            zero_instant: self.zero_instant,
+
+            me: self.me,
+            endpoint,
+            client_config: {
+                let mut client_config = ClientConfig::new(Arc::new(
+                    // We can use NopSignature here, because we don't need to verify the sources of
+                    // messages using the TLS baked into quic
+                    TlsVerifier::<NopSignature>::make_client_config(&scratch_keypair),
+                ));
+                client_config.transport_config(transport_config);
+                client_config
+            },
+            connections: Default::default(),
+            node_connections: Default::default(),
+
+            peer_ids,
+            addresses,
+
+            gossip: ConnectionManager::new(self.gossip),
+
+            timeouts: Default::default(),
+            pending_events: Default::default(),
+
+            phantom: PhantomData,
+        }
+    }
 }
 
 struct ConnectionState {
@@ -77,93 +188,10 @@ where
     OM: Serializable<Bytes>,
 {
     type NodeIdPublicKey = G::NodeIdPubKey;
-    type Config = QuicRouterSchedulerConfig<G>;
 
     type InboundMessage = IM;
     type OutboundMessage = OM;
     type TransportMessage = Bytes;
-
-    fn new(config: Self::Config) -> Self {
-        let mut rng = StdRng::seed_from_u64(config.master_seed);
-        let transport_config = {
-            let mut config = TransportConfig::default();
-            config.max_idle_timeout(None);
-            // TODO-1 reasonable initial window sizes
-            Arc::new(config)
-        };
-
-        // We can generate a random keypair here, because we don't need to verify the sources of
-        // messages using the TLS baked into quic
-        let scratch_keypair = {
-            let mut seed = [0; 32];
-            rng.fill_bytes(&mut seed);
-            <<NopSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(
-                &mut seed,
-            )
-            .expect("valid keypair")
-        };
-
-        let mut seed = [0; 32];
-        rng.fill_bytes(&mut seed);
-        let endpoint = quinn_proto::Endpoint::new(
-            Arc::new(EndpointConfig::default()),
-            Some(Arc::new(
-                {
-                    let mut server_config = quinn_proto::ServerConfig::with_crypto(Arc::new(
-                        // We can use NopSignature here, because we don't need to verify the sources of
-                        // messages using the TLS baked into quic
-                        TlsVerifier::<NopSignature>::make_server_config(&scratch_keypair),
-                    ));
-                    server_config.transport_config(transport_config.clone());
-                    server_config
-                }, // TODO use_retry ?
-            )),
-            false,
-            Some(seed),
-        );
-
-        let peer_ids: HashMap<_, _> = config
-            .all_peers
-            .iter()
-            .enumerate()
-            .filter(|(_, peer)| peer != &&config.me)
-            .map(|(idx, peer)| {
-                (
-                    *peer,
-                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3000 + idx as u16)),
-                )
-            })
-            .collect();
-        let addresses = peer_ids.iter().map(|(x, y)| (*y, *x)).collect();
-
-        Self {
-            zero_instant: config.zero_instant,
-
-            me: config.me,
-            endpoint,
-            client_config: {
-                let mut client_config = ClientConfig::new(Arc::new(
-                    // We can use NopSignature here, because we don't need to verify the sources of
-                    // messages using the TLS baked into quic
-                    TlsVerifier::<NopSignature>::make_client_config(&scratch_keypair),
-                ));
-                client_config.transport_config(transport_config);
-                client_config
-            },
-            connections: Default::default(),
-            node_connections: Default::default(),
-
-            peer_ids,
-            addresses,
-
-            gossip: ConnectionManager::new(config.gossip),
-
-            timeouts: Default::default(),
-            pending_events: Default::default(),
-
-            phantom: PhantomData,
-        }
-    }
 
     fn process_inbound(
         &mut self,

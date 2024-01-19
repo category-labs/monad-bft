@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Debug};
 
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignature, PubKey},
@@ -51,7 +51,7 @@ impl<PT: PubKey, S: CertificateSignature> std::fmt::Display for SignatureCollect
 impl<PT: PubKey, S: CertificateSignature> std::error::Error for SignatureCollectionError<PT, S> {}
 
 pub trait SignatureCollection:
-    Clone + Hashable + Eq + Send + Sync + std::fmt::Debug + 'static
+    Clone + Hashable + Eq + Debug + Send + Sync + Unpin + 'static
 {
     type NodeIdPubKey: PubKey;
     type SignatureType: CertificateSignature + Unpin;

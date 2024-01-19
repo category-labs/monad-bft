@@ -4,63 +4,79 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     voting::ValidatorMapping,
 };
-use monad_types::Epoch;
+use monad_types::{Epoch, NodeId, Stake};
 
-use crate::validator_set::ValidatorSetType;
+use crate::validator_set::{ValidatorSetType, ValidatorSetTypeFactory};
 
 /// A mapping from Epoch -> (Validator Stakes, Validator Certificate Pubkeys).
-pub struct ValidatorsEpochMapping<VT, SCT>
+pub struct ValidatorsEpochMapping<VTF, SCT>
 where
-    VT: ValidatorSetType,
+    VTF: ValidatorSetTypeFactory,
     SCT: SignatureCollection,
 {
+    validator_set_factory: VTF,
     validator_map: HashMap<
         Epoch,
         (
-            VT,
-            ValidatorMapping<VT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+            VTF::ValidatorSetType,
+            ValidatorMapping<
+                <VTF::ValidatorSetType as ValidatorSetType>::NodeIdPubKey,
+                SignatureCollectionKeyPairType<SCT>,
+            >,
         ),
     >,
 }
 
-impl<VT, SCT> ValidatorsEpochMapping<VT, SCT>
+impl<VTF, SCT> ValidatorsEpochMapping<VTF, SCT>
 where
-    VT: ValidatorSetType,
+    VTF: ValidatorSetTypeFactory,
     SCT: SignatureCollection,
 {
-    pub fn get_val_set(&self, epoch: &Epoch) -> Option<&VT> {
+    pub fn new(validator_set_factory: VTF) -> Self {
+        Self {
+            validator_set_factory,
+            validator_map: HashMap::new(),
+        }
+    }
+
+    pub fn get_val_set(&self, epoch: &Epoch) -> Option<&VTF::ValidatorSetType> {
         self.validator_map.get(epoch).map(|vs| &vs.0)
     }
 
     pub fn get_cert_pubkeys(
         &self,
         epoch: &Epoch,
-    ) -> Option<&ValidatorMapping<VT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>> {
+    ) -> Option<
+        &ValidatorMapping<
+            <VTF::ValidatorSetType as ValidatorSetType>::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
+    > {
         self.validator_map.get(epoch).map(|vs| &vs.1)
     }
 
     pub fn insert(
         &mut self,
         epoch: Epoch,
-        val_stakes: VT,
-        val_cert_pubkeys: ValidatorMapping<VT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
+        val_stakes: Vec<(
+            NodeId<<VTF::ValidatorSetType as ValidatorSetType>::NodeIdPubKey>,
+            Stake,
+        )>,
+        val_cert_pubkeys: ValidatorMapping<
+            <VTF::ValidatorSetType as ValidatorSetType>::NodeIdPubKey,
+            SignatureCollectionKeyPairType<SCT>,
+        >,
     ) {
-        let res = self
-            .validator_map
-            .insert(epoch, (val_stakes, val_cert_pubkeys));
+        let res = self.validator_map.insert(
+            epoch,
+            (
+                self.validator_set_factory
+                    .create(val_stakes)
+                    .expect("ValidatorData should not have duplicates or invalid entries"),
+                val_cert_pubkeys,
+            ),
+        );
 
         assert!(res.is_none());
-    }
-}
-
-impl<VT, SCT> Default for ValidatorsEpochMapping<VT, SCT>
-where
-    VT: ValidatorSetType,
-    SCT: SignatureCollection,
-{
-    fn default() -> Self {
-        Self {
-            validator_map: HashMap::new(),
-        }
     }
 }

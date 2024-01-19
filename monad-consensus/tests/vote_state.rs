@@ -13,7 +13,7 @@ use monad_crypto::{
 use monad_multi_sig::MultiSig;
 use monad_testutil::validators::create_keys_w_validators;
 use monad_types::{BlockId, NodeId, Round, SeqNum};
-use monad_validator::validator_set::ValidatorSet;
+use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory};
 use test_case::test_case;
 
 type SignatureType = NopSignature;
@@ -52,8 +52,11 @@ fn setup_ctx(
     ValidatorMapping<PubKeyType, SignatureCollectionKeyPairType<SignatureCollectionType>>,
     Vec<(NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>)>,
 ) {
-    let (keys, cert_keys, valset, vmap) =
-        create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_nodes);
+    let (keys, cert_keys, valset, vmap) = create_keys_w_validators::<
+        SignatureType,
+        SignatureCollectionType,
+        _,
+    >(num_nodes, ValidatorSetFactory::default());
 
     let mut votes = Vec::new();
     for j in 0..num_rounds {

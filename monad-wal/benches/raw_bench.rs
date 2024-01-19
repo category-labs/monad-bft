@@ -3,7 +3,7 @@ use std::{error::Error, fmt::Debug, fs::create_dir_all};
 use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use monad_types::{Deserializable, Serializable};
-use monad_wal::{wal::*, PersistenceLogger};
+use monad_wal::{wal::*, PersistenceLoggerBuilder};
 use tempfile::{tempdir, TempDir};
 
 const VOTE_SIZE: usize = 400;
@@ -61,13 +61,12 @@ impl Bencher {
         let tmpdir = tempdir().unwrap();
         create_dir_all(tmpdir.path()).unwrap();
         let file_path = tmpdir.path().join("wal");
-        let config = WALoggerConfig {
-            file_path,
-            sync: false,
-        };
+        let config = WALoggerConfig::new(
+            file_path, false, // sync
+        );
         Bencher {
             data: Datablob::new(byte_len),
-            logger: WALogger::<Datablob>::new(config).unwrap().0,
+            logger: config.build().unwrap().0,
             _tmpdir: tmpdir,
         }
     }

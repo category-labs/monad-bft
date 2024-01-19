@@ -33,7 +33,9 @@ use monad_state::{
 use monad_testutil::{block::setup_block, validators::create_keys_w_validators};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
-    epoch_manager::EpochManager, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    validator_set::{ValidatorSetFactory, ValidatorSetType},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 fn make_tc<
@@ -131,10 +133,18 @@ macro_rules! test_all_combination {
 // TODO-4: revisit to cleanup
 test_all_combination!(test_vote_message, |num_keys| {
     let (keypairs, certkeys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT>(num_keys);
+        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        validators
+            .get_members()
+            .iter()
+            .map(|(a, b)| (*a, *b))
+            .collect(),
+        validator_mapping,
+    );
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
@@ -181,10 +191,18 @@ test_all_combination!(test_vote_message, |num_keys| {
 
 test_all_combination!(test_timeout_message, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT>(num_keys);
+        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        validators
+            .get_members()
+            .iter()
+            .map(|(a, b)| (*a, *b))
+            .collect(),
+        validator_mapping,
+    );
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
@@ -271,10 +289,18 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
 test_all_combination!(test_proposal_qc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT>(num_keys);
+        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        validators
+            .get_members()
+            .iter()
+            .map(|(a, b)| (*a, *b))
+            .collect(),
+        validator_mapping,
+    );
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
@@ -318,10 +344,18 @@ test_all_combination!(test_proposal_qc, |num_keys| {
 
 test_all_combination!(test_proposal_tc, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT>(num_keys);
+        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        validators
+            .get_members()
+            .iter()
+            .map(|(a, b)| (*a, *b))
+            .collect(),
+        validator_mapping,
+    );
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];
@@ -401,10 +435,18 @@ test_all_combination!(test_block_sync_request, |_| {
 
 test_all_combination!(test_block_sync_response_not_available, |num_keys| {
     let (_keypairs, _cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT>(num_keys);
+        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        validators
+            .get_members()
+            .iter()
+            .map(|(a, b)| (*a, *b))
+            .collect(),
+        validator_mapping,
+    );
 
     let bid = BlockId(Hash([0x01_u8; 32]));
     let block_sync_msg = BlockSyncResponseMessage::NotAvailable(bid);
@@ -433,10 +475,18 @@ test_all_combination!(test_block_sync_response_not_available, |num_keys| {
 
 test_all_combination!(test_block_sync_response_found, |num_keys| {
     let (keypairs, cert_keys, validators, validator_mapping) =
-        create_keys_w_validators::<ST, SCT>(num_keys);
+        create_keys_w_validators::<ST, SCT, _>(num_keys, ValidatorSetFactory::default());
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let mut val_epoch_map = ValidatorsEpochMapping::default();
-    val_epoch_map.insert(Epoch(1), validators, validator_mapping);
+    let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
+    val_epoch_map.insert(
+        Epoch(1),
+        validators
+            .get_members()
+            .iter()
+            .map(|(a, b)| (*a, *b))
+            .collect(),
+        validator_mapping,
+    );
     let validator_mapping = val_epoch_map.get_cert_pubkeys(&Epoch(1)).unwrap();
 
     let author_keypair = &keypairs[0];

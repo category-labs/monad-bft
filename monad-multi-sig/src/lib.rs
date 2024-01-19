@@ -228,6 +228,7 @@ mod test {
         validators::create_keys_w_validators,
     };
     use monad_types::NodeId;
+    use monad_validator::validator_set::ValidatorSetFactory;
     use rand::{seq::SliceRandom, SeedableRng};
     use rand_chacha::ChaChaRng;
     use test_case::test_case;
@@ -265,8 +266,11 @@ mod test {
     #[test_case(5; "5 sigs")]
     #[test_case(100; "100 sigs")]
     fn test_creation(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -290,8 +294,11 @@ mod test {
             // skip test because we can't "steal" others signature
             return;
         }
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -332,8 +339,11 @@ mod test {
     #[test_case(5; "5 sigs")]
     #[test_case(100; "100 sigs")]
     fn test_num_signatures(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -353,8 +363,11 @@ mod test {
     #[test_case(100; "100 sigs")]
     fn test_node_id_not_in_validator_mapping(num_keys: u32) {
         use monad_crypto::certificate_signature::CertificateKeyPair;
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -391,8 +404,11 @@ mod test {
     #[test_case(5; "5 sigs")]
     #[test_case(100; "100 sigs")]
     fn test_duplicate_sig(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -417,8 +433,11 @@ mod test {
     #[test_case(5; "5 sigs")]
     #[test_case(100; "100 sigs")]
     fn test_verify(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -442,8 +461,11 @@ mod test {
     #[test_case(5; "5 sigs")]
     #[test_case(100; "100 sigs")]
     fn test_get_participants(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -466,8 +488,11 @@ mod test {
     #[test_case(5; "5 sigs")]
     #[test_case(100; "100 sigs")]
     fn test_serialization_roundtrip(num_keys: u32) {
-        let (keys, voting_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, voting_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let voting_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -507,8 +532,11 @@ mod test {
     #[test_case(8, 32, 32; "seed 8, 32/32 invalid")]
     fn test_creation_invalid_signature(seed: u64, num_keys: u32, num_invalid: u32) {
         assert!(num_invalid <= num_keys);
-        let (keys, cert_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(num_keys);
+        let (keys, cert_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(num_keys, ValidatorSetFactory::default());
         let cert_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -553,8 +581,11 @@ mod test {
 
     #[test]
     fn test_verify_invalid_signature() {
-        let (keys, cert_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(5);
+        let (keys, cert_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(5, ValidatorSetFactory::default());
         let cert_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)
@@ -581,8 +612,11 @@ mod test {
 
     #[test]
     fn test_verify_non_validator_signer() {
-        let (keys, cert_keys, _, valmap) =
-            create_keys_w_validators::<SignatureType, SignatureCollectionType>(5);
+        let (keys, cert_keys, _, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(5, ValidatorSetFactory::default());
         let cert_keys: Vec<_> = keys
             .iter()
             .map(CertificateKeyPair::pubkey)

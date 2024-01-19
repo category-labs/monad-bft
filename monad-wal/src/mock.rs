@@ -1,46 +1,51 @@
-use std::{fmt::Debug, marker::PhantomData};
+use std::marker::PhantomData;
 
-use crate::PersistenceLogger;
+use crate::{PersistenceLogger, PersistenceLoggerBuilder, WALError};
 
 pub struct MockWALogger<M> {
     _marker: PhantomData<M>,
 }
 
-#[derive(Debug)]
-pub struct MockWALoggerError {}
+#[derive(Clone)]
+pub struct MockWALoggerConfig<M>(PhantomData<M>);
 
-impl std::fmt::Display for MockWALoggerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <Self as Debug>::fmt(self, f)
+impl<M> Default for MockWALoggerConfig<M> {
+    fn default() -> Self {
+        Self(PhantomData)
     }
 }
 
-impl std::error::Error for MockWALoggerError {}
+impl<M> PersistenceLoggerBuilder for MockWALoggerConfig<M> {
+    type PersistenceLogger = MockWALogger<M>;
 
-#[derive(Clone)]
-pub struct MockWALoggerConfig;
-
-impl<M> PersistenceLogger for MockWALogger<M> {
-    type Event = M;
-    type Error = MockWALoggerError;
-    type Config = MockWALoggerConfig;
-
-    fn new(_config: Self::Config) -> Result<(Self, Vec<Self::Event>), Self::Error> {
+    fn build(
+        self,
+    ) -> Result<
+        (
+            Self::PersistenceLogger,
+            Vec<<Self::PersistenceLogger as PersistenceLogger>::Event>,
+        ),
+        WALError,
+    > {
         Ok((
-            Self {
+            Self::PersistenceLogger {
                 _marker: PhantomData,
             },
             Vec::new(),
         ))
     }
+}
 
-    fn push(&mut self, _message: &Self::Event) -> Result<(), Self::Error> {
+impl<M> PersistenceLogger for MockWALogger<M> {
+    type Event = M;
+
+    fn push(&mut self, _message: &Self::Event) -> Result<(), WALError> {
         Ok(())
     }
 }
 
 #[derive(Clone)]
-pub struct MockMemLoggerConfig<M: Clone> {
+pub struct MockMemLoggerConfig<M> {
     log: Vec<M>,
 }
 
@@ -56,21 +61,31 @@ impl<M: Clone> MockMemLoggerConfig<M> {
     }
 }
 
+impl<M: Clone> PersistenceLoggerBuilder for MockMemLoggerConfig<M> {
+    type PersistenceLogger = MockMemLogger<M>;
+
+    fn build(
+        self,
+    ) -> Result<
+        (
+            Self::PersistenceLogger,
+            Vec<<Self::PersistenceLogger as PersistenceLogger>::Event>,
+        ),
+        WALError,
+    > {
+        let log = self.log;
+        Ok((Self::PersistenceLogger { log: log.clone() }, log))
+    }
+}
+
 pub struct MockMemLogger<M> {
     pub log: Vec<M>,
 }
 
-impl<M: Debug + Clone> PersistenceLogger for MockMemLogger<M> {
+impl<M: Clone> PersistenceLogger for MockMemLogger<M> {
     type Event = M;
-    type Error = MockWALoggerError;
-    type Config = MockMemLoggerConfig<M>;
 
-    fn new(config: Self::Config) -> Result<(Self, Vec<Self::Event>), Self::Error> {
-        let log = config.log;
-        Ok((Self { log: log.clone() }, log))
-    }
-
-    fn push(&mut self, message: &Self::Event) -> Result<(), Self::Error> {
+    fn push(&mut self, message: &Self::Event) -> Result<(), WALError> {
         self.log.push(message.clone());
         Ok(())
     }
