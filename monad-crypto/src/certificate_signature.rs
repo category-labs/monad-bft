@@ -26,7 +26,7 @@ pub type CertificateSignaturePubKey<T> =
     <<T as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType;
 
 pub trait CertificateSignature:
-    Copy + Clone + Eq + Hashable + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static
+    Copy + Clone + Eq + Hashable + Send + Sync + Unpin + std::fmt::Debug + std::hash::Hash + 'static
 {
     type KeyPairType: CertificateKeyPair;
     type Error: Display + Debug + Send + Sync;

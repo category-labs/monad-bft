@@ -54,7 +54,7 @@ pub trait SignatureCollection:
     Clone + Hashable + Eq + Send + Sync + std::fmt::Debug + 'static
 {
     type NodeIdPubKey: PubKey;
-    type SignatureType: CertificateSignature;
+    type SignatureType: CertificateSignature + Unpin;
 
     fn new(
         sigs: impl IntoIterator<Item = (NodeId<Self::NodeIdPubKey>, Self::SignatureType)>,

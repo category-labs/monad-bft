@@ -25,6 +25,7 @@ use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
     ledger::MockLedger,
+    loopback::LoopbackExecutor,
     parent::ParentExecutor,
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
     timer::TokioTimer,
@@ -132,6 +133,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             val_set_update_interval,
         ),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path).expect("uds bind failed"),
+        loopback: LoopbackExecutor::default(),
     };
 
     let Ok((mut wal, wal_events)) = WALogger::new(WALoggerConfig {

@@ -73,6 +73,10 @@ pub enum StateRootHashCommand<B> {
     LedgerCommit(B),
 }
 
+pub enum LoopbackCommand<E> {
+    Forward(E),
+}
+
 pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     RouterCommand(RouterCommand<SCT::NodeIdPubKey, OM>),
     TimerCommand(TimerCommand<E>),
@@ -81,6 +85,7 @@ pub enum Command<E, OM, B, C, SCT: SignatureCollection> {
     ExecutionLedgerCommand(ExecutionLedgerCommand<SCT>),
     CheckpointCommand(CheckpointCommand<C>),
     StateRootHashCommand(StateRootHashCommand<B>),
+    LoopbackCommand(LoopbackCommand<E>),
 }
 
 impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
@@ -93,6 +98,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         Vec<ExecutionLedgerCommand<SCT>>,
         Vec<CheckpointCommand<C>>,
         Vec<StateRootHashCommand<B>>,
+        Vec<LoopbackCommand<E>>,
     ) {
         let mut router_cmds = Vec::new();
         let mut timer_cmds = Vec::new();
@@ -100,6 +106,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
         let mut execution_ledger_cmds = Vec::new();
         let mut checkpoint_cmds = Vec::new();
         let mut state_root_hash_cmds = Vec::new();
+        let mut loopback_cmds = Vec::new();
 
         for command in commands {
             match command {
@@ -109,6 +116,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
                 Command::ExecutionLedgerCommand(cmd) => execution_ledger_cmds.push(cmd),
                 Command::CheckpointCommand(cmd) => checkpoint_cmds.push(cmd),
                 Command::StateRootHashCommand(cmd) => state_root_hash_cmds.push(cmd),
+                Command::LoopbackCommand(cmd) => loopback_cmds.push(cmd),
             }
         }
         (
@@ -118,6 +126,7 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            loopback_cmds,
         )
     }
 }

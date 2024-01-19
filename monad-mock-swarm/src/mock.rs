@@ -22,7 +22,8 @@ use monad_router_scheduler::{RouterEvent, RouterScheduler};
 use monad_state::VerifiedMonadMessage;
 use monad_types::{NodeId, SeqNum, TimeoutVariant};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, state_root_hash::MockableStateRootHash,
+    checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
+    state_root_hash::MockableStateRootHash,
 };
 use priority_queue::PriorityQueue;
 
@@ -40,6 +41,7 @@ where
     execution_ledger: MockExecutionLedger<S::SignatureCollectionType>,
     checkpoint: MockCheckpoint<Checkpoint<S::SignatureCollectionType>>,
     state_root_hash: S::StateRootHashExecutor,
+    loopback: LoopbackExecutor<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
     tick: Duration,
 
     timer: PriorityQueue<
@@ -89,6 +91,7 @@ enum ExecutorEventType {
     Ledger,
     Timer,
     StateRootHash,
+    Loopback,
 }
 
 impl<S> MockExecutor<S>
@@ -109,7 +112,7 @@ where
                 genesis_validator_data,
                 val_set_update_interval,
             ),
-
+            loopback: Default::default(),
             tick,
 
             timer: PriorityQueue::new(),
@@ -154,6 +157,11 @@ where
                     .ready()
                     .then_some((self.tick, ExecutorEventType::StateRootHash)),
             )
+            .chain(
+                self.loopback
+                    .ready()
+                    .then_some((self.tick, ExecutorEventType::Loopback)),
+            )
             .min()
     }
 
@@ -182,6 +190,7 @@ where
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            loopback_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -206,6 +215,7 @@ where
         self.execution_ledger.replay(execution_ledger_cmds);
         self.checkpoint.replay(checkpoint_cmds);
         self.state_root_hash.replay(state_root_hash_cmds);
+        self.loopback.replay(loopback_cmds);
 
         for command in router_cmds {
             match command {
@@ -223,6 +233,7 @@ where
             execution_ledger_cmds,
             checkpoint_cmds,
             state_root_hash_cmds,
+            loopback_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -247,6 +258,7 @@ where
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
+        self.loopback.exec(loopback_cmds);
 
         for command in router_cmds {
             match command {
@@ -305,6 +317,10 @@ where
                 }
                 ExecutorEventType::StateRootHash => {
                     return futures::executor::block_on(self.state_root_hash.next())
+                        .map(MockExecutorEvent::Event)
+                }
+                ExecutorEventType::Loopback => {
+                    return futures::executor::block_on(self.loopback.next())
                         .map(MockExecutorEvent::Event)
                 }
             };
