@@ -15,7 +15,8 @@ use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::Message;
-use monad_gossip::mock::{MockGossip, MockGossipConfig};
+use monad_gossip::{mock::MockGossipConfig, Gossip};
+use monad_ipc::IpcReceiver;
 use monad_ledger::MonadFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, PubKey, SecpSignature};
@@ -23,7 +24,6 @@ use monad_state::{MonadConfig, MonadMessage, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
-    ipc::MockIpcReceiver,
     ledger::MockLedger,
     parent::ParentExecutor,
     state_root_hash::{MockStateRootHashNop, MockableStateRootHash},
@@ -95,10 +95,21 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router::<
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        _,
     >(
         node_state.node_config.network.clone(),
         &node_state.secp256k1_identity,
         &node_state.node_config.bootstrap.peers,
+        MockGossipConfig {
+            all_peers: node_state
+                .genesis_config
+                .validators
+                .iter()
+                .map(|peer| NodeId::new(peer.secp256k1_pubkey))
+                .collect(),
+            me: NodeId::new(node_state.secp256k1_identity.pubkey()),
+        }
+        .build(),
     )
     .await;
 
@@ -120,7 +131,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             ValidatorData::new(validators.clone()),
             val_set_update_interval,
         ),
-        ipc: MockIpcReceiver::default(),
+        ipc: IpcReceiver::new(node_state.mempool_ipc_path).expect("uds bind failed"),
     };
 
     let Ok((mut wal, wal_events)) = WALogger::new(WALoggerConfig {
@@ -236,18 +247,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     Ok(())
 }
 
-async fn build_router<M, OM>(
+async fn build_router<M, OM, G: Gossip>(
     network_config: NodeNetworkConfig,
     identity: &KeyPair,
     peers: &[NodeBootstrapPeerConfig],
-) -> Service<
-    SafeQuinnConfig<SignatureType>,
-    MockGossip<CertificateSignaturePubKey<SignatureType>>,
-    M,
-    OM,
->
+    gossip: G,
+) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
 where
     M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
+    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
 {
     Service::new(
         ServiceConfig {
@@ -276,13 +284,6 @@ where
                 })
                 .collect(),
         },
-        MockGossipConfig {
-            all_peers: peers
-                .iter()
-                .map(|peer| NodeId::new(peer.secp256k1_pubkey.to_owned()))
-                .collect(),
-            me: NodeId::new(identity.pubkey()),
-        }
-        .build(),
+        gossip,
     )
 }

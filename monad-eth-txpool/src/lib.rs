@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
+use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
@@ -11,8 +12,12 @@ impl TxPool for EthTxPool {
         Self(BTreeMap::new())
     }
 
-    fn insert_tx(&mut self, _tx: Bytes) {
-        todo!()
+    fn insert_tx(&mut self, tx: Bytes) {
+        // TODO: unwrap can be removed when this is made generic over the actual
+        // tx type rather than Bytes and decoding won't be necessary
+        let eth_tx = EthTransaction::decode(&mut tx.as_ref()).unwrap();
+        // TODO: sorting by gas_limit for proposal creation
+        self.0.insert(eth_tx.hash(), eth_tx);
     }
 
     fn create_proposal(

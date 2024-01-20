@@ -24,7 +24,7 @@ pub struct NodeState {
 
     pub wal_path: PathBuf,
     pub execution_ledger_path: PathBuf,
-    pub mempool_ipc_path: Option<PathBuf>,
+    pub mempool_ipc_path: PathBuf,
     pub otel_context: Option<opentelemetry::Context>,
 }
 

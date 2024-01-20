@@ -31,7 +31,7 @@ pub struct Cli {
 
     /// Set a custom monad mempool ipc path
     #[arg(long)]
-    pub mempool_ipc_path: Option<PathBuf>,
+    pub mempool_ipc_path: PathBuf,
 
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]

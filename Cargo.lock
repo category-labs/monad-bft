@@ -2224,6 +2224,7 @@ dependencies = [
 name = "monad-eth-txpool"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "monad-consensus-types",
  "monad-eth-tx",
@@ -2296,6 +2297,7 @@ dependencies = [
  "monad-eth-tx",
  "monad-executor-glue",
  "monad-secp",
+ "rand",
  "reth-primitives",
  "tokio",
  "tokio-util",
@@ -2398,6 +2400,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
+ "monad-ipc",
  "monad-ledger",
  "monad-quic",
  "monad-secp",
@@ -2531,6 +2534,7 @@ dependencies = [
  "monad-executor",
  "monad-executor-glue",
  "monad-gossip",
+ "monad-ipc",
  "monad-ledger",
  "monad-mock-swarm",
  "monad-multi-sig",

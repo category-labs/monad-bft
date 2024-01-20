@@ -7,4 +7,5 @@ edition = "2021"
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }

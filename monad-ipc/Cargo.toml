@@ -14,6 +14,7 @@ monad-executor-glue = { path = "../monad-executor-glue" }
 
 alloy-rlp = { workspace = true }
 futures = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",
@@ -29,3 +30,6 @@ monad-secp = { path = "../monad-secp" }
 clap = { workspace = true, features = ["derive"] }
 reth-primitives = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "ethtx"

@@ -30,6 +30,6 @@ where
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         // TODO: generate user tx
-        Poll::Ready(None)
+        Poll::Pending
     }
 }

@@ -13,6 +13,7 @@ use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MonadEvent, RouterCommand, StateRootHashCommand,
 };
 use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
+use monad_ipc::{generate_uds_path, IpcReceiver};
 use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
@@ -20,7 +21,6 @@ use monad_state::{MonadConfig, MonadMessage, MonadState, VerifiedMonadMessage};
 use monad_types::{Round, SeqNum, Stake};
 use monad_updaters::{
     checkpoint::MockCheckpoint,
-    ipc::MockIpcReceiver,
     ledger::MockLedger,
     local_router::LocalPeerRouter,
     parent::ParentExecutor,
@@ -88,7 +88,7 @@ pub async fn make_monad_executor<ST, SCT>(
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
     MockCheckpoint<Checkpoint<SCT>>,
     BoxUpdater<'static, StateRootHashCommand<Block<SCT>>, MonadEvent<ST, SCT>>,
-    MockIpcReceiver<ST, SCT>,
+    IpcReceiver<ST, SCT>,
 >
 where
     ST: CertificateSignatureRecoverable + Unpin,
@@ -127,7 +127,7 @@ where
                 val_set_update_interval,
             )),
         },
-        ipc: MockIpcReceiver::default(),
+        ipc: IpcReceiver::new(generate_uds_path()).expect("uds bind failed"),
     }
 }
 
