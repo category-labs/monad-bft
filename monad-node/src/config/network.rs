@@ -7,7 +7,6 @@ use serde::Deserialize;
 pub struct NodeNetworkConfig {
     pub bind_address_host: Ipv4Addr,
     pub bind_address_port: u16,
-    pub bind_address_mempool_port: u16,
 
     pub max_rtt_ms: u64,
     pub max_mbps: u16,
