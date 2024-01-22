@@ -1,6 +1,10 @@
 mod common;
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
 
 use common::QuicSwarm;
 use monad_consensus_types::block_validator::MockValidator;
@@ -9,10 +13,12 @@ use monad_mock_swarm::{mock_swarm::UntilTerminator, swarm_relation::NoSerSwarm};
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::NoSerRouterConfig;
 use monad_testutil::swarm::{create_and_run_nodes, SwarmTestConfig};
+use monad_tracing_counter::counter::{counter_get, CounterLayer, MetricFilter};
 use monad_transformer::{BwTransformer, BytesTransformer, GenericTransformer, LatencyTransformer};
 use monad_types::{Round, SeqNum};
 use monad_wal::mock::MockWALoggerConfig;
-use tracing_test::traced_test;
+use tracing_core::LevelFilter;
+use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
 
 #[test]
 fn two_nodes() {
@@ -74,9 +80,21 @@ fn two_nodes_quic() {
     );
 }
 
-#[traced_test]
 #[test]
 fn two_nodes_quic_bw() {
+    let fmt_layer = tracing_subscriber::fmt::layer();
+    let counter = Arc::new(RwLock::new(HashMap::new()));
+    let counter_layer = CounterLayer::new(Arc::clone(&counter));
+
+    let subscriber = Registry::default()
+        .with(
+            fmt_layer
+                .with_filter(MetricFilter {})
+                .with_filter(Targets::new().with_default(LevelFilter::INFO)),
+        )
+        .with(counter_layer);
+    tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
+
     let zero_instant = Instant::now();
 
     create_and_run_nodes::<QuicSwarm, _, _>(
@@ -109,16 +127,6 @@ fn two_nodes_quic_bw() {
         },
     );
 
-    logs_assert(|lines| {
-        if lines
-            .iter()
-            .filter(|line| line.contains("monotonic_counter.bwtransformer_dropped_msg"))
-            .count()
-            > 0
-        {
-            Ok(())
-        } else {
-            Err("Expected msg to be dropped".to_owned())
-        }
-    });
+    let dropped_msg = counter_get(counter, None, "bwtransformer_dropped_msg");
+    assert!(dropped_msg.is_some());
 }
