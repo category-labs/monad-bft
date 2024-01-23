@@ -24,6 +24,7 @@ use monad_wal::{
     PersistenceLogger,
 };
 use tracing_test::traced_test;
+
 const CONSENSUS_DELTA: Duration = Duration::from_millis(10);
 
 struct ReplaySwarm;

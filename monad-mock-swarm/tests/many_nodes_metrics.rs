@@ -18,7 +18,7 @@ use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 #[test]
 fn many_nodes_metrics() {
     let fmt_layer = tracing_subscriber::fmt::layer();
-    let counter_layer = CounterLayer::new();
+    let counter_layer = CounterLayer::default();
 
     let subscriber = Registry::default()
         .with(

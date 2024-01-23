@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        RwLock, RwLockReadGuard, RwLockWriteGuard,
+        Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
 };
 
@@ -33,6 +33,28 @@ macro_rules! inc_count {
     }};
 }
 
+/// Assert a predicate on a counter value
+///
+/// `span_prefix` allows filtering on the span/context where the event
+/// occured, e.g. NodeId. A `None` value matches on all possible prefix
+///
+/// `field` is the name of the event. It's what's put in `inc_count!`
+pub fn counter_get(
+    counter: Arc<RwLock<HashMap<String, AtomicUsize>>>,
+    span_prefix: Option<&'static str>,
+    field: &'static str,
+) -> Option<usize> {
+    let field_postfix = span_prefix.map_or(String::new(), |s| s.to_string()) + field;
+    let mut count: Option<usize> = None;
+    for (k, v) in counter.read().unwrap().iter() {
+        let v = v.load(Ordering::Acquire);
+        if k.ends_with(&field_postfix) {
+            count = count.map_or(Some(v), |cnt| Some(cnt + v))
+        }
+    }
+    count
+}
+
 /// This filter can prevent other layers (e.g. fmt layer) from capturing
 /// (printing) the counter messages
 ///
@@ -42,7 +64,7 @@ macro_rules! inc_count {
 /// use monad_tracing_counter::{counter::{CounterLayer, MetricFilter}, inc_count};
 ///
 /// let fmt_layer = tracing_subscriber::fmt::layer();
-/// let counter_layer = CounterLayer::new();
+/// let counter_layer = CounterLayer::default();
 ///
 /// let subscriber = Registry::default()
 ///     .with(
@@ -137,15 +159,15 @@ impl<'a> Visit for Visitor<'a> {
 /// aware of NodeId spans and prefixes the metrics name with the NodeId, making
 /// it useful in [monad_mock_swarm::mock_swarm] tests
 pub struct CounterLayer {
-    counts: RwLock<HashMap<String, AtomicUsize>>,
+    counts: Arc<RwLock<HashMap<String, AtomicUsize>>>,
     spans: RwLock<HashMap<span::Id, String>>,
     prefix: RwLock<String>,
 }
 
 impl CounterLayer {
-    pub fn new() -> Self {
+    pub fn new(counts: Arc<RwLock<HashMap<String, AtomicUsize>>>) -> Self {
         Self {
-            counts: RwLock::new(HashMap::new()),
+            counts,
             spans: RwLock::new(HashMap::new()),
             prefix: RwLock::new(String::new()),
         }
@@ -168,7 +190,8 @@ impl CounterLayer {
 
 impl Default for CounterLayer {
     fn default() -> Self {
-        Self::new()
+        let counts = Arc::new(RwLock::new(HashMap::new()));
+        Self::new(counts)
     }
 }
 
