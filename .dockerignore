@@ -1,6 +1,8 @@
 **/Dockerfile
 .dockerignore
 
+.github
+
 /docker/devnet/monad
 /docker/devnet/wal
 
