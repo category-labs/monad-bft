@@ -2272,9 +2272,12 @@ version = "0.1.0"
 dependencies = [
  "monad-consensus-types",
  "monad-crypto",
+ "monad-multi-sig",
  "monad-proto",
+ "monad-testutil",
  "monad-types",
  "monad-validator",
+ "tracing",
  "zerocopy 0.6.5",
 ]
 

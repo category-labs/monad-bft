@@ -24,7 +24,7 @@ impl AsRef<[u8]> for StateRootHash {
 
 /// Votes on the state root hash after executing block `seq_num`. `round` is the
 /// consensus round where the block is proposed
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StateRootHashInfo {
     pub state_root_hash: StateRootHash,
     pub seq_num: SeqNum,

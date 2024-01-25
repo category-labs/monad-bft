@@ -9,8 +9,10 @@ use monad_types::NodeId;
 use monad_validator::validator_set::ValidatorSetType;
 
 pub mod local;
+pub mod peer;
 
 pub use local::LocalAsyncStateVerify;
+pub use peer::PeerAsyncStateVerify;
 
 pub enum AsyncStateVerifyCommand<SCT: SignatureCollection> {
     /// Broadcast local execution result to other validators

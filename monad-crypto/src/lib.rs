@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use hasher::{Hashable, Hasher};
 
 #[cfg(feature = "rustls")]
@@ -12,8 +14,18 @@ pub struct NopKeyPair {
     pubkey: NopPubKey,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NopPubKey([u8; 32]);
+
+impl Debug for NopPubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:>02x}{:>02x}..{:>02x}{:>02x}",
+            self.0[0], self.0[1], self.0[30], self.0[31]
+        )
+    }
+}
 
 /// NopSignature is an implementation of CertificateSignature that's not cryptographically secure
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

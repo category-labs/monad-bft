@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use monad_async_state_verify::{
-    AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, LocalAsyncStateVerify,
+    AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
 };
 use monad_consensus_types::{
     block::Block,
@@ -175,7 +175,7 @@ impl SwarmRelation for NoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type AsyncStateRootVerify = LocalAsyncStateVerify<
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
     >;
@@ -213,7 +213,7 @@ impl SwarmRelation for BytesSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type AsyncStateRootVerify = LocalAsyncStateVerify<
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
     >;
@@ -252,7 +252,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type AsyncStateRootVerify = LocalAsyncStateVerify<
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
     >;

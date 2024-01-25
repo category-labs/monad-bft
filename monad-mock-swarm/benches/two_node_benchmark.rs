@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use monad_async_state_verify::LocalAsyncStateVerify;
+use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -41,7 +41,7 @@ fn two_nodes() {
                 SeqNum(4), // state_root_delay
             )
         },
-        LocalAsyncStateVerify::default,
+        PeerAsyncStateVerify::default,
         Duration::from_millis(2), // delta
         5_000,                    // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval

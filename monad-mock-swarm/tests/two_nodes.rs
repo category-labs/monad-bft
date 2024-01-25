@@ -2,7 +2,7 @@ mod common;
 
 use std::{collections::BTreeSet, time::Duration};
 
-use monad_async_state_verify::LocalAsyncStateVerify;
+use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -13,18 +13,14 @@ use monad_mock_swarm::{
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
-use monad_tracing_counter::counter::counter_get;
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::mock::MockWALoggerConfig;
 
-use crate::common::setup_counter;
 #[test]
 fn two_nodes_noser() {
-    let counter = setup_counter();
-
     let state_configs = make_state_configs::<NoSerSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
@@ -36,7 +32,7 @@ fn two_nodes_noser() {
                 SeqNum(4), // state_root_delay
             )
         },
-        LocalAsyncStateVerify::default,
+        PeerAsyncStateVerify::default,
         Duration::from_millis(2), // delta
         10,                       // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
@@ -74,6 +70,7 @@ fn two_nodes_noser() {
     {}
     swarm_ledger_verification(&swarm, 1024);
 
-    let empty_blocks = counter_get(counter, None, "commit_empty_block");
-    assert!(empty_blocks.is_none());
+    for node in swarm.states().values() {
+        assert_eq!(0, node.state.metrics().consensus_events.commit_empty_block);
+    }
 }

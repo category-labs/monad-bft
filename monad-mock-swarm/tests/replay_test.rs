@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
-use monad_async_state_verify::LocalAsyncStateVerify;
+use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -46,7 +46,7 @@ impl SwarmRelation for ReplaySwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type AsyncStateRootVerify = LocalAsyncStateVerify<
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
     >;
@@ -132,7 +132,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 SeqNum(4), // state_root_delay
             )
         },
-        LocalAsyncStateVerify::default,
+        PeerAsyncStateVerify::default,
         CONSENSUS_DELTA, // delta
         0,               // proposal_tx_limit
         SeqNum(2000),    // val_set_update_interval
@@ -154,7 +154,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 SeqNum(4), // state_root_delay
             )
         },
-        LocalAsyncStateVerify::default,
+        PeerAsyncStateVerify::default,
         CONSENSUS_DELTA, // delta
         0,               // proposal_tx_limit
         SeqNum(2000),    // val_set_update_interval
@@ -211,6 +211,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         .max()
         .unwrap();
 
+    println!("Phase 1 completes");
     // bring down 2 nodes
     let node0 = swarm
         .remove_state(&ID::new(node_ids[f0]))
@@ -235,6 +236,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         .max()
         .unwrap();
 
+    println!("Phase 2 completes");
     // bring up failed nodes with the replay logs
     let node0_logger_config = MockMemLoggerConfig::new(node0.logger.log);
     let node1_logger_config = MockMemLoggerConfig::new(node1.logger.log);
@@ -271,6 +273,8 @@ fn replay_one_honest(failure_idx: &[usize]) {
         ));
     }
 
+    println!("Replay finishes");
+
     // assert consensus state is the same after replay
     let node0_consensus = node0.state.consensus();
     let node0_consensus_recovered = swarm
@@ -303,6 +307,8 @@ fn replay_one_honest(failure_idx: &[usize]) {
     assert!(liveness::<ReplaySwarm>(&swarm, phase_two_length));
 
     swarm_ledger_verification(&swarm, phase_one_length + 1);
+
+    println!("Phase 3 completes");
 
     // assert that block sync isn't triggered
     for s in swarm.states().values() {

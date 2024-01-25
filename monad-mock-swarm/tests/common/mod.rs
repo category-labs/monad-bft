@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_async_state_verify::LocalAsyncStateVerify;
+use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -40,7 +40,7 @@ impl SwarmRelation for QuicSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
-    type AsyncStateRootVerify = LocalAsyncStateVerify<
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
     >;

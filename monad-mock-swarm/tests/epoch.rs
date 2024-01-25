@@ -7,7 +7,7 @@ mod test {
     };
 
     use itertools::Itertools;
-    use monad_async_state_verify::LocalAsyncStateVerify;
+    use monad_async_state_verify::PeerAsyncStateVerify;
     use monad_consensus_types::{
         block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
     };
@@ -53,7 +53,7 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
-        type AsyncStateRootVerify = LocalAsyncStateVerify<
+        type AsyncStateRootVerify = PeerAsyncStateVerify<
             Self::SignatureCollectionType,
             <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
         >;
@@ -144,7 +144,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
-            LocalAsyncStateVerify::default,
+            PeerAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             val_set_update_interval,  // val_set_update_interval
@@ -219,7 +219,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
-            LocalAsyncStateVerify::default,
+            PeerAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             val_set_update_interval,  // val_set_update_interval
@@ -327,7 +327,7 @@ mod test {
                     SeqNum(4), // state_root_delay
                 )
             },
-            LocalAsyncStateVerify::default,
+            PeerAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             val_set_update_interval,  // val_set_update_interval

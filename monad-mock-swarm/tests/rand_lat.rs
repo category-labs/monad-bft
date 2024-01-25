@@ -1,7 +1,7 @@
 mod common;
 use std::{collections::BTreeSet, env};
 
-use monad_async_state_verify::LocalAsyncStateVerify;
+use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -73,7 +73,7 @@ fn nodes_with_random_latency(seed: u64) {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
-        LocalAsyncStateVerify::default,
+        PeerAsyncStateVerify::default,
         Duration::from_millis(250), // delta
         0,                          // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval
