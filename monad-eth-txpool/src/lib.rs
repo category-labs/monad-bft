@@ -22,7 +22,7 @@ impl TxPool for EthTxPool {
         tx_limit: usize,
         gas_limit: u64,
         pending_txs: Vec<FullTransactionList>,
-    ) -> FullTransactionList {
+    ) -> (FullTransactionList, Option<FullTransactionList>) {
         // TODO: we should enhance the pending block tree to hold tx hashses so that
         // we don't have to calculate it here on the critical path of proposal creation
         let mut pending_tx_hashes: Vec<EthTxHash> = Vec::new();
@@ -51,9 +51,14 @@ impl TxPool for EthTxPool {
             txs.push(tx.clone());
         }
 
-        // TODO cascading behaviour for leftover txns
+        // TODO cascading behaviour for leftover txns once we have an idea of how we want
+        // to forward
         self.0.clear();
+        let leftovers = None;
 
-        FullTransactionList::new(EthFullTransactionList(txs).rlp_encode())
+        (
+            FullTransactionList::new(EthFullTransactionList(txs).rlp_encode()),
+            leftovers,
+        )
     }
 }

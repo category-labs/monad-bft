@@ -36,6 +36,10 @@ message ProtoProposalMessage {
   optional monad_proto.timeout.ProtoTimeoutCertificate last_round_tc = 2;
 }
 
+message ProtoCascadeTxMessage {
+  bytes txns = 1;
+}
+
 message ProtoUnverifiedConsensusMessage {
   oneof OneofMessage {
     ProtoProposalMessage proposal = 1;
@@ -50,5 +54,6 @@ message ProtoMonadMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
     ProtoRequestBlockSyncMessage block_sync_request = 2;
     ProtoBlockSyncMessage block_sync_response = 3;
+    ProtoCascadeTxMessage cascade_txns = 4;
   }
 }

@@ -2,15 +2,26 @@ use bytes::Bytes;
 
 use crate::payload::FullTransactionList;
 
+/// This trait represents the storage of transactions that
+/// are potentially available for a proposal
 pub trait TxPool {
+    /// Handle transactions submitted by users via RPC
     fn insert_tx(&mut self, tx: Bytes);
 
+    /// Returns 2 RLP encoded lists of transactions
+    /// The first list are the transactions to include in the
+    /// proposal, the second is the leftover list.
+    /// The leftover list is intended to be forwarded to another
+    /// Node for inclusion in a future proposal
     fn create_proposal(
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
         pending_txs: Vec<FullTransactionList>,
-    ) -> FullTransactionList;
+    ) -> (FullTransactionList, Option<FullTransactionList>);
+
+    /// Handle transactions cascaded forward by other nodes
+    fn handle_cascading_txns(&mut self) {}
 }
 
 impl<T: TxPool + ?Sized> TxPool for Box<T> {
@@ -23,7 +34,7 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         tx_limit: usize,
         gas_limit: u64,
         pending_txs: Vec<FullTransactionList>,
-    ) -> FullTransactionList {
+    ) -> (FullTransactionList, Option<FullTransactionList>) {
         (**self).create_proposal(tx_limit, gas_limit, pending_txs)
     }
 }
@@ -54,15 +65,15 @@ impl TxPool for MockTxPool {
         tx_limit: usize,
         _gas_limit: u64,
         _pending_txs: Vec<FullTransactionList>,
-    ) -> FullTransactionList {
+    ) -> (FullTransactionList, Option<FullTransactionList>) {
         if tx_limit == 0 {
-            FullTransactionList::empty()
+            (FullTransactionList::empty(), None)
         } else {
             // Random non-empty value with size = num_fetch_txs * hash_size
             let mut buf = Vec::with_capacity(tx_limit * TXN_SIZE);
             buf.resize(tx_limit * TXN_SIZE, 0);
             self.rng.fill_bytes(buf.as_mut_slice());
-            FullTransactionList::new(buf.into())
+            (FullTransactionList::new(buf.into()), None)
         }
     }
 }

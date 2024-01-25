@@ -23,6 +23,9 @@ where
                 VerifiedMonadMessage::BlockSyncResponse(msg) => {
                     proto_monad_message::OneofMessage::BlockSyncResponse(msg.into())
                 }
+                VerifiedMonadMessage::CascadeTxns(msg) => {
+                    proto_monad_message::OneofMessage::CascadeTxns(msg.into())
+                }
             }),
         }
     }
@@ -45,6 +48,9 @@ where
             }
             Some(proto_monad_message::OneofMessage::BlockSyncResponse(msg)) => {
                 MonadMessage::BlockSyncResponse(msg.try_into()?)
+            }
+            Some(proto_monad_message::OneofMessage::CascadeTxns(msg)) => {
+                MonadMessage::CascadeTxns(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadMessage.oneofmessage".to_owned(),

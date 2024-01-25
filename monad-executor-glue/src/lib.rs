@@ -6,7 +6,7 @@ use bytes::Bytes;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
+        message::{BlockSyncResponseMessage, CascadeTxMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unvalidated, Unverified},
 };
@@ -223,8 +223,14 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MempoolEvent {
-    UserTx(Bytes),
+pub enum MempoolEvent<SCT: SignatureCollection> {
+    /// Txns that are incoming from other Nodes
+    CascadeTxns {
+        sender: SCT::NodeIdPubKey,
+        txns: Unvalidated<CascadeTxMessage>,
+    },
+    /// Txns that are incoming via RPC (users)
+    UserTxns(Bytes),
 }
 
 /// MonadEvent are inputs to MonadState
@@ -241,7 +247,7 @@ where
     /// Events to update validator set
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
-    MempoolEvent(MempoolEvent),
+    MempoolEvent(MempoolEvent<SCT>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>

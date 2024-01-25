@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let monad_event = receiver.next().await.expect("never terminates");
         match monad_event {
             MonadEvent::MempoolEvent(event) => match event {
-                MempoolEvent::UserTx(tx) => {
+                MempoolEvent::UserTxns(tx) => {
                     let tx =
                         EthTransaction::decode(&mut tx.as_ref()).expect("must be valid eth tx");
 
@@ -141,6 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     assert_eq!(tx.transaction, eth_tx.transaction);
                     debug!("received tx");
                 }
+                MempoolEvent::CascadeTxns { sender, txns } => (),
             },
 
             _ => Err("Wrong MonadEvent variant")?,

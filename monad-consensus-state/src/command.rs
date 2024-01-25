@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use bytes::Bytes;
 use monad_consensus::{
     messages::{consensus_message::ConsensusMessage, message::TimeoutMessage},
     pacemaker::PacemakerCommand,
@@ -51,6 +52,12 @@ where
     StateRootHash(Block<SCT>),
     // TODO-2 add command for updating validator_set/round
     // - to handle this command, we need to call message_state.set_round()
+    //
+    /// Sends transactions remaining in TxPool to another validator
+    CascadeTxns {
+        peer: NodeId<SCT::NodeIdPubKey>,
+        txns: Bytes,
+    },
 }
 
 impl<ST, SCT> ConsensusCommand<ST, SCT>

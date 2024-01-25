@@ -473,7 +473,7 @@ where
                     validator_set.get_members(),
                 )
             {
-                cmds.extend(self.process_new_round_event(tx_pool, None));
+                cmds.extend(self.process_new_round_event(tx_pool, validator_set, None));
             }
         }
         cmds
@@ -558,7 +558,7 @@ where
                     validator_set.get_members(),
                 )
             {
-                cmds.extend(self.process_new_round_event(tx_pool, Some(tc)));
+                cmds.extend(self.process_new_round_event(tx_pool, validator_set, Some(tc)));
             }
         }
 
@@ -755,11 +755,15 @@ where
 
     /// called when the node is entering a new round and is the leader for that round
     #[must_use]
-    fn process_new_round_event<TT: TxPool>(
+    fn process_new_round_event<VT, TT: TxPool>(
         &mut self,
         txpool: &mut TT,
+        validators: &VT,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+    ) -> Vec<ConsensusCommand<ST, SCT>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
         self.vote_state
             .start_new_round(self.pacemaker.get_current_round());
 
@@ -810,13 +814,20 @@ where
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
 
-                let txns = txpool.create_proposal(
+                let (prop_txns, leftover_txns) = txpool.create_proposal(
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
                     pending_blocktree_txs,
                 );
-
-                proposer_builder(txns, h, last_round_tc)
+                let mut cmds = proposer_builder(prop_txns, h, last_round_tc);
+                if let (Some(txns), Some(target)) = (leftover_txns, self.cascade_target(validators))
+                {
+                    cmds.push(ConsensusCommand::CascadeTxns {
+                        peer: target,
+                        txns: txns.bytes().clone(),
+                    });
+                }
+                cmds
             }
             ConsensusAction::Abstain => {
                 inc_count!(abstain_proposal);
@@ -973,6 +984,20 @@ where
             return false;
         }
         true
+    }
+
+    // TODO: use a real algorithm to choose target
+    #[must_use]
+    fn cascade_target<VT>(&self, validators: &VT) -> Option<NodeId<SCT::NodeIdPubKey>>
+    where
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        for (nodeid, _) in validators.get_members().iter() {
+            if *nodeid != self.nodeid {
+                return Some(*nodeid);
+            }
+        }
+        None
     }
 }
 

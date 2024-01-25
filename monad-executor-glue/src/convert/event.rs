@@ -186,23 +186,40 @@ impl<SCT: SignatureCollection> TryFrom<ProtoValidatorEvent> for ValidatorEvent<S
     }
 }
 
-impl From<&MempoolEvent> for ProtoMempoolEvent {
-    fn from(value: &MempoolEvent) -> Self {
+impl<SCT: SignatureCollection> From<&MempoolEvent<SCT>> for ProtoMempoolEvent {
+    fn from(value: &MempoolEvent<SCT>) -> Self {
         let event = match value {
-            MempoolEvent::UserTx(tx) => {
+            MempoolEvent::UserTxns(tx) => {
                 proto_mempool_event::Event::Usertx(ProtoUserTx { tx: tx.clone() })
+            }
+            MempoolEvent::CascadeTxns { sender, txns } => {
+                proto_mempool_event::Event::CascadeTxns(ProtoCascadeTxnsWithSender {
+                    sender: Some(pubkey_to_proto(sender)),
+                    cascade: Some(txns.into()),
+                })
             }
         };
         Self { event: Some(event) }
     }
 }
 
-impl TryFrom<ProtoMempoolEvent> for MempoolEvent {
+impl<SCT: SignatureCollection> TryFrom<ProtoMempoolEvent> for MempoolEvent<SCT> {
     type Error = ProtoError;
 
     fn try_from(value: ProtoMempoolEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
-            Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTx(tx.tx),
+            Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
+            Some(proto_mempool_event::Event::CascadeTxns(msg)) => MempoolEvent::CascadeTxns {
+                sender: proto_to_pubkey(msg.sender.ok_or(ProtoError::MissingRequiredField(
+                    "MempoolEvent.cascade_txns.sender".to_owned(),
+                ))?)?,
+                txns: msg
+                    .cascade
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent.cascade.txns".to_owned(),
+                    ))?
+                    .try_into()?,
+            },
             None => Err(ProtoError::MissingRequiredField(
                 "MempoolEvent.event".to_owned(),
             ))?,
@@ -232,7 +249,7 @@ mod test {
 
         let mempool_event =
             MonadEvent::<MessageSignatureType, SignatureCollectionType>::MempoolEvent(
-                MempoolEvent::UserTx(tx),
+                MempoolEvent::UserTxns(tx),
             );
 
         let mempool_event_bytes: Bytes = mempool_event.serialize();

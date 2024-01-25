@@ -114,7 +114,9 @@ where
                 }
             };
 
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::UserTx(bytes))));
+            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(
+                bytes,
+            ))));
         }
 
         Poll::Pending

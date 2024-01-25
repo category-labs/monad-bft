@@ -18,6 +18,7 @@ monad-types = { path = "../monad-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-validator = { path = "../monad-validator" }
 
+bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

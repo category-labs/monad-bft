@@ -1,7 +1,10 @@
 use std::marker::PhantomData;
 
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::RequestBlockSyncMessage},
+    messages::{
+        consensus_message::ConsensusMessage,
+        message::{CascadeTxMessage, RequestBlockSyncMessage},
+    },
     validation::signing::Validated,
 };
 use monad_consensus_state::{
@@ -250,6 +253,14 @@ where
             ConsensusCommand::StateRootHash(full_block) => parent_cmds.push(
                 Command::StateRootHashCommand(StateRootHashCommand::LedgerCommit(full_block)),
             ),
+            ConsensusCommand::CascadeTxns { peer, txns } => {
+                parent_cmds.push(Command::RouterCommand(RouterCommand::Publish {
+                    target: RouterTarget::PointToPoint(peer),
+                    message: VerifiedMonadMessage::CascadeTxns(Validated::new(CascadeTxMessage {
+                        txns,
+                    })),
+                }))
+            }
         }
         parent_cmds
     }

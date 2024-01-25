@@ -9,7 +9,7 @@ use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
+        message::{BlockSyncResponseMessage, CascadeTxMessage, RequestBlockSyncMessage},
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
@@ -30,7 +30,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
-    BlockSyncEvent, Command, ConsensusEvent, Message, MonadEvent, ValidatorEvent,
+    BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message, MonadEvent, ValidatorEvent,
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
@@ -136,6 +136,7 @@ where
     Consensus(Verified<ST, Validated<ConsensusMessage<SCT>>>),
     BlockSyncRequest(Validated<RequestBlockSyncMessage>),
     BlockSyncResponse(Validated<BlockSyncResponseMessage<SCT>>),
+    CascadeTxns(Validated<CascadeTxMessage>),
 }
 
 impl<ST, SCT> From<Verified<ST, Validated<ConsensusMessage<SCT>>>> for VerifiedMonadMessage<ST, SCT>
@@ -162,6 +163,9 @@ where
 
     /// Block sync response
     BlockSyncResponse(Unvalidated<BlockSyncResponseMessage<SCT>>),
+
+    /// Cascade TxPool transactions
+    CascadeTxns(Unvalidated<CascadeTxMessage>),
 }
 
 impl<ST, SCT> monad_types::Serializable<Bytes> for VerifiedMonadMessage<ST, SCT>
@@ -188,6 +192,7 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => {
                 MonadMessage::BlockSyncResponse(msg.into())
             }
+            VerifiedMonadMessage::CascadeTxns(msg) => MonadMessage::CascadeTxns(msg.into()),
         }
     }
 }
@@ -218,6 +223,7 @@ where
             VerifiedMonadMessage::BlockSyncResponse(msg) => {
                 MonadMessage::BlockSyncResponse(msg.into())
             }
+            VerifiedMonadMessage::CascadeTxns(msg) => MonadMessage::CascadeTxns(msg.into()),
         }
     }
 }
@@ -252,6 +258,10 @@ where
                     unvalidated_response: msg,
                 })
             }
+            MonadMessage::CascadeTxns(msg) => MonadEvent::MempoolEvent(MempoolEvent::CascadeTxns {
+                sender: from.pubkey(),
+                txns: msg,
+            }),
         }
     }
 }

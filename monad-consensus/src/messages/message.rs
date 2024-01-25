@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use monad_consensus_types::{
     block::{BlockType, UnverifiedBlock},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -136,5 +137,16 @@ impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
                 bid.hash(state)
             }
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CascadeTxMessage {
+    pub txns: Bytes,
+}
+
+impl Hashable for CascadeTxMessage {
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(&self.txns);
     }
 }

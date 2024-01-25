@@ -84,9 +84,15 @@ message ProtoUserTx {
   bytes tx = 1;
 }
 
+message ProtoCascadeTxnsWithSender {
+  monad_proto.basic.ProtoPubkey sender = 1;
+  monad_proto.message.ProtoCascadeTxMessage cascade = 2;
+}
+
 message ProtoMempoolEvent {
   oneof event {
     ProtoUserTx usertx = 1;
+    ProtoCascadeTxnsWithSender cascade_txns = 2;
   }
 }
 

@@ -55,6 +55,7 @@ where
             },
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
+            VerifiedMonadMessage::CascadeTxns(_) => false,
         };
 
         if should_drop {
@@ -135,6 +136,7 @@ where
                     TwinsCapture::Spread(pid)
                 }
             }
+            VerifiedMonadMessage::CascadeTxns(_) => TwinsCapture::Spread(pid),
         };
 
         match capture {

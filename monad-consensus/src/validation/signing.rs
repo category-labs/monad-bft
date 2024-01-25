@@ -19,7 +19,7 @@ use monad_crypto::{
 };
 use monad_proto::proto::message::{
     proto_block_sync_message, proto_unverified_consensus_message, ProtoBlockSyncMessage,
-    ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
+    ProtoCascadeTxMessage, ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::{
@@ -33,8 +33,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-            VoteMessage,
+            BlockSyncResponseMessage, CascadeTxMessage, ProposalMessage, RequestBlockSyncMessage,
+            TimeoutMessage, VoteMessage,
         },
     },
     validation::{message::well_formed, safety::consecutive},
@@ -396,6 +396,12 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
     }
 }
 
+impl Unvalidated<CascadeTxMessage> {
+    pub fn validate(self) -> Result<Validated<CascadeTxMessage>, Error> {
+        Ok(Validated { message: self })
+    }
+}
+
 fn verify_certificates<SCT, VTF, VT>(
     epoch_manager: &EpochManager,
     val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
@@ -579,6 +585,14 @@ impl<SCT: SignatureCollection> From<&Unvalidated<BlockSyncResponseMessage<SCT>>>
                     proto_block_sync_message::OneofMessage::NotAvailable(bid.into())
                 }
             }),
+        }
+    }
+}
+
+impl From<&Unvalidated<CascadeTxMessage>> for ProtoCascadeTxMessage {
+    fn from(value: &Unvalidated<CascadeTxMessage>) -> Self {
+        ProtoCascadeTxMessage {
+            txns: value.obj.txns.clone(),
         }
     }
 }

@@ -11,8 +11,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
-            VoteMessage,
+            BlockSyncResponseMessage, CascadeTxMessage, ProposalMessage, RequestBlockSyncMessage,
+            TimeoutMessage, VoteMessage,
         },
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
@@ -159,6 +159,22 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncMessage>
         };
 
         Ok(Unvalidated::new(msg))
+    }
+}
+
+impl From<&Validated<CascadeTxMessage>> for ProtoCascadeTxMessage {
+    fn from(value: &Validated<CascadeTxMessage>) -> Self {
+        ProtoCascadeTxMessage {
+            txns: value.txns.clone(),
+        }
+    }
+}
+
+impl TryFrom<ProtoCascadeTxMessage> for Unvalidated<CascadeTxMessage> {
+    type Error = ProtoError;
+
+    fn try_from(value: ProtoCascadeTxMessage) -> Result<Self, Self::Error> {
+        Ok(Unvalidated::new(CascadeTxMessage { txns: value.txns }))
     }
 }
 
