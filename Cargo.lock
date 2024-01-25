@@ -2212,6 +2212,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-eth-account-states"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-eth-tx",
+ "monad-eth-types",
+]
+
+[[package]]
 name = "monad-eth-tx"
 version = "0.1.0"
 dependencies = [

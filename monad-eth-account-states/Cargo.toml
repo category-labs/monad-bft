@@ -1,0 +1,11 @@
+[package]
+name = "monad-eth-account-states"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-types = { path = "../monad-eth-types" }

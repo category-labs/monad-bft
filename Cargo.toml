@@ -8,6 +8,7 @@ members = [
     "monad-consensus-state",
     "monad-consensus-types",
     "monad-crypto",
+    "monad-eth-account-states",
     "monad-eth-tx",
     "monad-eth-txpool",
     "monad-eth-types",
