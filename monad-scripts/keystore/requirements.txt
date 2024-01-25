@@ -1,0 +1,2 @@
+blspy==2.0.2
+pycryptodome==3.20.0

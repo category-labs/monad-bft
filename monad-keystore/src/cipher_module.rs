@@ -1,0 +1,80 @@
+use aes::cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher};
+use serde::Deserialize;
+
+use super::hex_string::deserialize_bytes_from_hex_string;
+
+type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Aes128Params {
+    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
+    iv: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+enum CipherParams {
+    Aes128Params(Aes128Params),
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CipherModule {
+    pub cipher_function: String,
+    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
+    pub cipher_message: Vec<u8>,
+    params: CipherParams,
+}
+
+impl CipherModule {
+    pub fn decrypt(&self, decryption_key: &Vec<u8>) -> Vec<u8> {
+        assert!(decryption_key.len() == 32);
+
+        match &self.params {
+            CipherParams::Aes128Params(aes_128_params) => {
+                let key = GenericArray::clone_from_slice(&decryption_key[..16]);
+                let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
+                let mut cipher = Aes128Ctr::new(&key, &iv);
+
+                let mut decrypted_message = self.cipher_message.clone();
+                cipher.apply_keystream(&mut decrypted_message);
+
+                decrypted_message.to_vec()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use serde_json::json;
+
+    use super::{Aes128Params, CipherModule, CipherParams};
+
+    #[test]
+    fn test_parse_json() {
+        let cipher_message = "c2755caf2c080f939f2b23ce55e6dfbf7430ac36593d778206a60f968baa7055";
+        let iv = "af29e87a9fd4699e335f718d03e30ed9";
+        let kdf_json = json!({
+            "cipher_function": "AES_128_CTR",
+            "cipher_message": cipher_message,
+            "params": {
+                "iv": iv
+            }
+        });
+        let serialized_json = kdf_json.to_string();
+
+        let cipher_module: CipherModule = serde_json::from_str(&serialized_json).unwrap();
+
+        let expected_module = CipherModule {
+            cipher_function: "AES_128_CTR".to_owned(),
+            cipher_message: hex::decode(cipher_message).unwrap(),
+            params: CipherParams::Aes128Params(Aes128Params {
+                iv: hex::decode(iv).unwrap(),
+            }),
+        };
+
+        assert!(cipher_module == expected_module);
+    }
+}
