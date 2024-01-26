@@ -99,6 +99,7 @@ pub trait ValidatorSetType: Send + Sync {
     fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool;
     fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
     fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
+    fn has_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
 }
 
 impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
@@ -126,6 +127,10 @@ impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
 
     fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
         (**self).has_honest_vote(addrs)
+    }
+
+    fn has_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
+        (**self).has_majority_votes(addrs)
     }
 }
 
@@ -209,6 +214,19 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
             .sum::<Stake>()
             >= Stake(self.total_stake.0 / 3 + 1)
     }
+
+    fn has_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
+        let mut duplicates = HashSet::new();
+
+        let mut voter_stake: Stake = Stake(0);
+        for addr in addrs {
+            if let Some(v) = self.validators.get(addr) {
+                voter_stake += *v;
+                debug_assert!(duplicates.insert(addr));
+            }
+        }
+        voter_stake >= Stake(self.total_stake.0 / 2 + 1)
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +299,22 @@ mod test {
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
         assert!(!vs.has_honest_vote(&[v1.0]));
         assert!(vs.has_honest_vote(&[v2.0]));
+    }
+
+    #[test]
+    fn test_majority() {
+        let keypairs = create_keys::<SignatureType>(3);
+
+        let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(2));
+        let v2 = (NodeId::new(keypairs[1].pubkey()), Stake(3));
+
+        let n3 = NodeId::new(keypairs[2].pubkey());
+
+        let validators = vec![v1, v2];
+        let vs = ValidatorSetFactory::default().create(validators).unwrap();
+        assert!(vs.has_majority_votes(&[v2.0]));
+        assert!(!vs.has_majority_votes(&[v1.0]));
+        assert!(vs.has_majority_votes(&[v2.0, n3]));
+        assert!(!vs.has_majority_votes(&[v1.0, n3]));
     }
 }
