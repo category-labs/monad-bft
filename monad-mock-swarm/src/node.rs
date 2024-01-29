@@ -200,7 +200,7 @@ impl<S: SwarmRelation> Node<S> {
                         None => continue,
                         Some(MockExecutorEvent::Event(event)) => {
                             self.logger.push(&event).unwrap(); // FIXME-4: propagate the error
-                            let node_span = info_span!("node", id = ?self.id);
+                            let node_span = info_span!("node", id = ?self.id.get_identifier());
                             let _guard = node_span.enter();
                             let commands = self.state.update(event.clone());
 
