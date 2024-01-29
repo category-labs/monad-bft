@@ -295,15 +295,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
     swarm_ledger_verification(&swarm, phase_one_length + 1);
 
     // assert that block sync isn't triggered
-    logs_assert(|lines: &[&str]| {
-        assert!(!lines.is_empty());
-        match lines
-            .iter()
-            .filter(|line| line.contains("monotonic_counter.block_sync_request"))
-            .count()
-        {
-            0 => Ok(()),
-            n => Err(format!("Block sync triggered {} times", n)),
-        }
-    })
+    for s in swarm.states().values() {
+        assert_eq!(0, s.state.metrics().blocksync_events.blocksync_request);
+    }
 }

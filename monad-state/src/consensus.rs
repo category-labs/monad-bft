@@ -12,7 +12,7 @@ use monad_consensus_state::{
     ConsensusProcess,
 };
 use monad_consensus_types::{
-    block::Block, signature_collection::SignatureCollection, txpool::TxPool,
+    block::Block, metrics::Metrics, signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -42,6 +42,7 @@ where
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     leader_election: &'a LT,
     txpool: &'a mut TT,
+    metrics: &'a mut Metrics,
 
     _phantom: PhantomData<ST>,
 }
@@ -62,6 +63,7 @@ where
             val_epoch_map: &monad_state.val_epoch_map,
             leader_election: &monad_state.leader_election,
             txpool: &mut monad_state.txpool,
+            metrics: &mut monad_state.metrics,
             _phantom: PhantomData,
         }
     }
@@ -82,7 +84,7 @@ where
                 ) {
                     Ok(m) => m,
                     Err(e) => {
-                        handle_validation_error(e);
+                        handle_validation_error(e, self.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -95,7 +97,7 @@ where
                     match verified_message.validate(self.epoch_manager, self.val_epoch_map) {
                         Ok(m) => m.into_inner(),
                         Err(e) => {
-                            handle_validation_error(e);
+                            handle_validation_error(e, self.metrics);
                             // TODO-2: collect evidence
                             let evidence_cmds = vec![];
                             return evidence_cmds;
@@ -109,6 +111,7 @@ where
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
+                        self.metrics,
                     ),
                     ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
                         author,
@@ -117,6 +120,7 @@ where
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
+                        self.metrics,
                     ),
                     ConsensusMessage::Timeout(msg) => self.consensus.handle_timeout_message(
                         author,
@@ -125,13 +129,14 @@ where
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
+                        self.metrics,
                     ),
                 }
             }
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
                 TimeoutVariant::Pacemaker => self
                     .consensus
-                    .handle_timeout_expiry()
+                    .handle_timeout_expiry(self.metrics)
                     .into_iter()
                     .map(|cmd| {
                         ConsensusCommand::from_pacemaker_command(
@@ -149,7 +154,8 @@ where
                         .val_epoch_map
                         .get_val_set(&current_epoch)
                         .expect("current validator set should be in the map");
-                    self.consensus.handle_block_sync_tmo(bid, val_set)
+                    self.consensus
+                        .handle_block_sync_tmo(bid, val_set, self.metrics)
                 }
             },
 
@@ -166,7 +172,7 @@ where
                     match unvalidated_response.validate(self.epoch_manager, self.val_epoch_map) {
                         Ok(req) => req,
                         Err(e) => {
-                            handle_validation_error(e);
+                            handle_validation_error(e, self.metrics);
                             // TODO-2: collect evidence
                             let evidence_cmds = vec![];
                             return evidence_cmds;
@@ -180,8 +186,12 @@ where
                     .val_epoch_map
                     .get_val_set(&current_epoch)
                     .expect("current validator set should be in the map");
-                self.consensus
-                    .handle_block_sync(NodeId::new(sender), validated_response, val_set)
+                self.consensus.handle_block_sync(
+                    NodeId::new(sender),
+                    validated_response,
+                    val_set,
+                    self.metrics,
+                )
             }
         };
         consensus_cmds

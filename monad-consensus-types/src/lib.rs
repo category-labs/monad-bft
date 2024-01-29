@@ -2,6 +2,7 @@ pub mod block;
 pub mod block_validator;
 pub mod convert;
 pub mod ledger;
+pub mod metrics;
 pub mod payload;
 pub mod quorum_certificate;
 pub mod signature_collection;

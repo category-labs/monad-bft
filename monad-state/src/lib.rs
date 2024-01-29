@@ -19,6 +19,7 @@ use monad_consensus_state::{
 use monad_consensus_types::{
     block::Block,
     block_validator::BlockValidator,
+    metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     txpool::TxPool,
@@ -32,7 +33,6 @@ use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message, MonadEvent, ValidatorEvent,
 };
-use monad_tracing_counter::inc_count;
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
@@ -47,34 +47,34 @@ pub mod convert;
 mod epoch;
 mod mempool;
 
-pub(crate) fn handle_validation_error(e: validation::Error) {
+pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
         validation::Error::InvalidAuthor => {
-            inc_count!(invalid_author)
+            metrics.validation_errors.invalid_author += 1;
         }
         validation::Error::NotWellFormed => {
-            inc_count!(not_well_formed_sig)
+            metrics.validation_errors.not_well_formed_sig += 1;
         }
         validation::Error::InvalidSignature => {
-            inc_count!(invalid_signature)
+            metrics.validation_errors.invalid_signature += 1;
         }
         validation::Error::AuthorNotSender => {
-            inc_count!(author_not_sender)
+            metrics.validation_errors.author_not_sender += 1;
         }
         validation::Error::InvalidTcRound => {
-            inc_count!(invalid_tc_round)
+            metrics.validation_errors.invalid_tc_round += 1;
         }
         validation::Error::InsufficientStake => {
-            inc_count!(insufficient_stake)
+            metrics.validation_errors.insufficient_stake += 1;
         }
         validation::Error::InvalidSeqNum => {
-            inc_count!(invalid_seq_num)
+            metrics.validation_errors.invalid_seq_num += 1;
         }
         validation::Error::ValidatorDataUnavailable => {
-            inc_count!(val_data_unavailable)
+            metrics.validation_errors.val_data_unavailable += 1;
         }
         validation::Error::InvalidVoteMessage => {
-            inc_count!(invalid_vote_message)
+            metrics.validation_errors.invalid_vote_message += 1;
         }
     };
 }
@@ -98,6 +98,9 @@ where
     val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
     /// Transaction pool is the source of Proposals
     txpool: TT,
+
+    /// Metrics counters for events and errors
+    metrics: Metrics,
 
     _pd: PhantomData<ST>,
 }
@@ -124,6 +127,10 @@ where
 
     pub fn blocktree(&self) -> &BlockTree<SCT> {
         self.consensus.blocktree()
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
     }
 }
 
@@ -334,6 +341,7 @@ where
             consensus: consensus_process,
             block_sync_responder: BlockSyncResponder {},
             txpool: self.transaction_pool,
+            metrics: Metrics::default(),
 
             _pd: PhantomData,
         };

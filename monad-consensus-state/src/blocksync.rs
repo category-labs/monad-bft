@@ -13,13 +13,12 @@ use std::{collections::HashMap, marker::PhantomData, time::Duration};
 
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::Block, block_validator::BlockValidator, quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
+    block::Block, block_validator::BlockValidator, metrics::Metrics,
+    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, NodeId, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::debug;
@@ -78,16 +77,16 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn log(&self, bid: BlockId) {
+    pub fn log(&self, bid: BlockId, metrics: &mut Metrics) {
         match self {
             BlockSyncResult::Success(_) => {
-                inc_count!(block_sync_response_successful);
+                metrics.blocksync_events.blocksync_response_successful += 1;
             }
             BlockSyncResult::Failed(_) => {
-                inc_count!(block_sync_response_failed);
+                metrics.blocksync_events.blocksync_response_failed += 1;
             }
             BlockSyncResult::UnexpectedResponse => {
-                inc_count!(block_sync_response_unexpected);
+                metrics.blocksync_events.blocksync_response_unexpected += 1;
             }
         };
 
@@ -159,11 +158,12 @@ where
         &mut self,
         qc: &QuorumCertificate<SCT>,
         validator_set: &VT,
+        metrics: &mut Metrics,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        self.request_helper(qc, validator_set, DEFAULT_NODE_INDEX)
+        self.request_helper(qc, validator_set, DEFAULT_NODE_INDEX, metrics)
     }
 
     // this function creates a request and creates the appropriate commands
@@ -174,6 +174,7 @@ where
         qc: &QuorumCertificate<SCT>,
         validator_set: &VT,
         req_cnt: usize,
+        metrics: &mut Metrics,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -185,7 +186,7 @@ where
         }
 
         debug!("Block sync request: bid={:?}, qc={:?}", id, qc);
-        inc_count!(block_sync_request);
+        metrics.blocksync_events.blocksync_request += 1;
 
         let (req_peer, cnt) = self.choose_peer(
             // FIXME stake-weighted?
@@ -213,6 +214,7 @@ where
         msg: BlockSyncResponseMessage<SCT>,
         validator_set: &VT,
         block_validator: &BV,
+        metrics: &mut Metrics,
     ) -> BlockSyncResult<ST, SCT>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -244,6 +246,7 @@ where
                 &pending_req.qc,
                 validator_set,
                 pending_req.retry_cnt + 1,
+                metrics,
             ))
         } else {
             BlockSyncResult::UnexpectedResponse
@@ -256,6 +259,7 @@ where
         &mut self,
         bid: BlockId,
         validator_set: &VT,
+        metrics: &mut Metrics,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -270,6 +274,7 @@ where
                 &pending_req.qc,
                 validator_set,
                 pending_req.retry_cnt + 1,
+                metrics,
             ));
         }
         cmds
@@ -303,6 +308,7 @@ mod test {
         block::{Block, BlockType, UnverifiedBlock},
         block_validator::MockValidator,
         ledger::CommitResult,
+        metrics::Metrics,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
@@ -351,6 +357,7 @@ mod test {
             BlockSyncRequester::<ST, SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
+        let mut metrics = Metrics::default();
 
         let qc = &QC::new(
             QcInfo {
@@ -368,7 +375,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc, &valset);
+        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
@@ -381,7 +388,7 @@ mod test {
 
         // repeated request would yield no result
         for _ in 0..1000 {
-            let cmds = manager.request::<VT>(qc, &valset);
+            let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
             assert!(cmds.is_empty());
         }
 
@@ -400,7 +407,7 @@ mod test {
             },
             SC::with_pubkeys(&[]),
         );
-        let cmds = manager.request::<VT>(qc, &valset);
+        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer, bid) = match cmds[0] {
@@ -420,6 +427,7 @@ mod test {
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let transaction_validator = TV::default();
+        let mut metrics = Metrics::default();
 
         let payload = Payload {
             txns: FullTransactionList::empty(),
@@ -509,7 +517,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_1, &valset);
+        let cmds = manager.request::<VT>(qc_1, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer_1, bid) = match cmds[0] {
@@ -537,7 +545,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_2, &valset);
+        let cmds = manager.request::<VT>(qc_2, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer_2, bid) = match cmds[0] {
@@ -565,7 +573,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc_3, &valset);
+        let cmds = manager.request::<VT>(qc_3, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (peer_3, bid) = match cmds[0] {
@@ -597,6 +605,7 @@ mod test {
             msg_no_block_1,
             &valset,
             &transaction_validator,
+            &mut metrics,
         ) else {
             panic!("illegal response is processed");
         };
@@ -608,6 +617,7 @@ mod test {
             msg_with_block_2.clone(),
             &valset,
             &transaction_validator,
+            &mut metrics,
         ) else {
             panic!("illegal response is processed");
         };
@@ -617,6 +627,7 @@ mod test {
             msg_no_block_2.clone(),
             &valset,
             &transaction_validator,
+            &mut metrics,
         ) else {
             panic!("illegal response is processed");
         };
@@ -629,15 +640,23 @@ mod test {
             panic!("request sync not found")
         };
 
-        let BlockSyncResult::<ST, SC>::Success(b) =
-            manager.handle_response(&peer_1, msg_with_block_1, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Success(b) = manager.handle_response(
+            &peer_1,
+            msg_with_block_1,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
-        let BlockSyncResult::<ST, SC>::Failed(retry_command) =
-            manager.handle_response(&peer_3, msg_no_block_3, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Failed(retry_command) = manager.handle_response(
+            &peer_3,
+            msg_no_block_3,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
@@ -651,9 +670,13 @@ mod test {
 
         assert!(b == block_1);
 
-        let BlockSyncResult::<ST, SC>::Failed(retry_command) =
-            manager.handle_response(peer_2, msg_no_block_2, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Failed(retry_command) = manager.handle_response(
+            peer_2,
+            msg_no_block_2,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
@@ -665,17 +688,25 @@ mod test {
             panic!("request sync not found")
         };
 
-        let BlockSyncResult::<ST, SC>::Success(b) =
-            manager.handle_response(peer_3, msg_with_block_3, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Success(b) = manager.handle_response(
+            peer_3,
+            msg_with_block_3,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
         assert!(b == block_3);
 
-        let BlockSyncResult::<ST, SC>::Success(b) =
-            manager.handle_response(peer_2, msg_with_block_2, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Success(b) = manager.handle_response(
+            peer_2,
+            msg_with_block_2,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
@@ -687,6 +718,7 @@ mod test {
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(30, ValidatorSetFactory::default());
         let members = valset.get_members().iter().map(|(a, _)| *a).collect_vec();
+        let mut metrics = Metrics::default();
         let my_id = members[0];
         let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
 
@@ -706,7 +738,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc, &valset);
+        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
         let (mut peer, bid) = match cmds[0] {
@@ -725,6 +757,7 @@ mod test {
                     msg_failed.clone(),
                     &valset,
                     &transaction_validator,
+                    &mut metrics,
                 ) else {
                     panic!("illegal response is processed");
                 };
@@ -756,6 +789,7 @@ mod test {
         // Request, Failed, natural timeout
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(30, ValidatorSetFactory::default());
+        let mut metrics = Metrics::default();
         let my_id = *valset.get_members().iter().next().unwrap().0;
         let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
 
@@ -808,7 +842,7 @@ mod test {
             SC::with_pubkeys(&[]),
         );
 
-        let cmds = manager.request::<VT>(qc, &valset);
+        let cmds = manager.request::<VT>(qc, &valset, &mut metrics);
 
         assert!(cmds.len() == 2);
 
@@ -836,9 +870,13 @@ mod test {
 
         let transaction_validator = TV::default();
 
-        let BlockSyncResult::<ST, SC>::Failed(retry_command) =
-            manager.handle_response(&peer, msg_failed, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Failed(retry_command) = manager.handle_response(
+            &peer,
+            msg_failed,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
@@ -865,7 +903,7 @@ mod test {
 
         // lastly, natural timeout should trigger it too.
 
-        let retry_command = manager.handle_timeout(bid, &valset);
+        let retry_command = manager.handle_timeout(bid, &valset, &mut metrics);
 
         assert_eq!(retry_command.len(), 3);
 
@@ -900,16 +938,20 @@ mod test {
         let msg_with_block =
             BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block.clone()));
 
-        let BlockSyncResult::<ST, SC>::Success(b) =
-            manager.handle_response(&peer, msg_with_block, &valset, &transaction_validator)
-        else {
+        let BlockSyncResult::<ST, SC>::Success(b) = manager.handle_response(
+            &peer,
+            msg_with_block,
+            &valset,
+            &transaction_validator,
+            &mut metrics,
+        ) else {
             panic!("illegal response is processed");
         };
 
         assert_eq!(b, block);
 
         // this should return nothing, except the regular reset
-        let retry_command = manager.handle_timeout(bid, &valset);
+        let retry_command = manager.handle_timeout(bid, &valset, &mut metrics);
 
         assert_eq!(retry_command.len(), 1);
 

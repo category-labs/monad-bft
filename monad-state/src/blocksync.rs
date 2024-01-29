@@ -5,7 +5,9 @@ use monad_consensus::{
     validation::signing::Validated,
 };
 use monad_consensus_state::{command::Checkpoint, ConsensusProcess};
-use monad_consensus_types::{block::Block, signature_collection::SignatureCollection};
+use monad_consensus_types::{
+    block::Block, metrics::Metrics, signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -74,6 +76,8 @@ where
     /// BlockSyncRequest
     consensus: &'a CP,
 
+    metrics: &'a mut Metrics,
+
     _phantom: PhantomData<(ST, SCT, VTF, LT, TT)>,
 }
 
@@ -88,6 +92,7 @@ where
         Self {
             block_sync_responder: &monad_state.block_sync_responder,
             consensus: &monad_state.consensus,
+            metrics: &mut monad_state.metrics,
             _phantom: PhantomData,
         }
     }
@@ -101,7 +106,7 @@ where
                 let validated_request = match unvalidated_request.validate() {
                     Ok(req) => req,
                     Err(e) => {
-                        handle_validation_error(e);
+                        handle_validation_error(e, self.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
