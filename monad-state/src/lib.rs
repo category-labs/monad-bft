@@ -404,6 +404,12 @@ where
             }
 
             MonadEvent::ValidatorEvent(validator_event) => {
+                match validator_event {
+                    ValidatorEvent::UpdateValidators(ref update_validators) => {
+                        self.leader_election
+                            .update(update_validators.0.get_stakes());
+                    }
+                }
                 let validator_cmds = EpochChildState::new(self).update(validator_event);
 
                 validator_cmds
