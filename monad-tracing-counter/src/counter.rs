@@ -27,9 +27,15 @@ macro_rules! counter_status {
 /// Emit a trace event to increment the counter, used with [`CounterLayer`]
 #[macro_export]
 macro_rules! inc_count {
+    // Increment event count by 1
     ($($k:ident).+) => {{
+        inc_count!($($k).+, 1);
+    }};
+
+    // Increment event count by $val
+    ($($k:ident).+, $val:expr) => {{
         use tracing::trace;
-        trace!(monotonic_counter.$($k).+ = 1);
+        trace!(monotonic_counter.$($k).+ = $val);
     }};
 }
 

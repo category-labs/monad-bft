@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
@@ -17,7 +18,10 @@ use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 struct BLSSwarm;
@@ -35,6 +39,10 @@ impl SwarmRelation for BLSSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = LocalAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -71,6 +79,7 @@ fn two_nodes_bls() {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::default,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval

@@ -6,6 +6,7 @@ mod test {
         time::Duration,
     };
 
+    use monad_async_state_verify::LocalAsyncStateVerify;
     use monad_consensus_types::{
         block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
     };
@@ -47,6 +48,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             delta,        // delta
             0,            // proposal_tx_limit
             SeqNum(2000), // val_set_update_interval
@@ -155,6 +157,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             SeqNum(2000),             // val_set_update_interval
@@ -228,6 +231,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             SeqNum(2000),             // val_set_update_interval
@@ -318,6 +322,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             SeqNum(2000),             // val_set_update_interval

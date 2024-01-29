@@ -39,3 +39,6 @@ harness = false
 [[bench]]
 name = "many_nodes_bench"
 harness = false
+
+[dependencies]
+monad-async-state-verify = { path = "../monad-async-state-verify" }

@@ -7,6 +7,7 @@ mod test {
     };
 
     use itertools::Itertools;
+    use monad_async_state_verify::LocalAsyncStateVerify;
     use monad_consensus_types::{
         block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
     };
@@ -32,7 +33,8 @@ mod test {
     use monad_types::{Epoch, NodeId, Round, SeqNum};
     use monad_updaters::state_root_hash::{MockStateRootHashNop, MockStateRootHashSwap};
     use monad_validator::{
-        simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory,
+        simple_round_robin::SimpleRoundRobin,
+        validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
     };
     use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
     use test_case::test_case;
@@ -51,6 +53,10 @@ mod test {
             ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
         type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
         type TxPool = MockTxPool;
+        type AsyncStateRootVerify = LocalAsyncStateVerify<
+            Self::SignatureCollectionType,
+            <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+        >;
 
         type RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<Self::SignatureType>,
@@ -138,6 +144,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             val_set_update_interval,  // val_set_update_interval
@@ -212,6 +219,7 @@ mod test {
                     SeqNum(u64::MAX), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             val_set_update_interval,  // val_set_update_interval
@@ -319,6 +327,7 @@ mod test {
                     SeqNum(4), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(2), // delta
             0,                        // proposal_tx_limit
             val_set_update_interval,  // val_set_update_interval

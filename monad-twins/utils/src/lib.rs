@@ -71,6 +71,7 @@ where
             partition,
             default_partition,
             !allow_block_sync,
+            false, // drop_state_root
         );
 
         let pipeline = vec![
@@ -97,8 +98,13 @@ where
     while swarm.step_until(&mut terminator.clone()).is_some() {}
 
     if let Some(liveness_length) = liveness {
-        let liveness_transformer =
-            TwinsTransformer::new(duplicates, BTreeMap::new(), ids.clone(), false);
+        let liveness_transformer = TwinsTransformer::new(
+            duplicates,
+            BTreeMap::new(),
+            ids.clone(),
+            false,
+            false, // drop_state_root
+        );
         let pipeline = vec![
             MonadMessageTransformer::Twins(liveness_transformer),
             MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(rng.gen(), delta)),

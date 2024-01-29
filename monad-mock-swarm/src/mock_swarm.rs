@@ -206,6 +206,7 @@ where
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
                 TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+    // AsyncStateRootVerify = <DebugSwarmRelation as SwarmRelation>::AsyncStateRootVerify,
         > + 'static,
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,

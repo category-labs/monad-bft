@@ -5,6 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
+use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
@@ -32,6 +33,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::TxPool,
         S::BlockValidator,
         S::StateRootValidator,
+        S::AsyncStateRootVerify,
     >,
     pub logger: S::Logger,
     pub replay_events: Vec<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
@@ -51,6 +53,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::TxPool,
             S::BlockValidator,
             S::StateRootValidator,
+            S::AsyncStateRootVerify,
         >,
         logger_builder: impl PersistenceLoggerBuilder<PersistenceLogger = S::Logger>,
         router_scheduler: S::RouterScheduler,
@@ -77,6 +80,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             SignatureType = <DebugSwarmRelation as SwarmRelation>::SignatureType,
             SignatureCollectionType = <DebugSwarmRelation as SwarmRelation>::SignatureCollectionType,
                 TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
+    // AsyncStateRootVerify= <DebugSwarmRelation as SwarmRelation>::AsyncStateRootVerify,
         >,
 
     // FIXME can this be deleted?
@@ -92,6 +96,9 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 transaction_pool: Box::new(self.state_builder.transaction_pool),
                 block_validator: Box::new(self.state_builder.block_validator),
                 state_root_validator: Box::new(self.state_builder.state_root_validator),
+                async_state_verify: BoxedAsyncStateVerifyProcess::new(
+                    self.state_builder.async_state_verify,
+                ),
                 validators: self.state_builder.validators,
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,

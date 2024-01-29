@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-proto = { path = "../monad-proto" }

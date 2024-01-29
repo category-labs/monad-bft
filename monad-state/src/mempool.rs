@@ -12,22 +12,25 @@ use monad_validator::validator_set::ValidatorSetTypeFactory;
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT> {
+pub(super) struct MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT> {
     txpool: &'a mut TT,
 
-    _phantom: PhantomData<(ST, SCT, VT, LT, BVT, SVT)>,
+    _phantom: PhantomData<(ST, SCT, VT, LT, BVT, SVT, ASVT)>,
 }
 
 pub(super) struct MempoolCommand {}
 
-impl<'a, ST, SCT, VT, LT, TT, BVT, SVT> MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT>
+impl<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT>
+    MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VT: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
     TT: TxPool,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<ST, SCT, VT, LT, TT, BVT, SVT>) -> Self {
+    pub(super) fn new(
+        monad_state: &'a mut MonadState<ST, SCT, VT, LT, TT, BVT, SVT, ASVT>,
+    ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,
             _phantom: PhantomData,

@@ -1,3 +1,4 @@
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::NopStateRoot,
@@ -24,7 +25,10 @@ use monad_updaters::{
     loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
     timer::TokioTimer, BoxUpdater, Updater,
 };
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 
 pub enum MonadP2PGossipConfig<PT: PubKey> {
     Simple(MockGossipConfig<PT>),
@@ -140,7 +144,8 @@ type MonadStateType<ST, SCT> = MonadState<
     EthTxPool,
     MockValidator,
     NopStateRoot,
->;
+    LocalAsyncStateVerify<SCT, <ValidatorSetFactory<CertificateSignaturePubKey<ST>> as ValidatorSetTypeFactory>::ValidatorSetType>
+    >;
 
 pub struct StateConfig<ST, SCT>
 where
@@ -182,6 +187,7 @@ where
         transaction_pool: EthTxPool::default(),
         block_validator: MockValidator {},
         state_root_validator: NopStateRoot::default(),
+        async_state_verify: LocalAsyncStateVerify::default(),
         validators: config.validators,
         key: config.key,
         certkey: config.cert_key,

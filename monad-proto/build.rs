@@ -11,6 +11,7 @@ fn main() {
                 "proto/message.proto",
                 "proto/quorum_certificate.proto",
                 "proto/signing.proto",
+                "proto/state_root_hash.proto",
                 "proto/timeout.proto",
                 "proto/validator_data.proto",
                 "proto/voting.proto",

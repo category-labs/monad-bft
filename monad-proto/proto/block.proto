@@ -4,10 +4,11 @@ package monad_proto.block;
 
 import "basic.proto";
 import "quorum_certificate.proto";
+import "state_root_hash.proto";
 
 message ProtoExecutionArtifacts {
-  monad_proto.basic.ProtoHash parent_hash = 1;
-  monad_proto.basic.ProtoHash state_root = 2;
+  monad_proto.state_root_hash.ProtoStateRootHash parent_hash = 1;
+  monad_proto.state_root_hash.ProtoStateRootHash state_root = 2;
   monad_proto.basic.ProtoHash transactions_root = 3;
   monad_proto.basic.ProtoHash receipts_root = 4;
   monad_proto.basic.ProtoBloom logs_bloom = 5;

@@ -19,7 +19,8 @@ use monad_crypto::{
 };
 use monad_proto::proto::message::{
     proto_block_sync_message, proto_unverified_consensus_message, ProtoBlockSyncMessage,
-    ProtoCascadeTxMessage, ProtoRequestBlockSyncMessage, ProtoUnverifiedConsensusMessage,
+    ProtoCascadeTxMessage, ProtoPeerStateRootMessage, ProtoRequestBlockSyncMessage,
+    ProtoUnverifiedConsensusMessage,
 };
 use monad_types::{NodeId, Round, SeqNum, Stake};
 use monad_validator::{
@@ -33,8 +34,8 @@ use crate::{
     messages::{
         consensus_message::ConsensusMessage,
         message::{
-            BlockSyncResponseMessage, CascadeTxMessage, ProposalMessage, RequestBlockSyncMessage,
-            TimeoutMessage, VoteMessage,
+            BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage, ProposalMessage,
+            RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
         },
     },
     validation::{message::well_formed, safety::consecutive},
@@ -179,6 +180,7 @@ where
     }
 }
 
+// FIXME-2: move Validated/Unvalidated out of monad-consensus
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Validated<M> {
     message: Unvalidated<M>,
@@ -399,6 +401,46 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
 impl Unvalidated<CascadeTxMessage> {
     pub fn validate(self) -> Result<Validated<CascadeTxMessage>, Error> {
         Ok(Validated { message: self })
+    }
+}
+
+impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
+    pub fn validate<VTF, VT>(
+        self,
+        sender: &SCT::NodeIdPubKey,
+        epoch_manager: &EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+    ) -> Result<Validated<PeerStateRootMessage<SCT>>, Error>
+    where
+        VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
+        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+    {
+        if self.obj.peer.pubkey() != *sender {
+            return Err(Error::AuthorNotSender);
+        }
+
+        let epoch = epoch_manager.get_epoch(self.obj.info.round);
+        let valset = val_epoch_map
+            .get_val_set(&epoch)
+            .ok_or(Error::ValidatorDataUnavailable)?;
+
+        if !valset.is_member(&self.obj.peer) {
+            return Err(Error::InvalidAuthor);
+        }
+
+        Ok(Validated { message: self })
+    }
+}
+
+impl<SCT: SignatureCollection> From<&Unvalidated<PeerStateRootMessage<SCT>>>
+    for ProtoPeerStateRootMessage
+{
+    fn from(value: &Unvalidated<PeerStateRootMessage<SCT>>) -> Self {
+        ProtoPeerStateRootMessage {
+            peer: Some((&value.obj.peer).into()),
+            info: Some((&value.obj.info).into()),
+            sig: Some(certificate_signature_to_proto(&value.obj.sig)),
+        }
     }
 }
 

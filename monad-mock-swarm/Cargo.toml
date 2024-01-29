@@ -35,6 +35,7 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
+monad-async-state-verify = { path = "../monad-async-state-verify" }
 
 [dev-dependencies]
 monad-bls = { path = "../monad-bls" }

@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -19,7 +20,10 @@ use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 
 pub struct LogSwarm;
@@ -37,6 +41,10 @@ impl SwarmRelation for LogSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = LocalAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -78,6 +86,7 @@ pub fn generate_log(
                 SeqNum(state_root_delay), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::default,
         delta,                   // delta
         proposal_size,           // proposal_tx_limit
         val_set_update_interval, // val_set_update_interval

@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -22,7 +23,10 @@ use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::mock::{MockMemLogger, MockMemLoggerConfig};
 use tracing_test::traced_test;
 
@@ -42,6 +46,10 @@ impl SwarmRelation for ReplaySwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = LocalAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -124,6 +132,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::default,
         CONSENSUS_DELTA, // delta
         0,               // proposal_tx_limit
         SeqNum(2000),    // val_set_update_interval
@@ -145,6 +154,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::default,
         CONSENSUS_DELTA, // delta
         0,               // proposal_tx_limit
         SeqNum(2000),    // val_set_update_interval

@@ -2,6 +2,7 @@ use bytes::Bytes;
 use monad_consensus_types::{
     block::{BlockType, UnverifiedBlock},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHashInfo,
     timeout::{Timeout, TimeoutCertificate},
     voting::Vote,
 };
@@ -9,7 +10,7 @@ use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_types::{BlockId, EnumDiscriminant};
+use monad_types::{BlockId, EnumDiscriminant, NodeId};
 
 /// Consensus protocol vote message
 ///
@@ -149,4 +150,11 @@ impl Hashable for CascadeTxMessage {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(&self.txns);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerStateRootMessage<SCT: SignatureCollection> {
+    pub peer: NodeId<SCT::NodeIdPubKey>,
+    pub info: StateRootHashInfo,
+    pub sig: SCT::SignatureType,
 }

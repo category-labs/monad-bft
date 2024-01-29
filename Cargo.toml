@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "monad-async-state-verify",
     "monad-blocktree",
     "monad-bls",
     "monad-compress",

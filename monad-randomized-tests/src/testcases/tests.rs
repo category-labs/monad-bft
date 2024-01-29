@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -36,6 +37,7 @@ fn random_latency_test(seed: u64) {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::default,
         Duration::from_millis(250), // delta
         0,                          // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval
@@ -86,6 +88,7 @@ fn delayed_message_test(seed: u64) {
                 SeqNum(4), // state_root_delay
             )
         },
+        LocalAsyncStateVerify::default,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval

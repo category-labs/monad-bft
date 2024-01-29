@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::LocalAsyncStateVerify;
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -38,6 +39,7 @@ pub fn simulation_make() -> *mut Simulation {
                     SeqNum(4), // state_root_delay
                 )
             },
+            LocalAsyncStateVerify::default,
             Duration::from_millis(20), // delta
             100,                       // proposal_tx_limit
             SeqNum(2000),              // val_set_update_interval

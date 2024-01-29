@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::{BTreeMap, HashSet},
     error, fmt,
     marker::PhantomData,
@@ -90,7 +91,7 @@ impl<PT: PubKey> ValidatorSetTypeFactory for BoxedValidatorSetTypeFactory<PT> {
     }
 }
 
-pub trait ValidatorSetType: Send + Sync {
+pub trait ValidatorSetType: Send + Sync + Any {
     type NodeIdPubKey: PubKey;
 
     fn get_members(&self) -> &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>;
@@ -168,7 +169,7 @@ impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidatorSet<PT: PubKey> {
     validators: BTreeMap<NodeId<PT>, Stake>,
     total_stake: Stake,

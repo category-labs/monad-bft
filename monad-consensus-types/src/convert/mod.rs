@@ -4,5 +4,6 @@ pub mod block;
 pub mod ledger;
 pub mod quorum_certificate;
 pub mod signing;
+pub mod state_root_hash;
 pub mod timeout;
 pub mod voting;
