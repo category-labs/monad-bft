@@ -2920,6 +2920,7 @@ dependencies = [
  "monad-crypto",
  "monad-testutil",
  "monad-types",
+ "test-case",
  "tracing",
 ]
 
