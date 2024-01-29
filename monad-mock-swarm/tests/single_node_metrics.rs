@@ -31,6 +31,12 @@ fn two_nodes_metrics() {
     let subscriber = Registry::default()
         .with(
             fmt_layer
+                .event_format(
+                    tracing_subscriber::fmt::format()
+                        .with_ansi(false)
+                        .with_file(true)
+                        .with_line_number(true),
+                )
                 .with_filter(MetricFilter {})
                 .with_filter(Targets::new().with_default(LevelFilter::INFO)),
         )
