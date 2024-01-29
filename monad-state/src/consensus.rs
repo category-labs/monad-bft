@@ -9,10 +9,11 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     command::{Checkpoint, ConsensusCommand},
-    ConsensusProcess,
+    ConsensusState,
 };
 use monad_consensus_types::{
-    block::Block, metrics::Metrics, signature_collection::SignatureCollection, txpool::TxPool,
+    block::Block, block_validator::BlockValidator, metrics::Metrics, payload::StateRootValidator,
+    signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -29,13 +30,13 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    consensus: &'a mut CP,
+    consensus: &'a mut ConsensusState<ST, SCT, BVT, SVT>,
 
     /// Consensus needs these states to process messages
     epoch_manager: &'a mut EpochManager,
@@ -47,16 +48,17 @@ where
     _phantom: PhantomData<ST>,
 }
 
-impl<'a, CP, ST, SCT, VTF, LT, TT> ConsensusChildState<'a, CP, ST, SCT, VTF, LT, TT>
+impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT> ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT>
 where
-    CP: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
+    BVT: BlockValidator,
+    SVT: StateRootValidator,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VTF, LT, TT>) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
             epoch_manager: &mut monad_state.epoch_manager,

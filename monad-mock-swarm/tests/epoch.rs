@@ -7,7 +7,6 @@ mod test {
     };
 
     use itertools::Itertools;
-    use monad_consensus_state::ConsensusProcess;
     use monad_consensus_types::{
         block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
     };

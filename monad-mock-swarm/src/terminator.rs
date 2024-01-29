@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, time::Duration, usize};
 
-use monad_consensus_state::ConsensusProcess;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;
 use monad_types::Round;

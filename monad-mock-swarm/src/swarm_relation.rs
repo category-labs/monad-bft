@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use monad_consensus_state::ConsensusState;
 use monad_consensus_types::{
     block::Block,
     block_validator::{BlockValidator, MockValidator},
@@ -27,17 +26,13 @@ use monad_wal::{mock::MockWALogger, PersistenceLogger};
 use crate::{mock::MockExecutor, node::Node, transformer::MonadMessageTransformerPipeline};
 
 pub type SwarmRelationStateType<S> = MonadState<
-    ConsensusState<
-        <S as SwarmRelation>::SignatureType,
-        <S as SwarmRelation>::SignatureCollectionType,
-        <S as SwarmRelation>::BlockValidator,
-        <S as SwarmRelation>::StateRootValidator,
-    >,
     <S as SwarmRelation>::SignatureType,
     <S as SwarmRelation>::SignatureCollectionType,
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
     <S as SwarmRelation>::TxPool,
+    <S as SwarmRelation>::BlockValidator,
+    <S as SwarmRelation>::StateRootValidator,
 >;
 pub trait SwarmRelation
 where

@@ -1,4 +1,4 @@
-use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
+use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::NopStateRoot,
     signature_collection::SignatureCollection, validator_data::ValidatorData,
@@ -130,12 +130,13 @@ where
 }
 
 type MonadStateType<ST, SCT> = MonadState<
-    ConsensusState<ST, SCT, MockValidator, NopStateRoot>,
     ST,
     SCT,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     EthTxPool,
+    MockValidator,
+    NopStateRoot,
 >;
 
 pub struct StateConfig<ST, SCT>

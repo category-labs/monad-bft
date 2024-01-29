@@ -4,9 +4,10 @@ use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
     validation::signing::Validated,
 };
-use monad_consensus_state::{command::Checkpoint, ConsensusProcess};
+use monad_consensus_state::{command::Checkpoint, ConsensusState};
 use monad_consensus_types::{
-    block::Block, metrics::Metrics, signature_collection::SignatureCollection,
+    block::Block, block_validator::BlockValidator, metrics::Metrics, payload::StateRootValidator,
+    signature_collection::SignatureCollection,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -64,7 +65,7 @@ impl BlockSyncResponder {
     }
 }
 
-pub(super) struct BlockSyncChildState<'a, CP, ST, SCT, VTF, LT, TT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -74,21 +75,22 @@ where
 
     /// BlockSyncResponder queries consensus first when receiving
     /// BlockSyncRequest
-    consensus: &'a CP,
+    consensus: &'a ConsensusState<ST, SCT, BVT, SVT>,
 
     metrics: &'a mut Metrics,
 
     _phantom: PhantomData<(ST, SCT, VTF, LT, TT)>,
 }
 
-impl<'a, CP, ST, SCT, VTF, LT, TT> BlockSyncChildState<'a, CP, ST, SCT, VTF, LT, TT>
+impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT> BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT>
 where
-    CP: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BVT: BlockValidator,
+    SVT: StateRootValidator,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<CP, ST, SCT, VTF, LT, TT>) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>) -> Self {
         Self {
             block_sync_responder: &monad_state.block_sync_responder,
             consensus: &monad_state.consensus,

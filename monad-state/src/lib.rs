@@ -13,9 +13,7 @@ use monad_consensus::{
     },
     validation::signing::{Unvalidated, Unverified, Validated, Verified},
 };
-use monad_consensus_state::{
-    command::Checkpoint, ConsensusConfig, ConsensusProcess, ConsensusState,
-};
+use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
     block::Block,
     block_validator::BlockValidator,
@@ -79,14 +77,14 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
     };
 }
 
-pub struct MonadState<CT, ST, SCT, VTF, LT, TT>
+pub struct MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     /// Core consensus algorithm state machine
-    consensus: CT,
+    consensus: ConsensusState<ST, SCT, BVT, SVT>,
     /// Handle responses to block sync requests from other nodes
     block_sync_responder: BlockSyncResponder,
 
@@ -105,15 +103,16 @@ where
     _pd: PhantomData<ST>,
 }
 
-impl<CT, ST, SCT, VTF, LT, TT> MonadState<CT, ST, SCT, VTF, LT, TT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>
 where
-    CT: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
+    BVT: BlockValidator,
+    SVT: StateRootValidator,
 {
-    pub fn consensus(&self) -> &CT {
+    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BVT, SVT> {
         &self.consensus
     }
 
@@ -311,7 +310,7 @@ where
     pub fn build(
         self,
     ) -> (
-        MonadState<ConsensusState<ST, SCT, BVT, SVT>, ST, SCT, VTF, LT, TT>,
+        MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>,
         Vec<
             Command<
                 MonadEvent<ST, SCT>,
@@ -361,14 +360,15 @@ where
     }
 }
 
-impl<CT, ST, SCT, VTF, LT, TT> MonadState<CT, ST, SCT, VTF, LT, TT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>
 where
-    CT: ConsensusProcess<ST, SCT>,
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     TT: TxPool,
+    BVT: BlockValidator,
+    SVT: StateRootValidator,
 {
     pub fn update(
         &mut self,

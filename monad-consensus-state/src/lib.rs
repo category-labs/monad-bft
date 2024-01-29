@@ -48,129 +48,7 @@ pub mod blocksync;
 pub mod command;
 pub mod wrapper;
 
-/// Interface to the core consensus algorithm
-pub trait ConsensusProcess<ST, SCT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-{
-    type BlockValidatorType;
-    type StateRootValidatorType;
-
-    /// Create the core consensus state
-    ///
-    /// Arguments
-    ///
-    /// block_validator - validation for incoming proposals
-    /// my_pubkey - pubkey for NodeId used to identify this Node to the network
-    /// config - collection of configurable parameters for core consensus algorithm  
-    /// beneficiary - Eth format address to deliver proposer rewards to
-    /// keypair - keypair used for protocol level message signing
-    /// cert_keypair - keypair used for certificate level signing
-    fn new(
-        block_validator: Self::BlockValidatorType,
-        state_root_validator: Self::StateRootValidatorType,
-        my_pubkey: SCT::NodeIdPubKey,
-        config: ConsensusConfig,
-        beneficiary: EthAddress,
-        keypair: ST::KeyPairType,
-        cert_keypair: SignatureCollectionKeyPairType<SCT>,
-    ) -> Self;
-
-    fn get_pubkey(&self) -> SCT::NodeIdPubKey;
-
-    fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT>;
-
-    fn get_nodeid(&self) -> NodeId<SCT::NodeIdPubKey>;
-
-    fn get_beneficiary(&self) -> EthAddress;
-
-    fn blocktree(&self) -> &BlockTree<SCT>;
-
-    /// handles the local timeout expiry event
-    fn handle_timeout_expiry(&mut self, metrics: &mut Metrics) -> Vec<PacemakerCommand<SCT>>;
-
-    /// handles proposal messages from other nodes
-    /// validators and election are required as part of verifying the proposal certificates
-    /// as well as determining the next leader
-    fn handle_proposal_message<VTF, LT>(
-        &mut self,
-        author: NodeId<SCT::NodeIdPubKey>,
-        p: ProposalMessage<SCT>,
-        epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        election: &LT,
-        metrics: &mut Metrics,
-    ) -> Vec<ConsensusCommand<ST, SCT>>
-    where
-        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>;
-
-    /// collect votes from other nodes
-    fn handle_vote_message<VTF, LT, TT>(
-        &mut self,
-        author: NodeId<SCT::NodeIdPubKey>,
-        v: VoteMessage<SCT>,
-        tx_pool: &mut TT,
-        epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        election: &LT,
-        metrics: &mut Metrics,
-    ) -> Vec<ConsensusCommand<ST, SCT>>
-    where
-        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        TT: TxPool;
-
-    /// handle timeout messages from other nodes
-    fn handle_timeout_message<VTF, LT, TT>(
-        &mut self,
-        author: NodeId<SCT::NodeIdPubKey>,
-        tm: TimeoutMessage<SCT>,
-        tx_pool: &mut TT,
-        epoch_manager: &mut EpochManager,
-        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-        election: &LT,
-        metrics: &mut Metrics,
-    ) -> Vec<ConsensusCommand<ST, SCT>>
-    where
-        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-        TT: TxPool;
-
-    /// handle the response to a block sync message
-    fn handle_block_sync<VT>(
-        &mut self,
-        author: NodeId<SCT::NodeIdPubKey>,
-        msg: BlockSyncResponseMessage<SCT>,
-        validators: &VT,
-        metrics: &mut Metrics,
-    ) -> Vec<ConsensusCommand<ST, SCT>>
-    where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>;
-
-    /// handler when a block sync request has timed out
-    fn handle_block_sync_tmo<VT>(
-        &mut self,
-        bid: BlockId,
-        validators: &VT,
-        metrics: &mut Metrics,
-    ) -> Vec<ConsensusCommand<ST, SCT>>
-    where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>;
-
-    /// state root hashes are produced when blocks are executed. They can
-    /// arrive after the delay-gap between execution so they need to be handled
-    /// asynchronously
-    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash);
-
-    fn get_current_round(&self) -> Round;
-
-    fn get_keypair(&self) -> &ST::KeyPairType;
-
-    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>>;
-}
-
+/// core consensus algorithm
 pub struct ConsensusState<ST, SCT, BV, SVT>
 where
     ST: CertificateSignatureRecoverable,
@@ -266,19 +144,36 @@ where
     }
 }
 
-impl<ST, SCT, BVT, SVT> ConsensusProcess<ST, SCT> for ConsensusState<ST, SCT, BVT, SVT>
+/// Possible actions a leader node can take when entering a new round
+pub enum ConsensusAction {
+    /// Create a proposal with this state-root-hash and txn hash list
+    Propose(Hash, Vec<FullTransactionList>),
+    /// Create an empty block proposal
+    ProposeEmpty,
+    /// Do nothing which will lead to the round timing out
+    Abstain,
+}
+
+impl<ST, SCT, BVT, SVT> ConsensusState<ST, SCT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
     SVT: StateRootValidator,
 {
-    type BlockValidatorType = BVT;
-    type StateRootValidatorType = SVT;
-
-    fn new(
-        block_validator: Self::BlockValidatorType,
-        state_root_validator: Self::StateRootValidatorType,
+    /// Create the core consensus state
+    ///
+    /// Arguments
+    ///
+    /// block_validator - validation for incoming proposals
+    /// my_pubkey - pubkey for NodeId used to identify this Node to the network
+    /// config - collection of configurable parameters for core consensus algorithm
+    /// beneficiary - Eth format address to deliver proposer rewards to
+    /// keypair - keypair used for protocol level message signing
+    /// cert_keypair - keypair used for certificate level signing
+    pub fn new(
+        block_validator: BVT,
+        state_root_validator: SVT,
         my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
@@ -311,7 +206,8 @@ where
         }
     }
 
-    fn handle_timeout_expiry(&mut self, metrics: &mut Metrics) -> Vec<PacemakerCommand<SCT>> {
+    /// handles the local timeout expiry event
+    pub fn handle_timeout_expiry(&mut self, metrics: &mut Metrics) -> Vec<PacemakerCommand<SCT>> {
         metrics.consensus_events.local_timeout += 1;
         debug!(
             "local timeout: round={:?}",
@@ -323,12 +219,15 @@ where
             .collect()
     }
 
+    /// handles proposal messages from other nodes
+    /// validators and election are required as part of verifying the proposal certificates
+    /// as well as determining the next leader
     /// Proposals can include NULL blocks which are blocks containing 0 transactions,
     /// an empty list.
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
     #[must_use]
-    fn handle_proposal_message<VTF, LT>(
+    pub fn handle_proposal_message<VTF, LT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
@@ -429,10 +328,10 @@ where
         cmds
     }
 
-    /// handle votes at the vote_state state machine. When enough votes are collected,
-    /// a QC is formed and broadcast to other nodes
+    /// collect votes from other nodes and handle at vote_state state machine
+    /// When enough votes are collected, a QC is formed and broadcast to other nodes
     #[must_use]
-    fn handle_vote_message<VTF, LT, TT>(
+    pub fn handle_vote_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         vote_msg: VoteMessage<SCT>,
@@ -486,9 +385,9 @@ where
         cmds
     }
 
-    /// handling remote timeout messages
+    /// handling remote timeout messages from other nodes
     #[must_use]
-    fn handle_timeout_message<VTF, LT, TT>(
+    pub fn handle_timeout_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         tmo_msg: TimeoutMessage<SCT>,
@@ -586,7 +485,7 @@ where
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
     #[must_use]
-    fn handle_block_sync<VT>(
+    pub fn handle_block_sync<VT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
@@ -629,12 +528,12 @@ where
 
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
-    fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
+    pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
         self.pending_block_tree.tree().get(bid)
     }
 
     /// if a blocksync request timesout, try again with a different validator
-    fn handle_block_sync_tmo<VT>(
+    pub fn handle_block_sync_tmo<VT>(
         &mut self,
         bid: BlockId,
         validators: &VT,
@@ -647,56 +546,13 @@ where
             .handle_timeout(bid, validators, metrics)
     }
 
-    fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash) {
+    /// state root hashes are produced when blocks are executed. They can
+    /// arrive after the delay-gap between execution so they need to be handled
+    /// asynchronously
+    pub fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash) {
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 
-    fn get_pubkey(&self) -> SCT::NodeIdPubKey {
-        self.keypair.pubkey()
-    }
-
-    fn get_nodeid(&self) -> NodeId<SCT::NodeIdPubKey> {
-        self.nodeid
-    }
-
-    fn get_beneficiary(&self) -> EthAddress {
-        self.beneficiary
-    }
-
-    fn blocktree(&self) -> &BlockTree<SCT> {
-        &self.pending_block_tree
-    }
-
-    fn get_current_round(&self) -> Round {
-        self.pacemaker.get_current_round()
-    }
-
-    fn get_keypair(&self) -> &ST::KeyPairType {
-        &self.keypair
-    }
-
-    fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT> {
-        &self.cert_keypair
-    }
-}
-
-/// Possible actions a leader node can take when entering a new round
-pub enum ConsensusAction {
-    /// Create a proposal with this state-root-hash and txn hash list
-    Propose(Hash, Vec<FullTransactionList>),
-    /// Create an empty block proposal
-    ProposeEmpty,
-    /// Do nothing which will lead to the round timing out
-    Abstain,
-}
-
-impl<ST, SCT, BVT, SVT> ConsensusState<ST, SCT, BVT, SVT>
-where
-    ST: CertificateSignatureRecoverable,
-    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator,
-    SVT: StateRootValidator,
-{
     /// If the qc has a commit_state_hash, commit the parent block and prune the
     /// block tree
     /// Update our highest seen qc (high_qc) if the incoming qc is of higher rank
@@ -1029,6 +885,34 @@ where
         }
         None
     }
+
+    pub fn get_pubkey(&self) -> SCT::NodeIdPubKey {
+        self.keypair.pubkey()
+    }
+
+    pub fn get_nodeid(&self) -> NodeId<SCT::NodeIdPubKey> {
+        self.nodeid
+    }
+
+    pub fn get_beneficiary(&self) -> EthAddress {
+        self.beneficiary
+    }
+
+    pub fn blocktree(&self) -> &BlockTree<SCT> {
+        &self.pending_block_tree
+    }
+
+    pub fn get_current_round(&self) -> Round {
+        self.pacemaker.get_current_round()
+    }
+
+    pub fn get_keypair(&self) -> &ST::KeyPairType {
+        &self.keypair
+    }
+
+    pub fn get_cert_keypair(&self) -> &SignatureCollectionKeyPairType<SCT> {
+        &self.cert_keypair
+    }
 }
 
 #[cfg(test)]
@@ -1082,9 +966,7 @@ mod test {
     use test_case::test_case;
     use tracing_test::traced_test;
 
-    use crate::{
-        ConsensusCommand, ConsensusConfig, ConsensusMessage, ConsensusProcess, ConsensusState,
-    };
+    use crate::{ConsensusCommand, ConsensusConfig, ConsensusMessage, ConsensusState};
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
@@ -1242,7 +1124,7 @@ mod test {
         let v2 = Verified::<SignatureType, _>::new(vm2, &keys[2]);
         let v3 = Verified::<SignatureType, _>::new(vm3, &keys[3]);
 
-        state.handle_vote_message(
+        let _ = state.handle_vote_message(
             *v1.author(),
             *v1,
             &mut empty_txpool,
@@ -1251,7 +1133,7 @@ mod test {
             &election,
             &mut metrics,
         );
-        state.handle_vote_message(
+        let _ = state.handle_vote_message(
             *v2.author(),
             *v2,
             &mut empty_txpool,
@@ -1264,7 +1146,7 @@ mod test {
         // less than 2f+1, so expect not locked
         assert_eq!(state.high_qc.get_round(), Round(0));
 
-        state.handle_vote_message(
+        let _ = state.handle_vote_message(
             *v3.author(),
             *v3,
             &mut empty_txpool,
@@ -1416,7 +1298,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p7.destructure();
-        state.handle_proposal_message(
+        let _ = state.handle_proposal_message(
             author,
             verified_message,
             &mut epoch_manager,
@@ -1588,7 +1470,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_fut.destructure();
-        state.handle_proposal_message(
+        let _ = state.handle_proposal_message(
             author,
             verified_message,
             &mut epoch_manager,
@@ -1632,7 +1514,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p_last.destructure();
-        state.handle_proposal_message(
+        let _ = state.handle_proposal_message(
             author,
             verified_message,
             &mut epoch_manager,
@@ -1762,7 +1644,7 @@ mod test {
             ExecutionArtifacts::zero(),
         );
         let (author, _, verified_message) = p1.destructure();
-        state.handle_proposal_message(
+        let _ = state.handle_proposal_message(
             author,
             verified_message,
             &mut epoch_manager,
@@ -1989,7 +1871,7 @@ mod test {
         );
         let (author_2, _, verified_message_2) = cp2.destructure();
         let block_2 = verified_message_2.block.clone();
-        second_state.handle_proposal_message(
+        let _ = second_state.handle_proposal_message(
             author_2,
             verified_message_2.clone(),
             &mut epoch_manager,
@@ -2059,7 +1941,7 @@ mod test {
 
         let msg = BlockSyncResponseMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
-        second_state.handle_block_sync(routing_target, msg, valset, &mut metrics[1]);
+        let _ = second_state.handle_block_sync(routing_target, msg, valset, &mut metrics[1]);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
@@ -2586,7 +2468,7 @@ mod test {
         // requesting a block that's doesn't exists should yield None
         assert_eq!(first_state.fetch_uncommitted_block(&bid_correct), None);
         // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
-        first_state.handle_proposal_message(
+        let _ = first_state.handle_proposal_message(
             author,
             verified_message,
             &mut epoch_manager,
@@ -2613,7 +2495,7 @@ mod test {
         let bid_branch = block_1.0.get_id();
         assert_eq!(first_state.fetch_uncommitted_block(&bid_branch), None);
 
-        first_state.handle_proposal_message(
+        let _ = first_state.handle_proposal_message(
             author,
             verified_message,
             &mut epoch_manager,
@@ -2972,7 +2854,7 @@ mod test {
 
         let (_, _, p1) = verified_p1.destructure();
 
-        states[0].handle_proposal_message(
+        let _ = states[0].handle_proposal_message(
             p1.block.0.author,
             p1,
             &mut epoch_manager,
@@ -3013,7 +2895,7 @@ mod test {
             last_round_tc: None,
         };
 
-        states[0].handle_proposal_message(
+        let _ = states[0].handle_proposal_message(
             invalid_p2.block.0.author,
             invalid_p2,
             &mut epoch_manager,
@@ -3233,7 +3115,7 @@ mod test {
 
         let (author, _, verified_message) = cp.destructure();
         // observe QC to advance round and epoch
-        states[0].handle_proposal_message(
+        let _ = states[0].handle_proposal_message(
             author,
             verified_message,
             &mut epoch_managers[0],
@@ -3350,7 +3232,7 @@ mod test {
 
         let (author, _, verified_message) = cp.destructure();
         // observe TC to advance round and epoch
-        states[0].handle_proposal_message(
+        let _ = states[0].handle_proposal_message(
             author,
             verified_message,
             &mut epoch_managers[0],
@@ -3498,7 +3380,7 @@ mod test {
         for tmo_msg in tmo_msgs {
             let (author, _, tm) = tmo_msg.clone().destructure();
 
-            states[0].handle_timeout_message(
+            let _ = states[0].handle_timeout_message(
                 author,
                 tm,
                 &mut empty_txpool,
