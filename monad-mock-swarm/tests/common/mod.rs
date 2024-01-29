@@ -26,7 +26,10 @@ impl SwarmRelation for QuicSwarm {
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::SignatureCollectionType,
+    >;
     type TxPool = MockTxPool;
 
     type RouterScheduler = QuicRouterScheduler<

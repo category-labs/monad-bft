@@ -277,7 +277,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    LT: LeaderElection<
+        NodeIdPubKey = CertificateSignaturePubKey<ST>,
+        NodeSignatureCollection = SCT,
+    >,
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
@@ -302,7 +305,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    LT: LeaderElection<
+        NodeIdPubKey = CertificateSignaturePubKey<ST>,
+        NodeSignatureCollection = SCT,
+    >,
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
@@ -365,7 +371,10 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    LT: LeaderElection<
+        NodeIdPubKey = CertificateSignaturePubKey<ST>,
+        NodeSignatureCollection = SCT,
+    >,
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
@@ -404,8 +413,12 @@ where
             }
 
             MonadEvent::ValidatorEvent(validator_event) => {
+                match validator_event {
+                    ValidatorEvent::UpdateValidators(ref update_validators) => {
+                        self.leader_election.update(update_validators);
+                    }
+                }
                 let validator_cmds = EpochChildState::new(self).update(validator_event);
-
                 validator_cmds
                     .into_iter()
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)

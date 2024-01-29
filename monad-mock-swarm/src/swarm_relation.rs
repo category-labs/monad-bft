@@ -53,8 +53,10 @@ where
         + Send
         + Sync
         + Unpin;
-    type LeaderElection: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
-        + Send
+    type LeaderElection: LeaderElection<
+            NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
+            NodeSignatureCollection = Self::SignatureCollectionType,
+        > + Send
         + Sync
         + Unpin;
     type TxPool: TxPool + Send + Sync + Unpin;
@@ -103,8 +105,10 @@ impl SwarmRelation for DebugSwarmRelation {
     type ValidatorSetTypeFactory =
         BoxedValidatorSetTypeFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = Box<
-        dyn LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
-            + Send
+        dyn LeaderElection<
+                NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
+                NodeSignatureCollection = Self::SignatureCollectionType,
+            > + Send
             + Sync,
     >;
     type TxPool = Box<dyn TxPool + Send + Sync>;
@@ -162,7 +166,10 @@ impl SwarmRelation for NoSerSwarm {
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::SignatureCollectionType,
+    >;
     type TxPool = MockTxPool;
 
     type RouterScheduler = NoSerRouterScheduler<
@@ -196,7 +203,10 @@ impl SwarmRelation for BytesSwarm {
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::SignatureCollectionType,
+    >;
     type TxPool = MockTxPool;
 
     type RouterScheduler = BytesRouterScheduler<
@@ -231,7 +241,10 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::SignatureCollectionType,
+    >;
     type TxPool = MockTxPool;
 
     type RouterScheduler = NoSerRouterScheduler<

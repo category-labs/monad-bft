@@ -6,7 +6,7 @@ use monad_consensus_types::{
     payload::{ExecutionArtifacts, FullTransactionList},
     voting::ValidatorMapping,
 };
-use monad_secp::SecpSignature;
+use monad_secp::{PubKey, SecpSignature};
 use monad_state::VerifiedMonadMessage;
 use monad_testutil::{proposal::ProposalGen, validators::create_keys_w_validators};
 use monad_types::{Epoch, Round, SeqNum, Serializable};
@@ -41,7 +41,7 @@ fn main() {
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(Epoch(1), validator_stakes, ValidatorMapping::new(valmap));
-    let election = SimpleRoundRobin::default();
+    let election = SimpleRoundRobin::<_, BlsSignatureCollection<PubKey>>::default();
     let mut propgen: ProposalGen<_, _> =
         ProposalGen::<SecpSignature, BlsSignatureCollection<_>>::new();
 

@@ -97,7 +97,10 @@ fn test_consensus_message_event_proposal_bls() {
         ValidatorMapping::new(valmap),
     );
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
-    let election = SimpleRoundRobin::default();
+    let election = SimpleRoundRobin::<
+        _,
+        BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,
+    >::default();
     let mut propgen: ProposalGen<
         SignatureType,
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>,

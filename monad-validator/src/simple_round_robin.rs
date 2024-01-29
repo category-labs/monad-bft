@@ -1,21 +1,26 @@
 use std::{collections::BTreeMap, marker::PhantomData};
 
+use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{Epoch, NodeId, Round, Stake};
 use tracing::info;
 
-use crate::leader_election::LeaderElection;
+use crate::leader_election::{LeaderElection, UpdateValidators};
 
 #[derive(Clone)]
-pub struct SimpleRoundRobin<PT>(PhantomData<PT>);
-impl<PT> Default for SimpleRoundRobin<PT> {
+pub struct SimpleRoundRobin<PT, SCT>(PhantomData<(PT, SCT)>);
+impl<PT, SCT> Default for SimpleRoundRobin<PT, SCT> {
     fn default() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<PT: PubKey> LeaderElection for SimpleRoundRobin<PT> {
+impl<PT: PubKey, SCT: SignatureCollection> LeaderElection for SimpleRoundRobin<PT, SCT> {
     type NodeIdPubKey = PT;
+    type NodeSignatureCollection = SCT;
+
+    fn update(&mut self, event: &UpdateValidators<Self::NodeSignatureCollection>) {}
+
     fn get_leader(
         &self,
         round: Round,

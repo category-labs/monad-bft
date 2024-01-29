@@ -136,7 +136,7 @@ type MonadStateType<ST, SCT> = MonadState<
     ST,
     SCT,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
-    SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
+    SimpleRoundRobin<CertificateSignaturePubKey<ST>, SCT>,
     EthTxPool,
     MockValidator,
     NopStateRoot,

@@ -40,7 +40,10 @@ impl SwarmRelation for ReplaySwarm {
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
+    type LeaderElection = SimpleRoundRobin<
+        CertificateSignaturePubKey<Self::SignatureType>,
+        Self::SignatureCollectionType,
+    >;
     type TxPool = MockTxPool;
 
     type RouterScheduler = NoSerRouterScheduler<
