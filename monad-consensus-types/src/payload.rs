@@ -334,7 +334,7 @@ impl StateRootValidator for NopStateRoot {
     fn add_state_root(&mut self, _seq_num: SeqNum, _root_hash: Hash) {}
 
     fn get_next_state_root(&self, _seq_num: SeqNum) -> Option<Hash> {
-        Some(Hash([0; 32]))
+        Some(Hash([0xdb; 32]))
     }
 
     fn validate(&self, _seq_num: SeqNum, _block_state_root_hash: Hash) -> StateRootResult {
