@@ -141,7 +141,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         beneficiary: node_state.node_config.beneficiary,
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 5000,
-            proposal_gas_limit: 8_000_000,
+            proposal_gas_limit: 800_000_000,
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
         },

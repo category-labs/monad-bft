@@ -311,6 +311,7 @@ where
                         genesis_validator_data: validators.clone(),
                         val_set_update_interval: SeqNum(args.val_set_update_interval),
                     },
+                    nodeid: me,
                 },
                 state_config: StateConfig {
                     key: keypair,
@@ -320,7 +321,7 @@ where
                     validators: validators.clone(),
                     consensus_config: ConsensusConfig {
                         proposal_txn_limit: args.proposal_size,
-                        proposal_gas_limit: 8_000_000,
+                        proposal_gas_limit: 800_000_000,
                         propose_with_missing_blocks: false,
                         delta: Duration::from_millis(args.delta_ms),
                     },

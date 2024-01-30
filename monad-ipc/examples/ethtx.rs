@@ -98,7 +98,7 @@ fn make_tx(input_len: u32) -> TransactionSigned {
         chain_id: Some(1337),
         nonce: 0,
         gas_price: 1,
-        gas_limit: 9999999999,
+        gas_limit: 6400,
         to: TransactionKind::Call(Address::random()),
         value: 0.into(),
         input: input.into(),

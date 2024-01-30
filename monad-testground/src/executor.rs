@@ -18,7 +18,7 @@ use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
-use monad_types::{Round, SeqNum};
+use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
     loopback::LoopbackExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
@@ -69,6 +69,7 @@ where
     pub router_config: RouterConfig<ST, SCT>,
     pub execution_ledger_config: ExecutionLedgerConfig,
     pub state_root_hash_config: StateRootHashConfig<SCT>,
+    pub nodeid: NodeId<SCT::NodeIdPubKey>,
 }
 
 pub async fn make_monad_executor<ST, SCT>(
@@ -112,7 +113,9 @@ where
         ledger: MockLedger::default(),
         execution_ledger: match config.execution_ledger_config {
             ExecutionLedgerConfig::Mock => Executor::boxed(MockExecutionLedger::default()),
-            ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::default()),
+            ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::new(
+                format!("{:?}-ledger", config.nodeid).into(),
+            )),
         },
         checkpoint: MockCheckpoint::default(),
         state_root_hash: match config.state_root_hash_config {

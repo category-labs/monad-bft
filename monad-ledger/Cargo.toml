@@ -24,3 +24,8 @@ tempfile = { workspace = true }
 monad-eth-types = { path = "../monad-eth-types" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-types = { path = "../monad-types" }
+
+clap = { workspace = true, features = ["derive"] }
+
+[[example]]
+name = "ledgewatch"
