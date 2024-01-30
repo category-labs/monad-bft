@@ -33,8 +33,10 @@ use monad_executor_glue::{
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
+    epoch_manager::EpochManager,
+    leader_election::LeaderElection,
+    validator_set::{ValidatorSetType, ValidatorSetTypeFactory},
+    validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
 use crate::blocksync::BlockSyncResponder;
@@ -130,6 +132,14 @@ where
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    pub fn validator_epoch_map(&self) -> &ValidatorsEpochMapping<VTF, SCT> {
+        &self.val_epoch_map
+    }
+
+    pub fn leader_election(&self) -> &LT {
+        &self.leader_election
     }
 }
 

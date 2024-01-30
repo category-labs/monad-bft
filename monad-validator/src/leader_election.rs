@@ -13,6 +13,8 @@ pub trait LeaderElection {
     type NodeIdPubKey: PubKey;
     type NodeSignatureCollection: SignatureCollection;
 
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>>;
+
     fn update(&mut self, event: &UpdateValidators<Self::NodeSignatureCollection>);
 
     fn get_leader(
@@ -26,6 +28,10 @@ pub trait LeaderElection {
 impl<T: LeaderElection + ?Sized> LeaderElection for Box<T> {
     type NodeIdPubKey = T::NodeIdPubKey;
     type NodeSignatureCollection = T::NodeSignatureCollection;
+
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>> {
+        (**self).get_schedule()
+    }
 
     fn update(&mut self, event: &UpdateValidators<Self::NodeSignatureCollection>) {
         (**self).update(event)

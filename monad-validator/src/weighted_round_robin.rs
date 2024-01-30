@@ -54,6 +54,10 @@ impl<PT: PubKey, SCT: SignatureCollection<NodeIdPubKey = PT>> LeaderElection
     type NodeIdPubKey = PT;
     type NodeSignatureCollection = SCT;
 
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>> {
+        self.schedule.clone()
+    }
+
     fn update(&mut self, event: &UpdateValidators<Self::NodeSignatureCollection>) {
         self.schedule = WeightedRoundRobin::<PT, SCT>::compute_schedule(event.0.get_stakes());
     }

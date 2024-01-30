@@ -8,18 +8,39 @@ use tracing::info;
 use crate::leader_election::{LeaderElection, UpdateValidators};
 
 #[derive(Clone)]
-pub struct SimpleRoundRobin<PT, SCT>(PhantomData<(PT, SCT)>);
-impl<PT, SCT> Default for SimpleRoundRobin<PT, SCT> {
+pub struct SimpleRoundRobin<PT: PubKey, SCT> {
+    schedule: Vec<NodeId<PT>>,
+    phantom_data: PhantomData<SCT>,
+}
+
+impl<PT: PubKey, SCT: SignatureCollection> Default for SimpleRoundRobin<PT, SCT> {
     fn default() -> Self {
-        Self(PhantomData)
+        Self {
+            schedule: vec![],
+            phantom_data: PhantomData,
+        }
     }
 }
 
-impl<PT: PubKey, SCT: SignatureCollection> LeaderElection for SimpleRoundRobin<PT, SCT> {
+impl<PT: PubKey, SCT: SignatureCollection<NodeIdPubKey = PT>> LeaderElection
+    for SimpleRoundRobin<PT, SCT>
+{
     type NodeIdPubKey = PT;
     type NodeSignatureCollection = SCT;
 
-    fn update(&mut self, event: &UpdateValidators<Self::NodeSignatureCollection>) {}
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>> {
+        self.schedule.clone()
+    }
+
+    fn update(&mut self, event: &UpdateValidators<Self::NodeSignatureCollection>) {
+        self.schedule = event
+            .0
+            .clone()
+            .0
+            .into_iter()
+            .map(|(node_id, _, _)| node_id)
+            .collect::<Vec<_>>();
+    }
 
     fn get_leader(
         &self,
