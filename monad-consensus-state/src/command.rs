@@ -18,6 +18,7 @@ use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
 
 /// Command type that the consensus state-machine outputs
 /// This is converted to a monad-executor-glue::Command at the top-level monad-state
+#[derive(Debug)]
 pub enum ConsensusCommand<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
