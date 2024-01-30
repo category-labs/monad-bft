@@ -20,6 +20,7 @@ use monad_validator::{
     leader_election::LeaderElection,
     simple_round_robin::SimpleRoundRobin,
     validator_set::{BoxedValidatorSetTypeFactory, ValidatorSetFactory, ValidatorSetTypeFactory},
+    weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::{mock::MockWALogger, PersistenceLogger};
 
@@ -203,7 +204,7 @@ impl SwarmRelation for BytesSwarm {
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
-    type LeaderElection = SimpleRoundRobin<
+    type LeaderElection = WeightedRoundRobin<
         CertificateSignaturePubKey<Self::SignatureType>,
         Self::SignatureCollectionType,
     >;

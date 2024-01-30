@@ -46,8 +46,8 @@ where
 {
     let staking_list = keys
         .iter()
-        .map(|k| NodeId::new(k.pubkey()))
-        .zip(std::iter::repeat(Stake(1)))
+        .enumerate()
+        .map(|(index, k)| (NodeId::new(k.pubkey()), Stake((index as i64) + 1)))
         .collect::<Vec<_>>();
 
     let voting_identity = keys

@@ -16,6 +16,8 @@ use wasm_bindgen::prelude::*;
 
 mod graphql;
 pub use graphql::GraphQLRoot;
+use monad_validator::weighted_round_robin::WeightedRoundRobin;
+
 mod simulation;
 use simulation::Simulation;
 
@@ -30,7 +32,7 @@ pub fn simulation_make() -> *mut Simulation {
         let state_configs = make_state_configs::<BytesSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
-            SimpleRoundRobin::default,
+            WeightedRoundRobin::default,
             MockTxPool::default,
             || MockValidator,
             || {
