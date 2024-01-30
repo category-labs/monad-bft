@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "monad-async-state-verify",
     "monad-blocktree",
     "monad-bls",
     "monad-compress",
@@ -53,6 +54,7 @@ alloy-primitives = "0.6"
 alloy-rlp = "0.3"
 
 aes = "0.8.3"
+as-any = "0.3.1"
 async-trait = "0.1"
 base64 = "0.21"
 bincode = "1.3"

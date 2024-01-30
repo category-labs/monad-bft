@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -11,7 +12,10 @@ use monad_quic::QuicRouterScheduler;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
 use monad_transformer::BytesTransformerPipeline;
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::mock::MockWALogger;
 
 pub struct QuicSwarm;
@@ -28,6 +32,10 @@ impl SwarmRelation for QuicSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = QuicRouterScheduler<
         MockGossip<CertificateSignaturePubKey<Self::SignatureType>>,

@@ -1,6 +1,7 @@
 mod common;
 use std::{collections::BTreeSet, env};
 
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -72,10 +73,12 @@ fn nodes_with_random_latency(seed: u64) {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(250), // delta
         0,                          // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval
         Round(50),                  // epoch_start_delay
+        majority_threshold,         // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

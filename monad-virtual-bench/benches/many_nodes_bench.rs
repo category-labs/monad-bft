@@ -4,6 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
@@ -28,7 +29,10 @@ use monad_transformer::{
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::mock::{MockWALogger, MockWALoggerConfig};
 
 type SignatureType = NopSignature;
@@ -48,6 +52,10 @@ impl SwarmRelation for NopSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = QuicRouterScheduler<
         MockGossip<NodeIdPubKey>,
@@ -80,6 +88,10 @@ impl SwarmRelation for BlsSwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = QuicRouterScheduler<
         MockGossip<NodeIdPubKey>,
@@ -111,10 +123,12 @@ fn many_nodes_nop_timeout() -> u128 {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(20), // delta
         0,                         // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
+        majority_threshold,        // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -179,10 +193,12 @@ fn many_nodes_bls_timeout() -> u128 {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(20), // delta
         0,                         // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
+        majority_threshold,        // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

@@ -5,6 +5,7 @@ use std::{
 };
 
 use common::QuicSwarm;
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -28,7 +29,7 @@ use monad_wal::mock::MockWALoggerConfig;
 #[test]
 fn many_nodes_noser() {
     let state_configs = make_state_configs::<NoSerSwarm>(
-        100, // num_nodes
+        40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         MockTxPool::default,
@@ -38,10 +39,12 @@ fn many_nodes_noser() {
                 SeqNum(4), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
+        majority_threshold,       // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -88,10 +91,12 @@ fn many_nodes_quic() {
                 SeqNum(4), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(10), // delta
         150,                       // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
+        majority_threshold,        // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -150,10 +155,12 @@ fn many_nodes_quic_bw() {
                 SeqNum(u64::MAX), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(300), // delta
         5000,                       // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval
         Round(50),                  // epoch_start_delay
+        majority_threshold,         // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

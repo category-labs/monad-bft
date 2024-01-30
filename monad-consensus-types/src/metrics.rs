@@ -38,6 +38,8 @@ pub struct ConsensusEvents {
     pub rx_proposal: u64,
     pub proposal_with_tc: u64,
     pub failed_verify_randao_reveal_sig: u64,
+    pub commit_empty_block: u64,
+    pub state_root_update: u64,
 }
 
 #[derive(Debug, Default)]

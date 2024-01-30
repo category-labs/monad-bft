@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, marker::PhantomData, path::PathBuf};
+use std::{fs::File, io::Write, marker::PhantomData, ops::Deref, path::PathBuf};
 
 use alloy_primitives::{keccak256, Bloom, Bytes, FixedBytes, U256};
 use alloy_rlp::Encodable;
@@ -135,10 +135,10 @@ fn generate_header<SCT: SignatureCollection>(
     randao_reveal_hasher.update(monad_block.payload.randao_reveal.0);
 
     Header {
-        parent_hash: FixedBytes(parent_hash.0),
+        parent_hash: FixedBytes(*parent_hash.deref()),
         ommers_hash: block_body.calculate_ommers_root(),
         beneficiary: monad_block.payload.beneficiary.0,
-        state_root: FixedBytes(state_root.0),
+        state_root: FixedBytes(*state_root.deref()),
         transactions_root: FixedBytes(transactions_root.0),
         receipts_root: FixedBytes(receipts_root.0),
         withdrawals_root: block_body.calculate_withdrawals_root(),
@@ -167,6 +167,7 @@ mod test {
         ledger::CommitResult,
         payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
+        state_root_hash::StateRootHash,
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
@@ -193,8 +194,8 @@ mod test {
             &Payload {
                 txns: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),
                 header: ExecutionArtifacts {
-                    parent_hash: Hash::default(),
-                    state_root: Hash::default(),
+                    parent_hash: StateRootHash::default(),
+                    state_root: StateRootHash::default(),
                     transactions_root: Hash::default(),
                     receipts_root: Hash::default(),
                     logs_bloom: Bloom::zero(),

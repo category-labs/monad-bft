@@ -6,6 +6,7 @@ pub mod metrics;
 pub mod payload;
 pub mod quorum_certificate;
 pub mod signature_collection;
+pub mod state_root_hash;
 pub mod timeout;
 pub mod txpool;
 pub mod validation;

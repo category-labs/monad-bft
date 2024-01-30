@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -22,7 +23,10 @@ use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::mock::{MockMemLogger, MockMemLoggerConfig};
 use tracing_test::traced_test;
 
@@ -42,6 +46,10 @@ impl SwarmRelation for ReplaySwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -124,10 +132,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 SeqNum(4), // state_root_delay
             )
         },
-        CONSENSUS_DELTA, // delta
-        0,               // proposal_tx_limit
-        SeqNum(2000),    // val_set_update_interval
-        Round(50),       // epoch_start_delay
+        PeerAsyncStateVerify::new,
+        CONSENSUS_DELTA,    // delta
+        0,                  // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let node_ids: Vec<_> = state_configs
         .iter()
@@ -145,10 +155,12 @@ fn replay_one_honest(failure_idx: &[usize]) {
                 SeqNum(4), // state_root_delay
             )
         },
-        CONSENSUS_DELTA, // delta
-        0,               // proposal_tx_limit
-        SeqNum(2000),    // val_set_update_interval
-        Round(50),       // epoch_start_delay
+        PeerAsyncStateVerify::new,
+        CONSENSUS_DELTA,    // delta
+        0,                  // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
 
     let swarm_config = SwarmBuilder::<ReplaySwarm>(
@@ -201,6 +213,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         .max()
         .unwrap();
 
+    println!("Phase 1 completes");
     // bring down 2 nodes
     let node0 = swarm
         .remove_state(&ID::new(node_ids[f0]))
@@ -225,6 +238,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         .max()
         .unwrap();
 
+    println!("Phase 2 completes");
     // bring up failed nodes with the replay logs
     let node0_logger_config = MockMemLoggerConfig::new(node0.logger.log);
     let node1_logger_config = MockMemLoggerConfig::new(node1.logger.log);
@@ -261,6 +275,8 @@ fn replay_one_honest(failure_idx: &[usize]) {
         ));
     }
 
+    println!("Replay finishes");
+
     // assert consensus state is the same after replay
     let node0_consensus = node0.state.consensus();
     let node0_consensus_recovered = swarm
@@ -293,6 +309,8 @@ fn replay_one_honest(failure_idx: &[usize]) {
     assert!(liveness::<ReplaySwarm>(&swarm, phase_two_length));
 
     swarm_ledger_verification(&swarm, phase_one_length + 1);
+
+    println!("Phase 3 completes");
 
     // assert that block sync isn't triggered
     for s in swarm.states().values() {

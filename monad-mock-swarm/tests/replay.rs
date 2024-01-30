@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::{Block, BlockType},
     block_validator::MockValidator,
@@ -28,7 +29,10 @@ use monad_transformer::{
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    simple_round_robin::SimpleRoundRobin,
+    validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
+};
 use monad_wal::wal::{WALogger, WALoggerConfig};
 use tempfile::tempdir;
 
@@ -47,6 +51,10 @@ impl SwarmRelation for ReplaySwarm {
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
     type TxPool = MockTxPool;
+    type AsyncStateRootVerify = PeerAsyncStateVerify<
+        Self::SignatureCollectionType,
+        <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
+    >;
 
     type RouterScheduler = NoSerRouterScheduler<
         CertificateSignaturePubKey<Self::SignatureType>,
@@ -88,10 +96,12 @@ pub fn recover_nodes_msg_delays(
         MockTxPool::default,
         || MockValidator,
         || NopStateRoot,
+        PeerAsyncStateVerify::new,
         Duration::from_millis(101), // delta
         proposal_size,              // proposal_tx_limit
         val_set_update_interval,    // val_set_update_interval
         epoch_start_delay,          // epoch_start_delay
+        majority_threshold,         // state root quorum threshold
     );
 
     // create the log file path
@@ -162,10 +172,12 @@ pub fn recover_nodes_msg_delays(
         MockTxPool::default,
         || MockValidator,
         || NopStateRoot,
+        PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         proposal_size,            // proposal_tx_limit
         val_set_update_interval,  // val_set_update_interval
         epoch_start_delay,        // epoch_start_delay
+        majority_threshold,       // state root quorum threshold
     );
 
     let swarm_config_clone = SwarmBuilder::<ReplaySwarm>(

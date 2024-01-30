@@ -103,6 +103,7 @@ where
             this.ledger.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
             this.ipc.next().boxed_local(),
+            this.loopback.next().boxed_local(),
             this.router.next().boxed_local(),
         ])
         .map(|(event, _, _)| event)

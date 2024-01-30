@@ -4,6 +4,7 @@ use std::{
     marker::PhantomData,
 };
 
+use as_any::AsAny;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Stake};
 
@@ -90,16 +91,17 @@ impl<PT: PubKey> ValidatorSetTypeFactory for BoxedValidatorSetTypeFactory<PT> {
     }
 }
 
-pub trait ValidatorSetType: Send + Sync {
+pub trait ValidatorSetType: Send + Sync + AsAny {
     type NodeIdPubKey: PubKey;
 
     fn get_members(&self) -> &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>;
+    fn get_total_stake(&self) -> Stake;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
     fn is_member(&self, addr: &NodeId<Self::NodeIdPubKey>) -> bool;
     fn has_super_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
     fn has_honest_vote(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
-    fn has_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool;
+    fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool;
 }
 
 impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
@@ -107,6 +109,10 @@ impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
 
     fn get_members(&self) -> &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake> {
         (**self).get_members()
+    }
+
+    fn get_total_stake(&self) -> Stake {
+        (**self).get_total_stake()
     }
 
     fn len(&self) -> usize {
@@ -129,8 +135,8 @@ impl<T: ValidatorSetType + ?Sized> ValidatorSetType for Box<T> {
         (**self).has_honest_vote(addrs)
     }
 
-    fn has_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
-        (**self).has_majority_votes(addrs)
+    fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool {
+        (**self).has_threshold_votes(addrs, threshold)
     }
 }
 
@@ -168,7 +174,7 @@ impl<PT: PubKey> ValidatorSetTypeFactory for ValidatorSetFactory<PT> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidatorSet<PT: PubKey> {
     validators: BTreeMap<NodeId<PT>, Stake>,
     total_stake: Stake,
@@ -179,6 +185,10 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
 
     fn get_members(&self) -> &BTreeMap<NodeId<PT>, Stake> {
         &self.validators
+    }
+
+    fn get_total_stake(&self) -> Stake {
+        self.total_stake
     }
 
     fn len(&self) -> usize {
@@ -215,7 +225,7 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
             >= Stake(self.total_stake.0 / 3 + 1)
     }
 
-    fn has_majority_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>]) -> bool {
+    fn has_threshold_votes(&self, addrs: &[NodeId<Self::NodeIdPubKey>], threshold: Stake) -> bool {
         let mut duplicates = HashSet::new();
 
         let mut voter_stake: Stake = Stake(0);
@@ -225,7 +235,7 @@ impl<PT: PubKey> ValidatorSetType for ValidatorSet<PT> {
                 debug_assert!(duplicates.insert(addr));
             }
         }
-        voter_stake >= Stake(self.total_stake.0 / 2 + 1)
+        voter_stake >= threshold
     }
 }
 
@@ -302,7 +312,7 @@ mod test {
     }
 
     #[test]
-    fn test_majority() {
+    fn test_threshold() {
         let keypairs = create_keys::<SignatureType>(3);
 
         let v1 = (NodeId::new(keypairs[0].pubkey()), Stake(2));
@@ -312,9 +322,10 @@ mod test {
 
         let validators = vec![v1, v2];
         let vs = ValidatorSetFactory::default().create(validators).unwrap();
-        assert!(vs.has_majority_votes(&[v2.0]));
-        assert!(!vs.has_majority_votes(&[v1.0]));
-        assert!(vs.has_majority_votes(&[v2.0, n3]));
-        assert!(!vs.has_majority_votes(&[v1.0, n3]));
+        let majority_threshold = Stake(vs.get_total_stake().0 / 2 + 1);
+        assert!(vs.has_threshold_votes(&[v2.0], majority_threshold));
+        assert!(!vs.has_threshold_votes(&[v1.0], majority_threshold));
+        assert!(vs.has_threshold_votes(&[v2.0, n3], majority_threshold));
+        assert!(!vs.has_threshold_votes(&[v1.0, n3], majority_threshold));
     }
 }

@@ -6,20 +6,23 @@ use bytes::Bytes;
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
-        message::{BlockSyncResponseMessage, CascadeTxMessage, RequestBlockSyncMessage},
+        message::{
+            BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage,
+            RequestBlockSyncMessage,
+        },
     },
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
     block::{Block, UnverifiedBlock},
     signature_collection::SignatureCollection,
+    state_root_hash::StateRootHashInfo,
     validator_data::ValidatorData,
 };
-use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
-    hasher::Hash as ConsensusHash,
+use monad_crypto::certificate_signature::{
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_types::{BlockId, Epoch, NodeId, RouterTarget, SeqNum, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, RouterTarget, TimeoutVariant};
 
 #[derive(Clone)]
 pub enum RouterCommand<PT: PubKey, OM> {
@@ -138,7 +141,7 @@ pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
-    StateUpdate((SeqNum, ConsensusHash)),
+    StateUpdate(StateRootHashInfo),
     BlockSyncResponse {
         sender: NodeId<SCT::NodeIdPubKey>,
         unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
@@ -157,7 +160,7 @@ impl<S: Debug, SCT: Debug + SignatureCollection> Debug for ConsensusEvent<S, SCT
                 .field("msg", &unverified_message)
                 .finish(),
             ConsensusEvent::Timeout(p) => p.fmt(f),
-            ConsensusEvent::StateUpdate(e) => e.fmt(f),
+            ConsensusEvent::StateUpdate(p) => p.fmt(f),
             ConsensusEvent::BlockSyncResponse {
                 sender,
                 unvalidated_response,
@@ -233,6 +236,15 @@ pub enum MempoolEvent<SCT: SignatureCollection> {
     UserTxns(Vec<Bytes>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
+    PeerStateRoot {
+        sender: NodeId<SCT::NodeIdPubKey>,
+        unvalidated_message: Unvalidated<PeerStateRootMessage<SCT>>,
+    },
+    LocalStateRoot(StateRootHashInfo),
+}
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -248,6 +260,8 @@ where
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
     MempoolEvent(MempoolEvent<SCT>),
+    /// Events to async state verification
+    AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>

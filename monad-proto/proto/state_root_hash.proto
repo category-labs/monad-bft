@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package monad_proto.state_root_hash;
+
+import "basic.proto";
+
+message ProtoStateRootHash {
+  monad_proto.basic.ProtoHash hash = 1;
+}
+
+message ProtoStateRootHashInfo {
+  ProtoStateRootHash state_root_hash = 1;
+  monad_proto.basic.ProtoSeqNum seq_num = 2;
+  monad_proto.basic.ProtoRound round = 3;
+}

@@ -1,6 +1,7 @@
 mod common;
 use std::{collections::BTreeSet, time::Duration};
 
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -39,7 +40,7 @@ fn many_nodes_metrics() {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
     let state_configs = make_state_configs::<NoSerSwarm>(
-        100, // num_nodes
+        40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
         MockTxPool::default,
@@ -49,10 +50,12 @@ fn many_nodes_metrics() {
                 SeqNum(4), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
         0,                        // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
+        majority_threshold,       // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

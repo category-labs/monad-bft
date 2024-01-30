@@ -1,5 +1,5 @@
 [package]
-name = "monad-validator"
+name = "monad-async-state-verify"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,11 +11,14 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
+monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
+monad-validator = { path = "../monad-validator" }
 
-as-any = { workspace = true }
 tracing = { workspace = true }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-testutil = { path = "../monad-testutil" }
-test-case = { workspace = true }
+tracing-subscriber = "0.3.18"

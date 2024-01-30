@@ -1,11 +1,25 @@
-use std::ops::Deref;
+use std::{fmt::Debug, ops::Deref};
 
 use sha2::Digest;
 use zerocopy::AsBytes;
 
 /// A 32-byte/256-bit hash
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Hash(pub [u8; 32]);
+
+impl Debug for Hash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(
+                f,
+                "{:>02x}{:>02x}..{:>02x}{:>02x}",
+                self.0[0], self.0[1], self.0[30], self.0[31]
+            )
+        } else {
+            write!(f, "Hash({:?})", self.0)
+        }
+    }
+}
 
 impl Deref for Hash {
     type Target = [u8; 32];

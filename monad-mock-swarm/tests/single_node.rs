@@ -7,6 +7,7 @@ use std::{
 };
 
 use common::QuicSwarm;
+use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
 };
@@ -31,7 +32,7 @@ use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
 
 #[test]
-fn two_nodes() {
+fn two_nodes_noser() {
     let state_configs = make_state_configs::<NoSerSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
@@ -43,10 +44,12 @@ fn two_nodes() {
                 SeqNum(4), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta
-        0,                        // proposal_tx_limit
+        10,                       // proposal_tx_limit
         SeqNum(2000),             // val_set_update_interval
         Round(50),                // epoch_start_delay
+        majority_threshold,       // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -83,6 +86,10 @@ fn two_nodes() {
     assert!(verifier.verify(&swarm));
 
     swarm_ledger_verification(&swarm, 1024);
+
+    for node in swarm.states().values() {
+        assert_eq!(0, node.state.metrics().consensus_events.commit_empty_block);
+    }
 }
 
 #[test]
@@ -100,10 +107,12 @@ fn two_nodes_quic() {
                 SeqNum(4), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(10), // delta
         150,                       // proposal_tx_limit
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
+        majority_threshold,        // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -178,10 +187,12 @@ fn two_nodes_quic_bw() {
                 SeqNum(4), // state_root_delay
             )
         },
+        PeerAsyncStateVerify::new,
         Duration::from_millis(1000), // delta
         100,                         // proposal_tx_limit
         SeqNum(2000),                // val_set_update_interval
         Round(50),                   // epoch_start_delay
+        majority_threshold,          // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

@@ -397,6 +397,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 
 [[package]]
+name = "as-any"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b8a30a44e99a1c83ccb2a6298c563c888952a1c9134953db26876528f84c93a"
+
+[[package]]
 name = "ascii_utils"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2267,6 +2273,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-async-state-verify"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-multi-sig",
+ "monad-proto",
+ "monad-testutil",
+ "monad-types",
+ "monad-validator",
+ "tracing",
+ "tracing-subscriber",
+ "zerocopy 0.6.5",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -2326,6 +2348,7 @@ name = "monad-consensus"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -2405,6 +2428,7 @@ dependencies = [
  "futures",
  "getrandom",
  "hex",
+ "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",
@@ -2558,6 +2582,7 @@ dependencies = [
  "criterion",
  "futures",
  "itertools 0.10.5",
+ "monad-async-state-verify",
  "monad-bls",
  "monad-consensus",
  "monad-consensus-state",
@@ -2619,6 +2644,7 @@ dependencies = [
  "futures-util",
  "hex",
  "log",
+ "monad-async-state-verify",
  "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -2686,6 +2712,7 @@ name = "monad-randomized-tests"
 version = "0.1.0"
 dependencies = [
  "inventory",
+ "monad-async-state-verify",
  "monad-consensus-types",
  "monad-crypto",
  "monad-mock-swarm",
@@ -2726,6 +2753,7 @@ name = "monad-state"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-async-state-verify",
  "monad-blocktree",
  "monad-bls",
  "monad-consensus",
@@ -2757,6 +2785,7 @@ dependencies = [
  "clap 4.4.10",
  "env_logger",
  "futures-util",
+ "monad-async-state-verify",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -2790,6 +2819,7 @@ dependencies = [
 name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
+ "monad-async-state-verify",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -2860,6 +2890,7 @@ name = "monad-twins-utils"
 version = "0.1.0"
 dependencies = [
  "itertools 0.10.5",
+ "monad-async-state-verify",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -2916,6 +2947,7 @@ dependencies = [
 name = "monad-validator"
 version = "0.1.0"
 dependencies = [
+ "as-any",
  "monad-consensus-types",
  "monad-crypto",
  "monad-testutil",
@@ -2929,6 +2961,7 @@ name = "monad-virtual-bench"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "monad-async-state-verify",
  "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",

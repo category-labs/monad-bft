@@ -20,14 +20,12 @@ use monad_consensus_types::{
     },
     quorum_certificate::{QuorumCertificate, Rank},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHash,
     timeout::TimeoutCertificate,
     txpool::TxPool,
 };
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
-    },
-    hasher::Hash,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
@@ -147,7 +145,7 @@ where
 /// Possible actions a leader node can take when entering a new round
 pub enum ConsensusAction {
     /// Create a proposal with this state-root-hash and txn hash list
-    Propose(Hash, Vec<FullTransactionList>),
+    Propose(StateRootHash, Vec<FullTransactionList>),
     /// Create an empty block proposal
     ProposeEmpty,
     /// Do nothing which will lead to the round timing out
@@ -583,7 +581,7 @@ where
     /// state root hashes are produced when blocks are executed. They can
     /// arrive after the delay-gap between execution so they need to be handled
     /// asynchronously
-    pub fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: Hash) {
+    pub fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: StateRootHash) {
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 
@@ -626,6 +624,9 @@ where
             if !blocks_to_commit.is_empty() {
                 for block in blocks_to_commit.iter() {
                     epoch_manager.schedule_epoch_start(block.get_seq_num(), block.get_round());
+                    if block.payload.txns == FullTransactionList::empty() {
+                        metrics.consensus_events.commit_empty_block += 1;
+                    }
                 }
 
                 cmds.extend(
@@ -689,7 +690,7 @@ where
 
         let proposer_builder =
             |txns: FullTransactionList,
-             hash: Hash,
+             hash: StateRootHash,
              last_round_tc: Option<TimeoutCertificate<SCT>>| {
                 let mut header = ExecutionArtifacts::zero();
                 header.state_root = hash;
@@ -984,6 +985,7 @@ mod test {
             NopStateRoot, StateRoot, StateRootValidator, INITIAL_DELAY_STATE_ROOT_HASH,
         },
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+        state_root_hash::StateRootHash,
         timeout::Timeout,
         txpool::MockTxPool,
         voting::{ValidatorMapping, Vote, VoteInfo},
@@ -2276,7 +2278,7 @@ mod test {
         assert_eq!(state.get_current_round(), Round(10));
 
         // only execution update for block 8 comes
-        state.handle_state_root_update(SeqNum(8), Hash([0x08_u8; 32]));
+        state.handle_state_root_update(SeqNum(8), StateRootHash(Hash([0x08_u8; 32])));
 
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
@@ -2288,7 +2290,7 @@ mod test {
             &election,
             FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
-                state_root: Hash([0x06_u8; 32]),
+                state_root: StateRootHash(Hash([0x06_u8; 32])),
                 ..ExecutionArtifacts::zero()
             },
         );
@@ -2430,7 +2432,10 @@ mod test {
             if i == 2 {
                 let p = extract_proposal_broadcast(cmds);
                 assert_eq!(p.block.0.payload.txns, FullTransactionList::empty());
-                assert_eq!(p.block.0.payload.header.state_root, Hash([0; 32]));
+                assert_eq!(
+                    p.block.0.payload.header.state_root,
+                    StateRootHash(Hash([0; 32]))
+                );
                 assert_eq!(
                     leader_metrics
                         .consensus_events
@@ -2466,7 +2471,7 @@ mod test {
         let (author, _, verified_message) = p0.destructure();
         // p0 should have seqnum 1 and therefore only require state_root 0
         // the state_root 0's hash should be Hash([0x00; 32])
-        state.handle_state_root_update(SeqNum(0), Hash([0x00; 32]));
+        state.handle_state_root_update(SeqNum(0), StateRootHash(Hash([0x00; 32])));
         let _ = state.handle_proposal_message(
             author,
             verified_message,
@@ -2485,7 +2490,7 @@ mod test {
             FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
-                state_root: Hash([0x99; 32]),
+                state_root: StateRootHash(Hash([0x99; 32])),
                 transactions_root: Default::default(),
                 receipts_root: Default::default(),
                 logs_bloom: Bloom::zero(),
@@ -2494,7 +2499,7 @@ mod test {
         );
         let (author, _, verified_message) = p1.destructure();
         // p1 should have seqnum 2 and therefore only require state_root 1
-        state.handle_state_root_update(SeqNum(1), Hash([0x99; 32]));
+        state.handle_state_root_update(SeqNum(1), StateRootHash(Hash([0x99; 32])));
         let _ = state.handle_proposal_message(
             author,
             verified_message,
@@ -2515,7 +2520,7 @@ mod test {
             FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
-                state_root: Hash([0xbb; 32]),
+                state_root: StateRootHash(Hash([0xbb; 32])),
                 transactions_root: Default::default(),
                 receipts_root: Default::default(),
                 logs_bloom: Bloom::zero(),
@@ -2524,7 +2529,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p2.destructure();
-        state.handle_state_root_update(SeqNum(2), Hash([0xbb; 32]));
+        state.handle_state_root_update(SeqNum(2), StateRootHash(Hash([0xbb; 32])));
         let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
@@ -2547,7 +2552,7 @@ mod test {
             FullTransactionList::new(vec![0xaa].into()),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
-                state_root: Hash([0xcc; 32]),
+                state_root: StateRootHash(Hash([0xcc; 32])),
                 transactions_root: Default::default(),
                 receipts_root: Default::default(),
                 logs_bloom: Bloom::zero(),
@@ -2556,7 +2561,7 @@ mod test {
         );
 
         let (author, _, verified_message) = p3.destructure();
-        state.handle_state_root_update(SeqNum(3), Hash([0xcc; 32]));
+        state.handle_state_root_update(SeqNum(3), StateRootHash(Hash([0xcc; 32])));
         let p3_cmds = state.handle_proposal_message(
             author,
             verified_message,

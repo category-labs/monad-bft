@@ -5,7 +5,7 @@ use monad_consensus_types::{block::BlockType, validator_data::ValidatorData};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::MonadStateBuilder;
-use monad_types::{Round, SeqNum};
+use monad_types::{Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
 use crate::validators::create_keys_w_validators;
@@ -18,11 +18,13 @@ pub fn make_state_configs<S: SwarmRelation>(
     transaction_pool: impl Fn() -> S::TxPool,
     block_validator: impl Fn() -> S::BlockValidator,
     state_root_validator: impl Fn() -> S::StateRootValidator,
+    async_state_verify: impl Fn(fn(Stake) -> Stake) -> S::AsyncStateRootVerify,
 
     delta: Duration,
     proposal_txn_limit: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
+    state_root_quorum_threshold: fn(Stake) -> Stake,
 ) -> Vec<
     MonadStateBuilder<
         S::SignatureType,
@@ -32,6 +34,7 @@ pub fn make_state_configs<S: SwarmRelation>(
         S::TxPool,
         S::BlockValidator,
         S::StateRootValidator,
+        S::AsyncStateRootVerify,
     >,
 > {
     let (keys, cert_keys, validators, validator_mapping) =
@@ -62,6 +65,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             transaction_pool: transaction_pool(),
             block_validator: block_validator(),
             state_root_validator: state_root_validator(),
+            async_state_verify: async_state_verify(state_root_quorum_threshold),
             validators: validator_data.clone(),
 
             key,

@@ -4,8 +4,8 @@ package monad_proto.message;
 
 import "basic.proto";
 import "block.proto";
-import "ledger.proto";
 import "signing.proto";
+import "state_root_hash.proto";
 import "timeout.proto";
 import "voting.proto";
 
@@ -49,11 +49,18 @@ message ProtoUnverifiedConsensusMessage {
   monad_proto.signing.ProtoSignature author_signature = 6;
 }
 
+message ProtoPeerStateRootMessage {
+  monad_proto.basic.ProtoNodeId peer = 1;
+  monad_proto.state_root_hash.ProtoStateRootHashInfo info = 2;
+  monad_proto.signing.ProtoSignature sig = 3;
+}
+
 message ProtoMonadMessage {
   oneof OneofMessage {
     ProtoUnverifiedConsensusMessage consensus = 1;
     ProtoRequestBlockSyncMessage block_sync_request = 2;
     ProtoBlockSyncMessage block_sync_response = 3;
     ProtoCascadeTxMessage cascade_txns = 4;
+    ProtoPeerStateRootMessage peer_state_root = 5;
   }
 }

@@ -7,7 +7,10 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    block::BlockType, signature_collection::SignatureCollection, validator_data::ValidatorData,
+    block::BlockType,
+    signature_collection::SignatureCollection,
+    state_root_hash::{StateRootHash, StateRootHashInfo},
+    validator_data::ValidatorData,
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::Executor;
@@ -43,7 +46,7 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 /// and generating the state root hash and updating the staking contract,
 /// and sending it back to consensus.
 pub struct MockStateRootHashNop<B, ST, SCT: SignatureCollection> {
-    state_root_update: Option<(SeqNum, Hash)>,
+    state_root_update: Option<StateRootHashInfo>,
 
     // validator set updates
     epoch: Epoch,
@@ -111,11 +114,16 @@ where
                     // hash is pseudorandom seeded by the block's seq num to ensure
                     // that it is deterministic between nodes
                     let seq_num = block.get_seq_num();
+                    let round = block.get_round();
                     let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
-                    let mut hash = Hash([0; 32]);
-                    gen.fill_bytes(&mut hash.0);
+                    let mut hash = StateRootHash(Hash([0; 32]));
+                    gen.fill_bytes(&mut hash.0 .0);
 
-                    self.state_root_update = Some((seq_num, hash));
+                    self.state_root_update = Some(StateRootHashInfo {
+                        state_root_hash: hash,
+                        seq_num,
+                        round,
+                    });
 
                     if block.get_seq_num() % self.val_set_update_interval == SeqNum(0) {
                         self.next_val_data = Some(self.genesis_validator_data.clone());
@@ -146,9 +154,9 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some((seqnum, hash)) = this.state_root_update.take() {
-            Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate((seqnum, hash)),
+        let event = if let Some(info) = this.state_root_update.take() {
+            Poll::Ready(Some(MonadEvent::AsyncStateVerifyEvent(
+                monad_executor_glue::AsyncStateVerifyEvent::LocalStateRoot(info),
             )))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
@@ -177,7 +185,7 @@ where
 /// between two sets of validators every epoch.
 /// Goal is to mimic new validators joining and old validators leaving.
 pub struct MockStateRootHashSwap<B, ST, SCT: SignatureCollection> {
-    state_root_update: Option<(SeqNum, Hash)>,
+    state_root_update: Option<StateRootHashInfo>,
 
     // validator set updates
     epoch: Epoch,
@@ -260,11 +268,16 @@ where
             match command {
                 StateRootHashCommand::LedgerCommit(block) => {
                     let seq_num = block.get_seq_num();
+                    let round = block.get_round();
                     let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
-                    let mut hash = Hash([0; 32]);
-                    gen.fill_bytes(&mut hash.0);
+                    let mut hash = StateRootHash(Hash([0; 32]));
+                    gen.fill_bytes(&mut hash.0 .0);
 
-                    self.state_root_update = Some((seq_num, hash));
+                    self.state_root_update = Some(StateRootHashInfo {
+                        state_root_hash: hash,
+                        seq_num,
+                        round,
+                    });
 
                     if block.get_seq_num() % self.val_set_update_interval == SeqNum(0) {
                         self.next_val_data = if self.epoch.0 % 2 == 0 {
@@ -299,9 +312,9 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.deref_mut();
 
-        let event = if let Some((seqnum, hash)) = this.state_root_update.take() {
+        let event = if let Some(info) = this.state_root_update.take() {
             Poll::Ready(Some(MonadEvent::ConsensusEvent(
-                monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate((seqnum, hash)),
+                monad_executor_glue::ConsensusEvent::<ST, SCT>::StateUpdate(info),
             )))
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(

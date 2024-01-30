@@ -65,7 +65,7 @@ impl BlockSyncResponder {
     }
 }
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -79,10 +79,11 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, SCT, VTF, LT, TT)>,
+    _phantom: PhantomData<(ST, SCT, VTF, LT, TT, ASVT)>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT> BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT>
+impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+    BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -90,7 +91,9 @@ where
     BVT: BlockValidator,
     SVT: StateRootValidator,
 {
-    pub(super) fn new(monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT>) -> Self {
+    pub(super) fn new(
+        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+    ) -> Self {
         Self {
             block_sync_responder: &monad_state.block_sync_responder,
             consensus: &monad_state.consensus,
