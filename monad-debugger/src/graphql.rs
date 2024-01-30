@@ -11,6 +11,7 @@ use monad_mock_swarm::{
 };
 use monad_transformer::ID;
 use monad_types::NodeId;
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetType};
 
 use crate::simulation::Simulation;
 
@@ -114,6 +115,50 @@ impl<'s> GraphQLNode<'s> {
     async fn id(&self) -> GraphQLNodeId {
         self.0.id.get_peer_id().into()
     }
+
+    async fn stake(&self) -> async_graphql::Result<i64> {
+        let round = self.0.state.consensus().get_current_round();
+        let epoch = self.0.state.epoch_manager().get_epoch(round);
+        let node_id = self.0.id.get_peer_id();
+        Ok(self
+            .0
+            .state
+            .validator_epoch_map()
+            .get_val_set(&epoch)
+            .ok_or("bad epoch")?
+            .get_members()
+            .get(node_id)
+            .ok_or("bad node id")?
+            .0)
+    }
+
+    async fn leader_election_schedule(&self) -> Vec<GraphQLNodeId> {
+        self.0
+            .state
+            .leader_election()
+            .get_schedule()
+            .iter()
+            .map(Into::into)
+            .collect::<_>()
+    }
+
+    async fn round(&self) -> u64 {
+        self.0.state.consensus().get_current_round().0
+    }
+
+    async fn leader(&self) -> GraphQLNodeId {
+        let round = self.0.state.consensus().get_current_round();
+        let epoch = self.0.state.epoch_manager().get_epoch(round);
+        let members = self
+            .0
+            .state
+            .validator_epoch_map()
+            .get_val_set(&epoch)
+            .unwrap()
+            .get_members();
+        (&self.0.state.leader_election().get_leader(round)).into()
+    }
+
     async fn pending_messages(&self) -> Vec<GraphQLPendingMessage<'s>> {
         self.0
             .pending_inbound_messages

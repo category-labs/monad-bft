@@ -49,6 +49,14 @@ impl<PT: PubKey> LeaderElection for SimpleRoundRobin<PT> {
         self.validators = stakes
     }
 
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>> {
+        self.validators
+            .clone()
+            .into_iter()
+            .map(|(validator, _)| validator)
+            .collect()
+    }
+
     fn get_leader(&self, round: Round) -> NodeId<Self::NodeIdPubKey> {
         self.validators[round.0 as usize % self.validators.len()].0
     }

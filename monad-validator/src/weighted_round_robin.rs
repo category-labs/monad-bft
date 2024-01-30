@@ -44,6 +44,10 @@ impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
         self.schedule = WeightedRoundRobin::<PT>::compute_schedule(stakes);
     }
 
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>> {
+        self.schedule.clone()
+    }
+
     fn get_leader(&self, round: Round) -> NodeId<PT> {
         self.schedule[round.0 as usize % self.schedule.len()]
     }

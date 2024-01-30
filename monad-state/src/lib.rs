@@ -131,6 +131,14 @@ where
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
     }
+
+    pub fn validator_epoch_map(&self) -> &ValidatorsEpochMapping<VTF, SCT> {
+        &self.val_epoch_map
+    }
+
+    pub fn leader_election(&self) -> &LT {
+        &self.leader_election
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

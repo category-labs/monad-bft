@@ -7,6 +7,8 @@ pub trait LeaderElection {
 
     fn update(&mut self, stakes: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>);
 
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>>;
+
     fn get_leader(&self, round: Round) -> NodeId<Self::NodeIdPubKey>;
 }
 
@@ -15,6 +17,10 @@ impl<T: LeaderElection + ?Sized> LeaderElection for Box<T> {
 
     fn update(&mut self, stakes: Vec<(NodeId<Self::NodeIdPubKey>, Stake)>) {
         (**self).update(stakes)
+    }
+
+    fn get_schedule(&self) -> Vec<NodeId<Self::NodeIdPubKey>> {
+        (**self).get_schedule()
     }
 
     fn get_leader(&self, round: Round) -> NodeId<Self::NodeIdPubKey> {
