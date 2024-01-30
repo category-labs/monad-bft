@@ -246,15 +246,6 @@ pub fn test_broadcast<G: Gossip>(
         swarm.send(tx_peer, target, message);
     }
 
-    // some random extra messages to flush pipeline transformers
-    for _ in 0..10 {
-        for tx_peer in &peer_ids {
-            let message: AppMessage = (0..10).map(|_| rng.gen()).collect();
-            let target = RouterTarget::Broadcast;
-            swarm.send(tx_peer, target, message);
-        }
-    }
-
     let num_expected = pending_messages.len();
     while let Some((tick, rx_peer, (tx_peer, message))) = swarm.step_until(max_tick) {
         pending_messages.remove(&(rx_peer, (tx_peer, message)));
@@ -286,17 +277,6 @@ pub fn test_direct<G: Gossip>(
             swarm.send(tx_peer, target, message.clone());
 
             pending_messages.insert((*rx_peer, (*tx_peer, message)));
-        }
-    }
-
-    // some random extra messages to flush pipeline transformers
-    for _ in 0..10 {
-        for tx_peer in &peer_ids {
-            let message: AppMessage = (0..10).map(|_| rng.gen()).collect();
-            for rx_peer in &peer_ids {
-                let target = RouterTarget::PointToPoint(*rx_peer);
-                swarm.send(tx_peer, target, message.clone());
-            }
         }
     }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     fmt::Debug,
     marker::PhantomData,
     mem,
@@ -7,12 +7,11 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use bytes_utils::SegmentedBuf;
 use monad_crypto::certificate_signature::PubKey;
 use monad_tracing_counter::inc_count;
 use monad_types::NodeId;
 use rand::{prelude::SliceRandom, Rng};
-use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng, ChaChaRng};
+use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 
 pub const UNIQUE_ID: usize = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -371,80 +370,6 @@ impl<PT: PubKey, M> Transformer<M> for GenericTransformer<PT, M> {
 
 pub type GenericTransformerPipeline<PT, M> = Vec<GenericTransformer<PT, M>>;
 
-#[derive(Debug, Clone)]
-pub struct BytesSplitterTransformer<PT: PubKey> {
-    rng: ChaCha20Rng,
-    buffers: BTreeMap<ID<PT>, VecDeque<LinkMessage<PT, Bytes>>>,
-}
-
-impl<PT: PubKey> Default for BytesSplitterTransformer<PT> {
-    fn default() -> Self {
-        Self {
-            rng: ChaCha20Rng::from_seed([0_u8; 32]),
-            buffers: Default::default(),
-        }
-    }
-}
-
-impl<PT: PubKey> BytesSplitterTransformer<PT> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl<PT: PubKey> Transformer<Bytes> for BytesSplitterTransformer<PT> {
-    type NodeIdPubKey = PT;
-    fn transform(&mut self, message: LinkMessage<PT, Bytes>) -> TransformerStream<PT, Bytes> {
-        let entry = self.buffers.entry(message.to).or_default();
-        entry.push_back(message);
-
-        let split_idx = self.rng.gen_range(0..entry.len());
-
-        let accumulator = {
-            let split_message = entry
-                .front()
-                .expect("must be at least 1 element (split_idx)");
-            LinkMessage {
-                from: split_message.from,
-                to: split_message.to,
-                from_tick: split_message.from_tick,
-                message: SegmentedBuf::new(),
-            }
-        };
-
-        let mut base_message =
-            entry
-                .drain(0..split_idx)
-                .fold(accumulator, |mut base_message, merge_message| {
-                    base_message.message.push(merge_message.message);
-                    base_message
-                });
-        let split_message = entry
-            .front_mut()
-            .expect("must be at least 1 element (split_idx)");
-
-        let message_split_idx = self.rng.gen_range(1..=split_message.message.len());
-        base_message
-            .message
-            .push(split_message.message.copy_to_bytes(message_split_idx));
-
-        if split_message.message.is_empty() {
-            entry.pop_front();
-        }
-
-        let base_message = LinkMessage {
-            from: base_message.from,
-            to: base_message.to,
-            from_tick: base_message.from_tick,
-            message: base_message
-                .message
-                .copy_to_bytes(base_message.message.remaining()),
-        };
-
-        TransformerStream::Continue(vec![(Duration::ZERO, base_message)])
-    }
-}
-
 #[derive(Clone, Debug)]
 struct BwWindow {
     // sliding window of (msg.from_tick, msg.bit_len) sent in the last second
@@ -638,7 +563,6 @@ pub enum BytesTransformer<PT: PubKey> {
     Periodic(PeriodicTransformer<PT>),
     Replay(ReplayTransformer<PT, Bytes>),
 
-    BytesSplitter(BytesSplitterTransformer<PT>),
     Bw(BwTransformer<PT>),
     Pacer(PacerTransformer<PT>),
 }
@@ -654,7 +578,6 @@ impl<PT: PubKey> Transformer<Bytes> for BytesTransformer<PT> {
             BytesTransformer::Drop(t) => t.transform(message),
             BytesTransformer::Periodic(t) => t.transform(message),
             BytesTransformer::Replay(t) => t.transform(message),
-            BytesTransformer::BytesSplitter(t) => t.transform(message),
             BytesTransformer::Bw(t) => t.transform(message),
             BytesTransformer::Pacer(t) => t.transform(message),
         }
@@ -681,7 +604,6 @@ impl<PT: PubKey> Transformer<Bytes> for BytesTransformer<PT> {
                 <PeriodicTransformer<PT> as Transformer<Bytes>>::min_external_delay(t)
             }
             BytesTransformer::Replay(t) => t.min_external_delay(),
-            BytesTransformer::BytesSplitter(t) => t.min_external_delay(),
             BytesTransformer::Bw(t) => t.min_external_delay(),
             BytesTransformer::Pacer(t) => t.min_external_delay(),
         }

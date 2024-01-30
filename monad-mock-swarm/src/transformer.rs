@@ -267,18 +267,16 @@ pub type MonadMessageTransformerPipeline<PT> = Vec<MonadMessageTransformer<PT>>;
 
 #[cfg(test)]
 mod test {
-    use std::{cmp::max, collections::HashSet, time::Duration};
+    use std::{collections::HashSet, time::Duration};
 
     use monad_crypto::{certificate_signature::CertificateKeyPair, NopSignature};
     use monad_testutil::signing::create_keys;
     use monad_transformer::{
-        BytesSplitterTransformer, DropTransformer, GenericTransformer, LinkMessage,
-        PartitionTransformer, PeriodicTransformer, Pipeline, RandLatencyTransformer,
-        ReplayTransformer, TransformerReplayOrder, TransformerStream, XorLatencyTransformer,
+        DropTransformer, GenericTransformer, LinkMessage, PartitionTransformer,
+        PeriodicTransformer, Pipeline, RandLatencyTransformer, ReplayTransformer,
+        TransformerReplayOrder, TransformerStream, XorLatencyTransformer,
     };
     use monad_types::NodeId;
-    use rand::{Rng, SeedableRng};
-    use rand_chacha::ChaCha20Rng;
 
     use super::{LatencyTransformer, Transformer, ID};
     use crate::utils::test_tool::*;
@@ -429,46 +427,6 @@ mod test {
             };
             assert_eq!(c.len(), 1);
         }
-    }
-
-    #[test]
-    fn test_bytes_splitter_transformer() {
-        let keys = create_keys::<NopSignature>(2);
-
-        let mut t = BytesSplitterTransformer::new();
-
-        let mut sent_stream = Vec::new();
-        let mut received_stream = Vec::new();
-        let mut max_received_message_len = 0;
-
-        let mut rng = ChaCha20Rng::from_seed([0_u8; 32]);
-
-        const MESSAGE_LEN: usize = 32;
-        const NUM_MESSAGES_SENT: u64 = 100;
-
-        for idx in 0..NUM_MESSAGES_SENT {
-            let bytes: Vec<u8> = (0..MESSAGE_LEN).map(|_| rng.gen()).collect();
-            sent_stream.extend(bytes.iter().copied());
-            let TransformerStream::Continue(mut c) = t.transform(LinkMessage {
-                from: ID::new(NodeId::new(keys[0].pubkey())),
-                to: ID::new(NodeId::new(keys[1].pubkey())),
-                message: bytes.into(),
-                from_tick: Duration::from_millis(idx),
-            }) else {
-                panic!("bytes_splitter_transformer returned wrong type")
-            };
-            for (_, message) in &mut c {
-                max_received_message_len = max(max_received_message_len, message.message.len());
-                received_stream.extend_from_slice(&message.message);
-            }
-        }
-
-        assert!(max_received_message_len > MESSAGE_LEN);
-        assert!(!received_stream.is_empty());
-        assert!(sent_stream
-            .into_iter()
-            .zip(received_stream.into_iter())
-            .all(|(sent_byte, received_byte)| sent_byte == received_byte));
     }
 
     #[test]

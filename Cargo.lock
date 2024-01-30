@@ -2823,7 +2823,6 @@ name = "monad-transformer"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "bytes-utils",
  "monad-crypto",
  "monad-tracing-counter",
  "monad-types",

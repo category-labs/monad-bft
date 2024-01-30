@@ -90,7 +90,7 @@ mod tests {
     use std::time::Duration;
 
     use monad_crypto::NopSignature;
-    use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
+    use monad_transformer::{BytesTransformer, LatencyTransformer};
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -115,42 +115,6 @@ mod tests {
                 vec![BytesTransformer::Latency(LatencyTransformer::new(
                     Duration::from_millis(5),
                 ))]
-            },
-        );
-
-        let mut rng = ChaCha20Rng::from_seed([0; 32]);
-        test_broadcast(
-            &mut rng,
-            &mut swarm,
-            Duration::from_secs(1),
-            PAYLOAD_SIZE_BYTES,
-            usize::MAX,
-            1.0,
-        );
-        test_direct(
-            &mut rng,
-            &mut swarm,
-            Duration::from_secs(1),
-            PAYLOAD_SIZE_BYTES,
-        );
-    }
-
-    #[test]
-    fn test_split_messages() {
-        let mut swarm = make_swarm::<NopSignature, _>(
-            NUM_NODES,
-            |all_peers, me| {
-                MockGossipConfig {
-                    all_peers: all_peers.to_vec(),
-                    me: *me,
-                }
-                .build()
-            },
-            |_all_peers, _me| {
-                vec![
-                    BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(5))),
-                    BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
-                ]
             },
         );
 

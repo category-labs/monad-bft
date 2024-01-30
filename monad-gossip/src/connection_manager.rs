@@ -172,7 +172,7 @@ impl<G: Gossip> ConnectionManager<G> {
 mod tests {
     use std::time::Duration;
 
-    use bytes::Bytes;
+    use bytes::{Buf, Bytes};
     use monad_crypto::{
         certificate_signature::{
             CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -189,15 +189,14 @@ mod tests {
 
     type SignatureType = NopSignature;
 
-    struct Swarm {
+    struct Node {
         connection_manager:
             ConnectionManager<MockGossip<CertificateSignaturePubKey<SignatureType>>>,
         me: NodeId<CertificateSignaturePubKey<SignatureType>>,
-        other: NodeId<CertificateSignaturePubKey<SignatureType>>,
     }
 
-    impl Swarm {
-        fn create() -> Self {
+    impl Node {
+        fn create_swarm() -> Vec<Self> {
             const NUM_NODES: usize = 2;
             let all_peers: Vec<_> = (1_u32..)
                 .take(NUM_NODES)
@@ -214,85 +213,182 @@ mod tests {
                     NodeId::new(keypair.pubkey())
                 })
                 .collect();
-            let me = all_peers[0];
-            let other = all_peers[1];
-            let gossip = MockGossipConfig { all_peers, me }.build();
-            let connection_manager = ConnectionManager::new(gossip);
 
-            Self {
-                connection_manager,
-                me,
-                other,
-            }
+            all_peers
+                .iter()
+                .copied()
+                .map(|me| {
+                    let gossip = MockGossipConfig {
+                        all_peers: all_peers.clone(),
+                        me,
+                    }
+                    .build();
+                    let connection_manager = ConnectionManager::new(gossip);
+
+                    Self {
+                        connection_manager,
+                        me,
+                    }
+                })
+                .collect()
         }
     }
 
     #[test]
     fn test_send_disconnected() {
-        let mut swarm = Swarm::create();
-        swarm.connection_manager.send(
+        let mut swarm = Node::create_swarm();
+        let mut node_1 = swarm.pop().unwrap();
+        let node_2 = swarm.pop().unwrap();
+        node_1.connection_manager.send(
             Duration::ZERO,
-            monad_types::RouterTarget::PointToPoint(swarm.other),
+            monad_types::RouterTarget::PointToPoint(node_2.me),
             Bytes::new(),
         );
 
         assert!(
-            matches!(swarm.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::RequestConnect(other)) if other == swarm.other)
+            matches!(node_1.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::RequestConnect(other)) if other == node_2.me)
         );
         // is not connected, so nothing else should happen (no sends)
-        assert!(swarm.connection_manager.poll(Duration::ZERO).is_none());
+        assert!(node_1.connection_manager.poll(Duration::ZERO).is_none());
 
         // now we connect
-        swarm
+        node_1
             .connection_manager
-            .connected(Duration::ZERO, swarm.other);
+            .connected(Duration::ZERO, node_2.me);
         // retry same send
-        swarm.connection_manager.send(
+        node_1.connection_manager.send(
             Duration::ZERO,
-            monad_types::RouterTarget::PointToPoint(swarm.other),
+            monad_types::RouterTarget::PointToPoint(node_2.me),
             Bytes::new(),
         );
         // should emit a Send event
         assert!(
-            matches!(swarm.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(other, _))) if other == swarm.other)
+            matches!(node_1.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(other, _))) if other == node_2.me)
         );
         // no RequestConnect event
-        assert!(swarm.connection_manager.poll(Duration::ZERO).is_none());
+        assert!(node_1.connection_manager.poll(Duration::ZERO).is_none());
     }
 
     #[test]
     fn test_disconnected_clears_sends() {
-        let mut swarm = Swarm::create();
+        let mut swarm = Node::create_swarm();
+        let mut node_1 = swarm.pop().unwrap();
+        let node_2 = swarm.pop().unwrap();
 
-        swarm
+        node_1
             .connection_manager
-            .connected(Duration::ZERO, swarm.other);
-        swarm.connection_manager.send(
+            .connected(Duration::ZERO, node_2.me);
+        node_1.connection_manager.send(
             Duration::ZERO,
-            monad_types::RouterTarget::PointToPoint(swarm.other),
+            monad_types::RouterTarget::PointToPoint(node_2.me),
             Bytes::new(),
         );
         // we disconnect before we poll the Send event
-        swarm
+        node_1
             .connection_manager
-            .disconnected(Duration::ZERO, swarm.other);
+            .disconnected(Duration::ZERO, node_2.me);
 
         // Send event got replaced with RequestConnect
         assert!(
-            matches!(swarm.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::RequestConnect(other)) if other == swarm.other)
+            matches!(node_1.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::RequestConnect(other)) if other == node_2.me)
         );
-        assert!(swarm.connection_manager.poll(Duration::ZERO).is_none());
+        assert!(node_1.connection_manager.poll(Duration::ZERO).is_none());
     }
 
     #[test]
     #[should_panic]
     fn test_receive_disconnected() {
-        let mut swarm = Swarm::create();
+        let mut swarm = Node::create_swarm();
+        let mut node_1 = swarm.pop().unwrap();
+        let node_2 = swarm.pop().unwrap();
         // we didn't call handle_unframed_gossip_message first
-        swarm.connection_manager.handle_unframed_gossip_message(
+        node_1.connection_manager.handle_unframed_gossip_message(
             Duration::ZERO,
-            swarm.other,
+            node_2.me,
             Bytes::new(),
         )
+    }
+
+    #[test]
+    fn test_split_message() {
+        let mut swarm = Node::create_swarm();
+        let mut node_1 = swarm.pop().unwrap();
+        let mut node_2 = swarm.pop().unwrap();
+
+        let app_message_1_bytes: Bytes = [1, 2, 3].as_ref().into();
+        let app_message_2_bytes: Bytes = [3, 4, 5].as_ref().into();
+
+        // tx side
+        node_1
+            .connection_manager
+            .connected(Duration::ZERO, node_2.me);
+        node_1.connection_manager.send(
+            Duration::ZERO,
+            monad_types::RouterTarget::PointToPoint(node_2.me),
+            app_message_1_bytes.clone(),
+        );
+        node_1.connection_manager.send(
+            Duration::ZERO,
+            monad_types::RouterTarget::PointToPoint(node_2.me),
+            app_message_2_bytes.clone(),
+        );
+        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(
+            message_1_to,
+            mut message_1,
+        ))) = node_1.connection_manager.poll(Duration::ZERO)
+        else {
+            unreachable!("unexpected event");
+        };
+        assert_eq!(message_1_to, node_2.me);
+        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(message_2_to, message_2))) =
+            node_1.connection_manager.poll(Duration::ZERO)
+        else {
+            unreachable!("unexpected event");
+        };
+        assert_eq!(message_2_to, node_2.me);
+        assert!(node_1.connection_manager.poll(Duration::ZERO).is_none());
+
+        // rx side
+        node_2
+            .connection_manager
+            .connected(Duration::ZERO, node_1.me);
+        node_2.connection_manager.handle_unframed_gossip_message(
+            Duration::ZERO,
+            node_1.me,
+            // send half of first message
+            message_1.copy_to_bytes(message_1.remaining() / 2),
+        );
+        // doesn't emit on incomplete message
+        assert!(node_2.connection_manager.poll(Duration::ZERO).is_none());
+
+        message_1.extend(message_2.into_inner());
+
+        node_2.connection_manager.handle_unframed_gossip_message(
+            Duration::ZERO,
+            node_1.me,
+            // send second half of first message + second message
+            message_1.copy_to_bytes(message_1.remaining()),
+        );
+
+        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
+            message_1_from,
+            app_message_1,
+        ))) = node_2.connection_manager.poll(Duration::ZERO)
+        else {
+            unreachable!("unexpected event");
+        };
+        assert_eq!(message_1_from, node_1.me);
+        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
+            message_2_from,
+            app_message_2,
+        ))) = node_2.connection_manager.poll(Duration::ZERO)
+        else {
+            unreachable!("unexpected event");
+        };
+        assert_eq!(message_2_from, node_1.me);
+        assert!(node_2.connection_manager.poll(Duration::ZERO).is_none());
+
+        assert_eq!(app_message_1, app_message_1_bytes);
+        assert_eq!(app_message_2, app_message_2_bytes);
     }
 }

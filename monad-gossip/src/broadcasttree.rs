@@ -337,7 +337,7 @@ mod tests {
         hasher::{Hasher, HasherType},
         NopKeyPair, NopSignature,
     };
-    use monad_transformer::{BytesSplitterTransformer, BytesTransformer, LatencyTransformer};
+    use monad_transformer::{BytesTransformer, LatencyTransformer};
     use monad_types::{NodeId, RouterTarget};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
@@ -655,45 +655,6 @@ mod tests {
                 vec![BytesTransformer::Latency(LatencyTransformer::new(
                     Duration::from_millis(5),
                 ))]
-            },
-        );
-
-        let mut rng = ChaCha8Rng::from_seed([0; 32]);
-        test_broadcast(
-            &mut rng,
-            &mut swarm,
-            Duration::from_secs(1),
-            1024,
-            usize::MAX,
-            1.0,
-        );
-        test_direct(&mut rng, &mut swarm, Duration::from_secs(1), 1024);
-    }
-
-    // TODO: This test relies on the BytesSplitterTransformer to split messages. The transformer
-    // needs to be flushed to make sure that all split parts arrive. The mechanism for doing
-    // this right now is broadcasting random messages, but the broadcast tree algorithm is using
-    // a different tree/route for every message, so this isn't a reliable flush.
-    // Test happens to pass with small number of nodes for now. Better change would be to add
-    // ability to flush the transformer explicitly.
-    #[test]
-    fn test_split_messages() {
-        let mut swarm = make_swarm::<NopSignature, _>(
-            3,
-            |all_peers, me| {
-                BroadcastTreeConfig {
-                    all_peers: all_peers.to_vec(),
-                    my_id: *me,
-                    tree_arity: 2,
-                    num_routes: 2,
-                }
-                .build()
-            },
-            |_all_peers, _me| {
-                vec![
-                    BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(5))),
-                    BytesTransformer::BytesSplitter(BytesSplitterTransformer::new()),
-                ]
             },
         );
 
