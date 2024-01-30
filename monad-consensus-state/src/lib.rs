@@ -154,6 +154,21 @@ pub enum ConsensusAction {
     Abstain,
 }
 
+/// Actions after state root validation
+pub enum StateRootAction {
+    /// StateRoot validation is successful, proceed to next steps
+    Proceed,
+    /// StateRoot validation is unsuccessful - there's a mismatch of StateRoots.
+    /// Reject the proposal immediately
+    Reject,
+    /// StateRoot validation is undecided - we haven't collect enough
+    /// information. Either the state root is missing because we haven't
+    /// received a majority quorum on the state root, or the state root is
+    /// out-of-range. It's ok to insert to the block tree and observe if a QC
+    /// forms on the block. But we shouldn't vote on the block
+    Defer,
+}
+
 impl<ST, SCT, BVT, SVT> ConsensusState<ST, SCT, BVT, SVT>
 where
     ST: CertificateSignatureRecoverable,
@@ -249,7 +264,9 @@ where
             .get_val_set(&epoch)
             .expect("proposal message was verified");
 
-        if !self.state_root_hash_validation(&p, metrics) {
+        let state_root_action = self.state_root_hash_validation(&p, metrics);
+
+        if matches!(state_root_action, StateRootAction::Reject) {
             return cmds;
         }
 
@@ -308,6 +325,14 @@ where
             return cmds;
         }
 
+        // StateRootAction::Defer means we don't have enough information to
+        // decide if the state root hash is valid. It's ok to insert into the
+        // block tree, but we can't vote on the block
+        if matches!(state_root_action, StateRootAction::Defer) {
+            return cmds;
+        }
+
+        assert!(matches!(state_root_action, StateRootAction::Proceed));
         // decide if its safe to cast vote on this proposal
         let vote = self.safety.make_vote::<SCT>(&block, &p.last_round_tc);
 
@@ -785,34 +810,47 @@ where
         &mut self,
         p: &ProposalMessage<SCT>,
         metrics: &mut Metrics,
-    ) -> bool {
+    ) -> StateRootAction {
         if p.block.0.payload.txns == FullTransactionList::empty()
             && p.block.0.payload.header.state_root == INITIAL_DELAY_STATE_ROOT_HASH
         {
             debug!("Received empty block: block={:?}", p.block);
             metrics.consensus_events.rx_empty_block += 1;
-            return true;
+            return StateRootAction::Proceed;
         }
         match self.state_root_validator.validate(
             p.block.0.payload.seq_num,
             p.block.0.payload.header.state_root,
         ) {
-            // TODO-1 execution lagging too far behind should be a trigger for something
-            // to try and catch up faster. For now, just wait
+            // TODO-1 execution lagging too far behind should be a trigger for
+            // something to try and catch up faster. For now, just wait
             StateRootResult::OutOfRange => {
+                debug!(
+                    "Proposal Message carries state root hash for a block higher than highest locally known, unable to verify"
+                );
                 metrics.consensus_events.rx_execution_lagging += 1;
-                false
+                StateRootAction::Defer
             }
-            // Don't vote and locally timeout if the proposed state root does not match
-            // or if state root is missing
-            StateRootResult::Missing | StateRootResult::Mismatch => {
+            // Don't vote and locally timeout if the proposed state root does
+            // not match
+            StateRootResult::Mismatch => {
+                debug!("State root hash in proposal conflicts with local value");
                 metrics.consensus_events.rx_bad_state_root += 1;
-                false
+                StateRootAction::Reject
+            }
+            // Don't vote and locally timeout if we don't have enough
+            // information to decide whether the state root is valid. It's still
+            // safe to insert to the block tree if other checks passes. So we
+            // don't need to request block sync if other blocks forms a QC on it
+            StateRootResult::Missing => {
+                debug!("Missing state root hash value locally, unable to verify");
+                metrics.consensus_events.rx_missing_state_root += 1;
+                StateRootAction::Defer
             }
             StateRootResult::Success => {
                 debug!("Received Proposal Message with valid state root hash");
                 metrics.consensus_events.rx_proposal += 1;
-                true
+                StateRootAction::Proceed
             }
         }
     }
@@ -943,7 +981,7 @@ mod test {
         metrics::Metrics,
         payload::{
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, MissingNextStateRoot,
-            NopStateRoot, StateRoot, StateRootValidator,
+            NopStateRoot, StateRoot, StateRootValidator, INITIAL_DELAY_STATE_ROOT_HASH,
         },
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         timeout::Timeout,
@@ -964,7 +1002,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
+    use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, TimeoutVariant};
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
@@ -2168,16 +2206,120 @@ mod test {
         );
 
         let (author, _, verified_message) = p1.destructure();
+        let cmds: Vec<ConsensusCommand<NopSignature, MultiSig<NopSignature>>> = state
+            .handle_proposal_message(
+                author,
+                verified_message,
+                &mut epoch_manager,
+                &val_epoch_map,
+                &election,
+                &mut metrics,
+            );
+
+        // the proposal still gets processed: the node enters a new round, and
+        // issues a request for the block it skipped over
+        assert_eq!(cmds.len(), 3);
+        assert!(matches!(
+            cmds[0],
+            ConsensusCommand::Schedule {
+                duration: _,
+                on_timeout: TimeoutVariant::Pacemaker
+            }
+        ));
+        assert!(matches!(cmds[1], ConsensusCommand::RequestSync { .. }));
+        assert!(matches!(
+            cmds[2],
+            ConsensusCommand::Schedule {
+                duration: _,
+                on_timeout: TimeoutVariant::BlockSync(_)
+            }
+        ));
+        assert_eq!(metrics.consensus_events.rx_execution_lagging, 1);
+    }
+
+    /// Test consensus behavior when a state root hash is missing. This is
+    /// tested by only updating consensus with one state root, then handling a
+    /// proposal with state root lower than that
+    #[test]
+    fn test_missing_state_root() {
+        let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
+                StateRoot::new(SeqNum(5))
+            });
+        let election = SimpleRoundRobin::default();
+        let (state, _) = states.split_first_mut().unwrap();
+        let mut metrics = Metrics::default();
+
+        let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
+
+        // prepare 10 blocks
+        for _ in 0..10 {
+            let p = proposal_gen.next_proposal(
+                &keys,
+                &certkeys,
+                &epoch_manager,
+                &val_epoch_map,
+                &election,
+                FullTransactionList::empty(),
+                ExecutionArtifacts {
+                    state_root: INITIAL_DELAY_STATE_ROOT_HASH,
+                    ..ExecutionArtifacts::zero()
+                },
+            );
+            let (author, _, p) = p.destructure();
+            let _cmds = state.handle_proposal_message(
+                author,
+                p,
+                &mut epoch_manager,
+                &val_epoch_map,
+                &election,
+                &mut metrics,
+            );
+        }
+
+        assert_eq!(metrics.consensus_events.rx_empty_block, 10);
+        assert_eq!(state.get_current_round(), Round(10));
+
+        // only execution update for block 8 comes
+        state.handle_state_root_update(SeqNum(8), Hash([0x08_u8; 32]));
+
+        // Block 11 carries the state root hash from executing block 6 the state
+        // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
+        let p = proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::new(vec![0xaa].into()),
+            ExecutionArtifacts {
+                state_root: Hash([0x06_u8; 32]),
+                ..ExecutionArtifacts::zero()
+            },
+        );
+        let (author, _, p) = p.destructure();
         let cmds = state.handle_proposal_message(
             author,
-            verified_message,
+            p,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
             &mut metrics,
         );
-        assert!(cmds.is_empty());
-        assert_eq!(metrics.consensus_events.rx_execution_lagging, 1);
+
+        assert_eq!(state.get_current_round(), Round(11));
+        assert_eq!(metrics.consensus_events.rx_missing_state_root, 1);
+        println!("{:?}", cmds);
+        assert_eq!(cmds.len(), 3);
+        assert!(matches!(cmds[0], ConsensusCommand::StateRootHash(_)));
+        assert!(matches!(cmds[1], ConsensusCommand::LedgerCommit(_)));
+        assert!(matches!(
+            cmds[2],
+            ConsensusCommand::Schedule {
+                duration: _,
+                on_timeout: TimeoutVariant::Pacemaker
+            }
+        ));
     }
 
     /// Test consensus behaviour of a leader who is supposed to propose

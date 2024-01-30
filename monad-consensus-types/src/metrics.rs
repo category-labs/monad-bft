@@ -34,6 +34,7 @@ pub struct ConsensusEvents {
     pub rx_empty_block: u64,
     pub rx_execution_lagging: u64,
     pub rx_bad_state_root: u64,
+    pub rx_missing_state_root: u64,
     pub rx_proposal: u64,
     pub proposal_with_tc: u64,
     pub failed_verify_randao_reveal_sig: u64,
