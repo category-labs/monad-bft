@@ -1,38 +1,17 @@
 #!/usr/bin/python3
 
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("topology_input_file")
+parser.add_argument("tc_output_file")
+parser.add_argument("addresses_output_file")
+args = parser.parse_args()
+
+with open(args.topology_input_file) as topofile:
+    import json
+    regions = json.load(topofile)
+
 device = "lo"
-regions = [
-    {
-        "name": "us",
-        "latencies_ms": [10, 50, 100],
-        "nodes": [
-            {
-                "up_Mbps": 100,
-                "down_Mbps": 100,
-            },
-        ] * 20,
-    },
-    {
-        "name": "europe",
-        "latencies_ms": [50, 10, 50],
-        "nodes": [
-            {
-                "up_Mbps": 100,
-                "down_Mbps": 100,
-            },
-        ] * 20,
-    },
-    {
-        "name": "asia",
-        "latencies_ms": [100, 50, 10],
-        "nodes": [
-            {
-                "up_Mbps": 100,
-                "down_Mbps": 100,
-            },
-        ] * 20,
-    },
-]
 
 commands = []
 node_ips = []
@@ -156,10 +135,9 @@ for region_idx, region in enumerate(regions):
         node_ips.append(node_ip + ":5000")
         node_idx += 1
 
+with open(args.tc_output_file, 'w') as tcfile:
+    for command in commands:
+        tcfile.write(f"{command}\n")
 
-commands.append("")
-commands.append("")
-commands.append("MONAD_MEMPOOL_RNDUDS=true monad-testground -o http://jaeger:4317 --addresses {}".format(" ".join(node_ips)))
-
-for command in commands:
-    print(command)
+with open(args.addresses_output_file, 'w') as addressesfile:
+    addressesfile.write(" ".join(node_ips))
