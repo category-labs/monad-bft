@@ -117,7 +117,7 @@ where
                 .into_inner();
                 let block_id = validated_request.block_id;
                 self.block_sync_responder.handle_request_block_sync_message(
-                    NodeId::new(sender),
+                    sender,
                     validated_request,
                     self.consensus.fetch_uncommitted_block(&block_id),
                 )

@@ -22,7 +22,7 @@ use monad_executor_glue::{
     CheckpointCommand, Command, ConsensusEvent, ExecutionLedgerCommand, LedgerCommand, MonadEvent,
     RouterCommand, StateRootHashCommand, TimerCommand,
 };
-use monad_types::{NodeId, RouterTarget, TimeoutVariant};
+use monad_types::{RouterTarget, TimeoutVariant};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -82,7 +82,7 @@ where
                 let verified_message = match unverified_message.verify(
                     self.epoch_manager,
                     self.val_epoch_map,
-                    &sender,
+                    &sender.pubkey(),
                 ) {
                     Ok(m) => m,
                     Err(e) => {
@@ -188,12 +188,8 @@ where
                     .val_epoch_map
                     .get_val_set(&current_epoch)
                     .expect("current validator set should be in the map");
-                self.consensus.handle_block_sync(
-                    NodeId::new(sender),
-                    validated_response,
-                    val_set,
-                    self.metrics,
-                )
+                self.consensus
+                    .handle_block_sync(sender, validated_response, val_set, self.metrics)
             }
         };
         consensus_cmds

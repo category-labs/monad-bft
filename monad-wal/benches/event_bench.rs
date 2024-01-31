@@ -102,7 +102,7 @@ fn bench_proposal(c: &mut Criterion) {
     );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-        sender: author_keypair.pubkey(),
+        sender: NodeId::new(author_keypair.pubkey()),
         unverified_message,
     });
 
@@ -135,7 +135,7 @@ fn bench_vote(c: &mut Criterion) {
     let unverified_message = Unverified::new(Unvalidated::new(vote), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-        sender: keypair.pubkey(),
+        sender: NodeId::new(keypair.pubkey()),
         unverified_message,
     });
 
@@ -234,7 +234,7 @@ fn bench_timeout(c: &mut Criterion) {
     );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-        sender: author_keypair.pubkey(),
+        sender: NodeId::new(author_keypair.pubkey()),
         unverified_message,
     });
 

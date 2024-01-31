@@ -1,10 +1,7 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_proto::{error::ProtoError, proto::event::*};
-use monad_types::{
-    convert::{proto_to_pubkey, pubkey_to_proto},
-    TimeoutVariant,
-};
+use monad_types::TimeoutVariant;
 
 use crate::ConsensusEvent;
 
@@ -20,7 +17,7 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
                 sender,
                 unverified_message,
             } => proto_consensus_event::Event::Message(ProtoMessageWithSender {
-                sender: Some(pubkey_to_proto(sender)),
+                sender: Some(sender.into()),
                 unverified_message: Some(unverified_message.into()),
             }),
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
@@ -51,7 +48,7 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&Consens
                 sender,
                 unvalidated_response,
             } => proto_consensus_event::Event::BlockSyncResp(ProtoBlockSyncResponseWithSender {
-                sender: Some(pubkey_to_proto(sender)),
+                sender: Some(sender.into()),
                 response: Some(unvalidated_response.into()),
             }),
         };
@@ -67,9 +64,12 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
     fn try_from(value: ProtoConsensusEvent) -> Result<Self, Self::Error> {
         let event = match value.event {
             Some(proto_consensus_event::Event::Message(msg)) => ConsensusEvent::Message {
-                sender: proto_to_pubkey(msg.sender.ok_or(ProtoError::MissingRequiredField(
-                    "ConsensusEvent::message.sender".to_owned(),
-                ))?)?,
+                sender: msg
+                    .sender
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "ConsensusEvent::message.sender".to_owned(),
+                    ))?
+                    .try_into()?,
                 unverified_message: msg
                     .unverified_message
                     .ok_or(ProtoError::MissingRequiredField(
@@ -112,10 +112,12 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
                 ConsensusEvent::StateUpdate((s, h))
             }
             Some(proto_consensus_event::Event::BlockSyncResp(event)) => {
-                let sender =
-                    proto_to_pubkey(event.sender.ok_or(ProtoError::MissingRequiredField(
+                let sender = event
+                    .sender
+                    .ok_or(ProtoError::MissingRequiredField(
                         "ConsensusEvent::BlockSyncResp::sender".to_owned(),
-                    ))?)?;
+                    ))?
+                    .try_into()?;
 
                 let unvalidated_response = event
                     .response

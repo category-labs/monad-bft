@@ -134,13 +134,13 @@ impl<E, OM, B, C, SCT: SignatureCollection> Command<E, OM, B, C, SCT> {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConsensusEvent<ST, SCT: SignatureCollection> {
     Message {
-        sender: SCT::NodeIdPubKey,
+        sender: NodeId<SCT::NodeIdPubKey>,
         unverified_message: Unverified<ST, Unvalidated<ConsensusMessage<SCT>>>,
     },
     Timeout(TimeoutVariant),
     StateUpdate((SeqNum, ConsensusHash)),
     BlockSyncResponse {
-        sender: SCT::NodeIdPubKey,
+        sender: NodeId<SCT::NodeIdPubKey>,
         unvalidated_response: Unvalidated<BlockSyncResponseMessage<SCT>>,
     },
 }
@@ -191,7 +191,7 @@ pub struct FetchedBlock<SCT: SignatureCollection> {
 pub enum BlockSyncEvent<SCT: SignatureCollection> {
     /// A peer requesting for a missing block
     BlockSyncRequest {
-        sender: SCT::NodeIdPubKey,
+        sender: NodeId<SCT::NodeIdPubKey>,
         unvalidated_request: Unvalidated<RequestBlockSyncMessage>,
     },
     /// Fetched full block from the consensus ledger
@@ -226,7 +226,7 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
 pub enum MempoolEvent<SCT: SignatureCollection> {
     /// Txns that are incoming from other Nodes
     CascadeTxns {
-        sender: SCT::NodeIdPubKey,
+        sender: NodeId<SCT::NodeIdPubKey>,
         txns: Unvalidated<CascadeTxMessage>,
     },
     /// Txns that are incoming via RPC (users)
