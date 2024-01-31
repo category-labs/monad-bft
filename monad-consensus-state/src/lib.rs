@@ -314,8 +314,17 @@ where
         if let Some(v) = vote {
             let vote_msg = VoteMessage::<SCT>::new(v, &self.cert_keypair);
 
-            let next_leader =
-                election.get_leader(round + Round(1), epoch, validator_set.get_members());
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let (next_round, next_epoch, next_validator_set) = {
+                let next_round = round + Round(1);
+                let next_epoch = epoch_manager.get_epoch(next_round);
+                let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
+                    todo!("handle non-existent validatorset for next round epoch");
+                };
+                (next_round, next_epoch, next_validator_set.get_members())
+            };
+            let next_leader = election.get_leader(next_round, next_epoch, next_validator_set);
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(next_leader),
                 message: ConsensusMessage::Vote(vote_msg).sign(&self.keypair),
