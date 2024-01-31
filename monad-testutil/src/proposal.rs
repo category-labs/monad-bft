@@ -90,14 +90,7 @@ where
             .zip(certkeys)
             .find(|(k, _)| {
                 let epoch = epoch_manager.get_epoch(self.round);
-                k.pubkey()
-                    == election
-                        .get_leader(
-                            self.round,
-                            epoch,
-                            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
-                        )
-                        .pubkey()
+                k.pubkey() == election.get_leader(self.round).pubkey()
             })
             .expect("key not in valset");
 

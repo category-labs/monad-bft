@@ -41,7 +41,7 @@ fn main() {
     let epoch_manager = EpochManager::new(SeqNum(2000), Round(50));
     let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
     val_epoch_map.insert(Epoch(1), validator_stakes, ValidatorMapping::new(valmap));
-    let election = SimpleRoundRobin::default();
+    let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
     let mut propgen: ProposalGen<_, _> =
         ProposalGen::<SecpSignature, BlsSignatureCollection<_>>::new();
 
@@ -59,11 +59,7 @@ fn main() {
         .2;
 
     let epoch = epoch_manager.get_epoch(proposal.block.0.round);
-    let proposer_leader = election.get_leader(
-        proposal.block.0.round,
-        epoch,
-        val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
-    );
+    let proposer_leader = election.get_leader(proposal.block.0.round);
     let leader_key = keys
         .iter()
         .find(|k| k.pubkey() == proposer_leader.pubkey())

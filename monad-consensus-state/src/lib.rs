@@ -263,8 +263,7 @@ where
 
         // author, leader, round checks
         let round = self.pacemaker.get_current_round();
-        let block_round_leader =
-            election.get_leader(block.get_round(), epoch, validator_set.get_members());
+        let block_round_leader = election.get_leader(block.get_round());
         if block.get_round() > round
             || author != block_round_leader
             || block.get_author() != block_round_leader
@@ -316,15 +315,15 @@ where
 
             // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
             // error-prone
-            let (next_round, next_epoch, next_validator_set) = {
+            let next_round = {
                 let next_round = round + Round(1);
                 let next_epoch = epoch_manager.get_epoch(next_round);
                 let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
                     todo!("handle non-existent validatorset for next round epoch");
                 };
-                (next_round, next_epoch, next_validator_set.get_members())
+                next_round
             };
-            let next_leader = election.get_leader(next_round, next_epoch, next_validator_set);
+            let next_leader = election.get_leader(next_round);
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(next_leader),
                 message: ConsensusMessage::Vote(vote_msg).sign(&self.keypair),
@@ -381,13 +380,7 @@ where
             metrics.consensus_events.created_qc += 1;
             cmds.extend(self.process_certificate_qc(&qc, epoch_manager, validator_set, metrics));
 
-            if self.nodeid
-                == election.get_leader(
-                    self.pacemaker.get_current_round(),
-                    epoch,
-                    validator_set.get_members(),
-                )
-            {
+            if self.nodeid == election.get_leader(self.pacemaker.get_current_round()) {
                 cmds.extend(self.process_new_round_event(tx_pool, validator_set, None, metrics));
             }
         }
@@ -467,13 +460,7 @@ where
             });
             cmds.extend(advance_round_cmds);
 
-            if self.nodeid
-                == election.get_leader(
-                    self.pacemaker.get_current_round(),
-                    epoch,
-                    validator_set.get_members(),
-                )
-            {
+            if self.nodeid == election.get_leader(self.pacemaker.get_current_round()) {
                 cmds.extend(self.process_new_round_event(
                     tx_pool,
                     validator_set,
@@ -1104,7 +1091,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
 
@@ -1175,7 +1162,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let state = &mut states[0];
         let mut metrics = Metrics::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1223,7 +1210,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let state = &mut states[0];
         let mut metrics = Metrics::default();
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1325,7 +1312,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let state = &mut states[0];
         let mut metrics = Metrics::default();
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1390,7 +1377,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let state = &mut states[0];
         let mut metrics = Metrics::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1547,7 +1534,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let state = &mut states[0];
         let mut metrics = Metrics::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1637,7 +1624,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let state = &mut states[0];
         let mut metrics = Metrics::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1744,7 +1731,7 @@ mod test {
                 NopStateRoot
             });
         let valset = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut empty_txpool = MockTxPool::default();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -2093,7 +2080,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
                 StateRoot::new(SeqNum(1))
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
 
@@ -2141,7 +2128,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
                 StateRoot::new(SeqNum(1))
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
 
@@ -2191,7 +2178,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, MissingNextStateRoot>(4, || {
                 MissingNextStateRoot::default()
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut empty_txpool = MockTxPool::default();
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
@@ -2310,7 +2297,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRoot>(4, || {
                 StateRoot::new(SeqNum(1))
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
 
@@ -2454,7 +2441,7 @@ mod test {
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
                 NopStateRoot
             });
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let (first_state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
 
@@ -2569,7 +2556,7 @@ mod test {
                 || NopStateRoot,
             );
 
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut empty_txpool = MockTxPool::default();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
@@ -2607,11 +2594,7 @@ mod test {
             assert_eq!(state.get_current_round(), Round(8));
         }
         let epoch = epoch_manager.get_epoch(Round(10));
-        let next_leader = election.get_leader(
-            Round(10),
-            epoch,
-            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
-        );
+        let next_leader = election.get_leader(Round(10));
         let mut leader_index = 0;
         // test when observing a qc through vote message, and qc points to a block that doesn't exists yet
         let cp = correct_proposal_gen.next_proposal(
@@ -2703,7 +2686,7 @@ mod test {
                 || NopStateRoot,
             );
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut empty_txpool = MockTxPool::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -2781,7 +2764,7 @@ mod test {
                 || NopStateRoot,
             );
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         for _ in 0..4 {
@@ -2848,7 +2831,7 @@ mod test {
             );
 
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         let verified_p1 = propgen.next_proposal(
@@ -2886,11 +2869,7 @@ mod test {
         let (_, _, p2) = verified_p2.destructure();
 
         let epoch = epoch_manager.get_epoch(Round(4));
-        let invalid_author = election.get_leader(
-            Round(4),
-            epoch,
-            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
-        );
+        let invalid_author = election.get_leader(Round(4));
         assert!(invalid_author != NodeId::new(states[0].get_keypair().pubkey()));
         assert!(invalid_author != p2.block.0.author);
         let invalid_b2 = Block::new(
@@ -2928,7 +2907,7 @@ mod test {
                 || NopStateRoot,
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&epoch_manager, &val_epoch_map);
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
@@ -2998,7 +2977,7 @@ mod test {
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&propgen_epoch_manager, &val_epoch_map);
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3146,7 +3125,7 @@ mod test {
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&propgen_epoch_manager, &val_epoch_map);
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3264,7 +3243,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&propgen_epoch_manager, &val_epoch_map);
         let mut empty_txpool = MockTxPool::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3415,7 +3394,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&propgen_epoch_manager, &val_epoch_map);
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3643,7 +3622,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
-        let election = SimpleRoundRobin::default();
+        let election = SimpleRoundRobin::seed(&propgen_epoch_manager, &val_epoch_map);
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
