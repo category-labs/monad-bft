@@ -7,6 +7,7 @@ use std::{
 
 use alloy_rlp::{Decodable, Encodable};
 use clap::Parser;
+use monad_crypto::hasher::{Blake3Hash, Hash, Hasher};
 use reth_primitives::Block;
 
 #[derive(Parser, Debug)]
@@ -24,8 +25,11 @@ fn main() -> io::Result<()> {
     let mut f = File::open(args.ledger_path)?;
 
     let mut cursor = KECCAK_HDR_LEN;
+    let mut running_hash = Hash::default();
 
     loop {
+        let mut hasher = Blake3Hash::new();
+        hasher.update(running_hash);
         let end = f.seek(io::SeekFrom::End(0))?;
         f.seek(io::SeekFrom::Start(cursor as u64))?;
         if cursor > end as usize {
@@ -39,7 +43,15 @@ fn main() -> io::Result<()> {
         let y = Block::decode(&mut &buf[..]);
         let c = match y {
             Ok(x) => {
-                println!("seqnum: {:?}, num_tx: {:?}", x.header.number, x.body.len());
+                for t in &x.body {
+                    hasher.update(t.hash());
+                }
+                running_hash = hasher.hash();
+
+                println!(
+                    "seqnum: {:?}, running_hash: {}",
+                    x.header.number, running_hash,
+                );
                 x.length() + KECCAK_HDR_LEN
             }
             Err(_) => {
