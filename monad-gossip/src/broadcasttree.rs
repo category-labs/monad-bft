@@ -64,12 +64,26 @@ impl<PT: PubKey> BroadcastTreeConfig<PT> {
 pub struct BroadcastTree<PT: PubKey> {
     config: BroadcastTreeConfig<PT>,
 
-    msg_cache: HashMap<MsgId, HashMap<PartIndex, Bytes>>,
+    msg_cache: HashMap<MsgId, MsgCache<PT>>,
     // TODO garbage collect complete_msgs
     completed_msgs: HashSet<MsgId>,
 
     events: VecDeque<GossipEvent<PT>>,
     current_tick: Duration,
+}
+
+struct MsgCache<PT: PubKey> {
+    route: Vec<Vec<NodeId<PT>>>,
+    parts: HashMap<PartIndex, Bytes>,
+}
+
+impl<PT: PubKey> MsgCache<PT> {
+    fn new(route: Vec<Vec<NodeId<PT>>>) -> Self {
+        Self {
+            route,
+            parts: Default::default(),
+        }
+    }
 }
 
 impl<PT: PubKey> BroadcastTree<PT> {
@@ -138,9 +152,16 @@ impl<PT: PubKey> BroadcastTree<PT> {
             Ok(k) => k,
             Err(_) => return, // TODO, someone sending a bad gossip_header, evidence?
         };
-        // TODO: we can cache the calculated routes and garbage clean at the same time
-        // completed_msgs are cleared
-        let routes = self.calculate_route(NodeId::new(root), message_header.id);
+        if !self.msg_cache.contains_key(&message_header.id) {
+            let route = self.calculate_route(NodeId::new(root), message_header.id);
+            self.msg_cache
+                .insert(message_header.id, MsgCache::new(route));
+        }
+        let cache = self
+            .msg_cache
+            .get(&message_header.id)
+            .expect("msg_cache must have been initialized");
+        let routes = &cache.route;
         let route_idx = message_header.part as usize;
 
         let children = &routes[route_idx];
@@ -162,7 +183,11 @@ impl<PT: PubKey> BroadcastTree<PT> {
         message_header: Header,
         message_part: GossipMessage,
     ) {
-        let part_list = self.msg_cache.entry(message_header.id).or_default();
+        let cache = self
+            .msg_cache
+            .get_mut(&message_header.id)
+            .expect("handle_message_part should have initialized the msg_cache");
+        let part_list = &mut cache.parts;
         part_list.insert(message_header.part, message_part);
 
         if part_list.len() >= self.config.num_routes {
