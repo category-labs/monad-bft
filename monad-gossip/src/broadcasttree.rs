@@ -271,6 +271,7 @@ impl<PT: PubKey> BroadcastTree<PT> {
     ) {
         let routes = self.calculate_route(root, msgid);
         // for each chunk, use one of the routes -- if the route is empty, do nothing
+        // FIXME this assertion breaks for small messages
         assert_eq!(routes.len(), gossip_messages.len());
         for (route, gossip_message) in routes.iter().zip(gossip_messages.into_iter()) {
             for child in route {
@@ -289,9 +290,14 @@ impl<PT: PubKey> Gossip for BroadcastTree<PT> {
     fn send(&mut self, time: std::time::Duration, to: RouterTarget<PT>, message: AppMessage) {
         self.current_tick = time;
 
-        let mut hasher = HasherType::new();
-        hasher.update(&message);
-        let msgid = hasher.hash().0;
+        let msgid = {
+            let _hash_span =
+                tracing::debug_span!("broadcast_tree_hash_span", message_len = message.len())
+                    .entered();
+            let mut hasher = HasherType::new();
+            hasher.update(&message);
+            hasher.hash().0
+        };
 
         let root_id_bytes = self.config.my_id.pubkey().bytes();
 

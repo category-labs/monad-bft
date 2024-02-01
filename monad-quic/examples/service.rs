@@ -17,6 +17,7 @@ use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::mock::MockGossipConfig;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
+use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -26,22 +27,21 @@ struct Args {
 }
 
 pub fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_micros()
+    tracing_subscriber::fmt::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_span_events(FmtSpan::CLOSE)
         .init();
     let args = Args::parse();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(service(args.addresses, 1, 10_000 * 400));
+    let payload_size = 10_000 * 400;
+    std::thread::sleep(Duration::from_secs(5));
+    service(args.addresses, 1, payload_size);
 }
 
 type SignatureType = NopSignature;
 type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
-async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
+fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
     assert!(
         addresses.len() <= 100,
         "peer_id generation only supports <= 100 peers"
@@ -63,37 +63,12 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> = peers
         .iter()
         .copied()
-        .zip(addresses.into_iter())
+        .zip(addresses)
         .map(|(peer, address)| (peer, address.parse().unwrap()))
         .collect();
 
-    const MAX_RTT: Duration = Duration::from_millis(110);
+    const MAX_RTT: Duration = Duration::from_millis(250);
     const BANDWIDTH_Mbps: u16 = 1_000;
-
-    let services = keys
-        .iter()
-        .map(|key| {
-            let me = NodeId::new(key.pubkey());
-            let server_address = *known_addresses.get(&me).unwrap();
-            Service::<_, _, MockMessage, MockMessage>::new(
-                ServiceConfig {
-                    me,
-                    known_addresses: known_addresses.clone(),
-                    server_address,
-                    quinn_config: SafeQuinnConfig::<SignatureType>::new(
-                        key,
-                        MAX_RTT,
-                        BANDWIDTH_Mbps,
-                    ),
-                },
-                MockGossipConfig {
-                    all_peers: peers.clone(),
-                    me,
-                }
-                .build(),
-            )
-        })
-        .collect::<Vec<_>>();
 
     let (tx_writer, tx_reader): (BTreeMap<_, _>, Vec<_>) = peers
         .iter()
@@ -107,36 +82,49 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     let (rx_writer, rx_reader) =
         std::sync::mpsc::channel::<(NodeId<PubKeyType>, <MockMessage as Message>::Event)>();
 
-    services
-        .into_iter()
-        .zip(tx_reader)
-        .for_each(|(mut service, mut tx_reader)| {
-            let rx_writer = rx_writer.clone();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
+    keys.iter().zip(tx_reader).for_each(|(key, mut tx_reader)| {
+        let rx_writer = rx_writer.clone();
+        let me = NodeId::new(key.pubkey());
+        let server_address = *known_addresses.get(&me).unwrap();
+        let gossip = MockGossipConfig {
+            all_peers: peers.clone(),
+            me,
+        }
+        .build();
+        let service_config = ServiceConfig {
+            me,
+            known_addresses: known_addresses.clone(),
+            server_address,
+            quinn_config: SafeQuinnConfig::<SignatureType>::new(key, MAX_RTT, BANDWIDTH_Mbps),
+        };
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
 
-                rt.block_on(async move {
-                    loop {
-                        tokio::select! {
-                            maybe_message = service.next() => {
-                                let message = maybe_message.expect("never terminates");
-                                rx_writer
-                                    .send((service.me(), message))
-                                    .expect("rx_reader should never be dropped");
-                            }
-                            maybe_tx = tx_reader.recv() => {
-                                let tx = maybe_tx.expect("tx_writer should never be dropped");
-                                // TODO batch these?
-                                service.exec(vec![tx]);
-                            }
-                        };
-                    }
-                });
+            rt.block_on(async move {
+                let mut service =
+                    Service::<_, _, MockMessage, MockMessage>::new(service_config, gossip);
+
+                loop {
+                    tokio::select! {
+                        maybe_message = service.next() => {
+                            let message = maybe_message.expect("never terminates");
+                            rx_writer
+                                .send((service.me(), message))
+                                .expect("rx_reader should never be dropped");
+                        }
+                        maybe_tx = tx_reader.recv() => {
+                            let tx = maybe_tx.expect("tx_writer should never be dropped");
+                            // TODO batch these?
+                            service.exec(vec![tx]);
+                        }
+                    };
+                }
             });
         });
+    });
 
     let (tx_peer, tx_router) = tx_writer.first_key_value().expect("at least 1 tx");
     let start = Instant::now();
@@ -144,14 +132,14 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
     'warmup: loop {
         let mut expected_rx_count = num_peers;
         tracing::info!("warming up, sending msg id={}", id);
-        let message = MockMessage::new(id, 8);
+        let message = MockMessage::new(id, 1_000);
         tx_router
             .send(RouterCommand::Publish {
                 target: RouterTarget::Broadcast,
                 message,
             })
             .expect("reader should never be dropped");
-        while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(1)) {
+        while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_millis(500)) {
             if &tx == tx_peer && msg_id == message.id {
                 expected_rx_count -= 1;
                 if expected_rx_count == 0 {
@@ -191,6 +179,7 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                     start.elapsed(),
                     num_broadcast
                 );
+                std::thread::sleep(Duration::from_secs(3));
                 std::process::exit(0);
             }
         }

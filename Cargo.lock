@@ -2665,7 +2665,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap 4.4.10",
- "env_logger",
  "futures",
  "futures-util",
  "monad-crypto",
@@ -2679,6 +2678,7 @@ dependencies = [
  "rand",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
