@@ -9,7 +9,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     cargo build --release --example ethtx && \
-    mv target/release/ethtx ethtx
+    mv target/release/examples/ethtx ethtx
 
 # Runner
 FROM debian:buster-slim
