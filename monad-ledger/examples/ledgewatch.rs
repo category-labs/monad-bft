@@ -26,6 +26,7 @@ fn main() -> io::Result<()> {
 
     let mut cursor = KECCAK_HDR_LEN;
     let mut running_hash = Hash::default();
+    let mut running_cnt: u64 = 0;
 
     loop {
         let mut hasher = Blake3Hash::new();
@@ -45,12 +46,13 @@ fn main() -> io::Result<()> {
             Ok(x) => {
                 for t in &x.body {
                     hasher.update(t.hash());
+                    running_cnt += 1;
                 }
                 running_hash = hasher.hash();
 
                 println!(
-                    "seqnum: {:?}, running_hash: {}",
-                    x.header.number, running_hash,
+                    "seqnum: {:?}, running tx count: {}, running_hash: {}",
+                    x.header.number, running_cnt, running_hash,
                 );
                 x.length() + KECCAK_HDR_LEN
             }
