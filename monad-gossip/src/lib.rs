@@ -10,6 +10,7 @@ mod connection_manager;
 pub use connection_manager::{ConnectionManager, ConnectionManagerEvent};
 pub mod gossipsub;
 pub mod mock;
+pub mod seeder;
 pub mod testutil;
 
 type GossipMessage = Bytes;
