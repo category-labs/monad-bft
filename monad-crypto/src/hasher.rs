@@ -21,6 +21,16 @@ impl AsRef<[u8]> for Hash {
     }
 }
 
+impl std::fmt::Display for Hash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "0x")?;
+        for b in self.0 {
+            write!(f, "{:02x?}", b)?;
+        }
+        Ok(())
+    }
+}
+
 pub trait Hashable {
     fn hash(&self, state: &mut impl Hasher);
 }

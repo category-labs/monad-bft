@@ -1,8 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     net::SocketAddr,
     num::ParseIntError,
-    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
@@ -15,7 +14,7 @@ use monad_crypto::{
 };
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
-use monad_gossip::mock::{MockGossip, MockGossipConfig};
+use monad_gossip::mock::MockGossipConfig;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 
@@ -36,9 +35,11 @@ pub fn main() {
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(service(args.addresses, 1, 5_000 * 32));
+    rt.block_on(service(args.addresses, 1, 10_000 * 400));
 }
+
 type SignatureType = NopSignature;
+type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
 async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
     assert!(
@@ -54,28 +55,27 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
         })
         .collect();
 
-    let peers: Vec<NodeId<CertificateSignaturePubKey<SignatureType>>> = keys
+    let peers: Vec<NodeId<PubKeyType>> = keys
         .iter()
         .map(|keypair| NodeId::new(keypair.pubkey()))
         .collect();
 
-    let known_addresses: HashMap<NodeId<CertificateSignaturePubKey<SignatureType>>, SocketAddr> =
-        peers
-            .iter()
-            .copied()
-            .zip(addresses.into_iter())
-            .map(|(peer, address)| (peer, address.parse().unwrap()))
-            .collect();
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddr> = peers
+        .iter()
+        .copied()
+        .zip(addresses.into_iter())
+        .map(|(peer, address)| (peer, address.parse().unwrap()))
+        .collect();
 
     const MAX_RTT: Duration = Duration::from_millis(110);
     const BANDWIDTH_Mbps: u16 = 1_000;
 
-    let mut services = keys
+    let services = keys
         .iter()
         .map(|key| {
             let me = NodeId::new(key.pubkey());
             let server_address = *known_addresses.get(&me).unwrap();
-            Service::new(
+            Service::<_, _, MockMessage, MockMessage>::new(
                 ServiceConfig {
                     me,
                     known_addresses: known_addresses.clone(),
@@ -93,45 +93,25 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                 .build(),
             )
         })
-        .collect::<Vec<
-            Service<
-                _,
-                MockGossip<CertificateSignaturePubKey<SignatureType>>,
-                MockMessage,
-                MockMessage,
-            >,
-        >>();
+        .collect::<Vec<_>>();
 
-    // broadcast from first peer
-    services[0].exec(vec![RouterCommand::Publish {
-        target: RouterTarget::Broadcast,
-        message: MockMessage::new(0, 8),
-    }]);
-
-    let broadcast_commands: Vec<_> = (1..=num_broadcast)
-        .map(|idx| RouterCommand::Publish {
-            target: RouterTarget::Broadcast,
-            message: MockMessage::new(idx, message_len),
-        })
-        .collect();
-    // messages from first peer expected
-    let expected_messages: HashSet<(NodeId<CertificateSignaturePubKey<SignatureType>>, u8)> = peers
-        .first()
+    let (tx_writer, tx_reader): (BTreeMap<_, _>, Vec<_>) = peers
         .iter()
         .copied()
-        .flat_map(|peer| (1..=num_broadcast).map(|message_id| (*peer, message_id)))
-        .collect();
+        .map(|peer| {
+            let (sender, receiver) =
+                tokio::sync::mpsc::unbounded_channel::<RouterCommand<PubKeyType, MockMessage>>();
+            ((peer, sender), receiver)
+        })
+        .unzip();
+    let (rx_writer, rx_reader) =
+        std::sync::mpsc::channel::<(NodeId<PubKeyType>, <MockMessage as Message>::Event)>();
 
-    let mux = Arc::new(RwLock::new(0_u8));
-    let start_mux = Arc::new(RwLock::new(None));
     services
         .into_iter()
-        .enumerate()
-        .for_each(|(idx, mut service)| {
-            let mut broadcast_commands = Some(broadcast_commands.clone());
-            let mux = mux.clone();
-            let start_mux = start_mux.clone();
-            let mut expected_messages = expected_messages.clone();
+        .zip(tx_reader)
+        .for_each(|(mut service, mut tx_reader)| {
+            let rx_writer = rx_writer.clone();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -139,55 +119,86 @@ async fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) 
                     .unwrap();
 
                 rt.block_on(async move {
-                    let mut num_ack_rx = 0;
-                    while !expected_messages.is_empty() {
-                        let message = service.next().await.expect("never terminates");
-                        if message.1 == 0 {
-                            if idx != 0 {
-                                // send ack
-                                service.exec(vec![RouterCommand::Publish {
-                                    target: RouterTarget::PointToPoint(message.0),
-                                    message: MockMessage::new(0, 5),
-                                }]);
-                            } else {
-                                num_ack_rx += 1;
-                                assert!(num_ack_rx <= num_peers);
-                                if num_ack_rx == num_peers {
-                                    // all acks received, warmed up, broadcast payload
-                                    tracing::info!("START");
-                                    let now = Instant::now();
-                                    *start_mux.write().unwrap() = Some(now);
-                                    tracing::info!("exec broadcast payload");
-                                    service.exec(broadcast_commands.take().unwrap());
-                                    tracing::info!(
-                                        "done broadcast payload, elapsed={:?}",
-                                        now.elapsed()
-                                    );
-                                }
+                    loop {
+                        tokio::select! {
+                            maybe_message = service.next() => {
+                                let message = maybe_message.expect("never terminates");
+                                rx_writer
+                                    .send((service.me(), message))
+                                    .expect("rx_reader should never be dropped");
                             }
-                        } else {
-                            assert!(expected_messages.remove(&message));
-                        }
+                            maybe_tx = tx_reader.recv() => {
+                                let tx = maybe_tx.expect("tx_writer should never be dropped");
+                                // TODO batch these?
+                                service.exec(vec![tx]);
+                            }
+                        };
                     }
-                    tracing::info!(
-                        "took {:?} for node={} to rx all messages",
-                        (*start_mux.read().unwrap()).unwrap().elapsed(),
-                        idx
-                    );
-                    *mux.write().unwrap() += 1;
-                    service.next().await;
-                    unreachable!("should yield forever");
                 });
             });
         });
 
-    while *mux.read().unwrap() < num_peers {
-        std::thread::sleep(Duration::from_millis(100));
+    let (tx_peer, tx_router) = tx_writer.first_key_value().expect("at least 1 tx");
+    let start = Instant::now();
+    let mut id = 0_u8;
+    'warmup: loop {
+        let mut expected_rx_count = num_peers;
+        tracing::info!("warming up, sending msg id={}", id);
+        let message = MockMessage::new(id, 8);
+        tx_router
+            .send(RouterCommand::Publish {
+                target: RouterTarget::Broadcast,
+                message,
+            })
+            .expect("reader should never be dropped");
+        while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(1)) {
+            if &tx == tx_peer && msg_id == message.id {
+                expected_rx_count -= 1;
+                if expected_rx_count == 0 {
+                    break 'warmup;
+                }
+            }
+        }
+        id += 1;
+        assert!(id <= u8::MAX - num_broadcast);
     }
-    std::process::exit(0)
+    tracing::info!("took {:?} to warmup!", start.elapsed());
+
+    let start = Instant::now();
+    let mut expected_message_ids = HashMap::new();
+    for broadcast_id in id..id + num_broadcast {
+        let message = MockMessage::new(broadcast_id, message_len);
+        tx_router
+            .send(RouterCommand::Publish {
+                target: RouterTarget::Broadcast,
+                message,
+            })
+            .expect("reader should never be dropped");
+        expected_message_ids.insert(message.id, num_peers);
+    }
+    while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(10)) {
+        if &tx == tx_peer {
+            let num_left = expected_message_ids
+                .get_mut(&msg_id)
+                .expect("msg_id must exist");
+            *num_left -= 1;
+            if num_left == &0 {
+                expected_message_ids.remove(&msg_id);
+            }
+            if expected_message_ids.is_empty() {
+                tracing::info!(
+                    "took {:?} to broadcast/receive {} messages!",
+                    start.elapsed(),
+                    num_broadcast
+                );
+                std::process::exit(0);
+            }
+        }
+    }
+    unreachable!("timed out!");
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct MockMessage {
     id: u8,
     message_len: usize,
@@ -200,7 +211,7 @@ impl MockMessage {
 }
 
 impl Message for MockMessage {
-    type NodeIdPubKey = CertificateSignaturePubKey<SignatureType>;
+    type NodeIdPubKey = PubKeyType;
     type Event = (NodeId<Self::NodeIdPubKey>, u8);
 
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event {

@@ -1,7 +1,6 @@
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_proto::{error::ProtoError, proto::event::*};
-use monad_types::convert::{proto_to_pubkey, pubkey_to_proto};
 
 use crate::{BlockSyncEvent, FetchedBlock, MempoolEvent, MonadEvent, ValidatorEvent};
 
@@ -97,7 +96,7 @@ impl<SCT: SignatureCollection> From<&BlockSyncEvent<SCT>> for ProtoBlockSyncEven
                 sender,
                 unvalidated_request,
             } => proto_block_sync_event::Event::BlockSyncReq(ProtoBlockSyncRequestWithSender {
-                sender: Some(pubkey_to_proto(sender)),
+                sender: Some(sender.into()),
                 request: Some(unvalidated_request.into()),
             }),
             BlockSyncEvent::FetchedBlock(fetched_block) => {
@@ -115,10 +114,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlockSyncEvent> for BlockSyncEvent<S
         let event = match value.event {
             Some(event) => match event {
                 proto_block_sync_event::Event::BlockSyncReq(event) => {
-                    let sender =
-                        proto_to_pubkey(event.sender.ok_or(ProtoError::MissingRequiredField(
+                    let sender = event
+                        .sender
+                        .ok_or(ProtoError::MissingRequiredField(
                             "BlockSyncEvent.block_sync_req.sender".to_owned(),
-                        ))?)?;
+                        ))?
+                        .try_into()?;
                     let unvalidated_request = event
                         .request
                         .ok_or(ProtoError::MissingRequiredField(
@@ -194,7 +195,7 @@ impl<SCT: SignatureCollection> From<&MempoolEvent<SCT>> for ProtoMempoolEvent {
             }
             MempoolEvent::CascadeTxns { sender, txns } => {
                 proto_mempool_event::Event::CascadeTxns(ProtoCascadeTxnsWithSender {
-                    sender: Some(pubkey_to_proto(sender)),
+                    sender: Some(sender.into()),
                     cascade: Some(txns.into()),
                 })
             }
@@ -210,9 +211,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoMempoolEvent> for MempoolEvent<SCT> 
         let event = match value.event {
             Some(proto_mempool_event::Event::Usertx(tx)) => MempoolEvent::UserTxns(tx.tx),
             Some(proto_mempool_event::Event::CascadeTxns(msg)) => MempoolEvent::CascadeTxns {
-                sender: proto_to_pubkey(msg.sender.ok_or(ProtoError::MissingRequiredField(
-                    "MempoolEvent.cascade_txns.sender".to_owned(),
-                ))?)?,
+                sender: msg
+                    .sender
+                    .ok_or(ProtoError::MissingRequiredField(
+                        "MempoolEvent.cascade_txns.sender".to_owned(),
+                    ))?
+                    .try_into()?,
                 txns: msg
                     .cascade
                     .ok_or(ProtoError::MissingRequiredField(

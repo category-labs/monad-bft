@@ -248,24 +248,24 @@ where
         // malformed stuff (that gets added to event log) can be slashed? TODO
         match self {
             MonadMessage::Consensus(msg) => MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-                sender: from.pubkey(),
+                sender: from,
                 unverified_message: msg,
             }),
 
             MonadMessage::BlockSyncRequest(msg) => {
                 MonadEvent::BlockSyncEvent(BlockSyncEvent::BlockSyncRequest {
-                    sender: from.pubkey(),
+                    sender: from,
                     unvalidated_request: msg,
                 })
             }
             MonadMessage::BlockSyncResponse(msg) => {
                 MonadEvent::ConsensusEvent(ConsensusEvent::BlockSyncResponse {
-                    sender: from.pubkey(),
+                    sender: from,
                     unvalidated_response: msg,
                 })
             }
             MonadMessage::CascadeTxns(msg) => MonadEvent::MempoolEvent(MempoolEvent::CascadeTxns {
-                sender: from.pubkey(),
+                sender: from,
                 txns: msg,
             }),
         }

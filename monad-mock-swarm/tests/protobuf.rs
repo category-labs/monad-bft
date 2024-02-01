@@ -23,7 +23,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, Epoch, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     simple_round_robin::SimpleRoundRobin,
@@ -72,7 +72,7 @@ fn test_consensus_message_event_vote_multisig() {
     let unverified_votemsg = Unverified::new(Unvalidated::new(votemsg), sig);
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-        sender: keypair.pubkey(),
+        sender: NodeId::new(keypair.pubkey()),
         unverified_message: unverified_votemsg,
     });
 
@@ -116,7 +116,7 @@ fn test_consensus_message_event_proposal_bls() {
     let consensus_proposal_msg = ConsensusMessage::Proposal((*proposal).clone());
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
-        sender: proposal.author().pubkey(),
+        sender: NodeId::new(proposal.author().pubkey()),
         unverified_message: Unverified::new(
             Unvalidated::new(consensus_proposal_msg),
             *proposal.author_signature(),

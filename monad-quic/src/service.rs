@@ -306,6 +306,10 @@ where
 
     OM: Into<M> + Clone,
 {
+    pub fn me(&self) -> NodeId<G::NodeIdPubKey> {
+        self.me
+    }
+
     /// Wires events from a new pending connection to self.connection_events
     fn connecting(&mut self, mut connection: Connection<G::NodeIdPubKey>) {
         let connection_events_sender = self.connection_events_sender.clone();
