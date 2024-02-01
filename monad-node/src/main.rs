@@ -113,7 +113,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
-        ipc: IpcReceiver::new(node_state.mempool_ipc_path).expect("uds bind failed"),
+        ipc: IpcReceiver::new(node_state.mempool_ipc_path, 100).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
     };
 
@@ -153,7 +153,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         let cmds = state.update(wal_event);
         executor.replay(cmds);
     }
-
     let total_start = Instant::now();
     let mut start = total_start;
     let mut last_printed_len = 0;

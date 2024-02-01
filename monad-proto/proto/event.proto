@@ -81,7 +81,7 @@ message ProtoValidatorEvent {
 }
 
 message ProtoUserTx {
-  bytes tx = 1;
+  repeated bytes tx = 1;
 }
 
 message ProtoCascadeTxnsWithSender {

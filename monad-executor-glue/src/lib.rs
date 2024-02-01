@@ -230,7 +230,7 @@ pub enum MempoolEvent<SCT: SignatureCollection> {
         txns: Unvalidated<CascadeTxMessage>,
     },
     /// Txns that are incoming via RPC (users)
-    UserTxns(Bytes),
+    UserTxns(Vec<Bytes>),
 }
 
 /// MonadEvent are inputs to MonadState

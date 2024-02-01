@@ -127,7 +127,7 @@ where
                 val_set_update_interval,
             )),
         },
-        ipc: IpcReceiver::new(generate_uds_path()).expect("uds bind failed"),
+        ipc: IpcReceiver::new(generate_uds_path().into(), 100).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
     }
 }

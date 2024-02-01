@@ -253,7 +253,7 @@ mod test {
 
         let mempool_event =
             MonadEvent::<MessageSignatureType, SignatureCollectionType>::MempoolEvent(
-                MempoolEvent::UserTxns(tx),
+                MempoolEvent::UserTxns(vec![tx]),
             );
 
         let mempool_event_bytes: Bytes = mempool_event.serialize();

@@ -74,6 +74,8 @@ where
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
     waker: Option<Waker>,
 
+    poll_budget: u64,
+
     _pd: PhantomData<(M, OM)>,
 }
 
@@ -150,6 +152,8 @@ where
             gossip_timeout: Box::pin(tokio::time::sleep(Duration::ZERO)),
             waker: None,
 
+            poll_budget: 0,
+
             _pd: PhantomData,
         }
     }
@@ -224,6 +228,14 @@ where
         }
         let time = this.zero_instant.elapsed();
 
+        this.poll_budget += 1;
+        if this.poll_budget >= 16 {
+            this.poll_budget = 0;
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+            return Poll::Pending;
+        }
         loop {
             if let Poll::Ready(connecting) = this.accept.poll_unpin(cx) {
                 let endpoint = this.endpoint.clone();

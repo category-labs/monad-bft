@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut receiver =
-        IpcReceiver::<MessageSignatureType, SignatureCollectionType>::new(ipc_path.clone())?;
+        IpcReceiver::<MessageSignatureType, SignatureCollectionType>::new(ipc_path.clone(), 100)?;
 
     // https://etherscan.io/tx/0xc97438c9ac71f94040abec76967bcaf16445ff747bcdeb383e5b94033cbed201
     let raw_tx = hex!("02f871018302877a8085070adf56b2825208948880bb98e7747f73b52a9cfa34dab9a4a06afa3887eecbb1ada2fad280c080a0d5e6f03b507cc86b59bed88c201f98c9ca6514dc5825f41aa923769cf0402839a0563f21850c0c212ce6f402f140acdcebbb541c9bb6a051070851efec99e4dd8d");
@@ -132,14 +132,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let monad_event = receiver.next().await.expect("never terminates");
         match monad_event {
             MonadEvent::MempoolEvent(event) => match event {
-                MempoolEvent::UserTxns(tx) => {
-                    let tx =
-                        EthTransaction::decode(&mut tx.as_ref()).expect("must be valid eth tx");
+                MempoolEvent::UserTxns(txns) => {
+                    for tx in txns {
+                        let tx =
+                            EthTransaction::decode(&mut tx.as_ref()).expect("must be valid eth tx");
 
-                    let signer = tx.signer();
-                    assert_eq!(signer, author_address);
-                    assert_eq!(tx.transaction, eth_tx.transaction);
-                    debug!("received tx");
+                        let signer = tx.signer();
+                        assert_eq!(signer, author_address);
+                        assert_eq!(tx.transaction, eth_tx.transaction);
+                        debug!("received tx");
+                    }
                 }
                 MempoolEvent::CascadeTxns { sender, txns } => (),
             },

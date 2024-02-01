@@ -36,8 +36,10 @@ where
 
     pub(super) fn update(&mut self, event: MempoolEvent<SCT>) -> Vec<MempoolCommand> {
         match event {
-            MempoolEvent::UserTxns(b) => {
-                self.txpool.insert_tx(b);
+            MempoolEvent::UserTxns(txns) => {
+                for tx in txns {
+                    self.txpool.insert_tx(tx);
+                }
                 vec![]
             }
             MempoolEvent::CascadeTxns { sender, txns } => {
