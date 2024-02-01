@@ -12,7 +12,7 @@ use monad_crypto::{
     rustls::TlsVerifier,
     NopSignature,
 };
-use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEvent};
+use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip};
 use monad_router_scheduler::{RouterEvent, RouterScheduler, RouterSchedulerBuilder};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
@@ -85,7 +85,11 @@ where
                     let mut cubic_config = CubicConfig::default();
                     cubic_config.initial_window(rwnd);
                     cubic_config
-                }));
+                }))
+                .datagram_send_buffer_size(8 * rwnd as usize)
+                .datagram_receive_buffer_size(Some(rwnd as usize))
+                .initial_mtu(1280) // TODO is this right?
+                .min_mtu(1280);
             // TODO-1 reasonable initial window sizes
             Arc::new(config)
         };
@@ -168,6 +172,7 @@ struct ConnectionState {
     connection: Connection,
     stream: Option<StreamId>,
     pending_outbound_messages: VecDeque<Bytes>,
+    pending_outbound_datagrams: VecDeque<Bytes>,
 }
 
 impl ConnectionState {
@@ -176,6 +181,7 @@ impl ConnectionState {
             connection,
             stream: None,
             pending_outbound_messages: VecDeque::new(),
+            pending_outbound_datagrams: VecDeque::new(),
         }
     }
 }
@@ -461,6 +467,16 @@ where
                         }
                     }
                 }
+                while let Some(gossip_message) = state.pending_outbound_datagrams.pop_front() {
+                    match connection.datagrams().send(gossip_message) {
+                        Ok(()) => {
+                            should_poll = true;
+                        }
+                        Err(e) => {
+                            unreachable!("expect no write error: {e:?}")
+                        }
+                    }
+                }
 
                 let mut recv_stream = connection.recv_stream(stream_id);
                 let mut chunks = recv_stream.read(true).expect("failed to read chunks");
@@ -470,7 +486,12 @@ where
                     self.gossip
                         .handle_unframed_gossip_message(time, *remote_peer_id, chunk.bytes);
                 }
+
                 let _should_transmit = chunks.finalize();
+
+                while let Some(datagram) = connection.datagrams().recv() {
+                    self.gossip.handle_datagram(time, *remote_peer_id, datagram);
+                }
             }
 
             while let Some(event) = connection.poll() {
@@ -513,6 +534,12 @@ where
                                 .open(Dir::Bi)
                                 .expect("creating stream_id failed");
 
+                            // TODO delete this hack
+                            connection
+                                .send_stream(stream_id)
+                                .write(&[0])
+                                .expect("failed to write byte");
+
                             state.stream = Some(stream_id);
                             // TODO if duplicate, dc one of them
                             self.gossip.connected(time, *remote_peer_id);
@@ -535,6 +562,21 @@ where
                             assert!(state.stream.is_none(), "only one bidi stream supported");
                             state.stream = Some(stream_id);
 
+                            // TODO delete this hack
+                            let mut recv_stream = connection.recv_stream(stream_id);
+                            let mut chunks = recv_stream
+                                .read(true)
+                                .expect("failed to read initialized stream");
+                            assert_eq!(
+                                chunks
+                                    .next(1)
+                                    .expect("failed to read byte")
+                                    .expect("None chunk")
+                                    .bytes,
+                                Bytes::from_static(&[0_u8])
+                            );
+                            let _should_transmit = chunks.finalize();
+
                             self.gossip.connected(time, *remote_peer_id);
                             should_poll = true;
                             break;
@@ -545,7 +587,7 @@ where
                         quinn_proto::StreamEvent::Stopped { id, error_code } => todo!(),
                         quinn_proto::StreamEvent::Available { dir } => todo!(),
                     },
-                    quinn_proto::Event::DatagramReceived => todo!(),
+                    quinn_proto::Event::DatagramReceived => should_poll = true,
                 }
             }
             if connection.is_drained() {
@@ -588,7 +630,7 @@ where
                     self.node_connections.insert(to, connection_handle);
                     self.poll_connection(time, &connection_handle);
                 }
-                ConnectionManagerEvent::GossipEvent(GossipEvent::Send(to, gossip_message)) => {
+                ConnectionManagerEvent::Send(to, gossip_message) => {
                     let connection_handle = *self
                         .node_connections
                         .get(&to)
@@ -600,7 +642,19 @@ where
                         self.poll_connection(time, &connection_handle);
                     }
                 }
-                ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(peer_id, message)) => {
+                ConnectionManagerEvent::SendDatagram(to, gossip_message) => {
+                    let connection_handle = *self
+                        .node_connections
+                        .get(&to)
+                        .expect("must only emit Send once connected");
+                    if let Some(connection) = self.connections.get_mut(&connection_handle) {
+                        connection
+                            .pending_outbound_datagrams
+                            .push_back(gossip_message);
+                        self.poll_connection(time, &connection_handle);
+                    }
+                }
+                ConnectionManagerEvent::Emit(peer_id, message) => {
                     assert!(
                         time >= self
                             .pending_events

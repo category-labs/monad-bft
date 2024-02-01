@@ -10,6 +10,7 @@ mod connection_manager;
 pub use connection_manager::{ConnectionManager, ConnectionManagerEvent};
 pub mod gossipsub;
 pub mod mock;
+pub mod seeder;
 pub mod testutil;
 
 type GossipMessage = Bytes;
@@ -27,6 +28,8 @@ pub enum GossipEvent<PT: PubKey> {
     /// Send gossip_message to peer
     /// Delivery is not guaranteed (connection may sever at any point)
     /// Framing of each individual message is guaranteed
+    ///
+    /// There are NO ordering guarantees between multiple Sends
     Send(NodeId<PT>, FragmentedGossipMessage),
 
     /// Emit app_message to executor (NOTE: not gossip_message)

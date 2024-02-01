@@ -294,7 +294,7 @@ fn two_nodes_quic_bw() {
     // this is empirical, don't want to spend too much time figuring out a
     // degenerative case
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(5), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(6), Duration::from_secs(1));
     assert!(verifier.verify(&swarm));
 
     let node_ids = swarm.states().keys().copied().collect_vec();

@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
@@ -22,7 +23,7 @@ use monad_ledger::MonadBlockFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
     parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
@@ -241,8 +242,10 @@ async fn build_router<M, OM, G: Gossip>(
     gossip: G,
 ) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
 where
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
-    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
+    G: Gossip<NodeIdPubKey = monad_secp::PubKey> + Send + 'static,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
 {
     Service::new(
         ServiceConfig {

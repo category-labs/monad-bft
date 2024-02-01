@@ -32,6 +32,7 @@ monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
 base64 = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 futures-util = { workspace = true }

@@ -2913,6 +2913,7 @@ dependencies = [
  "monad-virtual-bench",
  "rand",
  "rand_chacha",
+ "raptorq",
  "serde",
  "test-case",
  "tracing",
@@ -3045,6 +3046,7 @@ name = "monad-node"
 version = "0.1.0"
 dependencies = [
  "base64 0.21.5",
+ "bytes",
  "clap 4.4.10",
  "env_logger",
  "futures-util",
@@ -4344,6 +4346,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "raptorq"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c9cf9270cc5903afdef387f06ef1cd89fb77f45c357c2a425bae78b839fd866"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "rayon"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5455,9 +5466,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.34.0"
+version = "1.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0c014766411e834f7af5b8f4cf46257aab4036ca95e9d2c144a10f59ad6f5b9"
+checksum = "61285f6515fa018fb2d1e46eb21223fff441ee8db5d0f1435e8ab4f5cdb80931"
 dependencies = [
  "backtrace",
  "bytes",

@@ -35,6 +35,10 @@ impl<ST: CertificateSignatureRecoverable> SafeQuinnConfig<ST> {
         let rwnd = bandwidth_Bps * max_rtt.as_millis() as u64 / 1000;
         transport_config
             .stream_receive_window(u32::try_from(rwnd).unwrap().into())
+            .keep_alive_interval(Some(2 * max_rtt))
+            .max_idle_timeout(Some(
+                quinn::IdleTimeout::try_from(3 * max_rtt).expect("failed to create IdleTimeout"),
+            ))
             .send_window(8 * rwnd)
             .initial_rtt(max_rtt) // not exactly initial.... because of quinn pacer
             .congestion_controller_factory(Arc::new({
@@ -42,7 +46,11 @@ impl<ST: CertificateSignatureRecoverable> SafeQuinnConfig<ST> {
                 let mut cubic_config = CubicConfig::default();
                 cubic_config.initial_window(rwnd);
                 cubic_config
-            }));
+            }))
+            .datagram_send_buffer_size(8 * rwnd as usize)
+            .datagram_receive_buffer_size(Some(rwnd as usize))
+            .initial_mtu(1280) // TODO is this right?
+            .min_mtu(1280);
         Self {
             transport: Arc::new(transport_config),
             client: Arc::new(TlsVerifier::<ST>::make_client_config(identity)),

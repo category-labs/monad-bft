@@ -1,13 +1,23 @@
 topology = [
     {
         "name": "us",
-        "latencies_ms": [100],
+        "latencies_ms": [10, 100],
         "nodes": [
             {
                 "up_Mbps": 1000,
                 "down_Mbps": 1000,
             },
-        ] * 100,
+        ] * 50,
+    },
+    {
+        "name": "eu",
+        "latencies_ms": [100, 10],
+        "nodes": [
+            {
+                "up_Mbps": 1000,
+                "down_Mbps": 1000,
+            },
+        ] * 50,
     },
 ]
 

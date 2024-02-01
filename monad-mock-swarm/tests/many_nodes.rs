@@ -255,11 +255,11 @@ fn many_nodes_quic_bw() {
         .unwrap();
 
     let max_block_sync_requests = 10;
-    let min_ledger_len = 100;
+    let min_ledger_len = 99;
     swarm_ledger_verification(&swarm, min_ledger_len);
 
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(122), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(105), Duration::from_secs(1));
 
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier

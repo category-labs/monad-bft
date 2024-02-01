@@ -1,17 +1,28 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    time::Duration,
-};
+use std::{collections::HashMap, time::Duration};
 
 use bytes::{Buf, Bytes};
 use bytes_utils::SegmentedBuf;
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
 
-use crate::{AppMessage, Gossip, GossipEvent, GossipMessage};
+use crate::{AppMessage, FragmentedGossipMessage, Gossip, GossipEvent, GossipMessage};
+
+pub const MAX_DATAGRAM_SIZE: usize = 1228;
 
 pub enum ConnectionManagerEvent<PT: PubKey> {
-    GossipEvent(GossipEvent<PT>),
+    /// Send gossip_message to peer
+    /// Delivery is not guaranteed (connection may sever at any point)
+    /// Ordering is enforced within a connection
+    Send(NodeId<PT>, FragmentedGossipMessage),
+
+    /// Send gossip_message_datagram to peer
+    /// Delivery is not guaranteed (connection may sever at any point)
+    ///
+    /// There are NO ordering guarantees
+    SendDatagram(NodeId<PT>, GossipMessage),
+
+    /// Emit app_message to executor (NOTE: not gossip_message)
+    Emit(NodeId<PT>, AppMessage),
 
     /// Ask executor to connect to given node
     /// Executor must call Gossip::connect after connection complete
@@ -138,6 +149,18 @@ impl<G: Gossip> ConnectionManager<G> {
         }
     }
 
+    /// Handle datagram received from peer
+    pub fn handle_datagram(
+        &mut self,
+        time: Duration,
+        from: NodeId<G::NodeIdPubKey>,
+        datagram: Bytes,
+    ) {
+        assert!(time >= self.current_tick);
+        self.current_tick = time;
+        self.gossip.handle_gossip_message(time, from, datagram);
+    }
+
     pub fn peek_tick(&self) -> Option<Duration> {
         self.gossip.peek_tick()
     }
@@ -148,21 +171,25 @@ impl<G: Gossip> ConnectionManager<G> {
         let gossip_event = self.gossip.poll(time)?;
         let connection_manager_event = match gossip_event {
             GossipEvent::Send(to, _) if !self.connections.contains_key(&to) => {
+                tracing::warn!("discarding message to={:?}, requesting connect", to,);
                 ConnectionManagerEvent::RequestConnect(to)
             }
-            GossipEvent::Send(to, gossip_message) => {
-                let gossip_message_header: Bytes =
-                    Vec::from((gossip_message.remaining() as MessageLenType).to_le_bytes()).into();
-                let mut framed_gossip_message = VecDeque::from(gossip_message);
-                framed_gossip_message.push_front(gossip_message_header);
-                ConnectionManagerEvent::GossipEvent(GossipEvent::Send(
-                    to,
-                    framed_gossip_message.into(),
-                ))
+            GossipEvent::Send(to, mut gossip_message) => {
+                if gossip_message.remaining() > MAX_DATAGRAM_SIZE {
+                    let gossip_message_header: Bytes =
+                        Vec::from((gossip_message.remaining() as MessageLenType).to_le_bytes())
+                            .into();
+                    let mut framed_gossip_message = gossip_message.into_inner();
+                    framed_gossip_message.push_front(gossip_message_header);
+                    ConnectionManagerEvent::Send(to, framed_gossip_message.into())
+                } else {
+                    ConnectionManagerEvent::SendDatagram(
+                        to,
+                        gossip_message.copy_to_bytes(gossip_message.remaining()),
+                    )
+                }
             }
-            gossip_event @ GossipEvent::Emit(_, _) => {
-                ConnectionManagerEvent::GossipEvent(gossip_event)
-            }
+            GossipEvent::Emit(from, event) => ConnectionManagerEvent::Emit(from, event),
         };
         Some(connection_manager_event)
     }
@@ -184,7 +211,7 @@ mod tests {
 
     use crate::{
         mock::{MockGossip, MockGossipConfig},
-        ConnectionManager, ConnectionManagerEvent, GossipEvent,
+        ConnectionManager, ConnectionManagerEvent,
     };
 
     type SignatureType = NopSignature;
@@ -263,7 +290,7 @@ mod tests {
         );
         // should emit a Send event
         assert!(
-            matches!(node_1.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(other, _))) if other == node_2.me)
+            matches!(node_1.connection_manager.poll(Duration::ZERO), Some(ConnectionManagerEvent::SendDatagram(other, _)) if other == node_2.me)
         );
         // no RequestConnect event
         assert!(node_1.connection_manager.poll(Duration::ZERO).is_none());
@@ -315,8 +342,8 @@ mod tests {
         let mut node_1 = swarm.pop().unwrap();
         let mut node_2 = swarm.pop().unwrap();
 
-        let app_message_1_bytes: Bytes = [1, 2, 3].as_ref().into();
-        let app_message_2_bytes: Bytes = [3, 4, 5].as_ref().into();
+        let app_message_1_bytes: Bytes = vec![1; 2000].into();
+        let app_message_2_bytes: Bytes = vec![2; 2000].into();
 
         // tx side
         node_1
@@ -332,15 +359,13 @@ mod tests {
             monad_types::RouterTarget::PointToPoint(node_2.me),
             app_message_2_bytes.clone(),
         );
-        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(
-            message_1_to,
-            mut message_1,
-        ))) = node_1.connection_manager.poll(Duration::ZERO)
+        let Some(ConnectionManagerEvent::Send(message_1_to, mut message_1)) =
+            node_1.connection_manager.poll(Duration::ZERO)
         else {
             unreachable!("unexpected event");
         };
         assert_eq!(message_1_to, node_2.me);
-        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(message_2_to, message_2))) =
+        let Some(ConnectionManagerEvent::Send(message_2_to, message_2)) =
             node_1.connection_manager.poll(Duration::ZERO)
         else {
             unreachable!("unexpected event");
@@ -370,18 +395,14 @@ mod tests {
             message_1.copy_to_bytes(message_1.remaining()),
         );
 
-        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
-            message_1_from,
-            app_message_1,
-        ))) = node_2.connection_manager.poll(Duration::ZERO)
+        let Some(ConnectionManagerEvent::Emit(message_1_from, app_message_1)) =
+            node_2.connection_manager.poll(Duration::ZERO)
         else {
             unreachable!("unexpected event");
         };
         assert_eq!(message_1_from, node_1.me);
-        let Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
-            message_2_from,
-            app_message_2,
-        ))) = node_2.connection_manager.poll(Duration::ZERO)
+        let Some(ConnectionManagerEvent::Emit(message_2_from, app_message_2)) =
+            node_2.connection_manager.poll(Duration::ZERO)
         else {
             unreachable!("unexpected event");
         };

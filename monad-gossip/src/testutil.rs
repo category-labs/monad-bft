@@ -4,10 +4,10 @@ use std::{
     time::Duration,
 };
 
-use bytes::Buf;
+use bytes::{Buf, BytesMut};
 use monad_crypto::{
     certificate_signature::{
-        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
     },
     hasher::{Hasher, HasherType},
 };
@@ -15,7 +15,7 @@ use monad_transformer::{BytesTransformerPipeline, LinkMessage, Pipeline, ID};
 use monad_types::{NodeId, RouterTarget};
 use rand::Rng;
 
-use super::{Gossip, GossipEvent};
+use super::Gossip;
 use crate::{AppMessage, ConnectionManager, ConnectionManagerEvent};
 
 struct Node<G: Gossip> {
@@ -26,9 +26,16 @@ struct Node<G: Gossip> {
 pub struct Swarm<G: Gossip> {
     current_tick: Duration,
     nodes: BTreeMap<NodeId<G::NodeIdPubKey>, Node<G>>,
-    pending_inbound_messages:
-        BinaryHeap<Reverse<(Duration, usize, LinkMessage<G::NodeIdPubKey, AppMessage>)>>,
+    pending_inbound_messages: BinaryHeap<Reverse<PendingInboundMessage<G::NodeIdPubKey>>>,
     seq_no: usize,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PendingInboundMessage<PT: PubKey> {
+    tick: Duration,
+    seq_no: usize,
+    message: LinkMessage<PT, AppMessage>,
+    is_datagram: bool,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -99,11 +106,11 @@ impl<G: Gossip> Swarm<G> {
             .chain(
                 self.pending_inbound_messages
                     .peek()
-                    .map(|Reverse((tick, _, message))| {
+                    .map(|Reverse(pending_message)| {
                         (
-                            *tick,
+                            pending_message.tick,
                             SwarmEventType::ScheduledMessage,
-                            *message.to.get_peer_id(),
+                            *pending_message.message.to.get_peer_id(),
                         )
                     }),
             )
@@ -129,17 +136,15 @@ impl<G: Gossip> Swarm<G> {
                     let connection_manager_event = node.connection_manager.poll(tick);
                     match connection_manager_event {
                         None => continue,
-                        Some(ConnectionManagerEvent::RequestConnect(_to)) => {
-                            todo!("multiple connections not supported")
+                        Some(ConnectionManagerEvent::RequestConnect(to)) => {
+                            todo!(
+                                "multiple connections not supported; {:?} tried to send to {:?}",
+                                id,
+                                to
+                            )
                         }
-                        Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
-                            from,
-                            message,
-                        ))) => (from, message),
-                        Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Send(
-                            to,
-                            mut bytes,
-                        ))) => {
+                        Some(ConnectionManagerEvent::Emit(from, message)) => (from, message),
+                        Some(ConnectionManagerEvent::Send(to, mut bytes)) => {
                             let scheduled_messages = node.pipeline.process(LinkMessage {
                                 from: ID::new(id),
                                 to: ID::new(to),
@@ -149,11 +154,37 @@ impl<G: Gossip> Swarm<G> {
                             });
 
                             for (scheduled_tick, message) in scheduled_messages {
-                                self.pending_inbound_messages.push(Reverse((
-                                    tick + scheduled_tick,
-                                    self.seq_no,
-                                    message,
-                                )));
+                                self.pending_inbound_messages.push(Reverse(
+                                    PendingInboundMessage {
+                                        tick: tick + scheduled_tick,
+                                        seq_no: self.seq_no,
+                                        message,
+                                        is_datagram: false,
+                                    },
+                                ));
+                                self.seq_no += 1;
+                            }
+
+                            continue;
+                        }
+                        Some(ConnectionManagerEvent::SendDatagram(to, bytes)) => {
+                            let scheduled_messages = node.pipeline.process(LinkMessage {
+                                from: ID::new(id),
+                                to: ID::new(to),
+                                message: bytes,
+
+                                from_tick: tick,
+                            });
+
+                            for (scheduled_tick, message) in scheduled_messages {
+                                self.pending_inbound_messages.push(Reverse(
+                                    PendingInboundMessage {
+                                        tick: tick + scheduled_tick,
+                                        seq_no: self.seq_no,
+                                        message,
+                                        is_datagram: true,
+                                    },
+                                ));
                                 self.seq_no += 1;
                             }
 
@@ -162,22 +193,30 @@ impl<G: Gossip> Swarm<G> {
                     }
                 }
                 SwarmEventType::ScheduledMessage => {
-                    let Reverse((scheduled_tick, _, gossip_message)) = self
+                    let Reverse(pending_message) = self
                         .pending_inbound_messages
                         .pop()
                         .expect("invariant broken");
-                    assert_eq!(tick, scheduled_tick);
+                    assert_eq!(tick, pending_message.tick);
 
                     let to_node = self
                         .nodes
-                        .get_mut(gossip_message.to.get_peer_id())
+                        .get_mut(pending_message.message.to.get_peer_id())
                         .expect("invariant broken");
 
-                    to_node.connection_manager.handle_unframed_gossip_message(
-                        scheduled_tick,
-                        *gossip_message.from.get_peer_id(),
-                        gossip_message.message,
-                    );
+                    if pending_message.is_datagram {
+                        to_node.connection_manager.handle_datagram(
+                            tick,
+                            *pending_message.message.from.get_peer_id(),
+                            pending_message.message.message,
+                        );
+                    } else {
+                        to_node.connection_manager.handle_unframed_gossip_message(
+                            tick,
+                            *pending_message.message.from.get_peer_id(),
+                            pending_message.message.message,
+                        );
+                    }
 
                     continue;
                 }
@@ -237,7 +276,11 @@ pub fn test_broadcast<G: Gossip>(
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
     for tx_peer in peer_ids.iter().take(max_payload_broadcasts) {
-        let message: AppMessage = (0..payload_size_bytes).map(|_| rng.gen()).collect();
+        let message = {
+            let mut message = BytesMut::zeroed(payload_size_bytes);
+            rng.fill_bytes(&mut message);
+            message.freeze()
+        };
         let target = RouterTarget::Broadcast;
 
         for rx_peer in &peer_ids {
@@ -272,7 +315,11 @@ pub fn test_direct<G: Gossip>(
     let mut pending_messages = HashSet::new();
     for tx_peer in &peer_ids {
         for rx_peer in &peer_ids {
-            let message: AppMessage = (0..payload_size_bytes).map(|_| rng.gen()).collect();
+            let message = {
+                let mut message = BytesMut::zeroed(payload_size_bytes);
+                rng.fill_bytes(&mut message);
+                message.freeze()
+            };
             let target = RouterTarget::PointToPoint(*rx_peer);
             swarm.send(tx_peer, target, message.clone());
 

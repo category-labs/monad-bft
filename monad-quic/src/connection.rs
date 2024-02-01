@@ -8,7 +8,7 @@ use bytes::Bytes;
 use futures::{future::BoxFuture, FutureExt, Stream, TryFutureExt};
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::NodeId;
-use quinn::{Connecting, ReadError, RecvStream, SendStream, WriteError};
+use quinn::{Connecting, ReadError, RecvStream, SendDatagramError, SendStream, WriteError};
 use quinn_proto::ConnectionError;
 
 use crate::QuinnConfig;
@@ -28,10 +28,16 @@ pub(crate) enum Connection<PT: PubKey> {
     ),
     Active(
         quinn::Connection,
-        BoxFuture<'static, Result<(RecvStream, Vec<Bytes>), ConnectionFailure>>,
+        BoxFuture<'static, Result<(RecvStream, Inbound), ConnectionFailure>>,
     ),
     Closed,
 }
+
+pub(crate) enum Inbound {
+    Stream(Vec<Bytes>),
+    Datagram(Bytes),
+}
+
 pub(crate) struct ConnectionWriter {
     connection: quinn::Connection,
     send_stream: SendStream,
@@ -55,6 +61,28 @@ impl ConnectionWriter {
             .await
             .map_err(ConnectionFailure::WriteError)
     }
+
+    pub async fn write_chunks(&mut self, chunks: &mut [Bytes]) -> Result<usize, ConnectionFailure> {
+        let written = self
+            .send_stream
+            .write_chunks(chunks)
+            .await
+            .map_err(ConnectionFailure::WriteError)?;
+
+        Ok(written.chunks)
+    }
+
+    pub fn write_datagram(&mut self, chunk: Bytes) -> Result<(), ConnectionFailure> {
+        self.connection
+            .send_datagram(chunk)
+            .map_err(|err| match err {
+                SendDatagramError::UnsupportedByPeer | SendDatagramError::TooLarge => {
+                    ConnectionFailure::DatagramError
+                }
+                SendDatagramError::Disabled => unreachable!("datagrams disabled locally?"),
+                SendDatagramError::ConnectionLost(err) => ConnectionFailure::ConnectionError(err),
+            })
+    }
 }
 
 impl Drop for ConnectionWriter {
@@ -77,6 +105,8 @@ pub(crate) enum ConnectionFailure {
 
     /// The remote closed their outbound stream
     RemoteStreamClosed,
+
+    DatagramError,
 }
 
 pub(crate) enum ConnectionEvent<PT: PubKey> {
@@ -85,6 +115,7 @@ pub(crate) enum ConnectionEvent<PT: PubKey> {
 
     Connected(ConnectionId, NodeId<PT>, ConnectionWriter),
     InboundMessage(ConnectionId, Vec<Bytes>),
+    InboundDatagram(ConnectionId, Bytes),
     Disconnected(ConnectionId, ConnectionFailure),
 }
 
@@ -108,10 +139,17 @@ impl<PT: PubKey> Connection<PT> {
                 return Err(ConnectionFailure::UnexpectedPeerId);
             }
 
-            let (send_stream, recv_stream) = connection
+            let (mut send_stream, recv_stream) = connection
                 .open_bi()
                 .await
                 .map_err(ConnectionFailure::ConnectionError)?;
+
+            // TODO delete this hack
+            send_stream
+                .write(&[0])
+                .await
+                .map_err(ConnectionFailure::WriteError)?;
+
             tracing::info!(
                 "connected to={:?}, connection_id={:?}, stream ready",
                 connection.remote_address(),
@@ -140,10 +178,20 @@ impl<PT: PubKey> Connection<PT> {
                 connection.stable_id(),
             );
 
-            let (send_stream, recv_stream) = connection
+            let (send_stream, mut recv_stream) = connection
                 .accept_bi()
                 .await
                 .map_err(ConnectionFailure::ConnectionError)?;
+
+            // TODO delete this hack
+            let mut buf = [0_u8];
+            let read = recv_stream
+                .read(&mut buf)
+                .await
+                .map_err(ConnectionFailure::ReadError)?;
+            if read != Some(1) {
+                return Err(ConnectionFailure::RemoteStreamClosed);
+            }
 
             tracing::info!(
                 "connected to={:?}, connection_id={:?}, stream ready",
@@ -158,17 +206,31 @@ impl<PT: PubKey> Connection<PT> {
     }
 
     fn active(connection: quinn::Connection, mut recv_stream: RecvStream) -> Self {
+        let connection_clone = connection.clone();
         let fut = async move {
-            let mut bufs = vec![Bytes::new(); 32];
-            let num_chunks = recv_stream
-                .read_chunks(&mut bufs)
-                .await
-                .map_err(ConnectionFailure::ReadError)?
-                .ok_or(ConnectionFailure::RemoteStreamClosed)?;
-            bufs.truncate(num_chunks);
-            Ok((recv_stream, bufs))
+            let stream = async {
+                let mut bufs = vec![Bytes::new(); 32];
+                let num_chunks = recv_stream
+                    .read_chunks(&mut bufs)
+                    .await
+                    .map_err(ConnectionFailure::ReadError)?
+                    .ok_or(ConnectionFailure::RemoteStreamClosed)?;
+                bufs.truncate(num_chunks);
+                Ok(Inbound::Stream(bufs))
+            }
+            .boxed();
+            let datagram = async move {
+                let datagram = connection
+                    .read_datagram()
+                    .await
+                    .map_err(ConnectionFailure::ConnectionError)?;
+                Ok(Inbound::Datagram(datagram))
+            }
+            .boxed();
+            let (bufs, _, _) = futures::future::select_all(vec![stream, datagram]).await;
+            Ok((recv_stream, bufs?))
         };
-        Self::Active(connection, fut.boxed())
+        Self::Active(connection_clone, fut.boxed())
     }
 }
 
@@ -205,10 +267,14 @@ where
             Connection::Active(connection, active) => {
                 let connection_id = ConnectionId(connection.stable_id() as u64);
                 match ready!(active.poll_unpin(cx)) {
-                    Ok((recv_stream, chunks)) => {
+                    Ok((recv_stream, Inbound::Stream(chunks))) => {
                         assert!(!chunks.is_empty());
                         *this = Connection::active(connection.clone(), recv_stream);
                         Poll::Ready(Some(ConnectionEvent::InboundMessage(connection_id, chunks)))
+                    }
+                    Ok((recv_stream, Inbound::Datagram(chunk))) => {
+                        *this = Connection::active(connection.clone(), recv_stream);
+                        Poll::Ready(Some(ConnectionEvent::InboundDatagram(connection_id, chunk)))
                     }
                     Err(err) => {
                         connection.close(
