@@ -15,6 +15,10 @@ use crate::AppMessage;
 /// 3) Fountain encoding, splitting into N chunks
 ///
 /// One other implicit responsiblity it has is validating `Meta` and `Chunk`.
+///
+/// Flow:
+/// 1) Payload is constructed from AppMessage, sender, time, etc.
+/// 2) Chunks are generated from payload
 pub trait Chunker: Sized {
     type NodeIdPubKey: PubKey;
     // payload includes AppMessage + created_at TS as entropy
