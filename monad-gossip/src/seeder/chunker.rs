@@ -18,6 +18,8 @@ use crate::{AppMessage, GossipEvent};
 /// 1) Splitting payload into N chunks
 /// 2) RS encoding, splitting into N chunks
 /// 3) Fountain encoding, splitting into N chunks
+///
+/// One other implicit responsiblity it has is validating `Meta` and `Chunk`.
 pub trait Chunker: Sized {
     type NodeIdPubKey: PubKey;
     type PayloadId: Clone + Ord + Debug; // payload includes AppMessage + created_at TS as entropy
@@ -67,7 +69,11 @@ pub trait Chunk: Clone + Debug + Serialize + DeserializeOwned {
     fn id(&self) -> Self::PayloadId;
 }
 
-pub struct Chunkers<C: Chunker> {
+// TODO Should this be renamed to ChunkerManager or something? ChunkerPolicy?
+// TODO only one mutator ingress (handle_protocol_message), one mutator egress (poll)?
+/// Policy is responsible for driving `Chunker`s. This includes deciding when to poll child
+/// chunkers for chunks to generate, when to garbage collect them, etc.
+pub struct Policy<C: Chunker> {
     chunkers: BTreeMap<C::PayloadId, C>,
     current_tick: Duration,
 
@@ -78,7 +84,7 @@ pub struct Chunkers<C: Chunker> {
     events: VecDeque<GossipEvent<C::NodeIdPubKey>>,
 }
 
-impl<C: Chunker> Default for Chunkers<C> {
+impl<C: Chunker> Default for Policy<C> {
     fn default() -> Self {
         Self {
             chunkers: Default::default(),
@@ -92,7 +98,7 @@ impl<C: Chunker> Default for Chunkers<C> {
     }
 }
 
-impl<C: Chunker> Chunkers<C> {
+impl<C: Chunker> Policy<C> {
     pub fn contains(&self, id: &C::PayloadId) -> bool {
         self.chunkers.contains_key(id)
     }
@@ -157,8 +163,11 @@ impl<C: Chunker> Chunkers<C> {
         }
     }
 
-    // TODO add ChunkersEvent type, which has ChunkersEvent::Emit, and ChunkersEvent::{SendChunk,
-    // SendMeta, SendSeeding}
+    // TODO add PolicyEvent type, which has PolicyEvent::Emit, and PolicyEvent::{SendChunk,
+    // SendMeta, SendSeeding} or PolicyEvent::Send(ProtocolMessage)
+    //
+    // Similarly, we can have a single inbound msg entrypoint:
+    // handle_protocol_message(ProtocolMessage)
     pub fn poll(&mut self) -> Option<GossipEvent<C::NodeIdPubKey>> {
         self.events.pop_front()
         // TODO generate_chunk needs to be called on individual peers
