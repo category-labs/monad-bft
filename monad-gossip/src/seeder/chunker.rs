@@ -23,12 +23,8 @@ pub trait Chunker: Sized {
     type NodeIdPubKey: PubKey;
     // payload includes AppMessage + created_at TS as entropy
     type PayloadId: Clone + Ord + Debug;
-    type Meta: Meta<NodeIdPubKey = Self::NodeIdPubKey, PayloadId = Self::PayloadId>
-        + Clone
-        + Debug
-        + Serialize
-        + DeserializeOwned;
-    type Chunk: Chunk<PayloadId = Self::PayloadId> + Clone + Debug + Serialize + DeserializeOwned;
+    type Meta: Meta<PayloadId = Self::PayloadId>;
+    type Chunk: Chunk<PayloadId = Self::PayloadId>;
 
     /// This must generate a Chunker with a UNIQUE PayloadId
     /// This is to ensure that two separate chunkers are generated for two separate broadcasts,
@@ -41,6 +37,10 @@ pub trait Chunker: Sized {
     fn try_new_from_meta(meta: Self::Meta) -> Result<Self, Box<dyn Error>>;
 
     fn meta(&self) -> &Self::Meta;
+    /// populated from meta
+    fn creator(&self) -> NodeId<Self::NodeIdPubKey>;
+    /// populated from meta
+    fn created_at(&self) -> Duration;
 
     // Payload has been reconstructed - process_chunk should not be called if this returns true
     fn is_seeder(&self) -> bool;
@@ -60,12 +60,9 @@ pub trait Chunker: Sized {
     fn set_peer_seeder(&mut self, peer: NodeId<Self::NodeIdPubKey>);
 }
 
-pub trait Meta {
-    type NodeIdPubKey: PubKey;
+pub trait Meta: Clone + Debug + Serialize + DeserializeOwned {
     type PayloadId;
     fn id(&self) -> Self::PayloadId;
-    fn creator(&self) -> NodeId<Self::NodeIdPubKey>;
-    fn created_at(&self) -> Duration;
 }
 
 pub trait Chunk: Clone + Debug + Serialize + DeserializeOwned {

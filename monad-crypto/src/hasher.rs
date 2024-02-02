@@ -4,7 +4,7 @@ use sha2::Digest;
 use zerocopy::AsBytes;
 
 /// A 32-byte/256-bit hash
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Hash(pub [u8; 32]);
 
 impl Deref for Hash {

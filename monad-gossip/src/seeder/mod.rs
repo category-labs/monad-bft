@@ -13,6 +13,7 @@ use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
 
 mod chunker;
 use chunker::{Chunk, Chunker, Meta};
+mod tree;
 
 pub struct SeederConfig<C: Chunker> {
     pub all_peers: Vec<NodeId<C::NodeIdPubKey>>,
@@ -138,7 +139,7 @@ impl<C: Chunker> Seeder<C> {
                         let maybe_app_message = status.chunker.process_chunk(from, chunk, data);
                         if let Some(app_message) = maybe_app_message {
                             self.events.push_back(GossipEvent::Emit(
-                                status.chunker.meta().creator(),
+                                status.chunker.creator(),
                                 app_message,
                             ));
                             assert!(status.chunker.is_seeder());
@@ -169,7 +170,7 @@ impl<C: Chunker> Seeder<C> {
     }
 
     fn insert_chunker(&mut self, chunker: C) {
-        let created_at = chunker.meta().created_at();
+        let created_at = chunker.created_at();
         self.chunker_timeouts
             .entry(created_at + self.config.timeout)
             .or_default()
