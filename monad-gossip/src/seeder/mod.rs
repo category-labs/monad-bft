@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{hash_map::Entry, BTreeMap, HashMap, VecDeque},
     time::Duration,
 };
 
@@ -17,6 +17,10 @@ use chunker::{Chunk, Chunker, Meta};
 pub struct SeederConfig<C: Chunker> {
     pub all_peers: Vec<NodeId<C::NodeIdPubKey>>,
     pub me: NodeId<C::NodeIdPubKey>,
+
+    pub timeout: Duration,
+    pub up_bandwidth_Mbps: u16,
+    pub chunker_poll_interval: Duration,
 }
 
 impl<C: Chunker> SeederConfig<C> {
@@ -25,11 +29,11 @@ impl<C: Chunker> SeederConfig<C> {
             config: self,
 
             chunkers: Default::default(),
-            timeout: Duration::from_millis(700),
             chunker_timeouts: Default::default(),
 
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
+            next_chunker_poll: None,
         }
     }
 }
@@ -39,11 +43,11 @@ pub struct Seeder<C: Chunker> {
 
     chunkers: BTreeMap<C::PayloadId, ChunkerStatus<C>>,
     /// Chunker is scheduled to be deleted `timeout` after C::Meta::created_at
-    timeout: Duration,
     chunker_timeouts: BTreeMap<Duration, Vec<C::PayloadId>>,
 
     events: VecDeque<GossipEvent<C::NodeIdPubKey>>,
     current_tick: Duration,
+    next_chunker_poll: Option<Duration>,
 }
 
 struct ChunkerStatus<C: Chunker> {
@@ -142,7 +146,6 @@ impl<C: Chunker> Seeder<C> {
                     }
                     // chunker may be complete if event was emitted
                     if status.chunker.is_seeder() && !status.sent_seeding(&from) {
-                        // TODO only should send this once per peer per payload_id!
                         let meta_info = MetaInfo {
                             meta: status.chunker.meta().clone(),
                             seeding: true,
@@ -153,6 +156,9 @@ impl<C: Chunker> Seeder<C> {
                             from,
                             Self::prepare_message(msg, Bytes::default()),
                         ));
+
+                        // this shouldn't usually be dropped, because there must already be an
+                        // outstanding connection
                         status.sent_metas.insert(from, meta_info);
                     }
                 } else {
@@ -165,7 +171,7 @@ impl<C: Chunker> Seeder<C> {
     fn insert_chunker(&mut self, chunker: C) {
         let created_at = chunker.meta().created_at();
         self.chunker_timeouts
-            .entry(created_at + self.timeout)
+            .entry(created_at + self.config.timeout)
             .or_default()
             .push(chunker.meta().id());
 
@@ -178,6 +184,7 @@ impl<C: Chunker> Seeder<C> {
     fn update_tick(&mut self, time: Duration) {
         assert!(time >= self.current_tick);
         self.current_tick = time;
+        self.next_chunker_poll = self.next_chunker_poll.map(|t| t.max(time));
     }
 }
 
@@ -188,6 +195,9 @@ impl<C: Chunker> Gossip for Seeder<C> {
         self.update_tick(time);
         match to {
             RouterTarget::Broadcast => {
+                if self.next_chunker_poll.is_none() {
+                    self.next_chunker_poll = Some(self.current_tick);
+                }
                 self.events
                     .push_back(GossipEvent::Emit(self.config.me, message.clone()));
 
@@ -244,6 +254,9 @@ impl<C: Chunker> Gossip for Seeder<C> {
         match header.message_type {
             MessageType::Direct => self.events.push_back(GossipEvent::Emit(from, data)),
             MessageType::BroadcastProtocol(header) => {
+                if self.next_chunker_poll.is_none() {
+                    self.next_chunker_poll = Some(self.current_tick);
+                }
                 self.handle_protocol_message(from, header, data)
             }
         }
@@ -253,31 +266,86 @@ impl<C: Chunker> Gossip for Seeder<C> {
         if !self.events.is_empty() {
             Some(self.current_tick)
         } else {
-            None
+            self.next_chunker_poll
         }
     }
 
     fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
-        while time
-            >= self
-                .chunker_timeouts
-                .keys()
-                .next()
-                .copied()
-                .unwrap_or(Duration::MAX)
-        {
-            let gc_ids = self.chunker_timeouts.pop_first().expect("must exist").1;
-            for gc_id in gc_ids {
-                let removed = self.chunkers.remove(&gc_id);
-                if removed.is_some() {
-                    tracing::debug!("garbage collected chunk with id: {:?}", gc_id);
+        self.update_tick(time);
+
+        if self.next_chunker_poll.map(|t| t >= time).unwrap_or(false) {
+            while time
+                >= self
+                    .chunker_timeouts
+                    .keys()
+                    .next()
+                    .copied()
+                    .unwrap_or(Duration::MAX)
+            {
+                let gc_ids = self.chunker_timeouts.pop_first().expect("must exist").1;
+                for gc_id in gc_ids {
+                    let removed = self.chunkers.remove(&gc_id);
+                    if removed.is_some() {
+                        tracing::debug!("garbage collected chunk with id: {:?}", gc_id);
+                    }
                 }
             }
+
+            // TODO we can do more intelligent selection of chunkers here - eg time-weighted decay?
+            //      stake-weighted selection?
+            // TODO can we eliminate disconnected peers from selection here? or is that too jank?
+            let mut chunkers: Vec<_> = self.chunkers.values_mut().collect();
+            // TODO shuffle chunkers with deterministic RNG
+
+            let mut chunk_bytes_generated: u64 = 0; // TODO should we include outbound meta bytes?
+            let mut chunker_idx = 0;
+            while {
+                let up_bandwidth_Bps = self.config.up_bandwidth_Mbps as u64 * 125_000;
+                let up_bandwidth_Bpms = up_bandwidth_Bps / 1_000;
+                let exceeded_limit =
+                    Duration::from_millis(chunk_bytes_generated / up_bandwidth_Bpms)
+                        >= self.config.chunker_poll_interval;
+                !chunkers.is_empty() && !exceeded_limit
+            } {
+                let status = &mut chunkers[chunker_idx];
+                if let Some((to, chunk, data)) = status.chunker.generate_chunk() {
+                    if let Entry::Vacant(e) = status.sent_metas.entry(to) {
+                        let meta_info = MetaInfo {
+                            meta: status.chunker.meta().clone(),
+                            seeding: status.chunker.is_seeder(),
+                        };
+                        e.insert(meta_info.clone());
+                        let meta_message = Self::prepare_message(
+                            MessageType::BroadcastProtocol(ProtocolHeader::Meta(meta_info)),
+                            Bytes::default(),
+                        );
+                        // Note that as currently constructed, this will always be dropped by the
+                        // ConnectionManager if there isn't already an established connection. This
+                        // should be fine for now - adding an extra timeout/retry mechanism seems
+                        // unnecessary given latencies.
+                        self.events.push_back(GossipEvent::Send(to, meta_message));
+                    }
+
+                    let chunk_message = Self::prepare_message(
+                        MessageType::BroadcastProtocol(ProtocolHeader::Chunk(chunk)),
+                        data,
+                    );
+                    chunk_bytes_generated += chunk_message.remaining() as u64;
+                    self.events.push_back(GossipEvent::Send(to, chunk_message));
+                    chunker_idx = (chunker_idx + 1) % chunkers.len();
+                } else {
+                    chunkers.swap_remove(chunker_idx);
+                }
+            }
+
+            self.next_chunker_poll = if chunk_bytes_generated == 0 {
+                None
+            } else {
+                Some(time + self.config.chunker_poll_interval)
+            };
         }
-        self.update_tick(time);
+
         self.events.pop_front()
-        // TODO generate_chunk needs to be called on individual peers
-        // TODO peek_tick needs to be updated after this is done
     }
 }
 

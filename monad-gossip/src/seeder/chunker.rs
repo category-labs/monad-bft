@@ -46,7 +46,7 @@ pub trait Chunker: Sized {
         data: Bytes,
     ) -> Option<AppMessage>;
 
-    fn generate_chunk(&mut self) -> Option<(NodeId<Self::NodeIdPubKey>, Self::Chunk)>;
+    fn generate_chunk(&mut self) -> Option<(NodeId<Self::NodeIdPubKey>, Self::Chunk, Bytes)>;
 
     /// Peer is now seeding - so we can stop sending them chunks
     fn set_peer_seeder(&mut self, peer: NodeId<Self::NodeIdPubKey>);
