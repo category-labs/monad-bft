@@ -17,7 +17,8 @@ use crate::AppMessage;
 /// One other implicit responsiblity it has is validating `Meta` and `Chunk`.
 pub trait Chunker: Sized {
     type NodeIdPubKey: PubKey;
-    type PayloadId: Clone + Ord + Debug; // payload includes AppMessage + created_at TS as entropy
+    // payload includes AppMessage + created_at TS as entropy
+    type PayloadId: Clone + Ord + Debug;
     type Meta: Meta<NodeIdPubKey = Self::NodeIdPubKey, PayloadId = Self::PayloadId>
         + Clone
         + Debug
@@ -34,7 +35,7 @@ pub trait Chunker: Sized {
     fn meta(&self) -> &Self::Meta;
 
     // Payload has been reconstructed - process_chunk should not be called if this returns true
-    fn is_complete(&self) -> bool;
+    fn is_seeder(&self) -> bool;
 
     /// Some(x) indicates that the chunker doesn't need to receive any more chunks, because it has
     /// successfully reconstructed payload. Chunker::is_complete MUST return true after this.
@@ -47,8 +48,8 @@ pub trait Chunker: Sized {
 
     fn generate_chunk(&mut self) -> Option<(NodeId<Self::NodeIdPubKey>, Self::Chunk)>;
 
-    // Peer's payload has been reconstructed - so we can stop sending them chunks
-    fn peer_complete(&mut self);
+    /// Peer is now seeding - so we can stop sending them chunks
+    fn set_peer_seeder(&mut self, peer: NodeId<Self::NodeIdPubKey>);
 }
 
 pub trait Meta {

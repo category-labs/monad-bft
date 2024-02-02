@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     time::Duration,
 };
 
@@ -8,13 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use monad_types::{NodeId, RouterTarget};
 
-use self::chunker::{Chunk, Meta};
-
 use super::{Gossip, GossipEvent};
 use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
 
 mod chunker;
-use chunker::Chunker;
+use chunker::{Chunk, Chunker, Meta};
 
 pub struct SeederConfig<C: Chunker> {
     pub all_peers: Vec<NodeId<C::NodeIdPubKey>>,
@@ -39,13 +37,34 @@ impl<C: Chunker> SeederConfig<C> {
 pub struct Seeder<C: Chunker> {
     config: SeederConfig<C>,
 
-    chunkers: BTreeMap<C::PayloadId, C>,
+    chunkers: BTreeMap<C::PayloadId, ChunkerStatus<C>>,
     /// Chunker is scheduled to be deleted `timeout` after C::Meta::created_at
     timeout: Duration,
     chunker_timeouts: BTreeMap<Duration, Vec<C::PayloadId>>,
 
     events: VecDeque<GossipEvent<C::NodeIdPubKey>>,
     current_tick: Duration,
+}
+
+struct ChunkerStatus<C: Chunker> {
+    chunker: C,
+    sent_metas: HashMap<NodeId<C::NodeIdPubKey>, MetaInfo<C::Meta>>,
+}
+
+impl<C: Chunker> ChunkerStatus<C> {
+    fn new(chunker: C) -> Self {
+        Self {
+            chunker,
+            sent_metas: Default::default(),
+        }
+    }
+
+    fn sent_seeding(&self, peer: &NodeId<C::NodeIdPubKey>) -> bool {
+        self.sent_metas
+            .get(peer)
+            .map(|meta| meta.seeding)
+            .unwrap_or(false)
+    }
 }
 
 impl<C: Chunker> Seeder<C> {
@@ -83,7 +102,7 @@ impl<C: Chunker> Seeder<C> {
         data: Bytes,
     ) {
         match header {
-            ProtocolHeader::Meta(meta) => {
+            ProtocolHeader::Meta(MetaInfo { meta, seeding }) => {
                 let id = meta.id();
                 if !self.chunkers.contains_key(&id) {
                     match C::try_new_from_meta(meta) {
@@ -98,24 +117,43 @@ impl<C: Chunker> Seeder<C> {
                 } else {
                     tracing::trace!("received duplicate meta for id: {:?}", id);
                 }
+
+                if seeding {
+                    self.chunkers
+                        .get_mut(&id)
+                        .expect("invariant broken")
+                        .chunker
+                        .set_peer_seeder(from);
+                }
             }
 
             ProtocolHeader::Chunk(chunk) => {
                 let id = chunk.id();
-                if let Some(chunker) = self.chunkers.get_mut(&id) {
-                    if !chunker.is_complete() {
-                        let maybe_app_message = chunker.process_chunk(from, chunk, data);
+                if let Some(status) = self.chunkers.get_mut(&id) {
+                    if !status.chunker.is_seeder() {
+                        let maybe_app_message = status.chunker.process_chunk(from, chunk, data);
                         if let Some(app_message) = maybe_app_message {
                             self.events.push_back(GossipEvent::Emit(
-                                chunker.meta().creator(),
+                                status.chunker.meta().creator(),
                                 app_message,
                             ));
-                            assert!(chunker.is_complete());
+                            assert!(status.chunker.is_seeder());
                         }
                     }
                     // chunker may be complete if event was emitted
-                    if chunker.is_complete() {
-                        todo!("send P2P response telling peer to stop sending. only should send this ONCE per peer per chunker! peer should then call Chunker::peer_complete on receival")
+                    if status.chunker.is_seeder() && !status.sent_seeding(&from) {
+                        // TODO only should send this once per peer per payload_id!
+                        let meta_info = MetaInfo {
+                            meta: status.chunker.meta().clone(),
+                            seeding: true,
+                        };
+                        let msg =
+                            MessageType::BroadcastProtocol(ProtocolHeader::Meta(meta_info.clone()));
+                        self.events.push_back(GossipEvent::Send(
+                            from,
+                            Self::prepare_message(msg, Bytes::default()),
+                        ));
+                        status.sent_metas.insert(from, meta_info);
                     }
                 } else {
                     tracing::trace!("no chunker initialized for id: {:?}", id);
@@ -131,7 +169,9 @@ impl<C: Chunker> Seeder<C> {
             .or_default()
             .push(chunker.meta().id());
 
-        let removed = self.chunkers.insert(chunker.meta().id(), chunker);
+        let removed = self
+            .chunkers
+            .insert(chunker.meta().id(), ChunkerStatus::new(chunker));
         assert!(removed.is_none());
     }
 
@@ -246,21 +286,27 @@ struct OuterHeader(u32);
 const OUTER_HEADER_SIZE: usize = std::mem::size_of::<OuterHeader>();
 
 #[derive(Clone, Deserialize, Serialize)]
-struct Header<Meta, Chunk> {
+struct Header<M, C> {
     data_len: u32,
-    message_type: MessageType<Meta, Chunk>,
+    message_type: MessageType<M, C>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-enum MessageType<Meta, Chunk> {
+enum MessageType<M, C> {
     Direct,
-    BroadcastProtocol(ProtocolHeader<Meta, Chunk>),
+    BroadcastProtocol(ProtocolHeader<M, C>),
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-enum ProtocolHeader<Meta, Chunk> {
-    Meta(Meta),
-    Chunk(Chunk),
+enum ProtocolHeader<M, C> {
+    Meta(MetaInfo<M>),
+    Chunk(C),
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct MetaInfo<M> {
+    meta: M,
+    seeding: bool,
 }
 
 // type PayloadHash = [u8; 32];
