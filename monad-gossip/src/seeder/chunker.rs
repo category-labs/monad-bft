@@ -29,7 +29,11 @@ pub trait Chunker: Sized {
     /// This must generate a Chunker with a UNIQUE PayloadId
     /// This is to ensure that two separate chunkers are generated for two separate broadcasts,
     /// even if they are the same AppMessage
-    fn try_new_from_message(message: AppMessage) -> Result<Self, Box<dyn Error>>;
+    fn try_new_from_message(
+        time: Duration,
+        sender: NodeId<Self::NodeIdPubKey>,
+        message: AppMessage,
+    ) -> Result<Self, Box<dyn Error>>;
     fn try_new_from_meta(meta: Self::Meta) -> Result<Self, Box<dyn Error>>;
 
     fn meta(&self) -> &Self::Meta;

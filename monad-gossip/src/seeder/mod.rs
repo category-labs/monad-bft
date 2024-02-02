@@ -201,7 +201,7 @@ impl<C: Chunker> Gossip for Seeder<C> {
                 self.events
                     .push_back(GossipEvent::Emit(self.config.me, message.clone()));
 
-                match C::try_new_from_message(message) {
+                match C::try_new_from_message(time, self.config.me, message) {
                     Ok(chunker) => {
                         tracing::info!(
                             "initialized chunker on broadcast attempt: {:?}",
