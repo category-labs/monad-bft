@@ -32,6 +32,8 @@ where
     M: Message<NodeIdPubKey = G::NodeIdPubKey>,
     QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
 {
+    // FIXME delete this, change semantics of gossip time to be time since epoch instead of
+    // arbitrary time! This allows Duration to be globally consistent
     /// An arbitrary starting time - used for computing internally consistent relative times,
     /// which are in std::time::Duration, for the Gossip trait
     zero_instant: Instant,
