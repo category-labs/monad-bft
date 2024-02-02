@@ -1,11 +1,14 @@
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Duration,
+};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 
 use monad_types::{NodeId, RouterTarget};
 
-use self::chunker::{Meta, Policy};
+use self::chunker::{Chunk, Meta};
 
 use super::{Gossip, GossipEvent};
 use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
@@ -23,7 +26,9 @@ impl<C: Chunker> SeederConfig<C> {
         Seeder {
             config: self,
 
-            policy: Default::default(),
+            chunkers: Default::default(),
+            timeout: Duration::from_millis(700),
+            chunker_timeouts: Default::default(),
 
             events: VecDeque::default(),
             current_tick: Duration::ZERO,
@@ -34,7 +39,10 @@ impl<C: Chunker> SeederConfig<C> {
 pub struct Seeder<C: Chunker> {
     config: SeederConfig<C>,
 
-    policy: Policy<C>,
+    chunkers: BTreeMap<C::PayloadId, C>,
+    /// Chunker is scheduled to be deleted `timeout` after C::Meta::created_at
+    timeout: Duration,
+    chunker_timeouts: BTreeMap<Duration, Vec<C::PayloadId>>,
 
     events: VecDeque<GossipEvent<C::NodeIdPubKey>>,
     current_tick: Duration,
@@ -76,13 +84,12 @@ impl<C: Chunker> Seeder<C> {
     ) {
         match header {
             ProtocolHeader::Meta(meta) => {
-                // TODO this block should probably be moved inside chunker
                 let id = meta.id();
-                if !self.policy.contains(&id) {
+                if !self.chunkers.contains_key(&id) {
                     match C::try_new_from_meta(meta) {
                         Ok(chunker) => {
                             tracing::info!("initialized chunker for id: {:?}", id);
-                            self.policy.insert(chunker);
+                            self.insert_chunker(chunker);
                         }
                         Err(e) => {
                             tracing::warn!("failed to create chunker from meta: {:?}", e);
@@ -93,14 +100,44 @@ impl<C: Chunker> Seeder<C> {
                 }
             }
 
-            ProtocolHeader::Chunk(chunk) => self.policy.process_chunk(from, chunk, data),
+            ProtocolHeader::Chunk(chunk) => {
+                let id = chunk.id();
+                if let Some(chunker) = self.chunkers.get_mut(&id) {
+                    if !chunker.is_complete() {
+                        let maybe_app_message = chunker.process_chunk(from, chunk, data);
+                        if let Some(app_message) = maybe_app_message {
+                            self.events.push_back(GossipEvent::Emit(
+                                chunker.meta().creator(),
+                                app_message,
+                            ));
+                            assert!(chunker.is_complete());
+                        }
+                    }
+                    // chunker may be complete if event was emitted
+                    if chunker.is_complete() {
+                        todo!("send P2P response telling peer to stop sending. only should send this ONCE per peer per chunker! peer should then call Chunker::peer_complete on receival")
+                    }
+                } else {
+                    tracing::trace!("no chunker initialized for id: {:?}", id);
+                }
+            }
         }
+    }
+
+    fn insert_chunker(&mut self, chunker: C) {
+        let created_at = chunker.meta().created_at();
+        self.chunker_timeouts
+            .entry(created_at + self.timeout)
+            .or_default()
+            .push(chunker.meta().id());
+
+        let removed = self.chunkers.insert(chunker.meta().id(), chunker);
+        assert!(removed.is_none());
     }
 
     fn update_tick(&mut self, time: Duration) {
         assert!(time >= self.current_tick);
         self.current_tick = time;
-        self.policy.update_tick(time);
     }
 }
 
@@ -114,7 +151,6 @@ impl<C: Chunker> Gossip for Seeder<C> {
                 self.events
                     .push_back(GossipEvent::Emit(self.config.me, message.clone()));
 
-                // TODO this block should probably be moved inside chunker
                 match C::try_new_from_message(message) {
                     Ok(chunker) => {
                         tracing::info!(
@@ -123,7 +159,7 @@ impl<C: Chunker> Gossip for Seeder<C> {
                         );
                         // this is safe because chunkers are guaranteed to be unique, even for
                         // same AppMessage.
-                        self.policy.insert(chunker);
+                        self.insert_chunker(chunker);
                     }
                     Err(e) => {
                         tracing::warn!("failed to create chunker on broadcast attempt: {:?}", e);
@@ -177,17 +213,31 @@ impl<C: Chunker> Gossip for Seeder<C> {
         if !self.events.is_empty() {
             Some(self.current_tick)
         } else {
-            self.policy.peek_tick()
+            None
         }
     }
 
     fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
-        self.update_tick(time);
-        if !self.events.is_empty() {
-            self.events.pop_front()
-        } else {
-            self.policy.poll()
+        while time
+            >= self
+                .chunker_timeouts
+                .keys()
+                .next()
+                .copied()
+                .unwrap_or(Duration::MAX)
+        {
+            let gc_ids = self.chunker_timeouts.pop_first().expect("must exist").1;
+            for gc_id in gc_ids {
+                let removed = self.chunkers.remove(&gc_id);
+                if removed.is_some() {
+                    tracing::debug!("garbage collected chunk with id: {:?}", gc_id);
+                }
+            }
         }
+        self.update_tick(time);
+        self.events.pop_front()
+        // TODO generate_chunk needs to be called on individual peers
+        // TODO peek_tick needs to be updated after this is done
     }
 }
 
