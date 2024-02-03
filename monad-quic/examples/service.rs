@@ -145,18 +145,19 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
     'warmup: loop {
         let mut expected_rx_count = num_peers;
         tracing::info!("warming up, sending msg id={}", id);
-        let message = MockMessage::new(id, 1_000);
+        let message = MockMessage::new(id, message_len);
         tx_router
             .send(RouterCommand::Publish {
                 target: RouterTarget::Broadcast,
                 message,
             })
             .expect("reader should never be dropped");
-        while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_millis(500)) {
+        while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_millis(1000)) {
             if &tx == tx_peer && msg_id == message.id {
                 expected_rx_count -= 1;
                 if expected_rx_count == 0 {
                     successful_sends += 1;
+                    tracing::info!("successful_sends = {}", successful_sends);
                     if successful_sends == required_successful_sends_in_row {
                         break 'warmup;
                     } else {
@@ -167,6 +168,7 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
                 }
             }
         }
+        tracing::info!("failed to recv warmup msg, num_left = {}", expected_rx_count);
         successful_sends = 0;
         id += 1;
         assert!(id <= u8::MAX - num_broadcast);

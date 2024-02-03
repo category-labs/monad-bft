@@ -148,6 +148,10 @@ impl<G: Gossip> ConnectionManager<G> {
         let gossip_event = self.gossip.poll(time)?;
         let connection_manager_event = match gossip_event {
             GossipEvent::Send(to, _) if !self.connections.contains_key(&to) => {
+                tracing::warn!(
+                    "discarding message to={:?}, requesting connect",
+                    to,
+                );
                 ConnectionManagerEvent::RequestConnect(to)
             }
             GossipEvent::Send(to, gossip_message) => {
