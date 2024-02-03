@@ -88,7 +88,7 @@ struct CanonicalConnection<PT: PubKey> {
 /// Inbound event buffer size for ALL connections
 const CONNECTION_EVENTS_BUFFER_SIZE: usize = 1_000;
 /// Outbound message buffer size for EACH connection
-const CONNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE: usize = 100;
+const CONNECTION_OUTBOUND_MESSAGE_BUFFER_SIZE: usize = 1_000;
 
 /// Configuration for Service
 pub struct ServiceConfig<QC: QuinnConfig> {

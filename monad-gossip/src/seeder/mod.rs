@@ -17,6 +17,7 @@ use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
 mod chunker;
 use chunker::{Chunk, Chunker, Meta};
 mod tree;
+pub use tree::Tree;
 
 pub struct SeederConfig<'k, C: Chunker<'k>> {
     pub all_peers: Vec<NodeId<CertificateSignaturePubKey<C::SignatureType>>>,
