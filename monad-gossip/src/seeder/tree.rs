@@ -240,7 +240,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Tree<ST> {
 
     fn set_peer_seeder(&mut self, _peer: NodeId<CertificateSignaturePubKey<Self::SignatureType>>) {
         // There's no special encoding done on blocks, so there's no need to track seeders
-        // Tvery node should receive each chunk only once with broadcast trees
+        // Every node should receive each chunk only once with broadcast trees
         // Also, each node MUST receive every chunk in order to become a seeder, which implies that
         // we've already sent them the chunk they need, or they've received it through some
         // side-channel mechanism. Either way, tracking seeders is not required
