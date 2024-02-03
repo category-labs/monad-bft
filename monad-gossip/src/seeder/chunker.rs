@@ -1,7 +1,9 @@
 use std::{error::Error, fmt::Debug, time::Duration};
 
 use bytes::Bytes;
-use monad_crypto::certificate_signature::PubKey;
+use monad_crypto::certificate_signature::{
+    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+};
 
 use monad_types::NodeId;
 use serde::{de::DeserializeOwned, Serialize};
@@ -19,8 +21,8 @@ use crate::AppMessage;
 /// Flow:
 /// 1) Payload is constructed from AppMessage, sender, time, etc.
 /// 2) Chunks are generated from payload
-pub trait Chunker: Sized {
-    type NodeIdPubKey: PubKey;
+pub trait Chunker<'k>: Sized {
+    type SignatureType: CertificateSignatureRecoverable;
     // payload includes AppMessage + created_at TS as entropy
     type PayloadId: Clone + Ord + Debug;
     type Meta: Meta<PayloadId = Self::PayloadId>;
@@ -29,16 +31,22 @@ pub trait Chunker: Sized {
     /// This must generate a Chunker with a UNIQUE PayloadId
     /// This is to ensure that two separate chunkers are generated for two separate broadcasts,
     /// even if they are the same AppMessage
-    fn try_new_from_message(
+    fn new_from_message(
         time: Duration,
-        sender: NodeId<Self::NodeIdPubKey>,
+        all_peers: &[NodeId<CertificateSignaturePubKey<Self::SignatureType>>],
+        key: &'k <Self::SignatureType as CertificateSignature>::KeyPairType,
         message: AppMessage,
+    ) -> Self;
+    fn try_new_from_meta(
+        time: Duration,
+        all_peers: &[NodeId<CertificateSignaturePubKey<Self::SignatureType>>],
+        key: &'k <Self::SignatureType as CertificateSignature>::KeyPairType,
+        meta: Self::Meta,
     ) -> Result<Self, Box<dyn Error>>;
-    fn try_new_from_meta(meta: Self::Meta) -> Result<Self, Box<dyn Error>>;
 
     fn meta(&self) -> &Self::Meta;
     /// populated from meta
-    fn creator(&self) -> NodeId<Self::NodeIdPubKey>;
+    fn creator(&self) -> NodeId<CertificateSignaturePubKey<Self::SignatureType>>;
     /// populated from meta
     fn created_at(&self) -> Duration;
 
@@ -49,15 +57,21 @@ pub trait Chunker: Sized {
     /// successfully reconstructed payload. Chunker::is_complete MUST return true after this.
     fn process_chunk(
         &mut self,
-        from: NodeId<Self::NodeIdPubKey>,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         chunk: Self::Chunk,
         data: Bytes,
-    ) -> Option<AppMessage>;
+    ) -> Result<Option<AppMessage>, Box<dyn Error>>;
 
-    fn generate_chunk(&mut self) -> Option<(NodeId<Self::NodeIdPubKey>, Self::Chunk, Bytes)>;
+    fn generate_chunk(
+        &mut self,
+    ) -> Option<(
+        NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        Self::Chunk,
+        Bytes,
+    )>;
 
     /// Peer is now seeding - so we can stop sending them chunks
-    fn set_peer_seeder(&mut self, peer: NodeId<Self::NodeIdPubKey>);
+    fn set_peer_seeder(&mut self, peer: NodeId<CertificateSignaturePubKey<Self::SignatureType>>);
 }
 
 pub trait Meta: Clone + Debug + Serialize + DeserializeOwned {

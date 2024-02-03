@@ -4,6 +4,9 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+};
 use serde::{Deserialize, Serialize};
 
 use monad_types::{NodeId, RouterTarget};
@@ -15,18 +18,19 @@ mod chunker;
 use chunker::{Chunk, Chunker, Meta};
 mod tree;
 
-pub struct SeederConfig<C: Chunker> {
-    pub all_peers: Vec<NodeId<C::NodeIdPubKey>>,
-    pub me: NodeId<C::NodeIdPubKey>,
+pub struct SeederConfig<'k, C: Chunker<'k>> {
+    pub all_peers: Vec<NodeId<CertificateSignaturePubKey<C::SignatureType>>>,
+    pub key: &'k <C::SignatureType as CertificateSignature>::KeyPairType,
 
     pub timeout: Duration,
     pub up_bandwidth_Mbps: u16,
     pub chunker_poll_interval: Duration,
 }
 
-impl<C: Chunker> SeederConfig<C> {
-    pub fn build(self) -> Seeder<C> {
+impl<'k, C: Chunker<'k>> SeederConfig<'k, C> {
+    pub fn build(self) -> Seeder<'k, C> {
         Seeder {
+            me: NodeId::new(self.key.pubkey()),
             config: self,
 
             chunkers: Default::default(),
@@ -39,24 +43,26 @@ impl<C: Chunker> SeederConfig<C> {
     }
 }
 
-pub struct Seeder<C: Chunker> {
-    config: SeederConfig<C>,
+pub struct Seeder<'k, C: Chunker<'k>> {
+    /// convenience derived from config.key.pubkey()
+    me: NodeId<CertificateSignaturePubKey<C::SignatureType>>,
+    config: SeederConfig<'k, C>,
 
-    chunkers: BTreeMap<C::PayloadId, ChunkerStatus<C>>,
+    chunkers: BTreeMap<C::PayloadId, ChunkerStatus<'k, C>>,
     /// Chunker is scheduled to be deleted `timeout` after C::Meta::created_at
     chunker_timeouts: BTreeMap<Duration, Vec<C::PayloadId>>,
 
-    events: VecDeque<GossipEvent<C::NodeIdPubKey>>,
+    events: VecDeque<GossipEvent<CertificateSignaturePubKey<C::SignatureType>>>,
     current_tick: Duration,
     next_chunker_poll: Option<Duration>,
 }
 
-struct ChunkerStatus<C: Chunker> {
+struct ChunkerStatus<'k, C: Chunker<'k>> {
     chunker: C,
-    sent_metas: HashMap<NodeId<C::NodeIdPubKey>, MetaInfo<C::Meta>>,
+    sent_metas: HashMap<NodeId<CertificateSignaturePubKey<C::SignatureType>>, MetaInfo<C::Meta>>,
 }
 
-impl<C: Chunker> ChunkerStatus<C> {
+impl<'k, C: Chunker<'k>> ChunkerStatus<'k, C> {
     fn new(chunker: C) -> Self {
         Self {
             chunker,
@@ -64,7 +70,7 @@ impl<C: Chunker> ChunkerStatus<C> {
         }
     }
 
-    fn sent_seeding(&self, peer: &NodeId<C::NodeIdPubKey>) -> bool {
+    fn sent_seeding(&self, peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>) -> bool {
         self.sent_metas
             .get(peer)
             .map(|meta| meta.seeding)
@@ -72,7 +78,7 @@ impl<C: Chunker> ChunkerStatus<C> {
     }
 }
 
-impl<C: Chunker> Seeder<C> {
+impl<'k, C: Chunker<'k>> Seeder<'k, C> {
     fn prepare_message(
         message_type: MessageType<C::Meta, C::Chunk>,
         data: Bytes,
@@ -102,7 +108,7 @@ impl<C: Chunker> Seeder<C> {
 
     fn handle_protocol_message(
         &mut self,
-        from: NodeId<C::NodeIdPubKey>,
+        from: NodeId<CertificateSignaturePubKey<C::SignatureType>>,
         header: ProtocolHeader<C::Meta, C::Chunk>,
         data: Bytes,
     ) {
@@ -110,7 +116,12 @@ impl<C: Chunker> Seeder<C> {
             ProtocolHeader::Meta(MetaInfo { meta, seeding }) => {
                 let id = meta.id();
                 if !self.chunkers.contains_key(&id) {
-                    match C::try_new_from_meta(meta) {
+                    match C::try_new_from_meta(
+                        self.current_tick,
+                        &self.config.all_peers,
+                        self.config.key,
+                        meta,
+                    ) {
                         Ok(chunker) => {
                             tracing::info!("initialized chunker for id: {:?}", id);
                             self.insert_chunker(chunker);
@@ -136,13 +147,20 @@ impl<C: Chunker> Seeder<C> {
                 let id = chunk.id();
                 if let Some(status) = self.chunkers.get_mut(&id) {
                     if !status.chunker.is_seeder() {
-                        let maybe_app_message = status.chunker.process_chunk(from, chunk, data);
-                        if let Some(app_message) = maybe_app_message {
-                            self.events.push_back(GossipEvent::Emit(
-                                status.chunker.creator(),
-                                app_message,
-                            ));
-                            assert!(status.chunker.is_seeder());
+                        let result = status.chunker.process_chunk(from, chunk, data);
+                        match result {
+                            Ok(None) => {}
+                            Ok(Some(app_message)) => {
+                                tracing::debug!("emitting app_message, len={}", app_message.len());
+                                self.events.push_back(GossipEvent::Emit(
+                                    status.chunker.creator(),
+                                    app_message,
+                                ));
+                                assert!(status.chunker.is_seeder());
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to process chunk: {:?}", e);
+                            }
                         }
                     }
                     // chunker may be complete if event was emitted
@@ -189,8 +207,8 @@ impl<C: Chunker> Seeder<C> {
     }
 }
 
-impl<C: Chunker> Gossip for Seeder<C> {
-    type NodeIdPubKey = C::NodeIdPubKey;
+impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
+    type NodeIdPubKey = CertificateSignaturePubKey<C::SignatureType>;
 
     fn send(&mut self, time: Duration, to: RouterTarget<Self::NodeIdPubKey>, message: AppMessage) {
         self.update_tick(time);
@@ -200,27 +218,21 @@ impl<C: Chunker> Gossip for Seeder<C> {
                     self.next_chunker_poll = Some(self.current_tick);
                 }
                 self.events
-                    .push_back(GossipEvent::Emit(self.config.me, message.clone()));
+                    .push_back(GossipEvent::Emit(self.me, message.clone()));
 
-                match C::try_new_from_message(time, self.config.me, message) {
-                    Ok(chunker) => {
-                        tracing::info!(
-                            "initialized chunker on broadcast attempt: {:?}",
-                            chunker.meta()
-                        );
-                        // this is safe because chunkers are guaranteed to be unique, even for
-                        // same AppMessage.
-                        self.insert_chunker(chunker);
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create chunker on broadcast attempt: {:?}", e);
-                    }
-                }
+                let chunker =
+                    C::new_from_message(time, &self.config.all_peers, self.config.key, message);
+                tracing::info!(
+                    "initialized chunker on broadcast attempt: {:?}",
+                    chunker.meta()
+                );
+                // this is safe because chunkers are guaranteed to be unique, even for
+                // same AppMessage.
+                self.insert_chunker(chunker);
             }
             RouterTarget::PointToPoint(to) => {
-                if to == self.config.me {
-                    self.events
-                        .push_back(GossipEvent::Emit(self.config.me, message))
+                if to == self.me {
+                    self.events.push_back(GossipEvent::Emit(self.me, message))
                 } else {
                     self.events.push_back(GossipEvent::Send(
                         to,
@@ -336,6 +348,10 @@ impl<C: Chunker> Gossip for Seeder<C> {
                     chunker_idx = (chunker_idx + 1) % chunkers.len();
                 } else {
                     chunkers.swap_remove(chunker_idx);
+                    if chunkers.is_empty() {
+                        break;
+                    }
+                    chunker_idx %= chunkers.len();
                 }
             }
 
@@ -366,84 +382,88 @@ enum MessageType<M, C> {
     BroadcastProtocol(ProtocolHeader<M, C>),
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 enum ProtocolHeader<M, C> {
     Meta(MetaInfo<M>),
     Chunk(C),
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 struct MetaInfo<M> {
     meta: M,
     seeding: bool,
 }
 
-// type PayloadHash = [u8; 32];
-//
-// #[derive(Clone, Deserialize, Serialize)]
-// struct ProtocolMeta {
-//     payload_hash: PayloadHash,
-//     // TODO insert initial proposer signature over (payload hash, qc_timestamp) here
-//     // This will be used in validation step
-//
-//     // this is only here
-//     total_chunks: u32,
-// }
-//
-// #[derive(Clone, Deserialize, Serialize)]
-// struct ProtocolChunk {
-//     payload_hash: PayloadHash,
-//     // TODO insert proof that the chunk is a valid constituent of payload here
-//     // This will be used in validation step
-// }
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
 
-// #[cfg(test)]
-// mod tests {
-//     use std::time::Duration;
-//
-//     use monad_crypto::NopSignature;
-//     use monad_transformer::{BytesTransformer, LatencyTransformer};
-//     use rand::SeedableRng;
-//     use rand_chacha::ChaCha20Rng;
-//
-//     use super::SeederConfig;
-//     use crate::testutil::{make_swarm, test_broadcast, test_direct};
-//
-//     const NUM_NODES: u16 = 10;
-//     const PAYLOAD_SIZE_BYTES: usize = 1024;
-//
-//     #[test]
-//     fn test_framed_messages() {
-//         let mut swarm = make_swarm::<NopSignature, _>(
-//             NUM_NODES,
-//             |all_peers, me| {
-//                 SeederConfig {
-//                     all_peers: all_peers.to_vec(),
-//                     me: *me,
-//                 }
-//                 .build()
-//             },
-//             |_all_peers, _me| {
-//                 vec![BytesTransformer::Latency(LatencyTransformer::new(
-//                     Duration::from_millis(5),
-//                 ))]
-//             },
-//         );
-//
-//         let mut rng = ChaCha20Rng::from_seed([0; 32]);
-//         test_broadcast(
-//             &mut rng,
-//             &mut swarm,
-//             Duration::from_secs(1),
-//             PAYLOAD_SIZE_BYTES,
-//             usize::MAX,
-//             1.0,
-//         );
-//         test_direct(
-//             &mut rng,
-//             &mut swarm,
-//             Duration::from_secs(1),
-//             PAYLOAD_SIZE_BYTES,
-//         );
-//     }
-// }
+    use monad_crypto::{
+        certificate_signature::{CertificateKeyPair, CertificateSignature},
+        hasher::{Hasher, HasherType},
+        NopSignature,
+    };
+    use monad_transformer::{BytesTransformer, LatencyTransformer};
+    use monad_types::NodeId;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    use super::{tree::Tree, SeederConfig};
+    use crate::testutil::{test_broadcast, test_direct, Swarm};
+
+    const NUM_NODES: u16 = 20;
+    const PAYLOAD_SIZE_BYTES: usize = 1024 * 1024;
+
+    type SignatureType = NopSignature;
+
+    #[test]
+    fn test_framed_messages() {
+        let keys: Vec<_> = (1_u32..)
+            .take(NUM_NODES.into())
+            .map(|idx| {
+                let mut secret = {
+                    let mut hasher = HasherType::new();
+                    hasher.update(idx.to_le_bytes());
+                    hasher.hash().0
+                };
+                <SignatureType as CertificateSignature>::KeyPairType::from_bytes(&mut secret)
+                    .unwrap()
+            })
+            .collect();
+        let mut swarm = {
+            Swarm::new(keys.iter().map(|key| {
+                (
+                    NodeId::new(key.pubkey()),
+                    SeederConfig::<Tree<SignatureType>> {
+                        all_peers: keys.iter().map(|key| NodeId::new(key.pubkey())).collect(),
+                        key,
+
+                        timeout: Duration::from_millis(700),
+                        up_bandwidth_Mbps: 1_000,
+                        chunker_poll_interval: Duration::from_millis(10),
+                    }
+                    .build(),
+                    vec![BytesTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_millis(100),
+                    ))],
+                )
+            }))
+        };
+
+        let mut rng = ChaCha8Rng::from_seed([0; 32]);
+        test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+            usize::MAX,
+            1.0,
+        );
+        test_direct(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+        );
+    }
+}
