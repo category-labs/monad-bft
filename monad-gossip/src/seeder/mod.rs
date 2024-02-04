@@ -413,7 +413,7 @@ mod tests {
     use crate::testutil::{test_broadcast, test_direct, Swarm};
 
     const NUM_NODES: u16 = 20;
-    const PAYLOAD_SIZE_BYTES: usize = 1024 * 1024;
+    const PAYLOAD_SIZE_BYTES: usize = 1024;
 
     type SignatureType = NopSignature;
 

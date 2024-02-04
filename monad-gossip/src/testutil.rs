@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use bytes::Buf;
+use bytes::{Buf, BytesMut};
 use monad_crypto::{
     certificate_signature::{
         CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -237,7 +237,11 @@ pub fn test_broadcast<G: Gossip>(
     let peer_ids: Vec<_> = swarm.nodes.keys().copied().collect();
     let mut pending_messages = HashSet::new();
     for tx_peer in peer_ids.iter().take(max_payload_broadcasts) {
-        let message: AppMessage = (0..payload_size_bytes).map(|_| rng.gen()).collect();
+        let message = {
+            let mut message = BytesMut::zeroed(payload_size_bytes);
+            rng.fill_bytes(&mut message);
+            message.freeze()
+        };
         let target = RouterTarget::Broadcast;
 
         for rx_peer in &peer_ids {
@@ -272,7 +276,11 @@ pub fn test_direct<G: Gossip>(
     let mut pending_messages = HashSet::new();
     for tx_peer in &peer_ids {
         for rx_peer in &peer_ids {
-            let message: AppMessage = (0..payload_size_bytes).map(|_| rng.gen()).collect();
+            let message = {
+                let mut message = BytesMut::zeroed(payload_size_bytes);
+                rng.fill_bytes(&mut message);
+                message.freeze()
+            };
             let target = RouterTarget::PointToPoint(*rx_peer);
             swarm.send(tx_peer, target, message.clone());
 
