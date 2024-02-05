@@ -14,7 +14,9 @@ use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+};
 use monad_wal::mock::MockWALoggerConfig;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -32,7 +34,7 @@ fn two_nodes() {
     let state_configs = make_state_configs::<NoSerSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
-        SimpleRoundRobin::default,
+        WeightedRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
         || {

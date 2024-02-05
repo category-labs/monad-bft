@@ -18,7 +18,9 @@ use monad_tracing_counter::{
 use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+};
 use monad_wal::mock::MockWALoggerConfig;
 use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};
@@ -41,7 +43,7 @@ fn many_nodes_metrics() {
     let state_configs = make_state_configs::<NoSerSwarm>(
         100, // num_nodes
         ValidatorSetFactory::default,
-        SimpleRoundRobin::default,
+        WeightedRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
         || {

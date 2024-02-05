@@ -14,7 +14,9 @@ use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::state_root_hash::MockStateRootHashNop;
-use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
+use monad_validator::{
+    validator_set::ValidatorSetFactory, weighted_round_robin::WeightedRoundRobin,
+};
 use monad_wal::mock::MockWALoggerConfig;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use test_case::test_case;
@@ -62,7 +64,7 @@ fn nodes_with_random_latency(seed: u64) {
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
-        SimpleRoundRobin::default,
+        WeightedRoundRobin::default,
         MockTxPool::default,
         || MockValidator,
         || {
