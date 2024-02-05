@@ -420,6 +420,9 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
+            MonadEvent::RecordMetricsEvent(_) => {
+                vec![]
+            }
         }
     }
 }

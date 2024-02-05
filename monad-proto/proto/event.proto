@@ -96,11 +96,14 @@ message ProtoMempoolEvent {
   }
 }
 
+message ProtoRecordMetricsEvent {}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
+    ProtoRecordMetricsEvent record_metrics_event = 5;
   }
 }

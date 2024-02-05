@@ -233,6 +233,9 @@ pub enum MempoolEvent<SCT: SignatureCollection> {
     UserTxns(Bytes),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordMetricsEvent;
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -248,6 +251,8 @@ where
     ValidatorEvent(ValidatorEvent<SCT>),
     /// Events to mempool
     MempoolEvent(MempoolEvent<SCT>),
+    /// Events for recording metrics
+    RecordMetricsEvent(RecordMetricsEvent),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
