@@ -50,7 +50,7 @@ message ProtoStateUpdateEvent {
 
 message ProtoBlockSyncRequestWithSender {
   monad_proto.basic.ProtoNodeId sender = 1;
-  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;  
+  monad_proto.message.ProtoRequestBlockSyncMessage request = 2;
 }
 
 message ProtoBlockSyncResponseWithSender {
@@ -109,12 +109,15 @@ message ProtoAsyncStateVerifyEvent {
   }
 }
 
+message ProtoMetricsEvent {}
+
 message ProtoMonadEvent{
   oneof event {
     ProtoConsensusEvent consensus_event = 1;
     ProtoBlockSyncEvent block_sync_event = 2;
     ProtoValidatorEvent validator_event = 3;
     ProtoMempoolEvent mempool_event = 4;
-    ProtoAsyncStateVerifyEvent async_state_verify_event = 5 ;
+    ProtoAsyncStateVerifyEvent async_state_verify_event = 5;
+    ProtoMetricsEvent metrics_event = 6;
   }
 }

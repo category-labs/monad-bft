@@ -505,6 +505,10 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
+            MonadEvent::MetricsEvent(_) => {
+                // TODO(rene): we may have non-trivial behavior here
+                vec![]
+            }
         }
     }
 }
