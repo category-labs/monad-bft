@@ -177,6 +177,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
+            metrics_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -220,6 +221,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
+            metrics_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -435,7 +437,7 @@ mod tests {
     use monad_crypto::hasher::Hash;
     use monad_executor::Executor;
     use monad_executor_glue::TimerCommand;
-    use monad_types::BlockId;
+    use monad_types::{BlockId, TimeoutVariant};
 
     use super::*;
 

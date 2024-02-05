@@ -16,7 +16,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
-use monad_executor_glue::Message;
+use monad_executor_glue::{Message, MetricsCommand, MonadEvent};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
@@ -26,7 +26,8 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
-    parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
+    nop_metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
+    timer::TokioTimer, BoxUpdater, Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -41,6 +42,7 @@ mod config;
 
 mod error;
 use error::NodeSetupError;
+use monad_opentelemetry_executor::OpenTelemetryExecutor;
 
 mod state;
 use state::NodeState;
@@ -55,22 +57,22 @@ fn main() {
         .map_err(NodeSetupError::EnvLoggerError)
         .unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
 
-    let state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| e.into())
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
-    drop(cmd);
-
-    if let Err(e) = runtime.block_on(run(state)) {
+    if let Err(e) = runtime.block_on(run(cmd)) {
         log::error!("monad consensus node crashed: {:?}", e);
     }
 }
 
-async fn run(node_state: NodeState) -> Result<(), ()> {
+async fn run(mut cmd: clap::Command) -> Result<(), ()> {
+    // NodeState::setup needs to be called within a tokio runtime
+    let node_state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
+    drop(cmd);
+
     let router = build_router::<
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
@@ -108,6 +110,22 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     );
     let val_set_update_interval = SeqNum(2000);
 
+    let metrics_executor: BoxUpdater<
+        'static,
+        MetricsCommand,
+        MonadEvent<SignatureType, SignatureCollectionType>,
+    > = if let Some(record_metrics_interval) = node_state.record_metrics_interval {
+        Updater::boxed(OpenTelemetryExecutor::new(
+            node_state.otel_endpoint.expect(
+                "cannot specify record metrics interval without specifying OpenTelemetry endpoint",
+            ),
+            record_metrics_interval,
+            /*enable_grpc_gzip=*/ false,
+        ))
+    } else {
+        Updater::boxed(NopMetricsExecutor::default())
+    };
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -117,6 +135,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
+        metrics: metrics_executor,
     };
 
     let logger_config = WALoggerConfig::new(node_state.wal_path.clone(), true);

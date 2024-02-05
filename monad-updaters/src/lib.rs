@@ -7,6 +7,7 @@ pub mod checkpoint;
 pub mod ipc;
 pub mod ledger;
 pub mod loopback;
+pub mod nop_metrics;
 pub mod parent;
 pub mod state_root_hash;
 pub mod validator_set;

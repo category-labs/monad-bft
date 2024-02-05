@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
@@ -26,6 +26,8 @@ pub struct NodeState {
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
     pub otel_context: Option<opentelemetry::Context>,
+    pub otel_endpoint: Option<String>,
+    pub record_metrics_interval: Option<Duration>,
 }
 
 impl NodeState {
@@ -49,7 +51,7 @@ impl NodeState {
         let genesis_config: GenesisConfig =
             toml::from_str(&std::fs::read_to_string(cli.genesis_config)?)?;
 
-        let otel_context = if let Some(otel_endpoint) = cli.otel_endpoint {
+        let otel_context = if let Some(otel_endpoint) = &cli.otel_endpoint {
             Some(build_otel_context(otel_endpoint)?)
         } else {
             None
@@ -66,6 +68,10 @@ impl NodeState {
             execution_ledger_path: cli.execution_ledger_path,
             mempool_ipc_path: cli.mempool_ipc_path,
             otel_context,
+            otel_endpoint: cli.otel_endpoint,
+            record_metrics_interval: cli
+                .record_metrics_interval_seconds
+                .and_then(|s| Some(Duration::from_secs(s))),
         })
     }
 }
@@ -98,7 +104,7 @@ fn load_bls12_381_keypair(path: &PathBuf) -> Result<BlsKeyPair, NodeSetupError> 
     })
 }
 
-fn build_otel_context(otel_endpoint: String) -> Result<opentelemetry::Context, NodeSetupError> {
+fn build_otel_context(otel_endpoint: &String) -> Result<opentelemetry::Context, NodeSetupError> {
     let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
         opentelemetry_otlp::new_exporter()
             .tonic()

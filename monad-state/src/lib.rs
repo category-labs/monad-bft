@@ -35,7 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::EthAddress;
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message,
-    MonadEvent, ValidatorEvent,
+    MetricsCommand, MetricsEvent, MonadEvent, ValidatorEvent,
 };
 use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
@@ -427,6 +427,8 @@ where
             ))),
         );
 
+        init_cmds.extend(monad_state.update(MonadEvent::MetricsEvent(MetricsEvent::Timeout)));
+
         (monad_state, init_cmds)
     }
 }
@@ -505,6 +507,13 @@ where
                     .flat_map(Into::<Vec<Command<_, _, _, _, _>>>::into)
                     .collect::<Vec<_>>()
             }
+            MonadEvent::MetricsEvent(metrics_event) => match metrics_event {
+                MetricsEvent::Timeout => {
+                    vec![Command::MetricsCommand(MetricsCommand::RecordMetrics(
+                        self.metrics,
+                    ))]
+                }
+            },
         }
     }
 }

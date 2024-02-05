@@ -30,6 +30,7 @@ monad-types = { path = "../monad-types" }
 monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
 monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
+monad-opentelemetry-executor = { path = "../monad-opentelemetry-executor" }
 
 base64 = { workspace = true }
 bytes = { workspace = true }
@@ -40,7 +41,7 @@ hex = { workspace = true }
 log = { workspace = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry_api = { workspace = true }
-opentelemetry-otlp = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
