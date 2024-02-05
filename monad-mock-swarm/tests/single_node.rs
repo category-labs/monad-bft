@@ -14,7 +14,7 @@ use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator,
+    terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
@@ -78,6 +78,10 @@ fn two_nodes() {
         .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
         .is_some()
     {}
+
+    let verifier = MockSwarmVerifier::default().tick_exact(Duration::from_secs(10));
+    assert!(verifier.verify(&swarm));
+
     swarm_ledger_verification(&swarm, 1024);
 }
 
