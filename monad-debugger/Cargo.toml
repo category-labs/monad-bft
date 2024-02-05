@@ -5,6 +5,14 @@ edition = "2021"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+bench = false
+
+[[bin]]
+name = "schema_gen"
+src = "src/bin/schema_gen.rs"
+bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
