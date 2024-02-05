@@ -3,7 +3,8 @@ use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_proto::{error::ProtoError, proto::event::*};
 
 use crate::{
-    AsyncStateVerifyEvent, BlockSyncEvent, FetchedBlock, MempoolEvent, MonadEvent, ValidatorEvent,
+    AsyncStateVerifyEvent, BlockSyncEvent, FetchedBlock, MempoolEvent, MetricsEvent, MonadEvent,
+    ValidatorEvent,
 };
 
 impl<SCT: SignatureCollection> From<&FetchedBlock<SCT>> for ProtoFetchedBlock {
@@ -63,6 +64,7 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> From<&MonadEv
             MonadEvent::AsyncStateVerifyEvent(event) => {
                 proto_monad_event::Event::AsyncStateVerifyEvent(event.into())
             }
+            MonadEvent::MetricsEvent(event) => proto_monad_event::Event::MetricsEvent(event.into()),
         };
         Self { event: Some(event) }
     }
@@ -88,6 +90,9 @@ impl<S: CertificateSignatureRecoverable, SCT: SignatureCollection> TryFrom<Proto
             }
             Some(proto_monad_event::Event::AsyncStateVerifyEvent(event)) => {
                 MonadEvent::AsyncStateVerifyEvent(event.try_into()?)
+            }
+            Some(proto_monad_event::Event::MetricsEvent(event)) => {
+                MonadEvent::MetricsEvent(event.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "MonadEvent.event".to_owned(),
@@ -301,6 +306,20 @@ impl<SCT: SignatureCollection> TryFrom<ProtoAsyncStateVerifyEvent> for AsyncStat
             ))?,
         };
         Ok(event)
+    }
+}
+
+impl From<&MetricsEvent> for ProtoMetricsEvent {
+    fn from(_: &MetricsEvent) -> Self {
+        Self {}
+    }
+}
+
+impl TryFrom<ProtoMetricsEvent> for MetricsEvent {
+    type Error = ProtoError;
+
+    fn try_from(_: ProtoMetricsEvent) -> Result<Self, Self::Error> {
+        Ok(Self)
     }
 }
 

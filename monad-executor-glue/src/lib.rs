@@ -245,6 +245,9 @@ pub enum AsyncStateVerifyEvent<SCT: SignatureCollection> {
     LocalStateRoot(StateRootHashInfo),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsEvent;
+
 /// MonadEvent are inputs to MonadState
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MonadEvent<ST, SCT>
@@ -262,6 +265,8 @@ where
     MempoolEvent(MempoolEvent<SCT>),
     /// Events to async state verification
     AsyncStateVerifyEvent(AsyncStateVerifyEvent<SCT>),
+    /// Events for metrics
+    MetricsEvent(MetricsEvent),
 }
 
 impl<ST, SCT> monad_types::Deserializable<[u8]> for MonadEvent<ST, SCT>
