@@ -26,10 +26,12 @@ jobs:
 
       # Run benchmark on master
       - name: Run benchmark on master
+        shell: bash
         run: cd master && cargo bench -- --output-format bencher | tee bench.txt
 
       # Run benchmark on PR
       - name: Run benchmark on PR
+        shell: bash
         run: cd pr && cargo bench -- --output-format bencher | tee bench.txt
 
       - name: Compare benchmarks
