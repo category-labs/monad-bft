@@ -36,4 +36,7 @@ pub struct Cli {
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
     pub otel_endpoint: Option<String>,
+
+    #[arg(long)]
+    pub record_metrics_interval_seconds: Option<u64>,
 }

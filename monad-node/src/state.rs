@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
@@ -26,6 +26,7 @@ pub struct NodeState {
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
     pub otel_context: Option<opentelemetry::Context>,
+    pub record_metrics_interval: Option<Duration>,
 }
 
 impl NodeState {
@@ -66,6 +67,9 @@ impl NodeState {
             execution_ledger_path: cli.execution_ledger_path,
             mempool_ipc_path: cli.mempool_ipc_path,
             otel_context,
+            record_metrics_interval: cli
+                .record_metrics_interval_seconds
+                .and_then(|s| Some(Duration::from_secs(s))),
         })
     }
 }

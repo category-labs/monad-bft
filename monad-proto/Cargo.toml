@@ -12,5 +12,5 @@ bench = false
 prost = { workspace = true }
 
 [build-dependencies]
-prost-build = { workspace = true}
+prost-build = { workspace = true }
 protobuf-src = { workspace = true }
