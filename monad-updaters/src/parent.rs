@@ -80,7 +80,7 @@ where
         self.execution_ledger.exec(execution_ledger_cmds);
         self.checkpoint.exec(checkpoint_cmds);
         self.state_root_hash.exec(state_root_hash_cmds);
-        self.loopback.replay(loopback_cmds);
+        self.loopback.exec(loopback_cmds);
     }
 }
 
