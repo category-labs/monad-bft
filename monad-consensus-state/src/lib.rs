@@ -1002,7 +1002,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, TimeoutVariant};
+    use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum, Stake, TimeoutVariant};
     use monad_validator::{
         epoch_manager::EpochManager,
         leader_election::LeaderElection,
@@ -1044,11 +1044,6 @@ mod test {
         let mut val_epoch_map = ValidatorsEpochMapping::new(ValidatorSetFactory::default());
         val_epoch_map.insert(
             Epoch(1),
-            val_stakes.clone(),
-            ValidatorMapping::new(val_cert_pubkeys.clone()),
-        );
-        val_epoch_map.insert(
-            Epoch(2),
             val_stakes,
             ValidatorMapping::new(val_cert_pubkeys),
         );
@@ -3133,11 +3128,28 @@ mod test {
     #[test]
     fn test_advance_epoch_through_proposal_qc() {
         let num_states = 2;
-        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+        let (keys, certkeys, epoch_manager, mut val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
                 || NopStateRoot,
             );
+        let val_stakes = val_epoch_map
+            .get_val_set(&Epoch(1))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(p, s)| (*p, *s))
+            .collect();
+        let val_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&Epoch(1))
+            .unwrap()
+            .map
+            .clone();
+        val_epoch_map.insert(
+            Epoch(2),
+            val_stakes,
+            ValidatorMapping::new(val_cert_pubkeys),
+        );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
@@ -3281,11 +3293,28 @@ mod test {
     #[test]
     fn test_advance_epoch_through_proposal_tc() {
         let num_states = 2;
-        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+        let (keys, certkeys, epoch_manager, mut val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
                 || NopStateRoot,
             );
+        let val_stakes = val_epoch_map
+            .get_val_set(&Epoch(1))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(p, s)| (*p, *s))
+            .collect();
+        let val_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&Epoch(1))
+            .unwrap()
+            .map
+            .clone();
+        val_epoch_map.insert(
+            Epoch(2),
+            val_stakes,
+            ValidatorMapping::new(val_cert_pubkeys),
+        );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
@@ -3398,11 +3427,28 @@ mod test {
     #[test]
     fn test_advance_epoch_through_local_tc() {
         let num_states = 4;
-        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+        let (keys, certkeys, epoch_manager, mut val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
                 || NopStateRoot,
             );
+        let val_stakes = val_epoch_map
+            .get_val_set(&Epoch(1))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(p, s)| (*p, *s))
+            .collect();
+        let val_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&Epoch(1))
+            .unwrap()
+            .map
+            .clone();
+        val_epoch_map.insert(
+            Epoch(2),
+            val_stakes,
+            ValidatorMapping::new(val_cert_pubkeys),
+        );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
@@ -3777,11 +3823,28 @@ mod test {
     #[test]
     fn test_advance_epoch_with_blocksync() {
         let num_states = 2;
-        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+        let (keys, certkeys, epoch_manager, mut val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
                 || NopStateRoot,
             );
+        let val_stakes = val_epoch_map
+            .get_val_set(&Epoch(1))
+            .unwrap()
+            .get_members()
+            .iter()
+            .map(|(p, s)| (*p, *s))
+            .collect();
+        let val_cert_pubkeys = val_epoch_map
+            .get_cert_pubkeys(&Epoch(1))
+            .unwrap()
+            .map
+            .clone();
+        val_epoch_map.insert(
+            Epoch(2),
+            val_stakes,
+            ValidatorMapping::new(val_cert_pubkeys),
+        );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
@@ -3901,6 +3964,122 @@ mod test {
             // verify state is now in epoch 2
             let current_epoch = epoch_manager.get_epoch(state.get_current_round());
             assert_eq!(current_epoch, Epoch(2));
+        }
+    }
+
+    #[test]
+    fn test_vote_sent_to_leader_in_next_epoch() {
+        let num_states = 2;
+        let (keys, certkeys, epoch_manager, mut val_epoch_map, mut states) =
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+                || NopStateRoot,
+            );
+
+        // generate a random key as a validator in epoch 2
+        let epoch_2_leader = NodeId::new(get_key::<SignatureType>(100).pubkey());
+        val_epoch_map.insert(
+            Epoch(2),
+            vec![(epoch_2_leader, Stake(1))],
+            ValidatorMapping::new(vec![(epoch_2_leader, epoch_2_leader.pubkey())]),
+        );
+
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let mut propgen_epoch_manager = epoch_manager;
+        let election = SimpleRoundRobin::default();
+        let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+
+        // Sequence number of the block which updates the validator set
+        let update_block = propgen_epoch_manager.val_set_update_interval;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let update_block_round = Round(update_block.0);
+
+        let expected_epoch_start_round =
+            update_block_round + propgen_epoch_manager.epoch_start_delay;
+
+        propgen_epoch_manager.schedule_epoch_start(update_block, update_block_round);
+
+        // commit blocks until the last round of the epoch
+        for _ in 0..(expected_epoch_start_round.0 - 2) {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &propgen_epoch_manager,
+                &val_epoch_map,
+                &election,
+                FullTransactionList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (i, (state, epoch_manager)) in
+                states.iter_mut().zip(epoch_managers.iter_mut()).enumerate()
+            {
+                let cmds = state.handle_proposal_message(
+                    author,
+                    verified_message.clone(),
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                    &mut metrics[i],
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+        }
+
+        // handle proposal on the last round of the epoch
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &propgen_epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        let (author, _, verified_message) = cp.destructure();
+        for (i, (state, epoch_manager)) in
+            states.iter_mut().zip(epoch_managers.iter_mut()).enumerate()
+        {
+            let cmds = state.handle_proposal_message(
+                author,
+                verified_message.clone(),
+                epoch_manager,
+                &val_epoch_map,
+                &election,
+                &mut metrics[i],
+            );
+            // state should send vote to the leader in epoch 2
+            let vote_messages: Vec<_> = cmds
+                .iter()
+                .filter_map(|c| match c {
+                    ConsensusCommand::Publish {
+                        target: RouterTarget::PointToPoint(peer),
+                        message,
+                    } => match message.deref().deref() {
+                        ConsensusMessage::Vote(vote) => {
+                            if *peer == epoch_2_leader {
+                                Some(*vote)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            assert!(vote_messages.len() == 1);
         }
     }
 }
