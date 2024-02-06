@@ -25,7 +25,8 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
-    parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
+    metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
+    timer::TokioTimer,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -116,6 +117,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 100).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
+        metrics: NopMetricsExecutor::default(),
     };
 
     let logger_config = WALoggerConfig::new(node_state.wal_path.clone(), true);
