@@ -16,7 +16,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::{
     mock::MockGossipConfig,
-    seeder::{SeederConfig, Tree, Raptor},
+    seeder::{Raptor, SeederConfig, Tree},
 };
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -107,7 +107,10 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
                 rt.block_on(async move {
                     let gossip = SeederConfig::<Raptor<SignatureType>> {
                         all_peers,
-                        key: &key,
+                        key: unsafe {
+                            // TODO delete this transmute lol
+                            std::mem::transmute(&key)
+                        },
 
                         timeout: Duration::from_millis(700),
                         up_bandwidth_Mbps: BANDWIDTH_Mbps,
@@ -169,7 +172,10 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
                 }
             }
         }
-        tracing::info!("failed to recv warmup msg, num_left = {}", expected_rx_count);
+        tracing::info!(
+            "failed to recv warmup msg, num_left = {}",
+            expected_rx_count
+        );
         successful_sends = 0;
         id += 1;
         assert!(id <= u8::MAX - num_broadcast);
