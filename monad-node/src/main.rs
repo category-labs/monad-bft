@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
@@ -21,7 +22,7 @@ use monad_ledger::MonadFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
     parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer,
@@ -113,7 +114,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
-        ipc: IpcReceiver::new(node_state.mempool_ipc_path).expect("uds bind failed"),
+        ipc: IpcReceiver::new(node_state.mempool_ipc_path, 100).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
     };
 
@@ -153,7 +154,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         let cmds = state.update(wal_event);
         executor.replay(cmds);
     }
-
     let total_start = Instant::now();
     let mut start = total_start;
     let mut last_printed_len = 0;
@@ -239,8 +239,10 @@ async fn build_router<M, OM, G: Gossip>(
     gossip: G,
 ) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
 where
-    M: Message<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
-    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>>,
+    G: Gossip<NodeIdPubKey = monad_secp::PubKey> + Send + 'static,
+    M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
+    <M as Deserializable<Bytes>>::ReadError: 'static,
+    OM: Serializable<Bytes> + Send + Sync + 'static,
 {
     Service::new(
         ServiceConfig {

@@ -134,18 +134,16 @@ async fn main() {
     type SignatureCollectionTypeConfig = MultiSig<SignatureTypeConfig>;
     // TODO parse this from CLI args
     let testground_args = TestgroundArgs {
-        simulation_length_s: 10,
-        delta_ms: 75,
+        simulation_length_s: 20,
+        delta_ms: 4000,
         proposal_size: 5_000,
         val_set_update_interval: 2_000,
         epoch_start_delay: 50,
 
-        router: RouterArgs::MonadP2P {
-            max_rtt_ms: 150,
-            bandwidth_Mbps: 1_000,
-            gossip: GossipArgs::Simple,
+        router: RouterArgs::Local {
+            external_latency_ms: 1000,
         },
-        execution_ledger: ExecutionLedgerArgs::Mock,
+        execution_ledger: ExecutionLedgerArgs::File,
     };
 
     let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());

@@ -2615,6 +2615,7 @@ name = "monad-node"
 version = "0.1.0"
 dependencies = [
  "base64 0.21.5",
+ "bytes",
  "clap 4.4.10",
  "env_logger",
  "futures-util",
@@ -2921,6 +2922,7 @@ dependencies = [
  "monad-crypto",
  "monad-testutil",
  "monad-types",
+ "test-case",
  "tracing",
 ]
 

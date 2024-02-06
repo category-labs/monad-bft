@@ -40,7 +40,7 @@ where
     }
 
     pub fn get_val_set(&self, epoch: &Epoch) -> Option<&VTF::ValidatorSetType> {
-        self.validator_map.get(epoch).map(|vs| &vs.0)
+        self.validator_map.get(epoch).map(|(val_set, _)| val_set)
     }
 
     pub fn get_cert_pubkeys(
@@ -52,7 +52,9 @@ where
             SignatureCollectionKeyPairType<SCT>,
         >,
     > {
-        self.validator_map.get(epoch).map(|vs| &vs.1)
+        self.validator_map
+            .get(epoch)
+            .map(|(_, cert_pubkeys)| cert_pubkeys)
     }
 
     pub fn insert(

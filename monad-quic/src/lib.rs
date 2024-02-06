@@ -4,8 +4,9 @@ pub use router_scheduler::*;
 mod timeout_queue;
 
 // FIXME-4 split the following into monad-quic-service crate
+mod connection;
+mod endpoint;
 mod quinn_config;
 pub use quinn_config::*;
 mod service;
 pub use service::*;
-mod connection;

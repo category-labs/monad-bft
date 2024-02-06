@@ -1,7 +1,7 @@
-use std::{marker::PhantomData, path::Path, task::Poll};
+use std::{path::PathBuf, task::Poll};
 
 use alloy_rlp::Decodable;
-use futures::{stream::SelectAll, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -9,17 +9,15 @@ use monad_crypto::certificate_signature::{
 use monad_eth_tx::EthTransaction;
 use monad_executor_glue::{MempoolEvent, MonadEvent};
 use rand::distributions::{Alphanumeric, DistString};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::{
+    net::{UnixListener, UnixStream},
+    sync::mpsc::error::TrySendError,
+};
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
-#[cfg(target_os = "linux")]
-const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/run/monad_mempool";
-#[cfg(target_os = "macos")]
-const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "/var/run/monad_mempool";
-
+const DEFAULT_MEMPOOL_BIND_PATH_BASE: &str = "./monad_mempool";
 const DEFAULT_MEMPOOL_BIND_PATH_EXT: &str = ".sock";
-
 const MEMPOOL_RANDOMIZE_UDS_PATH_ENVVAR: &str = "MONAD_MEMPOOL_RNDUDS";
 
 pub fn generate_uds_path() -> String {
@@ -44,22 +42,83 @@ pub fn generate_uds_path() -> String {
     )
 }
 
-pub struct IpcReceiver<ST, SCT> {
-    /// Listener for incoming connections on the socket
-    listener: UnixListener,
-    /// A reader is created per stream on the Unix socket
-    readers: SelectAll<FramedRead<UnixStream, LengthDelimitedCodec>>,
-
-    _phantom: PhantomData<(ST, SCT)>,
+pub struct IpcReceiver<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    read_events_recv: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT>>,
 }
 
-impl<ST, SCT> IpcReceiver<ST, SCT> {
-    pub fn new(bind_path: impl AsRef<Path>) -> Result<Self, std::io::Error> {
-        Ok(Self {
-            listener: UnixListener::bind(bind_path)?,
-            readers: SelectAll::default(),
-            _phantom: PhantomData,
-        })
+impl<ST, SCT> IpcReceiver<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    pub fn new(bind_path: PathBuf, buf_size: usize) -> Result<Self, std::io::Error> {
+        let (read_events_send, read_events_recv) = tokio::sync::mpsc::channel(buf_size);
+
+        let r = Self { read_events_recv };
+
+        let listener = UnixListener::bind(bind_path)?;
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, sockaddr)) => {
+                        debug!("new ipc connection sockaddr={:?}", sockaddr);
+                        IpcReceiver::new_connection(stream, read_events_send.clone());
+                    }
+                    Err(err) => {
+                        warn!("listener poll accept error={:?}", err);
+                        // TODO-2: handle error
+                        todo!("ipc listener error");
+                    }
+                }
+            }
+        });
+
+        Ok(r)
+    }
+
+    fn new_connection(
+        stream: UnixStream,
+        event_channel: tokio::sync::mpsc::Sender<MonadEvent<ST, SCT>>,
+    ) {
+        let mut reader = FramedRead::new(stream, LengthDelimitedCodec::default());
+        tokio::spawn(async move {
+            let mut txns = vec![];
+            loop {
+                match reader.next().await {
+                    Some(Ok(bytes)) => {
+                        let bytes = bytes.freeze();
+                        let _eth_tx = match EthTransaction::decode(&mut bytes.as_ref()) {
+                            Ok(eth_tx) => eth_tx,
+                            Err(err) => {
+                                warn!("tx decoder error error={:?}", err);
+                                break;
+                            }
+                        };
+                        txns.push(bytes);
+                    }
+                    Some(Err(err)) => {
+                        warn!("framed reader error err={:?}", err);
+                        break;
+                    }
+                    None => {
+                        debug!("done reading");
+                        break;
+                    }
+                }
+            }
+            match event_channel.try_send(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns))) {
+                Ok(_) => debug!("bytes received from IPC and sent to channel"),
+                Err(TrySendError::Full(_)) => todo!(
+                    "IPC recv channel full, max_capacity={}",
+                    event_channel.max_capacity()
+                ),
+                Err(TrySendError::Closed(_)) => warn!("failed to send, channel closed"),
+            }
+        });
     }
 }
 
@@ -75,50 +134,6 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if let Poll::Ready(result) = self.listener.poll_accept(cx) {
-            match result {
-                Ok((stream, sockaddr)) => {
-                    debug!("new ipc connection sockaddr={:?}", sockaddr);
-                    self.readers
-                        .push(FramedRead::new(stream, LengthDelimitedCodec::default()));
-                }
-                Err(err) => {
-                    warn!("listener poll accept error={:?}", err);
-                    // TODO-2: handle error
-                    todo!("ipc listener error");
-                }
-            }
-        }
-
-        while !self.readers.is_empty() {
-            let bytes = match self.readers.poll_next_unpin(cx) {
-                Poll::Ready(Some(Ok(bytes))) => bytes,
-                Poll::Ready(Some(Err(err))) => {
-                    warn!("framed reader error err={:?}", err);
-                    continue;
-                }
-                Poll::Ready(None) => {
-                    // SelectAll is empty: all streams have terminated
-                    debug!("all streams terminated");
-                    break;
-                }
-                Poll::Pending => break,
-            };
-
-            let bytes = bytes.freeze();
-            let _eth_tx = match EthTransaction::decode(&mut bytes.as_ref()) {
-                Ok(eth_tx) => eth_tx,
-                Err(err) => {
-                    info!("tx decoder error error={:?}", err);
-                    continue;
-                }
-            };
-
-            return Poll::Ready(Some(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(
-                bytes,
-            ))));
-        }
-
-        Poll::Pending
+        self.read_events_recv.poll_recv(cx)
     }
 }

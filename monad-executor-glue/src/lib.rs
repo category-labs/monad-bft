@@ -31,9 +31,9 @@ pub enum RouterCommand<PT: PubKey, OM> {
     // TODO-2 add a RouterCommand for setting peer set for broadcast
 }
 
-pub trait Message: Clone {
+pub trait Message: Clone + Send + Sync {
     type NodeIdPubKey: PubKey;
-    type Event;
+    type Event: Send + Sync;
 
     // TODO-3 NodeId -> &NodeId
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
@@ -230,7 +230,7 @@ pub enum MempoolEvent<SCT: SignatureCollection> {
         txns: Unvalidated<CascadeTxMessage>,
     },
     /// Txns that are incoming via RPC (users)
-    UserTxns(Bytes),
+    UserTxns(Vec<Bytes>),
 }
 
 /// MonadEvent are inputs to MonadState

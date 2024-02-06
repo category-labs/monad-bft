@@ -717,7 +717,7 @@ mod test {
     fn test_never_request_to_self() {
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(30, ValidatorSetFactory::default());
-        let members = valset.get_members().iter().map(|(a, _)| *a).collect_vec();
+        let members = valset.get_members().keys().cloned().collect_vec();
         let mut metrics = Metrics::default();
         let my_id = members[0];
         let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
@@ -850,7 +850,7 @@ mod test {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
-        assert!(&peer == valset.get_members().iter().map(|(a, _)| a).collect_vec()[1]);
+        assert!(&peer == valset.get_members().keys().collect_vec()[1]);
         assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match cmds[1] {
@@ -886,7 +886,7 @@ mod test {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
-        assert!(&peer == valset.get_members().iter().map(|(a, _)| a).collect_vec()[2]);
+        assert!(&peer == valset.get_members().keys().collect_vec()[2]);
         assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match retry_command[1] {
@@ -918,7 +918,7 @@ mod test {
             ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
             _ => panic!("manager didn't request a block when no inflight block is observed"),
         };
-        assert!(&peer == valset.get_members().iter().map(|(a, _)| a).collect_vec()[3]);
+        assert!(&peer == valset.get_members().keys().collect_vec()[3]);
         assert!(bid == qc.get_block_id());
 
         let (duration, TimeoutVariant::BlockSync(bid)) = (match retry_command[2] {

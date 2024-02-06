@@ -5,3 +5,4 @@ pub mod swarm_relation;
 pub mod terminator;
 pub mod transformer;
 mod utils;
+pub mod verifier;
