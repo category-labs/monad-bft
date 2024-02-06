@@ -410,7 +410,7 @@ mod tests {
         hasher::{Hasher, HasherType},
         NopSignature,
     };
-    use monad_transformer::{BytesTransformer, LatencyTransformer};
+    use monad_transformer::{BytesTransformer, LatencyTransformer, PacerTransformer};
     use monad_types::NodeId;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
@@ -523,5 +523,59 @@ mod tests {
             Duration::from_secs(1),
             PAYLOAD_SIZE_BYTES,
         );
+    }
+
+    #[test]
+    fn test_framed_messages_raptor_large() {
+        const UP_BANDWIDTH_MBIT: u16 = 100;
+        let keys: Vec<_> = (1_u32..)
+            .take(100)
+            .map(|idx| {
+                let mut secret = {
+                    let mut hasher = HasherType::new();
+                    hasher.update(idx.to_le_bytes());
+                    hasher.hash().0
+                };
+                <SignatureType as CertificateSignature>::KeyPairType::from_bytes(&mut secret)
+                    .unwrap()
+            })
+            .collect();
+        let mut swarm = {
+            Swarm::new(keys.iter().map(|key| {
+                (
+                    NodeId::new(key.pubkey()),
+                    SeederConfig::<Raptor<SignatureType>> {
+                        all_peers: keys.iter().map(|key| NodeId::new(key.pubkey())).collect(),
+                        key,
+
+                        timeout: Duration::from_millis(700),
+                        up_bandwidth_Mbps: UP_BANDWIDTH_MBIT,
+                        chunker_poll_interval: Duration::from_millis(10),
+                    }
+                    .build(),
+                    vec![
+                        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
+                            100,
+                        ))),
+                        BytesTransformer::Pacer(PacerTransformer::new(
+                            UP_BANDWIDTH_MBIT.into(),
+                            8 * 1450,
+                        )),
+                    ],
+                )
+            }))
+        };
+
+        let mut rng = ChaCha8Rng::from_seed([0; 32]);
+        let elapsed = test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            1_000 * 400, // payload_size
+            1,           // num_messages
+            1.0,
+        );
+        eprintln!("took {:?} to broadcast", elapsed);
+        assert!(elapsed < Duration::from_millis(500));
     }
 }
