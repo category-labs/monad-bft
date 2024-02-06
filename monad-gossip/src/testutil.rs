@@ -129,8 +129,12 @@ impl<G: Gossip> Swarm<G> {
                     let connection_manager_event = node.connection_manager.poll(tick);
                     match connection_manager_event {
                         None => continue,
-                        Some(ConnectionManagerEvent::RequestConnect(_to)) => {
-                            todo!("multiple connections not supported")
+                        Some(ConnectionManagerEvent::RequestConnect(to)) => {
+                            todo!(
+                                "multiple connections not supported; {:?} tried to send to {:?}",
+                                id,
+                                to
+                            )
                         }
                         Some(ConnectionManagerEvent::GossipEvent(GossipEvent::Emit(
                             from,

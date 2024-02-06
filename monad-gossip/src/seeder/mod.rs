@@ -16,6 +16,8 @@ use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
 
 mod chunker;
 use chunker::{Chunk, Chunker, Meta};
+mod raptor;
+pub use raptor::Raptor;
 mod tree;
 pub use tree::Tree;
 
@@ -287,7 +289,11 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
     fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
         self.update_tick(time);
 
-        if self.next_chunker_poll.map(|t| t >= time).unwrap_or(false) {
+        if self
+            .next_chunker_poll
+            .map(|next_poll| time >= next_poll)
+            .unwrap_or(false)
+        {
             while time
                 >= self
                     .chunker_timeouts
@@ -409,7 +415,7 @@ mod tests {
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
-    use super::{tree::Tree, SeederConfig};
+    use super::{raptor::Raptor, tree::Tree, SeederConfig};
     use crate::testutil::{test_broadcast, test_direct, Swarm};
 
     const NUM_NODES: u16 = 20;
@@ -436,6 +442,57 @@ mod tests {
                 (
                     NodeId::new(key.pubkey()),
                     SeederConfig::<Tree<SignatureType>> {
+                        all_peers: keys.iter().map(|key| NodeId::new(key.pubkey())).collect(),
+                        key,
+
+                        timeout: Duration::from_millis(700),
+                        up_bandwidth_Mbps: 1_000,
+                        chunker_poll_interval: Duration::from_millis(10),
+                    }
+                    .build(),
+                    vec![BytesTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_millis(100),
+                    ))],
+                )
+            }))
+        };
+
+        let mut rng = ChaCha8Rng::from_seed([0; 32]);
+        test_broadcast(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+            usize::MAX,
+            1.0,
+        );
+        test_direct(
+            &mut rng,
+            &mut swarm,
+            Duration::from_secs(1),
+            PAYLOAD_SIZE_BYTES,
+        );
+    }
+
+    #[test]
+    fn test_framed_messages_raptor() {
+        let keys: Vec<_> = (1_u32..)
+            .take(NUM_NODES.into())
+            .map(|idx| {
+                let mut secret = {
+                    let mut hasher = HasherType::new();
+                    hasher.update(idx.to_le_bytes());
+                    hasher.hash().0
+                };
+                <SignatureType as CertificateSignature>::KeyPairType::from_bytes(&mut secret)
+                    .unwrap()
+            })
+            .collect();
+        let mut swarm = {
+            Swarm::new(keys.iter().map(|key| {
+                (
+                    NodeId::new(key.pubkey()),
+                    SeederConfig::<Raptor<SignatureType>> {
                         all_peers: keys.iter().map(|key| NodeId::new(key.pubkey())).collect(),
                         key,
 

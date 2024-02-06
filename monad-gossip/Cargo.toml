@@ -20,6 +20,7 @@ bytes = { workspace = true }
 bytes-utils = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+raptorq = { workspace = true, features = ["serde_support"] }
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 

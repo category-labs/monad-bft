@@ -2490,6 +2490,7 @@ dependencies = [
  "monad-virtual-bench",
  "rand",
  "rand_chacha",
+ "raptorq",
  "serde",
  "test-case",
  "tracing",
@@ -3822,6 +3823,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d25bf25ec5ae4a3f1b92f929810509a2f53d7dca2f50b794ff57e3face536c8f"
 dependencies = [
  "rand_core",
+]
+
+[[package]]
+name = "raptorq"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c9cf9270cc5903afdef387f06ef1cd89fb77f45c357c2a425bae78b839fd866"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

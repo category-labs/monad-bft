@@ -99,6 +99,7 @@ quinn-proto = { git = "https://github.com/quinn-rs/quinn.git", rev = "dd34d57a" 
 
 rand = "0.8"
 rand_chacha = "0.3"
+raptorq = "1.8"
 rayon = "1.7"
 rcgen = "0.11"
 ring = "0.17"
