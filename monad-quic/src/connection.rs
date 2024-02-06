@@ -55,6 +55,16 @@ impl ConnectionWriter {
             .await
             .map_err(ConnectionFailure::WriteError)
     }
+
+    pub async fn write_chunks(&mut self, chunks: &mut [Bytes]) -> Result<usize, ConnectionFailure> {
+        let written = self
+            .send_stream
+            .write_chunks(chunks)
+            .await
+            .map_err(ConnectionFailure::WriteError)?;
+
+        Ok(written.chunks)
+    }
 }
 
 impl Drop for ConnectionWriter {

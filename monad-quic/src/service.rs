@@ -358,11 +358,25 @@ where
         );
         self.node_connections.insert(node_id, Some(connection_id));
         tokio::spawn(async move {
-            while let Some(chunk) = connection_reader.recv().await {
-                if let Err(failure) = connection_writer.write_chunk(chunk).await {
-                    tracing::warn!("connection write failure, failure={:?}", failure);
-                    break;
+            let mut buf = Vec::new();
+            'outer: while connection_reader.recv_many(&mut buf, 100).await > 0 {
+                let mut num_written = 0;
+                while num_written < buf.len() {
+                    match connection_writer
+                        .write_chunks(&mut buf[num_written..])
+                        .await
+                    {
+                        Ok(written) => {
+                            num_written += written;
+                            assert!(num_written <= buf.len());
+                        }
+                        Err(failure) => {
+                            tracing::warn!("connection write failure, failure={:?}", failure);
+                            break 'outer;
+                        }
+                    }
                 }
+                buf.clear();
             }
             // connection_writer gets dropped here, so quinn::Connection::close() will be called
         });
