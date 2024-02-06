@@ -177,6 +177,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
+            metrics_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
@@ -220,6 +221,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
+            metrics_cmds,
         ) = Self::Command::split_commands(commands);
 
         for command in timer_cmds {
