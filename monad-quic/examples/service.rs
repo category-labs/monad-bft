@@ -16,7 +16,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::{
     mock::MockGossipConfig,
-    seeder::{SeederConfig, Tree},
+    seeder::{SeederConfig, Tree, Raptor},
 };
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
@@ -105,7 +105,7 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
                     .unwrap();
 
                 rt.block_on(async move {
-                    let gossip = SeederConfig::<Tree<SignatureType>> {
+                    let gossip = SeederConfig::<Raptor<SignatureType>> {
                         all_peers,
                         key: &key,
 
@@ -163,6 +163,7 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
                     } else {
                         id += 1;
                         assert!(id <= u8::MAX - num_broadcast);
+                        std::thread::sleep(Duration::from_secs(1));
                         continue 'warmup;
                     }
                 }
@@ -174,6 +175,7 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
         assert!(id <= u8::MAX - num_broadcast);
     }
     tracing::info!("took {:?} to warmup!", start.elapsed());
+    std::thread::sleep(Duration::from_secs(1));
 
     let start = Instant::now();
     let mut expected_message_ids = HashMap::new();
@@ -187,7 +189,7 @@ fn service(addresses: Vec<String>, num_broadcast: u8, message_len: usize) {
             .expect("reader should never be dropped");
         expected_message_ids.insert(message.id, num_peers);
     }
-    while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(10)) {
+    while let Ok((_, (tx, msg_id))) = rx_reader.recv_timeout(Duration::from_secs(1)) {
         if &tx == tx_peer {
             let num_left = expected_message_ids
                 .get_mut(&msg_id)
