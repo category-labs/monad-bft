@@ -394,3 +394,15 @@ mod signature_serde {
         signature.serialize().serialize(serializer)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use raptorq::Encoder;
+
+    #[test]
+    fn test_encoder() {
+        const RAPTOR_SYMBOL_SIZE: u16 = 1024;
+        let message = vec![0; 10_000 * 400];
+        let _encoder = Encoder::with_defaults(&message, RAPTOR_SYMBOL_SIZE);
+    }
+}
