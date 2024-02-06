@@ -2422,6 +2422,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-eth-account-states"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "hex",
+ "monad-consensus-types",
+ "monad-eth-tx",
+ "monad-eth-types",
+ "rand_chacha",
+ "reth-primitives",
+]
+
+[[package]]
+name = "monad-eth-block-validator"
+version = "0.1.0"
+dependencies = [
+ "monad-consensus-types",
+ "monad-eth-tx",
+]
+
+[[package]]
 name = "monad-eth-tx"
 version = "0.1.0"
 dependencies = [
@@ -2438,6 +2459,7 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "monad-consensus-types",
+ "monad-eth-account-states",
  "monad-eth-tx",
 ]
 

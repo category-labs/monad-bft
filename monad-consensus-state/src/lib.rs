@@ -610,7 +610,7 @@ where
                 .pending_block_tree
                 .has_path_to_root(&qc.info.vote.vote_info.parent_id)
         {
-            let blocks_to_commit = self
+            let (blocks_to_commit, _blocks_pruned) = self
                 .pending_block_tree
                 .prune(&qc.info.vote.vote_info.parent_id);
 
@@ -668,7 +668,7 @@ where
     #[must_use]
     fn process_new_round_event<VT, TT: TxPool>(
         &mut self,
-        txpool: &mut TT,
+        tx_pool: &mut TT,
         validators: &VT,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
         metrics: &mut Metrics,
@@ -726,7 +726,7 @@ where
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
 
-                let (prop_txns, leftover_txns) = txpool.create_proposal(
+                let (prop_txns, leftover_txns) = tx_pool.create_proposal(
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
                     pending_blocktree_txs,

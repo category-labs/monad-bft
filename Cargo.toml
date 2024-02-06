@@ -9,6 +9,8 @@ members = [
     "monad-consensus-types",
     "monad-crypto",
     "monad-debugger",
+    "monad-eth-account-states",
+    "monad-eth-block-validator",
     "monad-eth-types",
     "monad-eth-tx",
     "monad-eth-txpool",

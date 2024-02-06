@@ -20,6 +20,12 @@ pub trait TxPool {
         pending_txs: Vec<FullTransactionList>,
     ) -> (FullTransactionList, Option<FullTransactionList>);
 
+    fn validate_block_txns(&mut self, txs: &FullTransactionList) -> bool;
+
+    fn update_committed_txns(&mut self, txs: &FullTransactionList);
+
+    fn remove_block_txns(&mut self, txs: &FullTransactionList);
+
     /// Handle transactions cascaded forward by other nodes
     fn handle_cascading_txns(&mut self) {}
 }
@@ -36,6 +42,18 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         pending_txs: Vec<FullTransactionList>,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         (**self).create_proposal(tx_limit, gas_limit, pending_txs)
+    }
+
+    fn validate_block_txns(&mut self, txs: &FullTransactionList) -> bool {
+        (**self).validate_block_txns(txs)
+    }
+
+    fn update_committed_txns(&mut self, txs: &FullTransactionList) {
+        (**self).update_committed_txns(txs)
+    }
+
+    fn remove_block_txns(&mut self, txs: &FullTransactionList) {
+        (**self).remove_block_txns(txs)
     }
 }
 
@@ -75,4 +93,12 @@ impl TxPool for MockTxPool {
             (FullTransactionList::new(buf.into()), None)
         }
     }
+
+    fn validate_block_txns(&mut self, _txs: &FullTransactionList) -> bool {
+        true
+    }
+
+    fn update_committed_txns(&mut self, _txs: &FullTransactionList) {}
+
+    fn remove_block_txns(&mut self, _txs: &FullTransactionList) {}
 }

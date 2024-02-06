@@ -1,4 +1,5 @@
-use monad_eth_types::EthFullTransactionList;
+use monad_consensus_types::{block_validator::BlockValidator, payload::FullTransactionList};
+use monad_eth_tx::EthFullTransactionList;
 
 /// Validates transactions as valid Ethereum transactions and also validates that
 /// the list of transactions will create a valid Ethereum block

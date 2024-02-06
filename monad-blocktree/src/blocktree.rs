@@ -79,12 +79,14 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
     /// - When prune is called on round `new_root` block, only round `n+1` block
     ///   is added (as `new_root`'s children) All the blocks that remains
     ///   shouldn't be pruned -> complete
-    pub fn prune(&mut self, new_root: &BlockId) -> Vec<Block<SCT>> {
+    ///
+    /// Returns a list of all blocks to commit and a list of pruned blocks
+    pub fn prune(&mut self, new_root: &BlockId) -> (Vec<Block<SCT>>, Vec<Block<SCT>>) {
         assert!(self.has_path_to_root(new_root));
         let mut commit: Vec<Block<SCT>> = Vec::new();
 
         if new_root == &self.root.block_id {
-            return commit;
+            return (commit, Vec::new());
         }
 
         let new_root_block = self
@@ -109,8 +111,17 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
         // garbage collect old blocks
         // remove any blocks less than or equal to round `n`
-        self.tree
-            .retain(|_, b| b.get_parent_round() >= new_root_block.get_round());
+        let mut blocks_ids_to_remove = Vec::new();
+        for (block_id, block) in self.tree.iter() {
+            if block.get_parent_round() < new_root_block.get_round() {
+                blocks_ids_to_remove.push(*block_id);
+            }
+        }
+        let mut old_blocks = Vec::new();
+        for block_id in blocks_ids_to_remove {
+            old_blocks.push(self.tree.remove(&block_id).unwrap())
+        }
+
         // new root should be set to QC of the block that's the new root
         self.root = Root {
             round: new_root_block.get_round(),
@@ -120,7 +131,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         inc_count!(blocktree.prune.success);
 
         commit.reverse();
-        commit
+        (commit, old_blocks)
     }
 
     /// Add a new block to the block tree if it's not in the tree and is higher
@@ -447,10 +458,10 @@ mod test {
         assert!(blocktree.has_path_to_root(&b6.get_id()));
 
         // pruning on the old root should return no committable blocks
-        let commit = blocktree.prune(&g.get_parent_id());
+        let (commit, _pruned) = blocktree.prune(&g.get_parent_id());
         assert_eq!(commit.len(), 0);
 
-        let commit = blocktree.prune(&b5.get_id());
+        let (commit, _pruned) = blocktree.prune(&b5.get_id());
         assert_eq!(
             Vec::from_iter(commit.iter().map(|b| b.get_id())),
             vec![g.get_id(), b3.get_id(), b5.get_id()]
@@ -703,7 +714,7 @@ mod test {
         // and the commit blocks should only contain b1 (not b2)
         assert!(blocktree.has_path_to_root(&g.get_id()));
         assert!(blocktree.has_path_to_root(&b1.get_id()));
-        let commit = blocktree.prune(&b1.get_id());
+        let (commit, _pruned) = blocktree.prune(&b1.get_id());
         assert_eq!(commit.len(), 2);
         assert_eq!(commit[0].get_id(), g.get_id());
         assert_eq!(commit[1].get_id(), b1.get_id());

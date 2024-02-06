@@ -46,7 +46,7 @@ impl EthFullTransactionList {
     }
 
     /// Get a list of tx hashes of all the transactions in this list
-    pub fn get_hashes(self) -> Vec<EthTxHash> {
+    pub fn get_hashes(&self) -> Vec<EthTxHash> {
         self.0.iter().map(|x| x.hash()).collect()
     }
 }

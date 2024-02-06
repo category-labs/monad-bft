@@ -3,18 +3,25 @@ use std::collections::{BTreeMap, HashSet};
 use alloy_rlp::Decodable;
 use bytes::Bytes;
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
+use monad_eth_account_states::EthAccountStates;
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
 
 #[derive(Default)]
-pub struct EthTxPool(BTreeMap<EthTxHash, EthTransaction>);
+pub struct EthTxPool {
+    txns: BTreeMap<EthTxHash, EthTransaction>,
+    acc_states: EthAccountStates,
+}
 
 impl TxPool for EthTxPool {
     fn insert_tx(&mut self, tx: Bytes) {
         // TODO: unwrap can be removed when this is made generic over the actual
         // tx type rather than Bytes and decoding won't be necessary
         let eth_tx = EthTransaction::decode(&mut tx.as_ref()).unwrap();
-        // TODO: sorting by gas_limit for proposal creation
-        self.0.insert(eth_tx.hash(), eth_tx);
+
+        if self.acc_states.validate_single_txn(&eth_tx) {
+            // TODO: sorting by gas_limit for proposal creation
+            self.txns.insert(eth_tx.hash(), eth_tx);
+        }
     }
 
     fn create_proposal(
@@ -39,7 +46,7 @@ impl TxPool for EthTxPool {
         let mut txs = Vec::new();
         let mut total_gas = 0;
 
-        for tx in self.0.values() {
+        for tx in self.txns.values() {
             if pending_blocktree_txs.contains(&tx.hash) {
                 continue;
             }
@@ -53,12 +60,24 @@ impl TxPool for EthTxPool {
 
         // TODO cascading behaviour for leftover txns once we have an idea of how we want
         // to forward
-        self.0.clear();
+        self.txns.clear();
         let leftovers = None;
 
         (
             FullTransactionList::new(EthFullTransactionList(txs).rlp_encode()),
             leftovers,
         )
+    }
+
+    fn validate_block_txns(&mut self, txs: &FullTransactionList) -> bool {
+        self.acc_states.validate_block_txns(txs)
+    }
+
+    fn update_committed_txns(&mut self, txs: &FullTransactionList) {
+        self.acc_states.update_committed_txns(txs);
+    }
+
+    fn remove_block_txns(&mut self, txs: &FullTransactionList) {
+        self.acc_states.remove_block_txns(txs)
     }
 }
