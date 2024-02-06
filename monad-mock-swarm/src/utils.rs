@@ -5,7 +5,7 @@ pub mod test_tool {
 
     use monad_consensus::{
         messages::{
-            consensus_message::ConsensusMessage,
+            consensus_message::{ConsensusMessage, ProtocolMessage},
             message::{
                 BlockSyncResponseMessage, ProposalMessage, RequestBlockSyncMessage, TimeoutMessage,
                 VoteMessage,
@@ -93,7 +93,12 @@ pub mod test_tool {
             block: UnverifiedBlock(fake_block(round)),
             last_round_tc: None,
         };
-        ConsensusMessage::Proposal(internal_msg).sign(kp).into()
+        ConsensusMessage {
+            version: "TEST".into(),
+            message: ProtocolMessage::Proposal(internal_msg),
+        }
+        .sign(kp)
+        .into()
     }
 
     pub fn fake_vote_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
@@ -111,7 +116,12 @@ pub mod test_tool {
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
-        ConsensusMessage::Vote(internal_msg).sign(kp).into()
+        ConsensusMessage {
+            version: "TEST".into(),
+            message: ProtocolMessage::Vote(internal_msg),
+        }
+        .sign(kp)
+        .into()
     }
 
     pub fn fake_timeout_message(kp: &KeyPairType) -> VerifiedMonadMessage<ST, SC> {
@@ -126,7 +136,12 @@ pub mod test_tool {
             },
             sig: NopSignature::sign(&[0x00_u8, 32], kp),
         };
-        ConsensusMessage::Timeout(internal_msg).sign(kp).into()
+        ConsensusMessage {
+            version: "TEST".into(),
+            message: ProtocolMessage::Timeout(internal_msg),
+        }
+        .sign(kp)
+        .into()
     }
 
     pub fn fake_request_block_sync() -> VerifiedMonadMessage<ST, SC> {

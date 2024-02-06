@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::TimeoutMessage},
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::TimeoutMessage,
+    },
     pacemaker::PacemakerCommand,
     validation::signing::{Validated, Verified},
     vote_state::VoteStateCommand,
@@ -69,13 +72,17 @@ where
     pub fn from_pacemaker_command(
         keypair: &ST::KeyPairType,
         cert_keypair: &SignatureCollectionKeyPairType<SCT>,
+        version: &str,
         cmd: PacemakerCommand<SCT>,
     ) -> Self {
         match cmd {
             PacemakerCommand::PrepareTimeout(tmo) => ConsensusCommand::Publish {
                 target: RouterTarget::Broadcast,
-                message: ConsensusMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair))
-                    .sign(keypair),
+                message: ConsensusMessage {
+                    version: version.into(),
+                    message: ProtocolMessage::Timeout(TimeoutMessage::new(tmo, cert_keypair)),
+                }
+                .sign(keypair),
             },
             PacemakerCommand::Schedule { duration } => ConsensusCommand::Schedule {
                 duration,

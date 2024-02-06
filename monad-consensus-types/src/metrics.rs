@@ -9,6 +9,7 @@ pub struct ValidationErrors {
     pub invalid_seq_num: u64,
     pub val_data_unavailable: u64,
     pub invalid_vote_message: u64,
+    pub invalid_version: u64,
 }
 
 #[derive(Debug, Default)]

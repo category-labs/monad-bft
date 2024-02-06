@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use monad_consensus::{
     messages::{
-        consensus_message::ConsensusMessage,
+        consensus_message::ProtocolMessage,
         message::{CascadeTxMessage, RequestBlockSyncMessage},
     },
     validation::signing::Validated,
@@ -28,7 +28,7 @@ use monad_validator::{
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
-use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
+use crate::{handle_validation_error, MonadState, MonadVersion, VerifiedMonadMessage};
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
@@ -44,6 +44,7 @@ where
     leader_election: &'a LT,
     txpool: &'a mut TT,
     metrics: &'a mut Metrics,
+    version: &'a MonadVersion,
 
     _phantom: PhantomData<(ST, ASVT)>,
 }
@@ -69,6 +70,7 @@ where
             leader_election: &monad_state.leader_election,
             txpool: &mut monad_state.txpool,
             metrics: &mut monad_state.metrics,
+            version: &monad_state.version,
             _phantom: PhantomData,
         }
     }
@@ -97,28 +99,33 @@ where
                 };
 
                 let (author, _, verified_message) = verified_message.destructure();
+
                 // Validated message according to consensus protocol spec
-                let validated_mesage =
-                    match verified_message.validate(self.epoch_manager, self.val_epoch_map) {
-                        Ok(m) => m.into_inner(),
-                        Err(e) => {
-                            handle_validation_error(e, self.metrics);
-                            // TODO-2: collect evidence
-                            let evidence_cmds = vec![];
-                            return evidence_cmds;
-                        }
-                    };
+                let validated_mesage = match verified_message.validate(
+                    self.epoch_manager,
+                    self.val_epoch_map,
+                    self.version.protocol_version,
+                ) {
+                    Ok(m) => m.into_inner(),
+                    Err(e) => {
+                        handle_validation_error(e, self.metrics);
+                        // TODO-2: collect evidence
+                        let evidence_cmds = vec![];
+                        return evidence_cmds;
+                    }
+                };
 
                 match validated_mesage {
-                    ConsensusMessage::Proposal(msg) => self.consensus.handle_proposal_message(
+                    ProtocolMessage::Proposal(msg) => self.consensus.handle_proposal_message(
                         author,
                         msg,
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
                         self.metrics,
+                        self.version.protocol_version,
                     ),
-                    ConsensusMessage::Vote(msg) => self.consensus.handle_vote_message(
+                    ProtocolMessage::Vote(msg) => self.consensus.handle_vote_message(
                         author,
                         msg,
                         self.txpool,
@@ -126,8 +133,9 @@ where
                         self.val_epoch_map,
                         self.leader_election,
                         self.metrics,
+                        self.version.protocol_version,
                     ),
-                    ConsensusMessage::Timeout(msg) => self.consensus.handle_timeout_message(
+                    ProtocolMessage::Timeout(msg) => self.consensus.handle_timeout_message(
                         author,
                         msg,
                         self.txpool,
@@ -135,6 +143,7 @@ where
                         self.val_epoch_map,
                         self.leader_election,
                         self.metrics,
+                        self.version.protocol_version,
                     ),
                 }
             }
@@ -147,6 +156,7 @@ where
                         ConsensusCommand::from_pacemaker_command(
                             self.consensus.get_keypair(),
                             self.consensus.get_cert_keypair(),
+                            self.version.protocol_version,
                             cmd,
                         )
                     })

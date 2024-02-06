@@ -9,7 +9,7 @@ use monad_proto::{error::ProtoError, proto::message::*};
 
 use crate::{
     messages::{
-        consensus_message::ConsensusMessage,
+        consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{
             BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage, ProposalMessage,
             RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
@@ -182,18 +182,19 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
     From<&VerifiedConsensusMessage<MS, SCT>> for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &VerifiedConsensusMessage<MS, SCT>) -> Self {
-        let oneof_message = match value.deref().deref() {
-            ConsensusMessage::Proposal(msg) => {
+        let oneof_message = match &value.deref().deref().message {
+            ProtocolMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
             }
-            ConsensusMessage::Vote(msg) => {
+            ProtocolMessage::Vote(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Vote(msg.into())
             }
-            ConsensusMessage::Timeout(msg) => {
+            ProtocolMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
             }
         };
         Self {
+            version: value.version.clone(),
             oneof_message: Some(oneof_message),
             author_signature: Some(certificate_signature_to_proto(value.author_signature())),
         }
@@ -208,13 +209,13 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
     fn try_from(value: ProtoUnverifiedConsensusMessage) -> Result<Self, Self::Error> {
         let message = match value.oneof_message {
             Some(proto_unverified_consensus_message::OneofMessage::Proposal(msg)) => {
-                ConsensusMessage::Proposal(msg.try_into()?)
+                ProtocolMessage::Proposal(msg.try_into()?)
             }
             Some(proto_unverified_consensus_message::OneofMessage::Timeout(msg)) => {
-                ConsensusMessage::Timeout(msg.try_into()?)
+                ProtocolMessage::Timeout(msg.try_into()?)
             }
             Some(proto_unverified_consensus_message::OneofMessage::Vote(msg)) => {
-                ConsensusMessage::Vote(msg.try_into()?)
+                ProtocolMessage::Vote(msg.try_into()?)
             }
             None => Err(ProtoError::MissingRequiredField(
                 "Unverified<ConsensusMessage>.oneofmessage".to_owned(),
@@ -223,7 +224,9 @@ impl<MS: CertificateSignatureRecoverable, SCT: SignatureCollection>
         let signature = proto_to_certificate_signature(value.author_signature.ok_or(
             Self::Error::MissingRequiredField("Unverified<ConsensusMessage>.signature".to_owned()),
         )?)?;
-        Ok(Unverified::new(Unvalidated::new(message), signature))
+        let version = value.version;
+        let consensus_msg = ConsensusMessage { version, message };
+        Ok(Unverified::new(Unvalidated::new(consensus_msg), signature))
     }
 }
 

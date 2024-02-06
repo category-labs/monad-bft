@@ -1,6 +1,9 @@
 use monad_bls::BlsSignatureCollection;
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::VoteMessage},
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::VoteMessage,
+    },
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
@@ -64,16 +67,19 @@ fn test_consensus_message_event_vote_multisig() {
         ledger_commit_info: CommitResult::Commit,
     };
 
-    let votemsg: ConsensusMessage<SignatureCollectionType> =
-        ConsensusMessage::Vote(VoteMessage::new(vote, &certkeypair));
-    let votemsg_hash = HasherType::hash_object(&votemsg);
-    let sig = SignatureType::sign(votemsg_hash.as_ref(), &keypair);
-
-    let unverified_votemsg = Unverified::new(Unvalidated::new(votemsg), sig);
+    let votemsg: ProtocolMessage<SignatureCollectionType> =
+        ProtocolMessage::Vote(VoteMessage::new(vote, &certkeypair));
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: votemsg,
+    };
+    let conmsg_hash = HasherType::hash_object(&conmsg);
+    let sig = SignatureType::sign(conmsg_hash.as_ref(), &keypair);
+    let unmsg = Unverified::new(Unvalidated::new(conmsg), sig);
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(keypair.pubkey()),
-        unverified_message: unverified_votemsg,
+        unverified_message: unmsg,
     });
 
     let buf = serialize_event(&event);
@@ -113,14 +119,19 @@ fn test_consensus_message_event_proposal_bls() {
         ExecutionArtifacts::zero(),
     );
 
-    let consensus_proposal_msg = ConsensusMessage::Proposal((*proposal).clone());
+    let consensus_proposal_msg = ProtocolMessage::Proposal((*proposal).clone());
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: consensus_proposal_msg,
+    };
+    let conmsg_hash = HasherType::hash_object(&conmsg);
+    let sig = SignatureType::sign(conmsg_hash.as_ref(), &keys[0]);
+
+    let uvm = Unverified::new(Unvalidated::new(conmsg), sig);
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(proposal.author().pubkey()),
-        unverified_message: Unverified::new(
-            Unvalidated::new(consensus_proposal_msg),
-            *proposal.author_signature(),
-        ),
+        unverified_message: uvm,
     });
 
     let buf = serialize_event(&event);

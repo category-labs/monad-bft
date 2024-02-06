@@ -25,7 +25,7 @@ use monad_crypto::{
 };
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{swarm_relation::SwarmRelation, terminator::ProgressTerminator};
-use monad_state::MonadStateBuilder;
+use monad_state::{MonadStateBuilder, MonadVersion};
 use monad_testutil::validators::complete_keys_w_validators;
 use monad_transformer::ID;
 use monad_types::{NodeId, Round, SeqNum};
@@ -114,6 +114,7 @@ where
         Self {
             id: self.id,
             state_config: MonadStateBuilder {
+                version: MonadVersion::new("TWINS_TEST"),
                 validator_set_factory: self.state_config.validator_set_factory.clone(),
                 leader_election: self.state_config.leader_election.clone(),
                 transaction_pool: TT::default(),
@@ -329,6 +330,7 @@ where
             S::StateRootValidator,
             S::AsyncStateRootVerify,
         > {
+            version: MonadVersion::new("TWINS_TEST"),
             validator_set_factory: S::ValidatorSetTypeFactory::default(),
             leader_election: S::LeaderElection::default(),
             transaction_pool: S::TxPool::default(),

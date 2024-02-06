@@ -21,7 +21,7 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::MonadFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, SecpSignature};
-use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
+use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
@@ -129,6 +129,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     };
 
     let builder = MonadStateBuilder {
+        version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: EthTxPool::default(),

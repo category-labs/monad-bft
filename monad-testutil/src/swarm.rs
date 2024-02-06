@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{block::BlockType, validator_data::ValidatorData};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
-use monad_state::MonadStateBuilder;
+use monad_state::{MonadStateBuilder, MonadVersion};
 use monad_types::{Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -60,6 +60,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     keys.into_iter()
         .zip(cert_keys)
         .map(|(key, certkey)| MonadStateBuilder {
+            version: MonadVersion::new("MOCK_SWARM"),
             validator_set_factory: validator_set_factory(),
             leader_election: leader_election(),
             transaction_pool: transaction_pool(),

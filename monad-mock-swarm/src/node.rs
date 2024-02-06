@@ -9,7 +9,7 @@ use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
-use monad_state::MonadStateBuilder;
+use monad_state::{MonadStateBuilder, MonadVersion};
 use monad_transformer::{LinkMessage, Pipeline, ID};
 use monad_validator::validator_set::BoxedValidatorSetTypeFactory;
 use monad_wal::{PersistenceLogger, PersistenceLoggerBuilder};
@@ -88,6 +88,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         NodeBuilder {
             id: self.id,
             state_builder: MonadStateBuilder {
+                version: MonadVersion::new("MOCK_SWARM"),
                 validator_set_factory: BoxedValidatorSetTypeFactory::new(
                     self.state_builder.validator_set_factory,
                 ),

@@ -52,6 +52,9 @@ pub mod convert;
 mod epoch;
 mod mempool;
 
+const CLIENT_MAJOR_VERSION: u16 = 0;
+const CLIENT_MINOR_VERSION: u16 = 1;
+
 pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metrics) {
     match e {
         validation::Error::InvalidAuthor => {
@@ -81,7 +84,26 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
         validation::Error::InvalidVoteMessage => {
             metrics.validation_errors.invalid_vote_message += 1;
         }
+        validation::Error::InvalidVersion => {
+            metrics.validation_errors.invalid_version += 1;
+        }
     };
+}
+
+pub struct MonadVersion {
+    pub protocol_version: &'static str,
+    client_version_maj: u16,
+    client_version_min: u16,
+}
+
+impl MonadVersion {
+    pub fn new(protocol_version: &'static str) -> Self {
+        Self {
+            protocol_version,
+            client_version_maj: CLIENT_MAJOR_VERSION,
+            client_version_min: CLIENT_MINOR_VERSION,
+        }
+    }
 }
 
 pub struct MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -108,6 +130,9 @@ where
 
     /// Metrics counters for events and errors
     metrics: Metrics,
+
+    /// Versions for client and protocol validation
+    version: MonadVersion,
 
     _pd: PhantomData<ST>,
 }
@@ -318,6 +343,8 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
+    pub version: MonadVersion,
+
     pub validator_set_factory: VTF,
     pub leader_election: LT,
     pub transaction_pool: TT,
@@ -384,6 +411,7 @@ where
             async_state_verify: self.async_state_verify,
 
             metrics: Metrics::default(),
+            version: self.version,
 
             _pd: PhantomData,
         };

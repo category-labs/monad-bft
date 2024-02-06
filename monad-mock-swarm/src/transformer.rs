@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, marker::PhantomData, ops::Deref, time::Duration};
 
 use itertools::Itertools;
-use monad_consensus::messages::consensus_message::ConsensusMessage;
+use monad_consensus::messages::consensus_message::ProtocolMessage;
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -50,11 +50,13 @@ where
         link_m: LinkMessage<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>>,
     ) -> TransformerStream<CertificateSignaturePubKey<ST>, VerifiedMonadMessage<ST, SCT>> {
         let should_drop = match &link_m.message {
-            VerifiedMonadMessage::Consensus(consensus_msg) => match consensus_msg.deref().deref() {
-                ConsensusMessage::Proposal(_) => self.drop_proposal,
-                ConsensusMessage::Vote(_) => self.drop_vote,
-                ConsensusMessage::Timeout(_) => self.drop_timeout,
-            },
+            VerifiedMonadMessage::Consensus(consensus_msg) => {
+                match consensus_msg.deref().deref().message {
+                    ProtocolMessage::Proposal(_) => self.drop_proposal,
+                    ProtocolMessage::Vote(_) => self.drop_vote,
+                    ProtocolMessage::Timeout(_) => self.drop_timeout,
+                }
+            }
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => self.drop_block_sync,
             VerifiedMonadMessage::CascadeTxns(_) => false,
@@ -129,12 +131,14 @@ where
         assert_eq!(dup_identifier, UNIQUE_ID);
 
         let capture = match &message {
-            VerifiedMonadMessage::Consensus(consensus_msg) => match consensus_msg.deref().deref() {
-                ConsensusMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.0.round),
-                ConsensusMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
-                // timeout naturally spread because liveness
-                ConsensusMessage::Timeout(_) => TwinsCapture::Spread(pid),
-            },
+            VerifiedMonadMessage::Consensus(consensus_msg) => {
+                match &consensus_msg.deref().deref().message {
+                    ProtocolMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.0.round),
+                    ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
+                    // timeout naturally spread because liveness
+                    ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),
+                }
+            }
             VerifiedMonadMessage::BlockSyncRequest(_)
             | VerifiedMonadMessage::BlockSyncResponse(_) => {
                 if self.ban_block_sync {

@@ -32,7 +32,7 @@ use monad_validator::{
 use crate::{
     convert::message::UnverifiedConsensusMessage,
     messages::{
-        consensus_message::ConsensusMessage,
+        consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{
             BlockSyncResponseMessage, CascadeTxMessage, PeerStateRootMessage, ProposalMessage,
             RequestBlockSyncMessage, TimeoutMessage, VoteMessage,
@@ -246,28 +246,33 @@ impl<SCT: SignatureCollection> Unvalidated<ConsensusMessage<SCT>> {
         self,
         epoch_manager: &EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
-    ) -> Result<Validated<ConsensusMessage<SCT>>, Error>
+        version: &str,
+    ) -> Result<Validated<ProtocolMessage<SCT>>, Error>
     where
         VTF: ValidatorSetTypeFactory<ValidatorSetType = VT>,
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        Ok(match self.obj {
-            ConsensusMessage::Proposal(m) => {
+        if self.obj.version != version {
+            return Err(Error::InvalidVersion);
+        }
+
+        Ok(match self.obj.message {
+            ProtocolMessage::Proposal(m) => {
                 let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
                 Validated {
-                    message: Unvalidated::new(ConsensusMessage::Proposal(validated.into_inner())),
+                    message: Unvalidated::new(ProtocolMessage::Proposal(validated.into_inner())),
                 }
             }
-            ConsensusMessage::Vote(m) => {
+            ProtocolMessage::Vote(m) => {
                 let validated = Unvalidated::new(m).validate()?;
                 Validated {
-                    message: Unvalidated::new(ConsensusMessage::Vote(validated.into_inner())),
+                    message: Unvalidated::new(ProtocolMessage::Vote(validated.into_inner())),
                 }
             }
-            ConsensusMessage::Timeout(m) => {
+            ProtocolMessage::Timeout(m) => {
                 let validated = Unvalidated::new(m).validate(epoch_manager, val_epoch_map)?;
                 Validated {
-                    message: Unvalidated::new(ConsensusMessage::Timeout(validated.into_inner())),
+                    message: Unvalidated::new(ProtocolMessage::Timeout(validated.into_inner())),
                 }
             }
         })
@@ -588,20 +593,21 @@ impl<ST: CertificateSignature, SCT: SignatureCollection> From<&UnverifiedConsens
     for ProtoUnverifiedConsensusMessage
 {
     fn from(value: &UnverifiedConsensusMessage<ST, SCT>) -> Self {
-        let oneof_message = match &value.obj.obj {
-            ConsensusMessage::Proposal(msg) => {
+        let oneof_message = match &value.obj.obj.message {
+            ProtocolMessage::Proposal(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Proposal(msg.into())
             }
-            ConsensusMessage::Vote(msg) => {
+            ProtocolMessage::Vote(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Vote(msg.into())
             }
-            ConsensusMessage::Timeout(msg) => {
+            ProtocolMessage::Timeout(msg) => {
                 proto_unverified_consensus_message::OneofMessage::Timeout(msg.into())
             }
         };
         Self {
             author_signature: Some(certificate_signature_to_proto(&value.author_signature)),
             oneof_message: Some(oneof_message),
+            version: value.obj.obj.version.clone(),
         }
     }
 }

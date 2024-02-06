@@ -1,5 +1,8 @@
 use monad_consensus::{
-    messages::{consensus_message::ConsensusMessage, message::ProposalMessage},
+    messages::{
+        consensus_message::{ConsensusMessage, ProtocolMessage},
+        message::ProposalMessage,
+    },
     validation::signing::Unvalidated,
 };
 use monad_consensus_types::{
@@ -87,7 +90,7 @@ fn test_proposal_hash() {
     );
     let author = NodeId::new(keypairs[0].pubkey());
 
-    let proposal = ConsensusMessage::Proposal(ProposalMessage {
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -100,8 +103,11 @@ fn test_proposal_hash() {
         ),
         last_round_tc: None,
     });
-
-    let sp = TestSigner::<SignatureType>::sign_object(proposal, &keypairs[0]);
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &keypairs[0]);
 
     assert!(sp
         .verify(&epoch_manager, &val_epoch_map, &keypairs[0].pubkey())
@@ -164,7 +170,7 @@ fn test_proposal_author_not_sender() {
     let sender_keypair = &keypairs[1];
     let author = NodeId::new(author_keypair.pubkey());
 
-    let proposal = ConsensusMessage::Proposal(ProposalMessage {
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -177,8 +183,11 @@ fn test_proposal_author_not_sender() {
         ),
         last_round_tc: None,
     });
-
-    let sp = TestSigner::<SignatureType>::sign_object(proposal, author_keypair);
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, author_keypair);
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &sender_keypair.pubkey())
             .unwrap_err(),
@@ -195,7 +204,7 @@ fn test_proposal_invalid_author() {
     vlist.push((NodeId::new(author_keypair.pubkey()), Stake(0)));
 
     let author = NodeId::new(author_keypair.pubkey());
-    let proposal = ConsensusMessage::Proposal(ProposalMessage {
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
             Round(234),
@@ -204,8 +213,11 @@ fn test_proposal_invalid_author() {
         ),
         last_round_tc: None,
     });
-
-    let sp = TestSigner::<SignatureType>::sign_object(proposal, &non_valdiator_keypair);
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &non_valdiator_keypair);
 
     let vset = ValidatorSetFactory::default().create(vlist).unwrap();
     let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(

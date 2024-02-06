@@ -46,6 +46,7 @@ message ProtoUnverifiedConsensusMessage {
     ProtoTimeoutMessage timeout = 2;
     ProtoVoteMessage vote = 3;
   }
+  string version = 4;
   monad_proto.signing.ProtoSignature author_signature = 6;
 }
 

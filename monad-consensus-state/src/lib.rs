@@ -3,7 +3,7 @@ use std::time::Duration;
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
     messages::{
-        consensus_message::ConsensusMessage,
+        consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage},
     },
     pacemaker::{Pacemaker, PacemakerCommand},
@@ -248,6 +248,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -268,7 +269,13 @@ where
             return cmds;
         }
 
-        cmds.extend(self.proposal_certificate_handling(&p, epoch_manager, validator_set, metrics));
+        cmds.extend(self.proposal_certificate_handling(
+            &p,
+            epoch_manager,
+            validator_set,
+            metrics,
+            version,
+        ));
 
         let Some(block) = Block::try_from_unverified(p.block, &self.block_validator) else {
             warn!("Transaction validation failed");
@@ -348,9 +355,14 @@ where
                 (next_round, next_epoch, next_validator_set.get_members())
             };
             let next_leader = election.get_leader(next_round, next_epoch, next_validator_set);
+            let msg = ConsensusMessage {
+                version: version.into(),
+                message: ProtocolMessage::Vote(vote_msg),
+            }
+            .sign(&self.keypair);
             let send_cmd = ConsensusCommand::Publish {
                 target: RouterTarget::PointToPoint(next_leader),
-                message: ConsensusMessage::Vote(vote_msg).sign(&self.keypair),
+                message: msg,
             };
             debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
             metrics.consensus_events.created_vote += 1;
@@ -372,6 +384,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -402,7 +415,13 @@ where
         if let Some(qc) = qc {
             debug!("Created QC {:?}", qc);
             metrics.consensus_events.created_qc += 1;
-            cmds.extend(self.process_certificate_qc(&qc, epoch_manager, validator_set, metrics));
+            cmds.extend(self.process_certificate_qc(
+                &qc,
+                epoch_manager,
+                validator_set,
+                metrics,
+                version,
+            ));
 
             if self.nodeid
                 == election.get_leader(
@@ -411,7 +430,13 @@ where
                     validator_set.get_members(),
                 )
             {
-                cmds.extend(self.process_new_round_event(tx_pool, validator_set, None, metrics));
+                cmds.extend(self.process_new_round_event(
+                    tx_pool,
+                    validator_set,
+                    None,
+                    metrics,
+                    version,
+                ));
             }
         }
         cmds
@@ -428,6 +453,7 @@ where
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -452,8 +478,13 @@ where
             .get_cert_pubkeys(&epoch)
             .expect("timeout message was verified");
 
-        let process_certificate_cmds =
-            self.process_certificate_qc(&tm.tminfo.high_qc, epoch_manager, validator_set, metrics);
+        let process_certificate_cmds = self.process_certificate_qc(
+            &tm.tminfo.high_qc,
+            epoch_manager,
+            validator_set,
+            metrics,
+            version,
+        );
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = tm.last_round_tc.as_ref() {
@@ -462,7 +493,12 @@ where
                 .pacemaker
                 .advance_round_tc(last_round_tc)
                 .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+                    ConsensusCommand::from_pacemaker_command(
+                        &self.keypair,
+                        &self.cert_keypair,
+                        version,
+                        cmd,
+                    )
                 })
                 .into_iter();
             cmds.extend(advance_round_cmds);
@@ -480,13 +516,23 @@ where
             );
 
         cmds.extend(remote_timeout_cmds.into_iter().map(|cmd| {
-            ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+            ConsensusCommand::from_pacemaker_command(
+                &self.keypair,
+                &self.cert_keypair,
+                version,
+                cmd,
+            )
         }));
         if let Some(tc) = tc {
             debug!("Created TC: {:?}", tc);
             metrics.consensus_events.created_tc += 1;
             let advance_round_cmds = self.pacemaker.advance_round_tc(&tc).into_iter().map(|cmd| {
-                ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+                ConsensusCommand::from_pacemaker_command(
+                    &self.keypair,
+                    &self.cert_keypair,
+                    version,
+                    cmd,
+                )
             });
             cmds.extend(advance_round_cmds);
 
@@ -502,6 +548,7 @@ where
                     validator_set,
                     Some(tc),
                     metrics,
+                    version,
                 ));
             }
         }
@@ -647,6 +694,7 @@ where
         epoch_manager: &mut EpochManager,
         validators: &VT,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -655,7 +703,12 @@ where
         cmds.extend(self.process_qc(qc, epoch_manager, metrics));
 
         cmds.extend(self.pacemaker.advance_round_qc(qc).map(|cmd| {
-            ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+            ConsensusCommand::from_pacemaker_command(
+                &self.keypair,
+                &self.cert_keypair,
+                version,
+                cmd,
+            )
         }));
 
         // if the qc points to a block that is missing from the blocktree, we need
@@ -673,6 +726,7 @@ where
         validators: &VT,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -714,10 +768,15 @@ where
                     block: UnverifiedBlock(b),
                     last_round_tc,
                 };
+                let msg = ConsensusMessage {
+                    version: version.into(),
+                    message: ProtocolMessage::Proposal(p),
+                }
+                .sign(&self.keypair);
 
                 vec![ConsensusCommand::Publish {
                     target: RouterTarget::Broadcast,
-                    message: ConsensusMessage::Proposal(p).sign(&self.keypair),
+                    message: msg,
                 }]
             };
 
@@ -863,6 +922,7 @@ where
         epoch_manager: &mut EpochManager,
         validators: &VT,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
@@ -870,7 +930,7 @@ where
         let mut cmds = vec![];
 
         let process_certificate_cmds =
-            self.process_certificate_qc(&p.block.0.qc, epoch_manager, validators, metrics);
+            self.process_certificate_qc(&p.block.0.qc, epoch_manager, validators, metrics, version);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -880,7 +940,12 @@ where
                 .pacemaker
                 .advance_round_tc(last_round_tc)
                 .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(&self.keypair, &self.cert_keypair, cmd)
+                    ConsensusCommand::from_pacemaker_command(
+                        &self.keypair,
+                        &self.cert_keypair,
+                        version,
+                        cmd,
+                    )
                 })
                 .into_iter();
             cmds.extend(advance_round_cmds);
@@ -969,8 +1034,9 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus::{
-        messages::message::{
-            BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage,
+        messages::{
+            consensus_message::ProtocolMessage,
+            message::{BlockSyncResponseMessage, ProposalMessage, TimeoutMessage, VoteMessage},
         },
         pacemaker::PacemakerCommand,
         validation::signing::Verified,
@@ -1015,7 +1081,7 @@ mod test {
     use test_case::test_case;
     use tracing_test::traced_test;
 
-    use crate::{ConsensusCommand, ConsensusConfig, ConsensusMessage, ConsensusState};
+    use crate::{ConsensusCommand, ConsensusConfig, ConsensusState};
 
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<SignatureType>;
@@ -1101,8 +1167,8 @@ mod test {
                 ConsensusCommand::Publish {
                     target: RouterTarget::PointToPoint(_),
                     message,
-                } => match message.deref().deref() {
-                    ConsensusMessage::Vote(vote) => Some(*vote),
+                } => match message.deref().deref().message {
+                    ProtocolMessage::Vote(vote) => Some(vote),
                     _ => None,
                 },
                 _ => None,
@@ -1122,8 +1188,8 @@ mod test {
                 ConsensusCommand::Publish {
                     target: RouterTarget::Broadcast,
                     message,
-                } => match message.deref().deref() {
-                    ConsensusMessage::Proposal(p) => Some(p.clone()),
+                } => match &message.deref().deref().message {
+                    ProtocolMessage::Proposal(p) => Some(p.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -1142,6 +1208,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
+        let version = "TEST";
 
         let state = &mut states[0];
         assert_eq!(state.high_qc.get_round(), Round(0));
@@ -1176,6 +1243,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let _ = state.handle_vote_message(
             *v2.author(),
@@ -1185,6 +1253,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         // less than 2f+1, so expect not locked
@@ -1198,6 +1267,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         assert_eq!(state.high_qc.get_round(), expected_qc_high_round);
         assert_eq!(metrics.consensus_events.vote_received, 3);
@@ -1213,6 +1283,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut metrics = Metrics::default();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let p1 = propgen.next_proposal(
             &keys,
@@ -1240,16 +1311,11 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Publish { target, message } => {
-                matches!(target, RouterTarget::PointToPoint(_))
-                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
-            }
-            _ => false,
-        });
 
-        assert!(result.is_none());
+        let result = extract_vote_msgs(cmds);
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -1261,6 +1327,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut metrics = Metrics::default();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
 
         let p1 = propgen.next_proposal(
@@ -1280,17 +1347,12 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Publish { target, message } => {
-                matches!(target, RouterTarget::PointToPoint(_))
-                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
-            }
-            _ => false,
-        });
+        let result = extract_vote_msgs(cmds);
 
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
-        assert!(result.is_some());
+        assert_eq!(result.len(), 1);
 
         let p2 = propgen.next_proposal(
             &keys,
@@ -1309,17 +1371,12 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Publish { target, message } => {
-                matches!(target, RouterTarget::PointToPoint(_))
-                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
-            }
-            _ => false,
-        });
+        let result = extract_vote_msgs(cmds);
 
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
-        assert!(result.is_some());
+        assert_eq!(result.len(), 1);
 
         for _ in 0..4 {
             propgen.next_proposal(
@@ -1349,6 +1406,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         assert_eq!(state.pacemaker.get_current_round(), Round(7));
@@ -1363,6 +1421,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut metrics = Metrics::default();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
 
         let p1 = propgen.next_proposal(
@@ -1382,15 +1441,10 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Publish { target, message } => {
-                matches!(target, RouterTarget::PointToPoint(_))
-                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
-            }
-            _ => false,
-        });
-        assert!(result.is_some());
+        let result = extract_vote_msgs(cmds);
+        assert_eq!(result.len(), 1);
 
         // send duplicate of p1, expect it to be ignored and no output commands
         let (author, _, verified_message) = p1.destructure();
@@ -1401,6 +1455,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         assert!(cmds.is_empty());
     }
@@ -1428,6 +1483,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut metrics = Metrics::default();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         // first proposal
@@ -1448,17 +1504,12 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Publish { target, message } => {
-                matches!(target, RouterTarget::PointToPoint(_))
-                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
-            }
-            _ => false,
-        });
+        let result = extract_vote_msgs(cmds);
 
         assert_eq!(state.pacemaker.get_current_round(), Round(1));
-        assert!(result.is_some());
+        assert_eq!(result.len(), 1);
 
         // second proposal
         let p2 = propgen.next_proposal(
@@ -1478,17 +1529,12 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
-        let result = cmds.iter().find(|&c| match c {
-            ConsensusCommand::Publish { target, message } => {
-                matches!(target, RouterTarget::PointToPoint(_))
-                    && matches!(message.deref().deref(), ConsensusMessage::Vote(_))
-            }
-            _ => false,
-        });
+        let result = extract_vote_msgs(cmds);
 
         assert_eq!(state.pacemaker.get_current_round(), Round(2));
-        assert!(result.is_some());
+        assert_eq!(result.len(), 1);
 
         let mut missing_proposals = Vec::new();
         for _ in 0..perms.len() {
@@ -1521,6 +1567,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         // was in Round(2) and skipped over perms.len() proposals. Handling
@@ -1542,6 +1589,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics,
+                version,
             ));
         }
 
@@ -1565,6 +1613,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         assert_eq!(state.pending_block_tree.size(), 2);
@@ -1585,6 +1634,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut metrics = Metrics::default();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         // round 1 proposal
@@ -1605,6 +1655,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         let p1_votes = extract_vote_msgs(p1_cmds);
@@ -1629,6 +1680,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         let lc = p2_cmds
@@ -1659,6 +1711,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let lc = p2_cmds
             .iter()
@@ -1675,6 +1728,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
         let mut metrics = Metrics::default();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
         // round 1 proposal
@@ -1695,6 +1749,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         // round 2 proposal
@@ -1715,6 +1770,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         let p2_votes = extract_vote_msgs(p2_cmds);
@@ -1762,6 +1818,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         let p3_votes = extract_vote_msgs(p3_cmds);
@@ -1781,6 +1838,7 @@ mod test {
         let valset = val_epoch_map.get_val_set(&Epoch(1)).unwrap();
         let election = SimpleRoundRobin::default();
         let mut empty_txpool = MockTxPool::default();
+        let version = "TEST";
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -1823,6 +1881,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
@@ -1833,6 +1892,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[2],
+            version,
         );
         let p3_votes = extract_vote_msgs(cmds3)[0];
 
@@ -1843,6 +1903,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[3],
+            version,
         );
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
@@ -1854,6 +1915,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[1],
+            version,
         );
         let p2_votes = extract_vote_msgs(cmds2)[0];
 
@@ -1877,6 +1939,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[1],
+                version,
             );
             let res = cmds2
                 .into_iter()
@@ -1922,6 +1985,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[1],
+            version,
         );
 
         // first_state has the correct block in its blocktree, so it should not request anything
@@ -1932,6 +1996,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
         let res = cmds1
             .into_iter()
@@ -1958,6 +2023,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[1],
+            version,
         );
         let cmds1 = first_state.handle_proposal_message(
             author,
@@ -1966,6 +2032,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
 
         // second_state has the malicious block in the blocktree, so it will not be able to
@@ -2005,6 +2072,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[1],
+            version,
         );
         // new block added should allow path_to_root properly, thus no more request sync
         let res = cmds2
@@ -2020,6 +2088,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
 
         // second_state has the correct blocks, so expect to see a commit
@@ -2046,6 +2115,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[2],
+            version,
         );
 
         assert_eq!(third_state.pending_block_tree.size(), 2);
@@ -2102,6 +2172,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[2],
+            version,
         );
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds2
@@ -2131,6 +2202,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
+        let version = "TEST";
 
         let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
 
@@ -2153,6 +2225,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let result = cmds.iter().find(|&c| {
             matches!(
@@ -2179,6 +2252,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
+        let version = "TEST";
 
         let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
 
@@ -2211,6 +2285,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics,
+                version,
             );
 
         // the proposal still gets processed: the node enters a new round, and
@@ -2246,6 +2321,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
+        let version = "TEST";
 
         let mut proposal_gen = ProposalGen::<SignatureType, _>::new();
 
@@ -2271,6 +2347,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics,
+                version,
             );
         }
 
@@ -2302,6 +2379,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         assert_eq!(state.get_current_round(), Round(11));
@@ -2332,6 +2410,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let mut empty_txpool = MockTxPool::default();
+        let version = "TEST";
         let (first_state, xs) = states.split_first_mut().unwrap();
         let (second_state, xs) = xs.split_first_mut().unwrap();
         let (third_state, xs) = xs.split_first_mut().unwrap();
@@ -2357,6 +2436,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
@@ -2367,6 +2447,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[1],
+            version,
         );
         let p2_votes = extract_vote_msgs(cmds2)[0];
 
@@ -2377,6 +2458,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[2],
+            version,
         );
         let p3_votes = extract_vote_msgs(cmds3)[0];
 
@@ -2387,6 +2469,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[3],
+            version,
         );
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
@@ -2426,6 +2509,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 leader_metrics,
+                version,
             );
 
             // after 2f + 1 votes, we expect that an empty proposal is created
@@ -2455,6 +2539,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
+        let version = "TEST";
 
         // delay gap in setup is 1
 
@@ -2479,6 +2564,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         let p1 = proposal_gen.next_proposal(
@@ -2507,6 +2593,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
 
         // commit some blocks and confirm cleanup of state root hashes happened
@@ -2537,6 +2624,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let lc = p2_cmds
             .iter()
@@ -2569,6 +2657,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let lc = p3_cmds
             .iter()
@@ -2599,6 +2688,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let (first_state, _) = states.split_first_mut().unwrap();
         let mut metrics = Metrics::default();
+        let version = "TEST";
 
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
         let mut branch_off_proposal_gen = ProposalGen::<SignatureType, _>::new();
@@ -2626,6 +2716,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_correct).unwrap();
         assert_eq!(full_block.get_id(), bid_correct);
@@ -2653,6 +2744,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics,
+            version,
         );
         let full_block = first_state.fetch_uncommitted_block(&bid_branch).unwrap();
         assert_eq!(full_block.get_id(), bid_branch);
@@ -2684,6 +2776,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics,
+                version,
             );
 
             for cmd in cmds {
@@ -2715,6 +2808,7 @@ mod test {
         let mut empty_txpool = MockTxPool::default();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
+        let version = "TEST";
 
         for i in 0..8 {
             let cp = correct_proposal_gen.next_proposal(
@@ -2736,6 +2830,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[j],
+                    version,
                 );
                 let bsync_reqest = cmds
                     .iter()
@@ -2776,27 +2871,10 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
 
-                let v: Vec<VoteMessage<SignatureCollectionType>> = cmds
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        ConsensusCommand::Publish {
-                            target: RouterTarget::PointToPoint(peer),
-                            message,
-                        } => match message.deref().deref() {
-                            ConsensusMessage::Vote(vote) => {
-                                if peer == next_leader {
-                                    Some(*vote)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-                    .collect();
+                let v = extract_vote_msgs(cmds);
                 assert_eq!(v.len(), 1);
                 votes.push((state.nodeid, v[0]));
             } else {
@@ -2812,6 +2890,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[leader_index],
+                version,
             );
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId<_>, BlockId)> = cmds
@@ -2845,6 +2924,7 @@ mod test {
                 || NopStateRoot,
             );
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
+        let version = "TEST";
         let election = SimpleRoundRobin::default();
         let mut empty_txpool = MockTxPool::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -2869,6 +2949,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 let bsync_reqest = cmds
                     .iter()
@@ -2901,6 +2982,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
 
         let req: Vec<(NodeId<_>, BlockId)> = cmds
@@ -2923,6 +3005,7 @@ mod test {
                 || NopStateRoot,
             );
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
+        let version = "TEST";
         let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -2958,6 +3041,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[1],
+            version,
         );
         let req: Vec<(NodeId<_>, BlockId)> = cmds
             .into_iter()
@@ -2990,6 +3074,7 @@ mod test {
             );
 
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
+        let version = "TEST";
         let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
@@ -3012,6 +3097,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
         assert_eq!(states[0].blocktree().size(), 1);
 
@@ -3053,6 +3139,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
 
         // p2 is not added because author is not the round leader
@@ -3074,6 +3161,7 @@ mod test {
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
+        let version = "TEST";
 
         // Sequence number of the block which updates the validator set
         let update_block = epoch_manager.val_set_update_interval;
@@ -3103,6 +3191,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3159,6 +3248,7 @@ mod test {
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
+        let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
 
@@ -3190,6 +3280,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3249,6 +3340,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3290,6 +3382,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
         let current_epoch = epoch_managers[0].get_epoch(states[0].get_current_round());
         assert_eq!(current_epoch, Epoch(2));
@@ -3323,6 +3416,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
+        let version = "TEST";
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3355,6 +3449,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3424,6 +3519,7 @@ mod test {
             &val_epoch_map,
             &election,
             &mut metrics[0],
+            version,
         );
         let current_epoch = epoch_managers[0].get_epoch(states[0].get_current_round());
         assert_eq!(current_epoch, Epoch(2));
@@ -3458,6 +3554,7 @@ mod test {
         let mut propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let election = SimpleRoundRobin::default();
+        let version = "TEST";
         let mut empty_txpool = MockTxPool::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3491,6 +3588,7 @@ mod test {
                         &val_epoch_map,
                         &election,
                         &mut metrics[i],
+                        version,
                     );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3550,6 +3648,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3590,6 +3689,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[0],
+                version,
             );
         }
 
@@ -3608,6 +3708,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
+        let version = "TEST";
         let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3641,6 +3742,7 @@ mod test {
                         &val_epoch_map,
                         &election,
                         &mut metrics[i],
+                        version,
                     );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3684,6 +3786,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[0],
+                    version,
                 );
             // state should not request blocksync
             let bsync_cmds: Vec<_> = cmds
@@ -3748,6 +3851,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[1],
+                version,
             );
         // state 2 should request blocksync
         let bsync_cmds: Vec<_> = cmds
@@ -3801,6 +3905,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[1],
+                version,
             );
         // state 2 should not request blocksync
         let bsync_cmds: Vec<_> = cmds
@@ -3853,6 +3958,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
+        let version = "TEST";
         let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3888,6 +3994,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -3954,6 +4061,7 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[i],
+                version,
             );
             // state should not request blocksync
             let bsync_cmds: Vec<_> = cmds
@@ -3975,6 +4083,7 @@ mod test {
     #[test]
     fn test_vote_sent_to_leader_in_next_epoch() {
         let num_states = 2;
+        let version = "TEST";
         let (keys, certkeys, epoch_manager, mut val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
                 num_states as u32,
@@ -4028,6 +4137,7 @@ mod test {
                     &val_epoch_map,
                     &election,
                     &mut metrics[i],
+                    version,
                 );
                 // state should not request blocksync
                 let bsync_cmds: Vec<_> = cmds
@@ -4063,27 +4173,10 @@ mod test {
                 &val_epoch_map,
                 &election,
                 &mut metrics[i],
+                version,
             );
             // state should send vote to the leader in epoch 2
-            let vote_messages: Vec<_> = cmds
-                .iter()
-                .filter_map(|c| match c {
-                    ConsensusCommand::Publish {
-                        target: RouterTarget::PointToPoint(peer),
-                        message,
-                    } => match message.deref().deref() {
-                        ConsensusMessage::Vote(vote) => {
-                            if *peer == epoch_2_leader {
-                                Some(*vote)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .collect();
+            let vote_messages = extract_vote_msgs(cmds);
             assert!(vote_messages.len() == 1);
         }
     }

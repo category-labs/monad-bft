@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use monad_bls::BlsSignatureCollection;
 use monad_compress::{brotli::BrotliCompression, CompressionAlgo};
-use monad_consensus::messages::consensus_message::ConsensusMessage;
+use monad_consensus::messages::consensus_message::{ConsensusMessage, ProtocolMessage};
 use monad_consensus_types::{
     payload::{ExecutionArtifacts, FullTransactionList},
     voting::ValidatorMapping,
@@ -69,9 +69,12 @@ fn main() {
         .find(|k| k.pubkey() == proposer_leader.pubkey())
         .expect("key in valset");
 
-    let proposal: VerifiedMonadMessage<_, _> = ConsensusMessage::Proposal(proposal)
-        .sign::<SecpSignature>(leader_key)
-        .into();
+    let proposal: VerifiedMonadMessage<_, _> = ConsensusMessage {
+        version: "Example".into(),
+        message: ProtocolMessage::Proposal(proposal),
+    }
+    .sign::<SecpSignature>(leader_key)
+    .into();
 
     let proposal_bytes: Bytes = proposal.serialize();
 

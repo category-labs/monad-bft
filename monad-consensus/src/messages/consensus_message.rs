@@ -14,7 +14,7 @@ use crate::{
 
 /// Consensus protocol messages
 #[derive(Clone, PartialEq, Eq)]
-pub enum ConsensusMessage<SCT: SignatureCollection> {
+pub enum ProtocolMessage<SCT: SignatureCollection> {
     /// Consensus protocol proposal message
     Proposal(ProposalMessage<SCT>),
 
@@ -25,25 +25,25 @@ pub enum ConsensusMessage<SCT: SignatureCollection> {
     Timeout(TimeoutMessage<SCT>),
 }
 
-impl<SCT: Debug + SignatureCollection> Debug for ConsensusMessage<SCT> {
+impl<SCT: Debug + SignatureCollection> Debug for ProtocolMessage<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConsensusMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
-            ConsensusMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
-            ConsensusMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
+            ProtocolMessage::Proposal(p) => f.debug_tuple("").field(&p).finish(),
+            ProtocolMessage::Vote(v) => f.debug_tuple("").field(&v).finish(),
+            ProtocolMessage::Timeout(t) => f.debug_tuple("").field(&t).finish(),
         }
     }
 }
 
 /// Integrity hash
-impl<SCT> Hashable for ConsensusMessage<SCT>
+impl<SCT> Hashable for ProtocolMessage<SCT>
 where
     SCT: SignatureCollection,
 {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(std::any::type_name::<Self>().as_bytes());
         match self {
-            ConsensusMessage::Proposal(m) => {
+            ProtocolMessage::Proposal(m) => {
                 EnumDiscriminant(1).hash(state);
                 m.hash(state);
             }
@@ -52,15 +52,31 @@ where
             // in the signature refactoring, we might want a clean split between:
             //      integrity sig: sign over the entire serialized struct
             //      protocol sig: signatures outlined in the protocol
-            ConsensusMessage::Vote(m) => {
+            ProtocolMessage::Vote(m) => {
                 EnumDiscriminant(2).hash(state);
                 m.hash(state);
             }
-            ConsensusMessage::Timeout(m) => {
+            ProtocolMessage::Timeout(m) => {
                 EnumDiscriminant(3).hash(state);
                 m.hash(state);
             }
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsensusMessage<SCT: SignatureCollection> {
+    pub version: String,
+    pub message: ProtocolMessage<SCT>,
+}
+
+impl<SCT> Hashable for ConsensusMessage<SCT>
+where
+    SCT: SignatureCollection,
+{
+    fn hash(&self, state: &mut impl Hasher) {
+        state.update(&self.version);
+        self.message.hash(state);
     }
 }
 
@@ -80,10 +96,10 @@ where
     }
 
     pub fn get_round(&self) -> Round {
-        match self {
-            ConsensusMessage::Proposal(p) => p.block.0.round,
-            ConsensusMessage::Vote(v) => v.vote.vote_info.round,
-            ConsensusMessage::Timeout(t) => t.timeout.tminfo.round,
+        match &self.message {
+            ProtocolMessage::Proposal(p) => p.block.0.round,
+            ProtocolMessage::Vote(v) => v.vote.vote_info.round,
+            ProtocolMessage::Timeout(t) => t.timeout.tminfo.round,
         }
     }
 }

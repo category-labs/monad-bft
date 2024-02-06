@@ -4,7 +4,7 @@ use bytes::Bytes;
 use criterion::{criterion_group, Criterion};
 use monad_consensus::{
     messages::{
-        consensus_message::ConsensusMessage,
+        consensus_message::{ConsensusMessage, ProtocolMessage},
         message::{ProposalMessage, TimeoutMessage, VoteMessage},
     },
     validation::signing::{Unvalidated, Unverified},
@@ -91,14 +91,18 @@ fn bench_proposal(c: &mut Criterion) {
         &validator_mapping,
     );
 
-    let proposal = ConsensusMessage::Proposal(ProposalMessage {
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: UnverifiedBlock(blk),
         last_round_tc: None,
     });
-    let proposal_hash = HasherType::hash_object(&proposal);
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let msg_hash = HasherType::hash_object(&conmsg);
     let unverified_message = Unverified::new(
-        Unvalidated::new(proposal),
-        author_keypair.sign(proposal_hash.as_ref()),
+        Unvalidated::new(conmsg),
+        author_keypair.sign(msg_hash.as_ref()),
     );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
@@ -129,10 +133,14 @@ fn bench_vote(c: &mut Criterion) {
 
     let vm = VoteMessage::<SignatureCollectionType>::new(v, &certkey);
 
-    let vote = ConsensusMessage::Vote(vm);
+    let vote = ProtocolMessage::Vote(vm);
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: vote,
+    };
 
-    let vote_hash = HasherType::hash_object(&vote);
-    let unverified_message = Unverified::new(Unvalidated::new(vote), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(vote_hash.as_ref(), &keypair));
+    let msg_hash = HasherType::hash_object(&conmsg);
+    let unverified_message = Unverified::new(Unvalidated::new(conmsg), <<SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::sign(msg_hash.as_ref(), &keypair));
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {
         sender: NodeId::new(keypair.pubkey()),
@@ -225,12 +233,15 @@ fn bench_timeout(c: &mut Criterion) {
         last_round_tc: Some(tc),
     };
 
-    let tmo = ConsensusMessage::Timeout(TimeoutMessage::new(timeout, author_certkey));
-
-    let tmo_hash = HasherType::hash_object(&tmo);
+    let tmo = ProtocolMessage::Timeout(TimeoutMessage::new(timeout, author_certkey));
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: tmo,
+    };
+    let msg_hash = HasherType::hash_object(&conmsg);
     let unverified_message = Unverified::new(
-        Unvalidated::new(tmo),
-        author_keypair.sign(tmo_hash.as_ref()),
+        Unvalidated::new(conmsg),
+        author_keypair.sign(msg_hash.as_ref()),
     );
 
     let event = MonadEvent::ConsensusEvent(ConsensusEvent::Message {

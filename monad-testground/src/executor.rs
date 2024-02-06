@@ -18,7 +18,9 @@ use monad_ipc::{generate_uds_path, IpcReceiver};
 use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
-use monad_state::{MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
+use monad_state::{
+    MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
+};
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, local_router::LocalPeerRouter,
@@ -181,6 +183,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     MonadStateBuilder {
+        version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: EthTxPool::default(),

@@ -18,4 +18,6 @@ pub enum Error {
     ValidatorDataUnavailable,
     /// VoteMessage does not contain a valid commit condition
     InvalidVoteMessage,
+    /// Consensus Message version must match
+    InvalidVersion,
 }
