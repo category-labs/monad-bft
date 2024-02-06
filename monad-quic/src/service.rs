@@ -239,39 +239,45 @@ where
                 continue;
             }
 
-            if let Poll::Ready(connection_event) = this.connection_events.poll_recv(cx) {
-                let connection_event =
-                    connection_event.expect("connection_event stream should never be exhausted");
-                match connection_event {
-                    ConnectionEvent::ConnectionFailure(maybe_expected_peer, failure) => {
-                        tracing::warn!("connection failure, failure={:?}", failure);
-                        if let Some(expected_peer) = maybe_expected_peer {
-                            let removed = this.node_connections.remove(&expected_peer);
-                            assert_eq!(removed, Some(None));
-                        }
-                    }
-                    ConnectionEvent::Connected(connection_id, node_id, writer) => {
-                        assert_eq!(connection_id, writer.connection_id());
-                        this.connected(time, node_id, writer);
-                    }
-                    ConnectionEvent::InboundMessage(from, gossip_messages) => {
-                        if let Some(connection) = this.canonical_connections.get(&from) {
-                            for gossip_message in gossip_messages {
-                                this.gossip.handle_unframed_gossip_message(
-                                    time,
-                                    connection.node_id,
-                                    gossip_message,
-                                );
+            let mut buf = Vec::new();
+            if let Poll::Ready(num_read) = this.connection_events.poll_recv_many(cx, &mut buf, 100)
+            {
+                assert_ne!(
+                    num_read, 0,
+                    "connection_event stream should never be exhausted"
+                );
+                for connection_event in buf {
+                    match connection_event {
+                        ConnectionEvent::ConnectionFailure(maybe_expected_peer, failure) => {
+                            tracing::warn!("connection failure, failure={:?}", failure);
+                            if let Some(expected_peer) = maybe_expected_peer {
+                                let removed = this.node_connections.remove(&expected_peer);
+                                assert_eq!(removed, Some(None));
                             }
                         }
-                    }
-                    ConnectionEvent::Disconnected(connection_id, failure) => {
-                        tracing::warn!(
-                            "connection disconnected, id={:?}, failure={:?}",
-                            connection_id,
-                            failure
-                        );
-                        this.disconnected(time, &connection_id);
+                        ConnectionEvent::Connected(connection_id, node_id, writer) => {
+                            assert_eq!(connection_id, writer.connection_id());
+                            this.connected(time, node_id, writer);
+                        }
+                        ConnectionEvent::InboundMessage(from, gossip_messages) => {
+                            if let Some(connection) = this.canonical_connections.get(&from) {
+                                for gossip_message in gossip_messages {
+                                    this.gossip.handle_unframed_gossip_message(
+                                        time,
+                                        connection.node_id,
+                                        gossip_message,
+                                    );
+                                }
+                            }
+                        }
+                        ConnectionEvent::Disconnected(connection_id, failure) => {
+                            tracing::warn!(
+                                "connection disconnected, id={:?}, failure={:?}",
+                                connection_id,
+                                failure
+                            );
+                            this.disconnected(time, &connection_id);
+                        }
                     }
                 }
                 continue;
