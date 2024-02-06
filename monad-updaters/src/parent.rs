@@ -52,6 +52,7 @@ where
             checkpoint_cmds,
             _state_root_hash_cmds,
             loopback_cmds,
+            metrics_cmds,
         ) = Command::split_commands(commands);
 
         self.router.replay(router_cmds);
@@ -72,6 +73,7 @@ where
             checkpoint_cmds,
             state_root_hash_cmds,
             loopback_cmds,
+            metrics_cmds,
         ) = Command::split_commands(commands);
 
         self.router.exec(router_cmds);
