@@ -365,7 +365,9 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
             self.next_chunker_poll = if chunk_bytes_generated == 0 {
                 None
             } else {
-                Some(time + self.config.chunker_poll_interval)
+                let up_bandwidth_Bps = self.config.up_bandwidth_Mbps as u64 * 125_000;
+                let up_bandwidth_Bpms = up_bandwidth_Bps / 1_000;
+                Some(time + Duration::from_millis(chunk_bytes_generated / up_bandwidth_Bpms))
             };
         }
 
