@@ -72,7 +72,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         let rng = ChaCha8Rng::from_seed(me.pubkey().bytes()[..32].try_into().unwrap());
 
         // TODO size this properly
-        const RAPTOR_SYMBOL_SIZE: u16 = 1024;
+        const RAPTOR_SYMBOL_SIZE: u16 = 32 * 1024;
 
         let encoder = Encoder::with_defaults(&message, RAPTOR_SYMBOL_SIZE);
         let meta = RaptorMeta::create(key, &message, time, encoder.get_config());

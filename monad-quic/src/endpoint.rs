@@ -367,8 +367,12 @@ where
                         ConnectionEvent::ConnectionFailure(maybe_expected_peer, failure) => {
                             tracing::warn!("connection failure, failure={:?}", failure);
                             if let Some(expected_peer) = maybe_expected_peer {
-                                let removed = this.node_connections.remove(&expected_peer);
-                                assert_eq!(removed, Some(None));
+                                if let Some(None) = this.node_connections.get(&expected_peer) {
+                                    this.node_connections.remove(&expected_peer);
+                                } else {
+                                    // don't need to do anything, because established conn is still
+                                    // alive
+                                }
                             }
                         }
                         ConnectionEvent::Connected(connection_id, node_id, writer) => {
