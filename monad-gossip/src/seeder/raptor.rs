@@ -193,8 +193,12 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         chunks
             .entry(encoding_packet.payload_id().clone())
             .or_insert_with(|| {
-                let mut to_forward = self.non_seeders.clone();
-                to_forward.remove(&from); // don't send back to sender
+                let to_forward = if from == self.creator {
+                    self.non_seeders.clone()
+                } else {
+                    // not responsible for forwarding
+                    Default::default()
+                };
                 ChunkData {
                     chunk,
                     data,
