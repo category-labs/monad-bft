@@ -190,21 +190,18 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         };
 
         let encoding_packet = EncodingPacket::deserialize(data.as_ref());
-        chunks
-            .entry(encoding_packet.payload_id().clone())
-            .or_insert_with(|| {
-                let to_forward = if from == self.creator {
-                    self.non_seeders.clone()
-                } else {
-                    // not responsible for forwarding
-                    Default::default()
-                };
-                ChunkData {
+
+        if from == self.creator {
+            chunks
+                .entry(encoding_packet.payload_id().clone())
+                .or_insert_with(|| ChunkData {
                     chunk,
                     data,
-                    to_forward,
-                }
-            });
+                    to_forward: self.non_seeders.clone(),
+                });
+        } else {
+            // not responsible for forwarding
+        }
 
         if let Some(app_mesage) = decoder.decode(encoding_packet) {
             *seeder = true;
