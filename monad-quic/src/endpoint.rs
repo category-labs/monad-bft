@@ -359,6 +359,29 @@ where
                 continue;
             }
 
+            if let Some(timeout) = this.gossip.peek_tick() {
+                // unit of timeout is duration since unix epoch
+                let duration_until_timeout =
+                    timeout.checked_sub(current_time).unwrap_or(Duration::ZERO);
+                let current_instant = Instant::now();
+
+                let deadline = current_instant + duration_until_timeout;
+                if deadline > this.gossip_timeout.deadline().into_std() {
+                    tokio::time::Sleep::reset(this.gossip_timeout.as_mut(), deadline.into());
+                }
+                if this.gossip_timeout.poll_unpin(cx).is_ready()
+                    || duration_until_timeout == Duration::ZERO
+                {
+                    if let Some(gossip_event) = this.gossip.poll(current_time) {
+                        if let Some(event) = this.handle_gossip_event(gossip_event) {
+                            return Poll::Ready(Some(event));
+                        }
+                    }
+                    // loop if don't return value, because need to re-poll timeout
+                    continue;
+                }
+            }
+
             if !this.connections.is_empty() {
                 if let Poll::Ready(connection_event) = this.connections.poll_next_unpin(cx) {
                     let connection_event = connection_event
@@ -400,29 +423,6 @@ where
                             this.disconnected(&connection_id);
                         }
                     }
-                    continue;
-                }
-            }
-
-            if let Some(timeout) = this.gossip.peek_tick() {
-                // unit of timeout is duration since unix epoch
-                let duration_until_timeout =
-                    timeout.checked_sub(current_time).unwrap_or(Duration::ZERO);
-                let current_instant = Instant::now();
-
-                let deadline = current_instant + duration_until_timeout;
-                if deadline > this.gossip_timeout.deadline().into_std() {
-                    tokio::time::Sleep::reset(this.gossip_timeout.as_mut(), deadline.into());
-                }
-                if this.gossip_timeout.poll_unpin(cx).is_ready()
-                    || duration_until_timeout == Duration::ZERO
-                {
-                    if let Some(gossip_event) = this.gossip.poll(current_time) {
-                        if let Some(event) = this.handle_gossip_event(gossip_event) {
-                            return Poll::Ready(Some(event));
-                        }
-                    }
-                    // loop if don't return value, because need to re-poll timeout
                     continue;
                 }
             }
