@@ -194,7 +194,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
             .entry(encoding_packet.payload_id().clone())
             .or_insert_with(|| {
                 let mut to_forward = self.non_seeders.clone();
-                to_forward.insert(from); // don't send back to sender
+                to_forward.remove(&from); // don't send back to sender
                 ChunkData {
                     chunk,
                     data,
