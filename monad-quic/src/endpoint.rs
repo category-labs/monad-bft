@@ -282,21 +282,21 @@ where
                 let connection = self.canonical_connections.get_mut(&connection_id).expect(
                     "invariant broken: node_connections connection_id not in canonical_connections",
                 );
-                for gossip_message in gossip_message.into_inner() {
-                    let message_len = gossip_message.len();
-                    let result = connection.writer.write_chunk(gossip_message).now_or_never();
-                    match result {
-                        Some(Ok(())) => continue,
-                        None => {
-                            tracing::warn!("failed to immediately write chunk len={}", message_len);
-                        }
-                        Some(Err(failure)) => {
-                            tracing::warn!("disconnecting, connection failure: {:?}", failure);
-                            // this implies that the connection died
-                            self.disconnected(&connection_id)
-                        }
+                let mut gossip_message: Vec<_> = gossip_message.into_inner().into_iter().collect();
+                let result = connection
+                    .writer
+                    .write_chunks(&mut gossip_message)
+                    .now_or_never()?;
+                match result {
+                    Ok(num_chunks) if num_chunks == gossip_message.len() => {}
+                    Ok(_) => {
+                        todo!("wrote partial chunks, replace with try_write_chunks");
                     }
-                    break;
+                    Err(failure) => {
+                        tracing::warn!("disconnecting, connection failure: {:?}", failure);
+                        // this implies that the connection died
+                        self.disconnected(&connection_id)
+                    }
                 }
                 None
             }
