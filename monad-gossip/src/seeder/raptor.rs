@@ -165,7 +165,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
     /// Can be called in untrusted context
     fn process_chunk(
         &mut self,
-        _from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+        from: NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
         chunk: Self::Chunk,
         data: Bytes,
     ) -> Result<Option<AppMessage>, Box<dyn Error>> {
@@ -192,10 +192,14 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         let encoding_packet = EncodingPacket::deserialize(data.as_ref());
         chunks
             .entry(encoding_packet.payload_id().clone())
-            .or_insert_with(|| ChunkData {
-                chunk,
-                data,
-                to_forward: self.non_seeders.clone(),
+            .or_insert_with(|| {
+                let mut to_forward = self.non_seeders.clone();
+                to_forward.insert(from); // don't send back to sender
+                ChunkData {
+                    chunk,
+                    data,
+                    to_forward,
+                }
             });
 
         if let Some(app_mesage) = decoder.decode(encoding_packet) {
