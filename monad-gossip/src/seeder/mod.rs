@@ -206,7 +206,6 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
     fn update_tick(&mut self, time: Duration) {
         assert!(time >= self.current_tick);
         self.current_tick = time;
-        self.next_chunker_poll = self.next_chunker_poll.map(|t| t.max(time));
     }
 }
 
@@ -282,7 +281,8 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
         if !self.events.is_empty() {
             Some(self.current_tick)
         } else {
-            self.next_chunker_poll
+            let next_chunker_poll = self.next_chunker_poll?.max(self.current_tick);
+            Some(next_chunker_poll)
         }
     }
 
