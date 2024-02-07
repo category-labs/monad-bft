@@ -366,7 +366,7 @@ where
                 let current_instant = Instant::now();
 
                 let deadline = current_instant + duration_until_timeout;
-                if deadline > this.gossip_timeout.deadline().into_std() {
+                if deadline > this.gossip_timeout.deadline().into_std() + Duration::from_millis(1) {
                     tokio::time::Sleep::reset(this.gossip_timeout.as_mut(), deadline.into());
                 }
                 if this.gossip_timeout.poll_unpin(cx).is_ready()
