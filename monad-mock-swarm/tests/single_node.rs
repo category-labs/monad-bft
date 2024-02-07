@@ -139,6 +139,8 @@ fn two_nodes_quic() {
                             me,
                         }
                         .build(),
+                        Duration::from_millis(2),
+                        1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
@@ -219,6 +221,8 @@ fn two_nodes_quic_bw() {
                             me,
                         }
                         .build(),
+                        Duration::from_millis(2),
+                        1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),

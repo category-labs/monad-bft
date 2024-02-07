@@ -155,6 +155,8 @@ fn many_nodes_nop_timeout() -> u128 {
                             me,
                         }
                         .build(),
+                        Duration::from_millis(100),
+                        1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
@@ -225,6 +227,8 @@ fn many_nodes_bls_timeout() -> u128 {
                             me,
                         }
                         .build(),
+                        Duration::from_millis(200),
+                        1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),

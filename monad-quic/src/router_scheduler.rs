@@ -16,8 +16,8 @@ use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip, GossipEven
 use monad_router_scheduler::{RouterEvent, RouterScheduler, RouterSchedulerBuilder};
 use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
 use quinn_proto::{
-    ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir, EndpointConfig, StreamId,
-    TransportConfig, VarInt, WriteError,
+    congestion::CubicConfig, ClientConfig, Connection, ConnectionHandle, DatagramEvent, Dir,
+    EndpointConfig, StreamId, TransportConfig, VarInt, WriteError,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 
@@ -33,6 +33,9 @@ pub struct QuicRouterSchedulerConfig<G: Gossip, IM, OM> {
 
     pub gossip: G,
 
+    pub max_rtt: Duration,
+    pub bandwidth_Mbps: u16,
+
     _phantom: PhantomData<(IM, OM)>,
 }
 
@@ -43,6 +46,8 @@ impl<G: Gossip, IM, OM> QuicRouterSchedulerConfig<G, IM, OM> {
         me: NodeId<G::NodeIdPubKey>,
         master_seed: u64,
         gossip: G,
+        max_rtt: Duration,
+        bandwidth_Mbps: u16,
     ) -> Self {
         Self {
             zero_instant,
@@ -50,6 +55,8 @@ impl<G: Gossip, IM, OM> QuicRouterSchedulerConfig<G, IM, OM> {
             me,
             master_seed,
             gossip,
+            max_rtt,
+            bandwidth_Mbps,
             _phantom: PhantomData,
         }
     }
@@ -66,7 +73,19 @@ where
         let mut rng = StdRng::seed_from_u64(self.master_seed);
         let transport_config = {
             let mut config = TransportConfig::default();
-            config.max_idle_timeout(None);
+            let bandwidth_Bps = self.bandwidth_Mbps as u64 * 125_000;
+            let rwnd = bandwidth_Bps * self.max_rtt.as_millis() as u64 / 1000;
+            config
+                .max_idle_timeout(None)
+                .stream_receive_window(u32::try_from(rwnd).unwrap().into())
+                .send_window(8 * rwnd)
+                .initial_rtt(self.max_rtt) // not exactly initial.... because of quinn pacer
+                .congestion_controller_factory(Arc::new({
+                    // this is necessary for seeding the quinn pacer correctly on init
+                    let mut cubic_config = CubicConfig::default();
+                    cubic_config.initial_window(rwnd);
+                    cubic_config
+                }));
             // TODO-1 reasonable initial window sizes
             Arc::new(config)
         };

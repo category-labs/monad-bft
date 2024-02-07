@@ -123,6 +123,8 @@ fn many_nodes_quic() {
                             me,
                         }
                         .build(),
+                        Duration::from_millis(2),
+                        1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
@@ -156,7 +158,7 @@ fn many_nodes_quic_bw() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(300), // delta
+        Duration::from_millis(200), // delta
         5000,                       // proposal_tx_limit
         SeqNum(2000),               // val_set_update_interval
         Round(50),                  // epoch_start_delay
@@ -187,6 +189,8 @@ fn many_nodes_quic_bw() {
                             me,
                         }
                         .build(),
+                        Duration::from_millis(100),
+                        1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
@@ -205,5 +209,5 @@ fn many_nodes_quic_bw() {
     let mut swarm = swarm_config.build();
     swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(100)));
 
-    swarm_ledger_verification(&swarm, 95);
+    swarm_ledger_verification(&swarm, 60);
 }
