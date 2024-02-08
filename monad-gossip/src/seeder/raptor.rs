@@ -192,6 +192,8 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         let encoding_packet = EncodingPacket::deserialize(data.as_ref());
 
         if from == self.creator {
+            // TODO this branch will never get hit once we become a Decoder { seeder }, this is
+            // suboptimal
             chunks
                 .entry(encoding_packet.payload_id().clone())
                 .or_insert_with(|| ChunkData {
