@@ -6,9 +6,7 @@ use std::{
 
 use common::QuicSwarm;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
-};
+use monad_consensus_types::{payload::StateRoot, tx_processor::MockTransactionProcessor};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
@@ -32,8 +30,7 @@ fn many_nodes_noser() {
         40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -84,8 +81,7 @@ fn many_nodes_quic() {
         40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay
@@ -148,8 +144,7 @@ fn many_nodes_quic_bw() {
         40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay

@@ -1,9 +1,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
-};
+use monad_consensus_types::{payload::StateRoot, tx_processor::MockTransactionProcessor};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
@@ -22,8 +20,7 @@ fn two_nodes_virtual() -> u128 {
         2, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 SeqNum(4), // state_root_delay

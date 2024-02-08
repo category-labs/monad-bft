@@ -5,7 +5,6 @@ use monad_consensus::{messages::message::PeerStateRootMessage, validation::signi
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
     block::Block,
-    block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
@@ -24,7 +23,7 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, VTF, LT, TPT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -41,15 +40,14 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT)>,
+    _phantom: PhantomData<(ST, LT, TPT, SVT)>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    AsyncStateVerifyChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, VTF, LT, TPT, SVT, ASVT>
+    AsyncStateVerifyChildState<'a, ST, SCT, VTF, LT, TPT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator,
     SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ASVT: AsyncStateVerifyProcess<
@@ -57,9 +55,7 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
-    ) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TPT, SVT, ASVT>) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,
             epoch_manager: &monad_state.epoch_manager,

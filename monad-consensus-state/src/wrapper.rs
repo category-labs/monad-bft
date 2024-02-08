@@ -5,15 +5,15 @@ use monad_crypto::certificate_signature::{
 
 use crate::ConsensusState;
 
-struct ConsensusStateWrapper<ST, SCT, TV, SV>
+struct ConsensusStateWrapper<ST, SCT, SV>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    consensus_state: ConsensusState<ST, SCT, TV, SV>,
+    consensus_state: ConsensusState<ST, SCT, SV>,
 }
 
-impl<ST, SCT, TV, SV> Drop for ConsensusStateWrapper<ST, SCT, TV, SV>
+impl<ST, SCT, SV> Drop for ConsensusStateWrapper<ST, SCT, SV>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -23,7 +23,7 @@ where
     }
 }
 
-impl<ST, SC, TV, SV> std::fmt::Debug for ConsensusStateWrapper<ST, SC, TV, SV>
+impl<ST, SC, SV> std::fmt::Debug for ConsensusStateWrapper<ST, SC, SV>
 where
     ST: CertificateSignatureRecoverable,
     SC: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

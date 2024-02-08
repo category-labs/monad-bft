@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::Block, payload::StateRoot, tx_processor::MockTransactionProcessor,
 };
 use monad_crypto::{certificate_signature::CertificateSignaturePubKey, NopSignature};
 use monad_executor_glue::MonadEvent;
@@ -26,12 +26,11 @@ impl SwarmRelation for QuicSwarm {
 
     type TransportMessage = Bytes;
 
-    type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
+    type TransactionProcessor = MockTransactionProcessor;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,

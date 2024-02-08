@@ -2,9 +2,7 @@ mod common;
 use std::{collections::BTreeSet, env};
 
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
-};
+use monad_consensus_types::{payload::StateRoot, tx_processor::MockTransactionProcessor};
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
@@ -64,8 +62,7 @@ fn nodes_with_random_latency(seed: u64) {
         4, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 // avoid state_root trigger in rand latency setting

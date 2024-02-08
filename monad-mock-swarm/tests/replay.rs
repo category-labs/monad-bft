@@ -7,9 +7,8 @@ use std::{
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::{Block, BlockType},
-    block_validator::MockValidator,
     payload::NopStateRoot,
-    txpool::MockTxPool,
+    tx_processor::MockTransactionProcessor,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -45,12 +44,11 @@ impl SwarmRelation for ReplaySwarm {
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
 
-    type BlockValidator = MockValidator;
     type StateRootValidator = NopStateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
+    type TransactionProcessor = MockTransactionProcessor;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -93,8 +91,7 @@ pub fn recover_nodes_msg_delays(
         num_nodes, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
         Duration::from_millis(101), // delta
@@ -169,8 +166,7 @@ pub fn recover_nodes_msg_delays(
         num_nodes, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
         Duration::from_millis(2), // delta

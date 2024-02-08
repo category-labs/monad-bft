@@ -2446,6 +2446,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-eth-account-states"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "hex",
+ "monad-consensus-types",
+ "monad-eth-tx",
+ "monad-eth-types",
+ "rand_chacha",
+ "reth-primitives",
+]
+
+[[package]]
 name = "monad-eth-tx"
 version = "0.1.0"
 dependencies = [
@@ -2456,12 +2469,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-eth-txpool"
+name = "monad-eth-tx-processor"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "bytes",
  "monad-consensus-types",
+ "monad-eth-account-states",
  "monad-eth-tx",
 ]
 
@@ -2649,7 +2663,6 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
@@ -2789,7 +2802,6 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
- "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",

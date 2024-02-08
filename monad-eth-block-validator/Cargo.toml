@@ -1,8 +1,0 @@
-[package]
-name = "monad-block-validator"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-monad-consensus-types = { path = "../monad-consensus-types" }
-monad-eth-types = { path = "../monad-eth-types" }

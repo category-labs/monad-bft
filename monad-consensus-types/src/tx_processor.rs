@@ -2,9 +2,7 @@ use bytes::Bytes;
 
 use crate::payload::FullTransactionList;
 
-/// This trait represents the storage of transactions that
-/// are potentially available for a proposal
-pub trait TxPool {
+pub trait TransactionProcessor {
     /// Handle transactions submitted by users via RPC
     fn insert_tx(&mut self, tx: Bytes);
 
@@ -20,11 +18,20 @@ pub trait TxPool {
         pending_txs: Vec<FullTransactionList>,
     ) -> (FullTransactionList, Option<FullTransactionList>);
 
+    /// Validates all the transactions of a proposed block
+    fn validate_block_txns(&mut self, txs: &FullTransactionList) -> bool;
+
+    /// Updates the transaction states
+    fn update_committed_txns(&mut self, txs: &FullTransactionList);
+
+    /// Removes transactions of a block when pruned
+    fn remove_block_txns(&mut self, txs: &FullTransactionList);
+
     /// Handle transactions cascaded forward by other nodes
     fn handle_cascading_txns(&mut self) {}
 }
 
-impl<T: TxPool + ?Sized> TxPool for Box<T> {
+impl<T: TransactionProcessor + ?Sized> TransactionProcessor for Box<T> {
     fn insert_tx(&mut self, tx: Bytes) {
         (**self).insert_tx(tx)
     }
@@ -37,6 +44,18 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         (**self).create_proposal(tx_limit, gas_limit, pending_txs)
     }
+
+    fn validate_block_txns(&mut self, txs: &FullTransactionList) -> bool {
+        (**self).validate_block_txns(txs)
+    }
+
+    fn update_committed_txns(&mut self, txs: &FullTransactionList) {
+        (**self).update_committed_txns(txs)
+    }
+
+    fn remove_block_txns(&mut self, txs: &FullTransactionList) {
+        (**self).remove_block_txns(txs)
+    }
 }
 
 use rand::RngCore;
@@ -45,11 +64,11 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 const MOCK_DEFAULT_SEED: u64 = 1;
 const TXN_SIZE: usize = 32;
 
-pub struct MockTxPool {
+pub struct MockTransactionProcessor {
     rng: ChaCha20Rng,
 }
 
-impl Default for MockTxPool {
+impl Default for MockTransactionProcessor {
     fn default() -> Self {
         Self {
             rng: ChaCha20Rng::seed_from_u64(MOCK_DEFAULT_SEED),
@@ -57,7 +76,7 @@ impl Default for MockTxPool {
     }
 }
 
-impl TxPool for MockTxPool {
+impl TransactionProcessor for MockTransactionProcessor {
     fn insert_tx(&mut self, _tx: Bytes) {}
 
     fn create_proposal(
@@ -75,4 +94,12 @@ impl TxPool for MockTxPool {
             (FullTransactionList::new(buf.into()), None)
         }
     }
+
+    fn validate_block_txns(&mut self, _txs: &FullTransactionList) -> bool {
+        true
+    }
+
+    fn update_committed_txns(&mut self, _txs: &FullTransactionList) {}
+
+    fn remove_block_txns(&mut self, _txs: &FullTransactionList) {}
 }

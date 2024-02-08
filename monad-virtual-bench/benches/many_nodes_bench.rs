@@ -7,7 +7,7 @@ use bytes::Bytes;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::Block, payload::StateRoot, tx_processor::MockTransactionProcessor,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -46,12 +46,11 @@ impl SwarmRelation for NopSwarm {
 
     type TransportMessage = Bytes;
 
-    type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
+    type TransactionProcessor = MockTransactionProcessor;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -82,12 +81,11 @@ impl SwarmRelation for BlsSwarm {
 
     type TransportMessage = Bytes;
 
-    type BlockValidator = MockValidator;
     type StateRootValidator = StateRoot;
     type ValidatorSetTypeFactory =
         ValidatorSetFactory<CertificateSignaturePubKey<Self::SignatureType>>;
     type LeaderElection = SimpleRoundRobin<CertificateSignaturePubKey<Self::SignatureType>>;
-    type TxPool = MockTxPool;
+    type TransactionProcessor = MockTransactionProcessor;
     type AsyncStateRootVerify = PeerAsyncStateVerify<
         Self::SignatureCollectionType,
         <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -116,8 +114,7 @@ fn many_nodes_nop_timeout() -> u128 {
         40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay
@@ -186,8 +183,7 @@ fn many_nodes_bls_timeout() -> u128 {
         40, // num_nodes
         ValidatorSetFactory::default,
         SimpleRoundRobin::default,
-        MockTxPool::default,
-        || MockValidator,
+        MockTransactionProcessor::default,
         || {
             StateRoot::new(
                 SeqNum(u64::MAX), // state_root_delay

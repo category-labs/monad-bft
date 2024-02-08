@@ -1,13 +1,12 @@
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::NopStateRoot,
-    signature_collection::SignatureCollection, validator_data::ValidatorData,
+    block::Block, payload::NopStateRoot, signature_collection::SignatureCollection,
+    tx_processor::MockTransactionProcessor, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor};
 use monad_executor_glue::{
@@ -143,8 +142,7 @@ type MonadStateType<ST, SCT> = MonadState<
     SCT,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
-    EthTxPool,
-    MockValidator,
+    MockTransactionProcessor,
     NopStateRoot,
     PeerAsyncStateVerify<SCT, <ValidatorSetFactory<CertificateSignaturePubKey<ST>> as ValidatorSetTypeFactory>::ValidatorSetType>>;
 
@@ -186,8 +184,7 @@ where
         version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
-        transaction_pool: EthTxPool::default(),
-        block_validator: MockValidator {},
+        tx_processor: MockTransactionProcessor::default(),
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
         validators: config.validators,

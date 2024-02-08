@@ -10,10 +10,9 @@ use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::NopStateRoot, validator_data::ValidatorData,
+    payload::NopStateRoot, tx_processor::MockTransactionProcessor, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
-use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::Message;
 use monad_gossip::{mock::MockGossipConfig, Gossip};
@@ -132,8 +131,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
-        transaction_pool: EthTxPool::default(),
-        block_validator: MockValidator,
+        tx_processor: MockTransactionProcessor::default(),
         state_root_validator: NopStateRoot {},
         async_state_verify: PeerAsyncStateVerify::default(),
         validators,

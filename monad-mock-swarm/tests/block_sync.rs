@@ -7,9 +7,7 @@ mod test {
     };
 
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
-    use monad_consensus_types::{
-        block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
-    };
+    use monad_consensus_types::{payload::StateRoot, tx_processor::MockTransactionProcessor};
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
         mock_swarm::{Nodes, SwarmBuilder},
@@ -41,8 +39,7 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
+            MockTransactionProcessor::default,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -151,8 +148,7 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
+            MockTransactionProcessor::default,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -226,8 +222,7 @@ mod test {
             4, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
+            MockTransactionProcessor::default,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay
@@ -318,8 +313,7 @@ mod test {
             num_nodes, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
-            MockTxPool::default,
-            || MockValidator,
+            MockTransactionProcessor::default,
             || {
                 StateRoot::new(
                     SeqNum(u64::MAX), // state_root_delay

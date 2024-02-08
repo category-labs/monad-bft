@@ -13,8 +13,8 @@ use std::{collections::HashMap, marker::PhantomData, time::Duration};
 
 use monad_consensus::messages::message::BlockSyncResponseMessage;
 use monad_consensus_types::{
-    block::Block, block_validator::BlockValidator, metrics::Metrics,
-    quorum_certificate::QuorumCertificate, signature_collection::SignatureCollection,
+    block::Block, metrics::Metrics, quorum_certificate::QuorumCertificate,
+    signature_collection::SignatureCollection, tx_processor::TransactionProcessor,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -208,17 +208,17 @@ where
     /// Handle the response to a BlockSync request
     /// If the request was not fulfilled, the request is tried again with
     /// a different node
-    pub fn handle_response<VT, BV>(
+    pub fn handle_response<VT, TPT>(
         &mut self,
         author: &NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
         validator_set: &VT,
-        block_validator: &BV,
+        tx_processor: &mut TPT,
         metrics: &mut Metrics,
     ) -> BlockSyncResult<ST, SCT>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
-        BV: BlockValidator,
+        TPT: TransactionProcessor,
     {
         let bid = msg.get_block_id();
 
@@ -234,7 +234,7 @@ where
             match msg {
                 BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
                     if let Some(block) =
-                        Block::try_from_unverified(unverified_full_block, block_validator)
+                        Block::try_from_unverified(unverified_full_block, tx_processor)
                     {
                         return BlockSyncResult::Success(block);
                     }
@@ -306,12 +306,12 @@ mod test {
     use itertools::Itertools;
     use monad_consensus_types::{
         block::{Block, BlockType, UnverifiedBlock},
-        block_validator::MockValidator,
         ledger::CommitResult,
         metrics::Metrics,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
         signature_collection::SignatureCollection,
+        tx_processor::MockTransactionProcessor,
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
@@ -335,7 +335,7 @@ mod test {
     type SC = MockSignatures<ST>;
     type VT = ValidatorSet<CertificateSignaturePubKey<ST>>;
     type QC = QuorumCertificate<SC>;
-    type TV = MockValidator;
+    type TT = MockTransactionProcessor;
 
     fn extract_request_sync<ST, SCT>(
         cmds: &[ConsensusCommand<ST, SCT>],
@@ -426,7 +426,7 @@ mod test {
             BlockSyncRequester::<ST, SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
-        let transaction_validator = TV::default();
+        let mut tx_processor = TT::default();
         let mut metrics = Metrics::default();
 
         let payload = Payload {
@@ -604,7 +604,7 @@ mod test {
             &NodeId::new(keypair.pubkey()),
             msg_no_block_1,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -616,7 +616,7 @@ mod test {
             &NodeId::new(keypair.pubkey()),
             msg_with_block_2.clone(),
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -626,7 +626,7 @@ mod test {
             &peer_2,
             msg_no_block_2.clone(),
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -644,7 +644,7 @@ mod test {
             &peer_1,
             msg_with_block_1,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -654,7 +654,7 @@ mod test {
             &peer_3,
             msg_no_block_3,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -674,7 +674,7 @@ mod test {
             peer_2,
             msg_no_block_2,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -692,7 +692,7 @@ mod test {
             peer_3,
             msg_with_block_3,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -704,7 +704,7 @@ mod test {
             peer_2,
             msg_with_block_2,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");
@@ -748,7 +748,7 @@ mod test {
         // should have skipped self
         assert!(peer == members[1]);
         assert!(bid == qc.get_block_id());
-        let transaction_validator = TV::default();
+        let mut tx_processor = TT::default();
         let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
         for _ in 0..10 {
             for i in 2..31 {
@@ -756,7 +756,7 @@ mod test {
                     &peer,
                     msg_failed.clone(),
                     &valset,
-                    &transaction_validator,
+                    &mut tx_processor,
                     &mut metrics,
                 ) else {
                     panic!("illegal response is processed");
@@ -868,15 +868,11 @@ mod test {
         // similarly, failure of message should have also triggered a timeout
         let msg_failed = BlockSyncResponseMessage::<SC>::NotAvailable(bid);
 
-        let transaction_validator = TV::default();
+        let mut tx_processor = TT::default();
 
-        let BlockSyncResult::<ST, SC>::Failed(retry_command) = manager.handle_response(
-            &peer,
-            msg_failed,
-            &valset,
-            &transaction_validator,
-            &mut metrics,
-        ) else {
+        let BlockSyncResult::<ST, SC>::Failed(retry_command) =
+            manager.handle_response(&peer, msg_failed, &valset, &mut tx_processor, &mut metrics)
+        else {
             panic!("illegal response is processed");
         };
 
@@ -942,7 +938,7 @@ mod test {
             &peer,
             msg_with_block,
             &valset,
-            &transaction_validator,
+            &mut tx_processor,
             &mut metrics,
         ) else {
             panic!("illegal response is processed");

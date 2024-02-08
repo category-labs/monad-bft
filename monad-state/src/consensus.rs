@@ -12,8 +12,8 @@ use monad_consensus_state::{
     ConsensusState,
 };
 use monad_consensus_types::{
-    block::Block, block_validator::BlockValidator, metrics::Metrics, payload::StateRootValidator,
-    signature_collection::SignatureCollection, txpool::TxPool,
+    block::Block, metrics::Metrics, payload::StateRootValidator,
+    signature_collection::SignatureCollection, tx_processor::TransactionProcessor,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -30,45 +30,41 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, MonadVersion, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TPT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    consensus: &'a mut ConsensusState<ST, SCT, BVT, SVT>,
+    consensus: &'a mut ConsensusState<ST, SCT, SVT>,
 
     /// Consensus needs these states to process messages
     epoch_manager: &'a mut EpochManager,
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     leader_election: &'a LT,
-    txpool: &'a mut TT,
+    tx_processor: &'a mut TPT,
     metrics: &'a mut Metrics,
     version: &'a MonadVersion,
 
     _phantom: PhantomData<(ST, ASVT)>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, VTF, LT, TPT, SVT, ASVT> ConsensusChildState<'a, ST, SCT, VTF, LT, TPT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool,
-    BVT: BlockValidator,
+    TPT: TransactionProcessor,
     SVT: StateRootValidator,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
-    ) -> Self {
+    pub(super) fn new(monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TPT, SVT, ASVT>) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
             epoch_manager: &mut monad_state.epoch_manager,
             val_epoch_map: &monad_state.val_epoch_map,
             leader_election: &monad_state.leader_election,
-            txpool: &mut monad_state.txpool,
+            tx_processor: &mut monad_state.tx_processor,
             metrics: &mut monad_state.metrics,
             version: &monad_state.version,
             _phantom: PhantomData,
@@ -119,6 +115,7 @@ where
                     ProtocolMessage::Proposal(msg) => self.consensus.handle_proposal_message(
                         author,
                         msg,
+                        self.tx_processor,
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
@@ -128,7 +125,7 @@ where
                     ProtocolMessage::Vote(msg) => self.consensus.handle_vote_message(
                         author,
                         msg,
-                        self.txpool,
+                        self.tx_processor,
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
@@ -138,7 +135,7 @@ where
                     ProtocolMessage::Timeout(msg) => self.consensus.handle_timeout_message(
                         author,
                         msg,
-                        self.txpool,
+                        self.tx_processor,
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
@@ -203,8 +200,13 @@ where
                     .val_epoch_map
                     .get_val_set(&current_epoch)
                     .expect("current validator set should be in the map");
-                self.consensus
-                    .handle_block_sync(sender, validated_response, val_set, self.metrics)
+                self.consensus.handle_block_sync(
+                    sender,
+                    validated_response,
+                    self.tx_processor,
+                    val_set,
+                    self.metrics,
+                )
             }
         };
         let consensus_cmds = vec;

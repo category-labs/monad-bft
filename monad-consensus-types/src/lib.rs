@@ -1,5 +1,4 @@
 pub mod block;
-pub mod block_validator;
 pub mod convert;
 pub mod ledger;
 pub mod metrics;
@@ -8,7 +7,7 @@ pub mod quorum_certificate;
 pub mod signature_collection;
 pub mod state_root_hash;
 pub mod timeout;
-pub mod txpool;
+pub mod tx_processor;
 pub mod validation;
 pub mod validator_data;
 pub mod voting;

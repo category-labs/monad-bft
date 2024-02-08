@@ -8,8 +8,8 @@ use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    block_validator::BlockValidator, payload::Payload, quorum_certificate::QuorumCertificate,
-    signature_collection::SignatureCollection,
+    payload::Payload, quorum_certificate::QuorumCertificate,
+    signature_collection::SignatureCollection, tx_processor::TransactionProcessor,
 };
 
 /// This trait represents a consensus block
@@ -113,10 +113,10 @@ impl<SCT: SignatureCollection> Block<SCT> {
     /// with the TransactionValidator
     pub fn try_from_unverified(
         unverified: UnverifiedBlock<SCT>,
-        validator: &impl BlockValidator,
+        tx_processor: &mut impl TransactionProcessor,
     ) -> Option<Self> {
-        validator
-            .validate(&unverified.0.payload.txns)
+        tx_processor
+            .validate_block_txns(&unverified.0.payload.txns)
             .then_some(unverified.0)
     }
 }
