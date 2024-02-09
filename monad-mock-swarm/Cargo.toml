@@ -29,6 +29,7 @@ monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 
 bytes = { workspace = true }
+hex = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
 priority-queue = { workspace = true }

@@ -1,6 +1,20 @@
 use std::time::Duration;
 
+use hex::ToHex;
+use monad_consensus_types::metrics::Metrics;
+use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
+use monad_transformer::ID;
+
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
+
+type FetchMetricFunction = fn(&Metrics) -> (u64, &str);
+
+#[macro_export]
+macro_rules! fetch_metrics {
+    ( $( $k:ident ).+ ) => {{
+         |s: &Metrics| { (s.$($k).+, stringify!($($k).+)) }
+    }};
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum ExpectedTick {
@@ -14,19 +28,36 @@ enum ExpectedTick {
 }
 
 #[derive(Debug)]
-pub struct MockSwarmVerifier {
-    tick: ExpectedTick,
+enum ExpectedMetric {
+    // Exact metric value
+    Exact(u64),
+    // Expect metric is in the range [lower, upper]
+    Range(u64, u64),
+    // Minimum metric value
+    Threshold(u64),
 }
 
-impl Default for MockSwarmVerifier {
+#[derive(Debug)]
+pub struct MockSwarmVerifier<S: SwarmRelation> {
+    tick: ExpectedTick,
+
+    metrics: Vec<(
+        ID<CertificateSignaturePubKey<S::SignatureType>>,
+        FetchMetricFunction,
+        ExpectedMetric,
+    )>,
+}
+
+impl<S: SwarmRelation> Default for MockSwarmVerifier<S> {
     fn default() -> Self {
         Self {
             tick: ExpectedTick::None,
+            metrics: Vec::new(),
         }
     }
 }
 
-impl MockSwarmVerifier {
+impl<S: SwarmRelation> MockSwarmVerifier<S> {
     pub fn tick_exact(mut self, tick: Duration) -> Self {
         if self.tick != ExpectedTick::None {
             panic!("Tick verify already set");
@@ -42,10 +73,52 @@ impl MockSwarmVerifier {
         self.tick = ExpectedTick::Range(mean_tick, delta);
         self
     }
+
+    pub fn metric_exact(
+        mut self,
+        node_ids: Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        fetch_metric: FetchMetricFunction,
+        value: u64,
+    ) -> Self {
+        for node_id in node_ids {
+            self.metrics
+                .push((node_id, fetch_metric, ExpectedMetric::Exact(value)));
+        }
+        self
+    }
+
+    pub fn metric_range(
+        mut self,
+        node_ids: Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        fetch_metric: FetchMetricFunction,
+        lower: u64,
+        upper: u64,
+    ) -> Self {
+        for node_id in node_ids {
+            self.metrics
+                .push((node_id, fetch_metric, ExpectedMetric::Range(lower, upper)));
+        }
+        self
+    }
+
+    pub fn metric_threshold(
+        mut self,
+        node_ids: Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        fetch_metric: FetchMetricFunction,
+        minimum: u64,
+    ) -> Self {
+        for node_id in node_ids {
+            self.metrics
+                .push((node_id, fetch_metric, ExpectedMetric::Threshold(minimum)));
+        }
+        self
+    }
 }
 
-impl MockSwarmVerifier {
-    pub fn verify<S: SwarmRelation>(&self, swarm: &Nodes<S>) -> bool {
+impl<S: SwarmRelation> MockSwarmVerifier<S> {
+    pub fn verify(&self, swarm: &Nodes<S>) -> bool {
+        let mut verification_passed = true;
+
         let actual_tick = swarm.tick;
         match self.tick {
             ExpectedTick::Exact(tick) => {
@@ -54,7 +127,7 @@ impl MockSwarmVerifier {
                         "Tick verify error expected={:?} actual={:?}",
                         tick, swarm.tick
                     );
-                    return false;
+                    verification_passed = false;
                 }
             }
             ExpectedTick::Range(mean, delta) => {
@@ -65,12 +138,47 @@ impl MockSwarmVerifier {
                         "Tick verify error expected=[{:?},{:?}] actual={:?}",
                         lower, upper, actual_tick
                     );
-                    return false;
+                    verification_passed = false;
                 }
             }
             ExpectedTick::None => {}
         }
 
-        true
+        for (node_id, fetch_metric, expected_metric) in self.metrics.iter() {
+            let node = swarm.states.get(node_id).unwrap();
+            let node_id_as_hex: String = node_id.get_peer_id().pubkey().bytes().encode_hex();
+            let (actual_metric, metric_name) = fetch_metric(node.state.metrics());
+            match expected_metric {
+                ExpectedMetric::Exact(metric) => {
+                    if actual_metric != *metric {
+                        eprintln!(
+                            "Metric verify error: node_id: {}, metric: {}, expected={:?} actual={:?}",
+                            node_id_as_hex, metric_name, metric, actual_metric
+                        );
+                        verification_passed = false;
+                    }
+                }
+                ExpectedMetric::Range(lower, upper) => {
+                    if actual_metric < *lower || actual_metric > *upper {
+                        eprintln!(
+                            "Metric verify error: node_id: {}, metric: {}, expected=[{:?},{:?}] actual={:?}",
+                            node_id_as_hex, metric_name, lower, upper, actual_metric
+                        );
+                        verification_passed = false;
+                    }
+                }
+                ExpectedMetric::Threshold(minimum) => {
+                    if actual_metric < *minimum {
+                        eprintln!(
+                            "Metric verify error: node_id: {}, metric: {}, expected>={:?} actual={:?}",
+                            node_id_as_hex, metric_name, minimum, actual_metric
+                        );
+                        verification_passed = false;
+                    }
+                }
+            }
+        }
+
+        verification_passed
     }
 }

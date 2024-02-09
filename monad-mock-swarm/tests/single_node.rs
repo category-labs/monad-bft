@@ -7,14 +7,15 @@ use std::{
 };
 
 use common::QuicSwarm;
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
+    fetch_metrics, mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
     terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
 use monad_quic::QuicRouterSchedulerConfig;
@@ -82,14 +83,17 @@ fn two_nodes_noser() {
         .is_some()
     {}
 
-    let verifier = MockSwarmVerifier::default().tick_exact(Duration::from_secs(10));
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    let verifier = MockSwarmVerifier::default()
+        .tick_exact(Duration::from_secs(10))
+        .metric_exact(
+            node_ids,
+            fetch_metrics!(consensus_events.commit_empty_block),
+            0,
+        );
     assert!(verifier.verify(&swarm));
 
     swarm_ledger_verification(&swarm, 1024);
-
-    for node in swarm.states().values() {
-        assert_eq!(0, node.state.metrics().consensus_events.commit_empty_block);
-    }
 }
 
 #[test]
