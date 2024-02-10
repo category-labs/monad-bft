@@ -1,7 +1,7 @@
 use std::{path::PathBuf, task::Poll};
 
 use alloy_rlp::Decodable;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -47,7 +47,7 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    read_events_recv: tokio::sync::mpsc::Receiver<MonadEvent<ST, SCT>>,
+    read_events_recv: flume::Receiver<MonadEvent<ST, SCT>>,
 }
 
 impl<ST, SCT> IpcReceiver<ST, SCT>
@@ -56,7 +56,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     pub fn new(bind_path: PathBuf, buf_size: usize) -> Result<Self, std::io::Error> {
-        let (read_events_send, read_events_recv) = tokio::sync::mpsc::channel(buf_size);
+        let (read_events_send, read_events_recv) = flume::bounded(buf_size);
 
         let r = Self { read_events_recv };
 
@@ -80,10 +80,7 @@ where
         Ok(r)
     }
 
-    fn new_connection(
-        stream: UnixStream,
-        event_channel: tokio::sync::mpsc::Sender<MonadEvent<ST, SCT>>,
-    ) {
+    fn new_connection(stream: UnixStream, event_channel: flume::Sender<MonadEvent<ST, SCT>>) {
         let mut reader = FramedRead::new(stream, LengthDelimitedCodec::default());
         tokio::spawn(async move {
             let mut txns = vec![];
@@ -112,11 +109,13 @@ where
             }
             match event_channel.try_send(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns))) {
                 Ok(_) => debug!("bytes received from IPC and sent to channel"),
-                Err(TrySendError::Full(_)) => todo!(
-                    "IPC recv channel full, max_capacity={}",
-                    event_channel.max_capacity()
+                Err(flume::TrySendError::Full(_)) => todo!(
+                    "IPC recv channel full, max_capacity={:?}",
+                    event_channel.capacity()
                 ),
-                Err(TrySendError::Closed(_)) => warn!("failed to send, channel closed"),
+                Err(flume::TrySendError::Disconnected(_)) => {
+                    warn!("failed to send, channel closed")
+                }
             }
         });
     }
@@ -131,9 +130,10 @@ where
     type Item = MonadEvent<ST, SCT>;
 
     fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.read_events_recv.poll_recv(cx)
+        let mut pinned = std::pin::pin!(self.read_events_recv.stream());
+        pinned.as_mut().poll_next(cx)
     }
 }
