@@ -13,6 +13,7 @@ monad-eth-tx = { path = "../monad-eth-tx" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 
 alloy-rlp = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 rand = { workspace = true }

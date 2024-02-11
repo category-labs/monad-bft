@@ -100,9 +100,9 @@ where
 
         futures::future::select_all(vec![
             this.timer.next().boxed_local(),
+            this.ipc.next().boxed_local(),
             this.ledger.next().boxed_local(),
             this.state_root_hash.next().boxed_local(),
-            this.ipc.next().boxed_local(),
             this.loopback.next().boxed_local(),
             this.router.next().boxed_local(),
         ])

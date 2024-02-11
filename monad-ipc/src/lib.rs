@@ -1,7 +1,8 @@
 use std::{path::PathBuf, task::Poll};
 
 use alloy_rlp::Decodable;
-use futures::{FutureExt, Stream, StreamExt};
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use monad_consensus_types::signature_collection::SignatureCollection;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -11,7 +12,7 @@ use monad_executor_glue::{MempoolEvent, MonadEvent};
 use rand::distributions::{Alphanumeric, DistString};
 use tokio::{
     net::{UnixListener, UnixStream},
-    sync::mpsc::error::TrySendError,
+    time::{Duration, Instant},
 };
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use tracing::{debug, warn};
@@ -66,7 +67,7 @@ where
                 match listener.accept().await {
                     Ok((stream, sockaddr)) => {
                         debug!("new ipc connection sockaddr={:?}", sockaddr);
-                        IpcReceiver::new_connection(stream, read_events_send.clone());
+                        IpcReceiver::new_connection(stream, read_events_send.clone(), buf_size);
                     }
                     Err(err) => {
                         warn!("listener poll accept error={:?}", err);
@@ -80,34 +81,20 @@ where
         Ok(r)
     }
 
-    fn new_connection(stream: UnixStream, event_channel: flume::Sender<MonadEvent<ST, SCT>>) {
+    fn new_connection(
+        stream: UnixStream,
+        event_channel: flume::Sender<MonadEvent<ST, SCT>>,
+        buf_size: usize,
+    ) {
         let mut reader = FramedRead::new(stream, LengthDelimitedCodec::default());
-        tokio::spawn(async move {
-            let mut txns = vec![];
-            loop {
-                match reader.next().await {
-                    Some(Ok(bytes)) => {
-                        let bytes = bytes.freeze();
-                        let _eth_tx = match EthTransaction::decode(&mut bytes.as_ref()) {
-                            Ok(eth_tx) => eth_tx,
-                            Err(err) => {
-                                warn!("tx decoder error error={:?}", err);
-                                break;
-                            }
-                        };
-                        txns.push(bytes);
-                    }
-                    Some(Err(err)) => {
-                        warn!("framed reader error err={:?}", err);
-                        break;
-                    }
-                    None => {
-                        debug!("done reading");
-                        break;
-                    }
-                }
+
+        let send_batch = move |tx: &mut Vec<Bytes>| {
+            if tx.is_empty() {
+                return;
             }
-            match event_channel.try_send(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns))) {
+            match event_channel.try_send(MonadEvent::MempoolEvent(MempoolEvent::UserTxns(
+                tx.to_vec(),
+            ))) {
                 Ok(_) => debug!("bytes received from IPC and sent to channel"),
                 Err(flume::TrySendError::Full(_)) => todo!(
                     "IPC recv channel full, max_capacity={:?}",
@@ -117,7 +104,60 @@ where
                     warn!("failed to send, channel closed")
                 }
             }
+            tx.clear();
+        };
+
+        tokio::spawn(async move {
+            let mut txns = Vec::with_capacity(buf_size);
+            let batch_timeout = tokio::time::sleep(Duration::from_secs(100));
+            tokio::pin!(batch_timeout);
+
+            loop {
+                tokio::select! {
+                    read = reader.next() => {
+                        match read {
+                            Some(Ok(bytes)) => {
+                                let bytes = bytes.freeze();
+                                if !validate_ethtx(&mut bytes.as_ref()) {
+                                    break;
+                                }
+
+                                txns.push(bytes);
+                                if txns.len() >= buf_size {
+                                    send_batch(&mut txns);
+                                } else {
+                                    batch_timeout.as_mut().reset(Instant::now() + Duration::from_millis(250));
+                                }
+                            }
+                            Some(Err(err)) => {
+                                warn!("framed reader error err={:?}", err);
+                                break;
+                            }
+                            None => {
+                                debug!("done reading");
+                                break;
+                            }
+                        }
+                    }
+                    () = &mut batch_timeout => {
+                        send_batch(&mut txns);
+                        batch_timeout.as_mut().reset(Instant::now() + Duration::from_secs(100));
+                    }
+                }
+            }
+
+            send_batch(&mut txns);
         });
+    }
+}
+
+fn validate_ethtx(bytes: &mut &[u8]) -> bool {
+    match EthTransaction::decode(bytes) {
+        Ok(_) => true,
+        Err(err) => {
+            warn!("tx decoder error error={:?}", err);
+            false
+        }
     }
 }
 
