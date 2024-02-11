@@ -13,12 +13,14 @@ monad-eth-tx = { path = "../monad-eth-tx" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 
 alloy-rlp = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",
     "rt",
+    "time",
 ]}
 tokio-util = { workspace = true, features = ["codec"] }
 tracing = { workspace = true }

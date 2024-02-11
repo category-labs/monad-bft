@@ -2586,6 +2586,7 @@ name = "monad-ipc"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "bytes",
  "clap 4.4.10",
  "futures",
  "monad-bls",
