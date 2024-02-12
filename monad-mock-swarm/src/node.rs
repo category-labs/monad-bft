@@ -195,6 +195,7 @@ impl<S: SwarmRelation> Node<S> {
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
     )> {
         while let Some((tick, event_type)) = self.peek_event() {
+            let _mock_swarm_span = tracing::info_span!("mock_swarm_span", ?tick).entered();
             if tick > until {
                 break;
             }
@@ -207,7 +208,7 @@ impl<S: SwarmRelation> Node<S> {
                         None => continue,
                         Some(MockExecutorEvent::Event(event)) => {
                             self.logger.push(&event).unwrap(); // FIXME-4: propagate the error
-                            let node_span = info_span!("node", id = ?self.id);
+                            let node_span = info_span!("node", id = format!("{}", self.id));
                             let _guard = node_span.enter();
                             let commands = self.state.update(event.clone());
 

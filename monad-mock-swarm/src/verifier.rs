@@ -4,6 +4,7 @@ use hex::ToHex;
 use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;
+use monad_types::Round;
 
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 
@@ -181,4 +182,21 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
 
         verification_passed
     }
+}
+
+/// Computes the tick number for a happy path NoSer-like swarm to finish on a
+/// certain round. For the NoSer-like swarm, message is delivered exactly after
+/// exactly delta, regardless of message size
+pub fn happy_path_tick_by_round(round: Round, delta: Duration) -> Duration {
+    // (1 <timeout> + (epoch_start_round - 1 <the leader enters before delivered
+    // to other nodes>) * 2 <round trip>) * delta
+    delta * (1 + (round.0 - 1) * 2) as u32
+}
+
+/// Computes the tick number for a happy path NoSer-like swarm to finish when
+/// any nodes has committed given number of blocks
+pub fn happy_path_tick_by_block(block: usize, delta: Duration) -> Duration {
+    // (1 <timeout> + (epoch_start_round + 1 <leader forms a QC-of-QC to commit>) *
+    // 2 <round trip>) * delta
+    delta * (1 + (block + 2) * 2) as u32
 }

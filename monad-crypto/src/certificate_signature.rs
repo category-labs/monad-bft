@@ -7,7 +7,7 @@ use std::{
 use crate::{hasher::Hashable, NopKeyPair, NopPubKey, NopSignature};
 
 pub trait PubKey:
-    Debug + Eq + Hash + Ord + PartialOrd + Copy + Send + Sync + Unpin + 'static
+    Debug + Display + Eq + Hash + Ord + PartialOrd + Copy + Send + Sync + Unpin + 'static
 {
     type Error: Display + Debug + Send + Sync;
     fn from_bytes(pubkey: &[u8]) -> Result<Self, Self::Error>;

@@ -329,7 +329,7 @@ mod test {
 
     #[test]
     fn test_randlatency_transformer() {
-        let mut t = RandLatencyTransformer::new(1, 30);
+        let mut t = RandLatencyTransformer::new(1, Duration::from_millis(30));
         let m = get_mock_message();
         let TransformerStream::Continue(c) = t.transform(m.clone()) else {
             panic!("randlatency_transformer returned wrong type")

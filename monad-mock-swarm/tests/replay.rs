@@ -84,11 +84,12 @@ fn test_replay() {
 pub fn recover_nodes_msg_delays(
     num_nodes: u16,
     num_blocks_before: usize,
-    num_block_after: usize,
+    num_blocks_after: usize,
     proposal_size: usize,
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
 ) {
+    let delta = Duration::from_millis(u8::MAX as u64);
     let state_configs = make_state_configs::<ReplaySwarm>(
         num_nodes, // num_nodes
         ValidatorSetFactory::default,
@@ -97,11 +98,11 @@ pub fn recover_nodes_msg_delays(
         || MockValidator,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
-        Duration::from_millis(101), // delta
-        proposal_size,              // proposal_tx_limit
-        val_set_update_interval,    // val_set_update_interval
-        epoch_start_delay,          // epoch_start_delay
-        majority_threshold,         // state root quorum threshold
+        delta,                   // delta
+        proposal_size,           // proposal_tx_limit
+        val_set_update_interval, // val_set_update_interval
+        epoch_start_delay,       // epoch_start_delay
+        majority_threshold,      // state root quorum threshold
     );
 
     // create the log file path
@@ -133,7 +134,7 @@ pub fn recover_nodes_msg_delays(
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, val_set_update_interval),
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
-                        Duration::from_millis(u8::MAX as u64),
+                        delta,
                     ))],
                     seed.try_into().unwrap(),
                 )
@@ -173,11 +174,11 @@ pub fn recover_nodes_msg_delays(
         || MockValidator,
         || NopStateRoot,
         PeerAsyncStateVerify::new,
-        Duration::from_millis(2), // delta
-        proposal_size,            // proposal_tx_limit
-        val_set_update_interval,  // val_set_update_interval
-        epoch_start_delay,        // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
+        delta,                   // delta
+        proposal_size,           // proposal_tx_limit
+        val_set_update_interval, // val_set_update_interval
+        epoch_start_delay,       // epoch_start_delay
+        majority_threshold,      // state root quorum threshold
     );
 
     let swarm_config_clone = SwarmBuilder::<ReplaySwarm>(
@@ -193,9 +194,7 @@ pub fn recover_nodes_msg_delays(
                     logger_config,
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, val_set_update_interval),
-                    vec![GenericTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
-                    ))],
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     seed.try_into().unwrap(),
                 )
             })
@@ -221,8 +220,9 @@ pub fn recover_nodes_msg_delays(
         .collect::<HashMap<_, _>>();
 
     assert_eq!(node_ledger_before, node_ledger_recovered);
-    let mut term = UntilTerminator::new().until_block(num_blocks_before + num_block_after);
+
+    let mut term = UntilTerminator::new().until_block(num_blocks_before + num_blocks_after);
     while nodes_recovered.step_until(&mut term).is_some() {}
 
-    swarm_ledger_verification(&nodes_recovered, 1);
+    swarm_ledger_verification(&nodes_recovered, num_blocks_before + num_blocks_after - 2);
 }

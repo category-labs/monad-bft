@@ -1,6 +1,6 @@
 pub mod twin_reader;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use monad_consensus_types::{
     block::Block, payload::StateRoot, signature_collection::SignatureCollection,
@@ -76,7 +76,10 @@ where
 
         let pipeline = vec![
             MonadMessageTransformer::Twins(twins_transformer),
-            MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(rng.gen(), delta)),
+            MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(
+                rng.gen(),
+                Duration::from_millis(delta),
+            )),
         ];
         let validators = state_config.validators.clone();
         swarm.add_state(NodeBuilder::<S>::new(
@@ -107,7 +110,10 @@ where
         );
         let pipeline = vec![
             MonadMessageTransformer::Twins(liveness_transformer),
-            MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(rng.gen(), delta)),
+            MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(
+                rng.gen(),
+                Duration::from_millis(delta),
+            )),
         ];
 
         for id in ids {

@@ -17,6 +17,20 @@ impl Hashable for SecpSignature {
     }
 }
 
+impl std::fmt::Display for PubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bytes = self.bytes();
+        write!(
+            f,
+            "{:>02x}{:>02x}..{:>02x}{:>02x}",
+            bytes[0],
+            bytes[1],
+            bytes[bytes.len() - 2],
+            bytes[bytes.len() - 1]
+        )
+    }
+}
+
 impl certificate_signature::PubKey for PubKey {
     type Error = Error;
 

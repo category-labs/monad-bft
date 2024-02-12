@@ -12,8 +12,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm_relation::NoSerSwarm,
     terminator::UntilTerminator,
+    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
@@ -28,6 +31,7 @@ use monad_wal::mock::MockWALoggerConfig;
 
 #[test]
 fn many_nodes_noser() {
+    let delta = Duration::from_millis(1);
     let state_configs = make_state_configs::<NoSerSwarm>(
         40, // num_nodes
         ValidatorSetFactory::default,
@@ -40,11 +44,11 @@ fn many_nodes_noser() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(2), // delta
-        0,                        // proposal_tx_limit
-        SeqNum(2000),             // val_set_update_interval
-        Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
+        delta,              // delta
+        0,                  // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -62,9 +66,7 @@ fn many_nodes_noser() {
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
-                    vec![GenericTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
-                    ))],
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     seed.try_into().unwrap(),
                 )
             })
@@ -74,12 +76,16 @@ fn many_nodes_noser() {
     let mut swarm = swarm_config.build();
     swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)));
     swarm_ledger_verification(&swarm, 1024);
+
+    let verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+    assert!(verifier.verify(&swarm));
 }
 
 #[test]
-fn many_nodes_quic() {
+fn many_nodes_quic_latency() {
     let zero_instant = Instant::now();
 
+    let delta = Duration::from_millis(100);
     let state_configs = make_state_configs::<QuicSwarm>(
         40, // num_nodes
         ValidatorSetFactory::default,
@@ -92,11 +98,11 @@ fn many_nodes_quic() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(10), // delta
-        150,                       // proposal_tx_limit
-        SeqNum(2000),              // val_set_update_interval
-        Round(50),                 // epoch_start_delay
-        majority_threshold,        // state root quorum threshold
+        delta,              // delta
+        0,                  // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -123,14 +129,12 @@ fn many_nodes_quic() {
                             me,
                         }
                         .build(),
-                        Duration::from_millis(2),
+                        delta * 2,
                         1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
-                    vec![BytesTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
-                    ))],
+                    vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
                     seed.try_into().unwrap(),
                 )
             })
@@ -138,13 +142,21 @@ fn many_nodes_quic() {
     );
 
     let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)));
-    swarm_ledger_verification(&swarm, 10);
+    swarm.batch_step_until(&mut UntilTerminator::new().until_block(100));
+    swarm_ledger_verification(&swarm, 100);
+
+    // quic router scheduler loses the first message when it's handshaking
+    // handshake takes less than consensus round timer
+    // initial timeout is sent out at t=consensus_round_timer=4*delta
+    let verifier = MockSwarmVerifier::default()
+        .tick_range(happy_path_tick_by_block(100, delta) + 4 * delta, 10 * delta);
+    assert!(verifier.verify(&swarm));
 }
 
 #[test]
 fn many_nodes_quic_bw() {
     let zero_instant = Instant::now();
+    let delta = Duration::from_millis(100);
 
     let state_configs = make_state_configs::<QuicSwarm>(
         40, // num_nodes
@@ -158,11 +170,11 @@ fn many_nodes_quic_bw() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(200), // delta
-        5000,                       // proposal_tx_limit
-        SeqNum(2000),               // val_set_update_interval
-        Round(50),                  // epoch_start_delay
-        majority_threshold,         // state root quorum threshold
+        delta,              // delta
+        5000,               // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -189,7 +201,7 @@ fn many_nodes_quic_bw() {
                             me,
                         }
                         .build(),
-                        Duration::from_millis(100),
+                        delta,
                         1000,
                     )
                     .build(),
@@ -207,7 +219,33 @@ fn many_nodes_quic_bw() {
     );
 
     let mut swarm = swarm_config.build();
-    swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(100)));
 
-    swarm_ledger_verification(&swarm, 60);
+    let tick1 = swarm
+        .batch_step_until(&mut UntilTerminator::new().until_block(100))
+        .unwrap();
+    swarm_ledger_verification(&swarm, 100);
+
+    let verifier =
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(122), Duration::from_secs(1));
+    assert!(verifier.verify(&swarm));
+
+    // The first ~130 rounds are all timing out as the QUIC protocol is learning
+    // to pace the message burst. Trying to send all the proposal at the same
+    // time instant cannot deliver because the bandwidth limiter allows a rather
+    // small burst size.
+    //
+    // The average block time approaches 350ms as the swarm runs longer. The
+    // theoretical minimum block time is (39 nodes * 5000 txns * 32 bytes/txn) /
+    // 1 Gbps + 100ms + 100ms = 249.9ms.
+    //
+    // A long running test is better at checking the average block time
+
+    // let tick2 = swarm
+    //     .batch_step_until(&mut UntilTerminator::new().until_block(1000))
+    //     .unwrap();
+
+    // let block_time = (tick2 - tick1) / 900;
+
+    // assert!(block_time > Duration::from_millis(250));
+    // assert!(block_time < Duration::from_millis(250) + delta * 2);
 }

@@ -25,7 +25,7 @@ use monad_wal::mock::MockWALoggerConfig;
 
 use crate::RandomizedTest;
 
-fn random_latency_test(seed: u64) {
+fn random_latency_test(latency_seed: u64) {
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -61,7 +61,7 @@ fn random_latency_test(seed: u64) {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![GenericTransformer::RandLatency(
-                        RandLatencyTransformer::new(seed.try_into().unwrap(), 330),
+                        RandLatencyTransformer::new(latency_seed, Duration::from_millis(330)),
                     )],
                     seed.try_into().unwrap(),
                 )
@@ -77,7 +77,7 @@ fn random_latency_test(seed: u64) {
     swarm_ledger_verification(&swarm, 2048);
 }
 
-fn delayed_message_test(seed: u64) {
+fn delayed_message_test(latency_seed: u64) {
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -124,7 +124,7 @@ fn delayed_message_test(seed: u64) {
                         GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),
                         GenericTransformer::Replay(ReplayTransformer::new(
                             Duration::from_secs(1),
-                            TransformerReplayOrder::Random(seed.try_into().unwrap()),
+                            TransformerReplayOrder::Random(latency_seed),
                         )),
                     ],
                     seed.try_into().unwrap(),

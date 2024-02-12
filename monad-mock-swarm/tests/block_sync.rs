@@ -17,6 +17,7 @@ mod test {
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm},
         terminator::{ProgressTerminator, UntilTerminator},
         transformer::{FilterTransformer, MonadMessageTransformer},
+        verifier::MockSwarmVerifier,
     };
     use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
     use monad_testutil::swarm::{
@@ -36,7 +37,7 @@ mod test {
 
     #[test]
     fn bsync_timeout_recovery() {
-        let delta = Duration::from_millis(2);
+        let delta = Duration::from_millis(1);
         let state_configs = make_state_configs::<MonadMessageNoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -142,11 +143,15 @@ mod test {
 
         // first node should have caught up
         verify_all(&swarm);
+
+        let verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(30), delta);
+        assert!(verifier.verify(&swarm));
     }
 
     #[test]
     #[should_panic]
     fn lack_of_progress() {
+        let delta = Duration::from_millis(1);
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -159,11 +164,11 @@ mod test {
                 )
             },
             PeerAsyncStateVerify::new,
-            Duration::from_millis(2), // delta
-            0,                        // proposal_tx_limit
-            SeqNum(2000),             // val_set_update_interval
-            Round(50),                // epoch_start_delay
-            majority_threshold,       // state root quorum threshold
+            delta,              // delta
+            0,                  // proposal_tx_limit
+            SeqNum(2000),       // val_set_update_interval
+            Round(50),          // epoch_start_delay
+            majority_threshold, // state root quorum threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -189,9 +194,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators, SeqNum(2000)),
                         vec![
-                            GenericTransformer::Latency(LatencyTransformer::new(
-                                Duration::from_millis(1),
-                            )),
+                            GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
                                 filter_peers.clone(),
                             )),
@@ -204,6 +207,7 @@ mod test {
         );
 
         let mut swarm = swarm_config.build();
+        // step until should panic
         while swarm
             .step_until(&mut ProgressTerminator::new(
                 all_peers
@@ -222,6 +226,8 @@ mod test {
      */
     #[test]
     fn extreme_delay_recovery_with_block_sync() {
+        let delta = Duration::from_millis(1);
+
         let state_configs = make_state_configs::<NoSerSwarm>(
             4, // num_nodes
             ValidatorSetFactory::default,
@@ -234,11 +240,11 @@ mod test {
                 )
             },
             PeerAsyncStateVerify::new,
-            Duration::from_millis(2), // delta
-            0,                        // proposal_tx_limit
-            SeqNum(2000),             // val_set_update_interval
-            Round(50),                // epoch_start_delay
-            majority_threshold,       // state root quorum threshold
+            delta,              // delta
+            0,                  // proposal_tx_limit
+            SeqNum(2000),       // val_set_update_interval
+            Round(50),          // epoch_start_delay
+            majority_threshold, // state root quorum threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -264,9 +270,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators, SeqNum(2000)),
                         vec![
-                            GenericTransformer::Latency(LatencyTransformer::new(
-                                Duration::from_millis(1),
-                            )),
+                            GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
                                 filter_peers.clone(),
                             )),
@@ -290,6 +294,9 @@ mod test {
             .is_some()
         {}
         swarm_ledger_verification(&swarm, 20);
+
+        let verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+        assert!(verifier.verify(&swarm));
     }
 
     #[test_case(4, Duration::from_millis(100),Duration::from_millis(200),Duration::from_secs(4),1; "test 1")]
@@ -306,6 +313,7 @@ mod test {
         black_out_cnt: usize,
         // giving a high delay so state root doesn't trigger
     ) {
+        let delta = Duration::from_millis(1);
         assert!(
             from < to
                 && to < until
@@ -326,11 +334,11 @@ mod test {
                 )
             },
             PeerAsyncStateVerify::new,
-            Duration::from_millis(2), // delta
-            0,                        // proposal_tx_limit
-            SeqNum(2000),             // val_set_update_interval
-            Round(50),                // epoch_start_delay
-            majority_threshold,       // state root quorum threshold
+            delta,              // delta
+            0,                  // proposal_tx_limit
+            SeqNum(2000),       // val_set_update_interval
+            Round(50),          // epoch_start_delay
+            majority_threshold, // state root quorum threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -358,9 +366,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators, SeqNum(2000)),
                         vec![
-                            GenericTransformer::Latency(LatencyTransformer::new(
-                                Duration::from_millis(1),
-                            )),
+                            GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
                                 filter_peers.clone(),
                             )),
@@ -379,5 +385,8 @@ mod test {
             .is_some()
         {}
         swarm_ledger_verification(&swarm, 20);
+
+        let verifier = MockSwarmVerifier::default().tick_range(until, delta);
+        assert!(verifier.verify(&swarm));
     }
 }

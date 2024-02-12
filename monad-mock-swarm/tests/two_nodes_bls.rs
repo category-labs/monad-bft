@@ -8,8 +8,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm_relation::SwarmRelation,
     terminator::UntilTerminator,
+    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::SecpSignature;
@@ -68,6 +71,8 @@ impl SwarmRelation for BLSSwarm {
 fn two_nodes_bls() {
     tracing_subscriber::fmt::init();
 
+    let delta = Duration::from_millis(1);
+
     let state_configs = make_state_configs::<BLSSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
@@ -80,11 +85,11 @@ fn two_nodes_bls() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(2), // delta
-        0,                        // proposal_tx_limit
-        SeqNum(2000),             // val_set_update_interval
-        Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
+        delta,              // delta
+        0,                  // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -102,9 +107,7 @@ fn two_nodes_bls() {
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
-                    vec![GenericTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
-                    ))],
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     seed.try_into().unwrap(),
                 )
             })
@@ -113,8 +116,15 @@ fn two_nodes_bls() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_block(100))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 128);
+    swarm_ledger_verification(&swarm, 98);
+
+    // the calculation is correct with two nodes because NoSerRouterScheduler
+    // always sends the message over the network/transformer, even for it's for
+    // self
+    let verifier =
+        MockSwarmVerifier::default().tick_range(happy_path_tick_by_block(100, delta), delta);
+    assert!(verifier.verify(&swarm));
 }

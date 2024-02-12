@@ -29,7 +29,7 @@ pub fn init() {
 pub fn simulation_make() -> *mut Simulation {
     let config = || {
         let state_configs = make_state_configs::<BytesSwarm>(
-            4, // num_nodes
+            2, // num_nodes
             ValidatorSetFactory::default,
             SimpleRoundRobin::default,
             MockTxPool::default,

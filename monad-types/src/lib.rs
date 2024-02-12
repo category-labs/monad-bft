@@ -141,6 +141,12 @@ pub struct NodeId<P: PubKey> {
     pubkey: P,
 }
 
+impl<P: PubKey> std::fmt::Display for NodeId<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.pubkey, f)
+    }
+}
+
 impl<P: PubKey> NodeId<P> {
     pub fn new(pubkey: P) -> Self {
         Self { pubkey }
@@ -153,7 +159,7 @@ impl<P: PubKey> NodeId<P> {
 
 impl<P: PubKey> std::fmt::Debug for NodeId<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.pubkey.fmt(f)
+        std::fmt::Debug::fmt(&self.pubkey, f)
     }
 }
 

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use monad_consensus_types::{
+    metrics::Metrics,
     quorum_certificate::QuorumCertificate,
     signature_collection::{
         SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
@@ -254,10 +255,12 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_tc(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
+        metrics: &mut Metrics,
     ) -> Option<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
             return None;
         }
+        metrics.consensus_events.enter_new_round_tc += 1;
         let round = tc.round;
         self.last_round_tc = Some(tc.clone());
         Some(self.enter_round(round + Round(1)))
@@ -270,10 +273,12 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        metrics: &mut Metrics,
     ) -> Option<PacemakerCommand<SCT>> {
         if qc.get_round() < self.current_round {
             return None;
         }
+        metrics.consensus_events.enter_new_round_qc += 1;
         self.last_round_tc = None;
         Some(self.enter_round(qc.get_round() + Round(1)))
     }

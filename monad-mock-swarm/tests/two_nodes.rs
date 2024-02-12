@@ -15,8 +15,12 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    fetch_metrics, mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator, verifier::MockSwarmVerifier,
+    fetch_metrics,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm_relation::NoSerSwarm,
+    terminator::UntilTerminator,
+    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_quic::QuicRouterSchedulerConfig;
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
@@ -34,6 +38,7 @@ use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
 
 #[test]
 fn two_nodes_noser() {
+    let delta = Duration::from_millis(100);
     let state_configs = make_state_configs::<NoSerSwarm>(
         2, // num_nodes
         ValidatorSetFactory::default,
@@ -46,11 +51,11 @@ fn two_nodes_noser() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(2), // delta
-        10,                       // proposal_tx_limit
-        SeqNum(2000),             // val_set_update_interval
-        Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
+        delta,              // delta
+        10,                 // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -68,9 +73,7 @@ fn two_nodes_noser() {
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
-                    vec![GenericTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
-                    ))],
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     seed.try_into().unwrap(),
                 )
             })
@@ -79,13 +82,16 @@ fn two_nodes_noser() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_block(1026))
         .is_some()
     {}
 
     let node_ids = swarm.states().keys().copied().collect_vec();
+    // the calculation is correct with two nodes because NoSerRouterScheduler
+    // always sends the message over the network/transformer, even for it's for
+    // self. Otherwise the time is shorter with two nodes, like QUIC test
     let verifier = MockSwarmVerifier::default()
-        .tick_exact(Duration::from_secs(10))
+        .tick_range(happy_path_tick_by_block(1026, delta), delta)
         .metric_exact(
             node_ids,
             fetch_metrics!(consensus_events.commit_empty_block),
@@ -97,8 +103,9 @@ fn two_nodes_noser() {
 }
 
 #[test]
-fn two_nodes_quic() {
+fn two_nodes_quic_latency() {
     let zero_instant = Instant::now();
+    let delta = Duration::from_millis(100);
 
     let state_configs = make_state_configs::<QuicSwarm>(
         2, // num_nodes
@@ -112,11 +119,11 @@ fn two_nodes_quic() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(10), // delta
-        150,                       // proposal_tx_limit
-        SeqNum(2000),              // val_set_update_interval
-        Round(50),                 // epoch_start_delay
-        majority_threshold,        // state root quorum threshold
+        delta,              // delta
+        150,                // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -143,14 +150,12 @@ fn two_nodes_quic() {
                             me,
                         }
                         .build(),
-                        Duration::from_millis(2),
+                        delta,
                         1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
-                    vec![BytesTransformer::Latency(LatencyTransformer::new(
-                        Duration::from_millis(1),
-                    ))],
+                    vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
                     seed.try_into().unwrap(),
                 )
             })
@@ -159,10 +164,23 @@ fn two_nodes_quic() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_block(1000))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 256);
+    swarm_ledger_verification(&swarm, 998);
+
+    // 1 extra round trip because of QUIC handshake two nodes with QUIC router
+    // scheduler finishes faster than normal happy path because
+    // QuicRouterScheduler immediately emit message to self when broadcasting.
+    // Every round takes 1 delta instead of 2 delta
+    //
+    // Being more lenient here because the QUICRouterScheduler and 2 nodes case
+    // isn't particular interesting
+    let verifier = MockSwarmVerifier::default().tick_range(
+        happy_path_tick_by_block(1000, delta) / 2 + 2 * delta,
+        delta * 10,
+    );
+    assert!(verifier.verify(&swarm));
 }
 
 #[test]
@@ -181,6 +199,7 @@ fn two_nodes_quic_bw() {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set global subscriber");
 
     let zero_instant = Instant::now();
+    let delta = Duration::from_millis(1);
 
     let state_configs = make_state_configs::<QuicSwarm>(
         2, // num_nodes
@@ -194,11 +213,11 @@ fn two_nodes_quic_bw() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(1000), // delta
-        100,                         // proposal_tx_limit
-        SeqNum(2000),                // val_set_update_interval
-        Round(50),                   // epoch_start_delay
-        majority_threshold,          // state root quorum threshold
+        delta,              // delta
+        100,                // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -225,16 +244,14 @@ fn two_nodes_quic_bw() {
                             me,
                         }
                         .build(),
-                        Duration::from_millis(2),
+                        delta,
                         1000,
                     )
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![
-                        BytesTransformer::Latency(LatencyTransformer::new(Duration::from_millis(
-                            1,
-                        ))),
-                        BytesTransformer::Bw(BwTransformer::new(8, Duration::from_secs(1))),
+                        BytesTransformer::Latency(LatencyTransformer::new(delta)),
+                        BytesTransformer::Bw(BwTransformer::new(8, Duration::from_millis(10))),
                     ],
                     seed.try_into().unwrap(),
                 )
@@ -244,10 +261,16 @@ fn two_nodes_quic_bw() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(10)))
+        .step_until(&mut UntilTerminator::new().until_block(1000))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 100);
+    swarm_ledger_verification(&swarm, 998);
+
+    // this is empirical, don't want to spend too much time figuring out a
+    // degenerative case
+    let verifier =
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(5), Duration::from_secs(1));
+    assert!(verifier.verify(&swarm));
 
     let dropped_msg = counter_get(counter, None, "bwtransformer_dropped_msg");
     assert!(dropped_msg.is_some());

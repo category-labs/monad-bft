@@ -41,6 +41,8 @@ pub struct ConsensusEvents {
     pub failed_verify_randao_reveal_sig: u64,
     pub commit_empty_block: u64,
     pub state_root_update: u64,
+    pub enter_new_round_qc: u64,
+    pub enter_new_round_tc: u64,
 }
 
 #[derive(Debug, Default)]

@@ -17,6 +17,12 @@ pub const UNIQUE_ID: usize = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ID<PT: PubKey>(usize, NodeId<PT>);
 
+impl<PT: PubKey> std::fmt::Display for ID<PT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.1, f)
+    }
+}
+
 impl<PT: PubKey> ID<PT> {
     pub fn new(peer_id: NodeId<PT>) -> Self {
         Self(UNIQUE_ID, peer_id)
@@ -151,12 +157,12 @@ impl<PT: PubKey, M> Transformer<M> for XorLatencyTransformer<PT> {
 #[derive(Clone, Debug)]
 pub struct RandLatencyTransformer<PT: PubKey> {
     gen: ChaChaRng,
-    max_latency: u64,
+    max_latency: Duration,
     _phantom: PhantomData<PT>,
 }
 
 impl<PT: PubKey> RandLatencyTransformer<PT> {
-    pub fn new(seed: u64, max_latency: u64) -> Self {
+    pub fn new(seed: u64, max_latency: Duration) -> Self {
         RandLatencyTransformer {
             gen: ChaChaRng::seed_from_u64(seed),
             max_latency,
@@ -165,9 +171,9 @@ impl<PT: PubKey> RandLatencyTransformer<PT> {
     }
 
     pub fn next_latency(&mut self) -> Duration {
-        let s = self.gen.gen_range(1..self.max_latency);
+        let s = self.gen.gen_range(1..self.max_latency.as_millis());
 
-        Duration::from_millis(s)
+        Duration::from_millis(s as u64)
     }
 }
 

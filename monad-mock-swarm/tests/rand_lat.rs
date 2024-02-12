@@ -7,8 +7,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm_relation::NoSerSwarm,
     terminator::UntilTerminator,
+    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -55,11 +58,12 @@ fn nodes_with_random_latency_cron() {
 #[test_case(9; "seed9")]
 #[test_case(10; "seed10")]
 #[test_case(14710580201381303742; "seed11")]
-fn nodes_with_random_latency(seed: u64) {
+fn nodes_with_random_latency(latency_seed: u64) {
     use std::time::Duration;
 
     use monad_transformer::RandLatencyTransformer;
 
+    let delta = Duration::from_millis(200);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -74,11 +78,11 @@ fn nodes_with_random_latency(seed: u64) {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(250), // delta
-        0,                          // proposal_tx_limit
-        SeqNum(2000),               // val_set_update_interval
-        Round(50),                  // epoch_start_delay
-        majority_threshold,         // state root quorum threshold
+        delta,              // delta
+        0,                  // proposal_tx_limit
+        SeqNum(3000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -95,9 +99,9 @@ fn nodes_with_random_latency(seed: u64) {
                     state_builder,
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
-                    MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    MockStateRootHashNop::new(validators, SeqNum(3000)),
                     vec![GenericTransformer::RandLatency(
-                        RandLatencyTransformer::new(seed.try_into().unwrap(), 330),
+                        RandLatencyTransformer::new(latency_seed, delta),
                     )],
                     seed.try_into().unwrap(),
                 )
@@ -107,8 +111,16 @@ fn nodes_with_random_latency(seed: u64) {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(60 * 60)))
+        .step_until(&mut UntilTerminator::new().until_block(2000))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 2048);
+    swarm_ledger_verification(&swarm, 1998);
+    let max_tick = happy_path_tick_by_block(2000, delta);
+    println!(
+        "tick {:?} max tick {:?}",
+        swarm.peek_tick().unwrap(),
+        max_tick
+    );
+    let verifier = MockSwarmVerifier::default().tick_range(max_tick / 2, max_tick / 2);
+    assert!(verifier.verify(&swarm));
 }

@@ -48,6 +48,7 @@ fn all_messages_delayed_cron() {
         Err(_e) => panic!("RANDOM_TEST_SEED is not set"),
     };
 }
+
 #[test_case(TransformerReplayOrder::Forward; "in order")]
 #[test_case(TransformerReplayOrder::Reverse; "reverse order")]
 #[test_case(TransformerReplayOrder::Random(1); "random seed 1")]
@@ -56,6 +57,8 @@ fn all_messages_delayed_cron() {
 #[test_case(TransformerReplayOrder::Random(4); "random seed 4")]
 #[test_case(TransformerReplayOrder::Random(5); "random seed 5")]
 fn all_messages_delayed(direction: TransformerReplayOrder) {
+    // tracing_subscriber::fmt::init();
+    let delta = Duration::from_millis(1);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -64,17 +67,20 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         || MockValidator,
         || {
             StateRoot::new(
-                // due to the burst behavior of replay-transformer, its okay to have delay as 1
-                // TODO-4?: Make Replay Transformer's stored message not burst within the same Duration
+                // due to the burst behavior of replay-transformer, its okay to
+                // have delay as 1
+                //
+                // TODO-4?: Make Replay Transformer's stored message not burst
+                // within the same Duration
                 SeqNum(1), // state_root_delay
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(2), // delta
-        0,                        // proposal_tx_limit
-        SeqNum(2000),             // val_set_update_interval
-        Round(50),                // epoch_start_delay
-        majority_threshold,       // state root quorum threshold
+        delta,              // delta
+        10,                 // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -86,7 +92,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     let mut filter_peers = HashSet::new();
     filter_peers.insert(first_node);
 
-    println!("delayed node ID: {:?}", first_node);
+    println!("delayed node ID: {}", first_node);
 
     let swarm_config = SwarmBuilder::<NoSerSwarm>(
         state_configs
@@ -101,9 +107,7 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![
-                        GenericTransformer::Latency(LatencyTransformer::new(
-                            Duration::from_millis(1),
-                        )),
+                        GenericTransformer::Latency(LatencyTransformer::new(delta)),
                         GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),
                         GenericTransformer::Replay(ReplayTransformer::new(
                             Duration::from_millis(500),
@@ -117,9 +121,33 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     );
 
     let mut swarm = swarm_config.build();
+    // run the swarm to before the replay and record the longest ledger length
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(1)))
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(499)))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 20);
+
+    let longest_ledger = swarm
+        .states()
+        .values()
+        .map(|s| s.executor.ledger().get_blocks().len())
+        .max()
+        .unwrap();
+
+    while swarm
+        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(1000)))
+        .is_some()
+    {}
+
+    // TODO: assert block sync is not triggered too many times the replaying
+    // node might call block sync when the events are replayed out of order. we
+    // want to assert that it used the filtered messages to recover, rather than
+    // asking blocks from peers
+
+    // validators should produce the same number of blocks as a working swarm
+    // after replay
+    //
+    // the reverse function of happy_path_tick_by_block
+    let expected_blocks = (Duration::from_millis(500).as_millis() / delta.as_millis() - 1) / 2 - 2;
+    swarm_ledger_verification(&swarm, longest_ledger + expected_blocks as usize);
 }

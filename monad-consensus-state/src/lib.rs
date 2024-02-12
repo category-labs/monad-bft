@@ -491,7 +491,7 @@ where
             metrics.consensus_events.remote_timeout_msg_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc)
+                .advance_round_tc(last_round_tc, metrics)
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
@@ -526,14 +526,18 @@ where
         if let Some(tc) = tc {
             debug!("Created TC: {:?}", tc);
             metrics.consensus_events.created_tc += 1;
-            let advance_round_cmds = self.pacemaker.advance_round_tc(&tc).into_iter().map(|cmd| {
-                ConsensusCommand::from_pacemaker_command(
-                    &self.keypair,
-                    &self.cert_keypair,
-                    version,
-                    cmd,
-                )
-            });
+            let advance_round_cmds = self
+                .pacemaker
+                .advance_round_tc(&tc, metrics)
+                .into_iter()
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        &self.keypair,
+                        &self.cert_keypair,
+                        version,
+                        cmd,
+                    )
+                });
             cmds.extend(advance_round_cmds);
 
             if self.nodeid
@@ -702,7 +706,7 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc, epoch_manager, metrics));
 
-        cmds.extend(self.pacemaker.advance_round_qc(qc).map(|cmd| {
+        cmds.extend(self.pacemaker.advance_round_qc(qc, metrics).map(|cmd| {
             ConsensusCommand::from_pacemaker_command(
                 &self.keypair,
                 &self.cert_keypair,
@@ -938,7 +942,7 @@ where
             metrics.consensus_events.proposal_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc)
+                .advance_round_tc(last_round_tc, metrics)
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,

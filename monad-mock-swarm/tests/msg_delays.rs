@@ -7,8 +7,11 @@ use monad_consensus_types::{
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm_relation::NoSerSwarm,
     terminator::UntilTerminator,
+    verifier::{happy_path_tick_by_block, MockSwarmVerifier},
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -22,6 +25,7 @@ use monad_wal::mock::MockWALoggerConfig;
 fn two_nodes() {
     tracing_subscriber::fmt::init();
 
+    let delta = Duration::from_millis(u8::MAX as u64);
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -34,11 +38,11 @@ fn two_nodes() {
             )
         },
         PeerAsyncStateVerify::new,
-        Duration::from_millis(101), // delta
-        0,                          // proposal_tx_limit
-        SeqNum(2000),               // val_set_update_interval
-        Round(50),                  // epoch_start_delay
-        majority_threshold,         // state root quorum threshold
+        delta,              // delta
+        0,                  // proposal_tx_limit
+        SeqNum(2000),       // val_set_update_interval
+        Round(50),          // epoch_start_delay
+        majority_threshold, // state root quorum threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -57,7 +61,7 @@ fn two_nodes() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
-                        Duration::from_millis(u8::MAX as u64),
+                        delta,
                     ))],
                     seed.try_into().unwrap(),
                 )
@@ -67,8 +71,14 @@ fn two_nodes() {
 
     let mut swarm = swarm_config.build();
     while swarm
-        .step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(60)))
+        .step_until(&mut UntilTerminator::new().until_block(100))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 40);
+    swarm_ledger_verification(&swarm, 98);
+
+    // Assert it takes less than the max time because actual latency is less
+    // than theoretical max because of XOR
+    let max_time = happy_path_tick_by_block(100, delta);
+    let verifier = MockSwarmVerifier::default().tick_range(max_time / 2, max_time / 2);
+    assert!(verifier.verify(&swarm));
 }
