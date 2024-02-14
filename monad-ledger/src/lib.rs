@@ -1,9 +1,15 @@
-use std::{fs::File, io::Write, marker::PhantomData, ops::Deref, path::PathBuf};
+use std::{
+    fs::{self, File},
+    io::{ErrorKind, Write},
+    marker::PhantomData,
+    ops::Deref,
+    path::PathBuf,
+};
 
 use alloy_primitives::{keccak256, Bloom, Bytes, FixedBytes, U256};
 use alloy_rlp::Encodable;
 use monad_consensus_types::{
-    block::Block as MonadBlock,
+    block::{Block as MonadBlock, BlockType},
     payload::{ExecutionArtifacts, FullTransactionList},
     signature_collection::SignatureCollection,
 };
@@ -11,6 +17,7 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_eth_tx::EthFullTransactionList;
 use monad_executor::Executor;
 use monad_executor_glue::ExecutionLedgerCommand;
+use monad_types::SeqNum;
 use reth_primitives::{BlockBody, Header};
 
 /// A ledger for committed Ethereum blocks
@@ -68,6 +75,69 @@ where
                 ExecutionLedgerCommand::LedgerCommit(full_blocks) => {
                     for full_block in full_blocks {
                         self.file.write_all(&encode_full_block(full_block)).unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A ledger for committed Ethereum blocks
+/// Blocks are RLP encoded and written to their own individual file, named by the block
+/// number
+pub struct MonadBlockFileLedger<SCT> {
+    dir_path: PathBuf,
+    phantom: PhantomData<SCT>,
+}
+
+impl<SCT> MonadBlockFileLedger<SCT>
+where
+    SCT: SignatureCollection + Clone,
+{
+    pub fn new(dir_path: PathBuf) -> Self {
+        match fs::create_dir(&dir_path) {
+            Ok(_) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(e) => panic!("{}", e),
+        }
+        Self {
+            dir_path,
+            phantom: PhantomData,
+        }
+    }
+
+    fn write_block(&self, seq_num: SeqNum, buf: &[u8]) -> std::io::Result<()> {
+        let mut file_path = PathBuf::from(&self.dir_path);
+        file_path.push(format!("{}", seq_num.0));
+
+        let mut f = File::create(file_path).unwrap();
+        f.write_all(buf).unwrap();
+
+        Ok(())
+    }
+}
+
+impl<SCT> Executor for MonadBlockFileLedger<SCT>
+where
+    SCT: SignatureCollection + Clone,
+{
+    type Command = ExecutionLedgerCommand<SCT>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            ExecutionLedgerCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        for command in commands {
+            match command {
+                ExecutionLedgerCommand::LedgerCommit(full_blocks) => {
+                    for full_block in full_blocks {
+                        self.write_block(full_block.get_seq_num(), &encode_full_block(full_block))
+                            .unwrap();
                     }
                 }
             }

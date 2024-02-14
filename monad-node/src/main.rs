@@ -18,7 +18,7 @@ use monad_executor::Executor;
 use monad_executor_glue::Message;
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
-use monad_ledger::MonadFileLedger;
+use monad_ledger::MonadBlockFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
@@ -111,7 +111,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         router,
         timer: TokioTimer::default(),
         ledger: MockLedger::default(),
-        execution_ledger: MonadFileLedger::new(node_state.execution_ledger_path),
+        execution_ledger: MonadBlockFileLedger::new(node_state.execution_ledger_path),
         checkpoint: MockCheckpoint::default(),
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 100).expect("uds bind failed"),
