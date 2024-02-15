@@ -27,7 +27,7 @@ struct AggregationTree<PT: PubKey> {
 
 impl<PT: PubKey> AggregationTree<PT> {
     fn new(
-        sigs: &Vec<(NodeId<PT>, BlsSignature)>,
+        sigs: &[(NodeId<PT>, BlsSignature)],
         validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
         validator_index: &HashMap<NodeId<PT>, usize>,
     ) -> Self {

@@ -195,7 +195,7 @@ async fn main() {
     .unwrap();
 }
 
-fn testnet<ST, SCT>(addresses: &Vec<String>, args: &TestgroundArgs) -> Vec<Config<ST, SCT>>
+fn testnet<ST, SCT>(addresses: &[String], args: &TestgroundArgs) -> Vec<Config<ST, SCT>>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,

@@ -28,7 +28,7 @@ pub struct CipherModule {
 }
 
 impl CipherModule {
-    pub fn decrypt(&self, decryption_key: &Vec<u8>) -> Vec<u8> {
+    pub fn decrypt(&self, decryption_key: &[u8]) -> Vec<u8> {
         assert!(decryption_key.len() == 32);
 
         match &self.params {
