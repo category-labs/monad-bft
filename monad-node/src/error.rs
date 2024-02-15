@@ -39,6 +39,9 @@ pub enum NodeSetupError {
 
     #[error(transparent)]
     TraceError(#[from] opentelemetry_api::trace::TraceError),
+
+    #[error(transparent)]
+    MetricsError(#[from] opentelemetry_api::metrics::MetricsError),
 }
 
 impl NodeSetupError {
@@ -54,6 +57,7 @@ impl NodeSetupError {
             NodeSetupError::SignatureCollectionError(_) => ErrorKind::ValueValidation,
             NodeSetupError::TomlDeError(_) => ErrorKind::ValueValidation,
             NodeSetupError::TraceError(_) => ErrorKind::ValueValidation,
+            NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
         }
     }
 }

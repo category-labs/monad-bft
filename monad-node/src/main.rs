@@ -15,7 +15,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
-use monad_executor_glue::Message;
+use monad_executor_glue::{Message, MetricsCommand, MonadEvent};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
@@ -25,8 +25,8 @@ use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMe
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
-    metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
-    timer::TokioTimer,
+    parent::ParentExecutor, state_root_hash::MockStateRootHashNop, timer::TokioTimer, BoxUpdater,
+    Updater,
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
@@ -41,6 +41,7 @@ mod config;
 
 mod error;
 use error::NodeSetupError;
+use monad_updaters::metrics::{NopMetricsExecutor, OpenTelemetryExecutor};
 
 mod state;
 use state::NodeState;
@@ -108,6 +109,16 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     );
     let val_set_update_interval = SeqNum(2000);
 
+    let metrics_executor: BoxUpdater<
+        'static,
+        MetricsCommand,
+        MonadEvent<SignatureType, SignatureCollectionType>,
+    > = if let Some(record_metrics_interval) = node_state.record_metrics_interval {
+        Updater::boxed(OpenTelemetryExecutor::new(record_metrics_interval))
+    } else {
+        Updater::boxed(NopMetricsExecutor::default())
+    };
+
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
@@ -117,7 +128,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        metrics: NopMetricsExecutor::default(),
+        metrics: metrics_executor,
     };
 
     let logger_config = WALoggerConfig::new(node_state.wal_path.clone(), true);

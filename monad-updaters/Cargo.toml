@@ -25,6 +25,11 @@ alloy-rlp = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "time"], optional = true }
 tracing = { workspace = true }
+opentelemetry = { workspace = true, features = ["rt-tokio"] }
+opentelemetry_api = { workspace = true, features = ["metrics"] }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "metrics"] }
+opentelemetry-stdout = { version = "0.1.0", features = ["metrics"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }

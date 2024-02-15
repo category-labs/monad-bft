@@ -5,8 +5,11 @@ use clap::{error::ErrorKind, FromArgMatches};
 use log::info;
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
-use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider};
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry::{
+    sdk::metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector},
+    trace::{Span, TraceContextExt, Tracer, TracerProvider},
+};
+use opentelemetry_otlp::{MetricsExporter, WithExportConfig};
 use zeroize::Zeroize;
 
 use crate::{
@@ -100,6 +103,18 @@ fn load_bls12_381_keypair(path: &PathBuf) -> Result<BlsKeyPair, NodeSetupError> 
         kind: ErrorKind::ValueValidation,
         msg: "bls secret must be base64-encoded 32 bytes".to_owned(),
     })
+}
+
+fn build_otel_metrics_exporter(http_endpoint: String) -> Result<MetricsExporter, NodeSetupError> {
+    Ok(opentelemetry_otlp::MetricsExporterBuilder::Tonic(
+        opentelemetry_otlp::new_exporter()
+            .tonic()
+            .with_endpoint(http_endpoint),
+    )
+    .build_metrics_exporter(
+        Box::new(DefaultTemporalitySelector::new()),
+        Box::new(DefaultAggregationSelector::new()),
+    )?)
 }
 
 fn build_otel_context(otel_endpoint: String) -> Result<opentelemetry::Context, NodeSetupError> {
