@@ -24,7 +24,7 @@ pub enum ChecksumError {
 impl ChecksumModule {
     pub fn verify_checksum(
         &self,
-        decryption_key: &Vec<u8>,
+        decryption_key: &[u8],
         cipher_message: &Vec<u8>,
     ) -> Result<(), ChecksumError> {
         assert!(decryption_key.len() == 32);
