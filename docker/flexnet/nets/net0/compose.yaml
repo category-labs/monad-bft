@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  build_image0:
+    build: 
+      context: ${FLEXNET_IMAGE_ROOT}/image0
+    image: image0:latest
+
+  node0_us:
+    image: image0:latest
+    volumes:
+      - ./node0:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "-c", "bash /monad/scripts/tc.sh ; tail -f /dev/null" ]
+
+
+  node1_eu:
+    image: image0:latest
+    volumes:
+      - ./node1:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "-c", "bash /monad/scripts/tc.sh ; tail -f /dev/null" ]
+
+
+
+  node2_eu:
+    image: image0:latest
+    volumes:
+      - ./node2:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "-c", "bash /monad/scripts/tc.sh ; tail -f /dev/null" ]
+
+
+networks:
+  default:
+    driver: bridge
+    
