@@ -28,6 +28,8 @@ monad-types = { path = "../monad-types" }
 
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
+heed = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",
