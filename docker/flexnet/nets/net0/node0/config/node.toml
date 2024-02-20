@@ -1,0 +1,25 @@
+
+#########################################################
+#                                                       #
+#        WARNING: THIS FILE SHOULD NEVER BE USED        #
+#              IN PRODUCTION ENVIRONMENTS!              #
+#                                                       #
+#########################################################
+
+beneficiary = "0x0000000000000000000000000000000000000000"
+
+[[bootstrap.peers]]
+address = "node1_eu:8888"
+mempool_address = "node1_eu:8889"
+secp256k1_pubkey = "0x030bb8d132df4964689bd80ff107725d726f5a89e2d7f9b6ff7e70bf2c5d9b285e"
+
+[[bootstrap.peers]]
+address = "node2_eu:8888"
+mempool_address = "node2_eu:8889"
+secp256k1_pubkey = "0x03521142713b444ebab11ade695747e1cad3c6a11f5a5b451f99419b1f88d4932f"
+
+[network]
+bind_address_host = "0.0.0.0"
+bind_address_port = 8888
+max_rtt_ms = 300
+max_mbps = 1000

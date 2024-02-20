@@ -3,36 +3,45 @@ version: '3.8'
 services:
   build_image0:
     build: 
-      context: ${FLEXNET_IMAGE_ROOT}/image0
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
     image: image0:latest
+
 
   node0_us:
     image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
     volumes:
       - ./node0:/monad
     cap_add:
       - NET_ADMIN
-    entrypoint: ["bash", "-c", "bash /monad/scripts/tc.sh ; tail -f /dev/null" ]
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
 
 
   node1_eu:
     image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
     volumes:
       - ./node1:/monad
     cap_add:
       - NET_ADMIN
-    entrypoint: ["bash", "-c", "bash /monad/scripts/tc.sh ; tail -f /dev/null" ]
-
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
 
 
   node2_eu:
     image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
     volumes:
       - ./node2:/monad
     cap_add:
       - NET_ADMIN
-    entrypoint: ["bash", "-c", "bash /monad/scripts/tc.sh ; tail -f /dev/null" ]
-
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
 
 networks:
   default:

@@ -1,0 +1,22 @@
+
+#########################################################
+#                                                       #
+#        WARNING: THIS FILE SHOULD NEVER BE USED        #
+#              IN PRODUCTION ENVIRONMENTS!              #
+#                                                       #
+#########################################################
+
+[[validators]]
+secp256k1_pubkey = "0x02b0b53e1c8132629cac9dc52357f3867576a29fba4fc686501caa8b7c21992612"
+bls12_381_pubkey = "0x914261427b52f199f18c2df61c4ffcb9a4580ce4e833a9a8abb87f1883c73c085f8fc0311fcc4ec3e2ba212a3f967872"
+stake = 1
+
+[[validators]]
+secp256k1_pubkey = "0x030bb8d132df4964689bd80ff107725d726f5a89e2d7f9b6ff7e70bf2c5d9b285e"
+bls12_381_pubkey = "0x90f82520cfcba8393f9cf6c1c00dc9c586381d3ccbb117f37bf64451e80c09a2e0f7cc55e849755f13a06896b426ba46"
+stake = 1
+
+[[validators]]
+secp256k1_pubkey = "0x03521142713b444ebab11ade695747e1cad3c6a11f5a5b451f99419b1f88d4932f"
+bls12_381_pubkey = "0xb227d40538254b2998a5f8d80bf4c805cebf8667940d390e76b7677efdb3adbbc0df99e8655ea6e9b063ef90e9e4be51"
+stake = 1

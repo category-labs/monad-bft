@@ -1,3 +1,6 @@
 [submodule "monad-triedb/triedb-driver/monad-trie"]
 	path = monad-triedb/triedb-driver/monad-trie
 	url = git@github.com:monad-crypto/monad-trie
+[submodule "docker/flexnet/common/blst"]
+	path = docker/flexnet/common/blst
+	url = https://github.com/supranational/blst.git

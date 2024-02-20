@@ -3,7 +3,7 @@
 set -x
 # Define the function to show usage
 usage() {
-    echo "Usage: $0 --output-dir <dir_path> --net-dir <net_path> --image-root <image_root>"
+    echo "Usage: $0 --output-dir <dir_path> --net-dir <net_path> --image-root <image_root> --monad-bft-root <monad_bft_root>"
     exit 1
 }
 
@@ -12,7 +12,12 @@ usage() {
 output_dir=""
 net_dir=""
 image_root=""
+monad_bft_root=""
 
+
+if [ "$#" -eq 0 ]; then
+    usage; exit 1
+fi
 
 # Extract options and their arguments into variables
 while true; do
@@ -31,6 +36,11 @@ while true; do
             case "$2" in 
                 "") echo "$1 must have a value"; shift 1 ;;
                 *)  image_root="$2"; shift 2 ;;
+            esac ;;
+        --monad-bft-root)
+            case "$2" in
+                "") echo "$1 must have a value"; shift 1 ;;
+                *)  monad_bft_root="$2"; shift 2;;
             esac ;;
         "") shift; break ;;
         *) echo "Error parsing $1, check arguments before it"; usage; exit 1 ;;
@@ -62,6 +72,14 @@ elif [ ! -d "$image_root" ]; then
     exit 1
 fi
 
+if [ -z "$monad_bft_root" ]; then
+    echo "Error: --monad-bft-root is required."
+    usage
+elif [ ! -d "$monad_bft_root" ]; then
+    echo "Error: --monad-bft-root is not a directory."
+    exit 1
+fi
+
 # Create node volume directory
 net_name=$(basename $(realpath "$net_dir"))
 rand_hex=$(od -vAn -N8 -tx1 /dev/urandom | tr -d " \n" | cut -c 1-16)
@@ -70,18 +88,20 @@ mkdir $vol_root
 echo "Root of node volumes created at: $vol_root"
 
 cp -r $net_dir/* $vol_root
-# Set FLEXNET_IMAGE_ROOT environment variable
+# Set environment variables
 export FLEXNET_IMAGE_ROOT=$(realpath "$image_root")
+export MONAD_BFT_ROOT=$(realpath "$monad_bft_root")
+export HOST_GID=$(id -g)
+export HOST_UID=$(id -u)
 
 pushd $vol_root
 
 build_services=$(docker compose config --services | grep build_image)
 node_services=$(docker compose config --services | grep node)
-docker compose build $build_services
+docker compose build $build_services &&
 docker compose up --detach $node_services
-sleep 1
-# docker compose down $node_services
-
+sleep 30
+docker compose down $node_services
 
 # return to starting dir
 popd
