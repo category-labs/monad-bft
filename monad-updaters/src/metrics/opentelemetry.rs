@@ -1,37 +1,38 @@
 use std::{
     collections::HashMap,
     marker::PhantomData,
+    ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
 };
 
 use futures::Stream;
-use monad_consensus_types::metrics::Metrics;
+use monad_consensus_types::{metrics::Metrics, signature_collection::SignatureCollection};
+use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_executor::Executor;
-use monad_executor_glue::MetricsCommand;
-use monad_types::TimeoutVariant;
+use monad_executor_glue::{MetricsCommand, MetricsEvent, MonadEvent};
 use opentelemetry_api::{
     metrics::{Counter, Meter, MeterProvider as _},
     KeyValue,
 };
+use opentelemetry_otlp::{ExportConfig, WithExportConfig};
 use opentelemetry_sdk::{
-    metrics::{data::ResourceMetrics, exporter::PushMetricsExporter, ManualReader, MeterProvider},
+    metrics::{data::ResourceMetrics, MeterProvider},
     Resource,
 };
-use opentelemetry_stdout::MetricsExporter;
 use tokio::task::{AbortHandle, JoinSet};
 
 /// A OpenTelemetry executor for recording metrics
-pub struct OpenTelemetryExecutor<E> {
+pub struct OpenTelemetryExecutor<ST, SCT> {
+    interval: Duration,
     meter_provider: MeterProvider,
-    exporter: MetricsExporter,
     meter: Meter,
     counters: HashMap<&'static str, Counter<u64>>,
-    timers: JoinSet<Option<E>>,
-    aborts: HashMap<TimeoutVariant, AbortHandle>,
+    timers: JoinSet<Option<MetricsEvent>>,
+    handle: Option<AbortHandle>,
     waker: Option<Waker>,
-    _phantom: PhantomData<E>,
+    phantom: PhantomData<(ST, SCT)>,
 }
 
 const COUNTERS: [&str; 46] = [
@@ -82,38 +83,47 @@ const COUNTERS: [&str; 46] = [
     "blocksync_response_unexpected",
     "blocksync_request",
 ];
+fn foo() {}
 
-impl<E> OpenTelemetryExecutor<E> {
+impl<ST, SCT> OpenTelemetryExecutor<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection,
+{
     pub fn new(interval: Duration) -> Self {
-        let exporter = opentelemetry_stdout::MetricsExporterBuilder::default()
-            .with_encoder(|writer, data| {
-                serde_json::to_writer_pretty(writer, &data).unwrap();
-                Ok(())
-            })
-            .build();
-        let reader = ManualReader::builder().build();
-
-        let meter_provider = MeterProvider::builder()
-            .with_reader(reader)
+        let export_config = ExportConfig {
+            endpoint: "http://localhost:4317".to_string(),
+            ..ExportConfig::default()
+        };
+        let meter_provider = opentelemetry_otlp::new_pipeline()
+            .metrics(opentelemetry_sdk::runtime::Tokio)
+            .with_exporter(
+                opentelemetry_otlp::new_exporter()
+                    .tonic()
+                    .with_export_config(export_config),
+            )
             .with_resource(Resource::new(vec![KeyValue::new(
-                "service.name",
-                "metrics-basic-example",
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+                "basic-otlp-metrics-example",
             )]))
-            .build();
+            .build()
+            .unwrap();
+
         let meter = meter_provider.meter("node");
         let counters = COUNTERS
             .into_iter()
             .map(|counter_name| (counter_name, meter.u64_counter(counter_name).init()))
             .collect();
+
         Self {
+            interval,
             meter_provider,
-            exporter,
             meter,
             counters,
             timers: Default::default(),
-            aborts: Default::default(),
+            handle: None,
             waker: None,
-            _phantom: PhantomData,
+            phantom: PhantomData,
         }
     }
 
@@ -262,33 +272,73 @@ impl<E> OpenTelemetryExecutor<E> {
     }
 }
 
-impl<E> Executor for OpenTelemetryExecutor<E> {
+impl<ST, SCT> Executor for OpenTelemetryExecutor<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection,
+{
     type Command = MetricsCommand;
 
     fn replay(&mut self, mut _commands: Vec<Self::Command>) {}
 
     fn exec(&mut self, commands: Vec<Self::Command>) {
-        for cmd in commands {
-            match cmd {
-                MetricsCommand::RecordMetrics(metrics) => {
-                    self.record_metrics(&metrics);
-
-                    let mut rm = ResourceMetrics {
-                        resource: Default::default(),
-                        scope_metrics: vec![],
+        let mut wake = false;
+        for command in commands {
+            match command {
+                MetricsCommand::RecordMetrics(record_metrics) => {
+                    wake = true;
+                    let interval = self.interval;
+                    let future = async move {
+                        let mut rm = ResourceMetrics {
+                            resource: Default::default(),
+                            scope_metrics: vec![],
+                        };
+                        tokio::time::sleep(interval).await;
+                        Some(MetricsEvent::Timeout)
                     };
-                    let fut = self.exporter.export(&mut rm);
-
+                    let handle = &self.timers.spawn(future);
+                    // let old_handle = self.handle.replace(self.timers.spawn(future));
+                    // if let Some(mut old_handle) = self.handle.take() {
+                    //     old_handle.abort();
+                    // }
+                    // self.handle = Some(handle);
                 }
+            }
+        }
+        if wake {
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
             }
         }
     }
 }
 
-impl<E> Stream for OpenTelemetryExecutor<E> {
-    type Item = E;
+impl<ST, SCT> Stream for OpenTelemetryExecutor<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection,
+{
+    type Item = MonadEvent<ST, SCT>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut _timer_poll_span = tracing::info_span!("timer_poll_span").entered();
+
+        let this = self.deref_mut();
+
+        // its possible to get Poll::Ready(None) because the join_set might be empty
+        while let Poll::Ready(Some(poll_result)) = this.timers.poll_join_next(cx) {
+            match poll_result {
+                Ok(e) => {
+                    return Poll::Ready(e.and_then(|e| Some(MonadEvent::MetricsEvent(e))));
+                }
+                Err(join_error) => {
+                    // only case where this happen is when task is aborted
+                    assert!(join_error.is_cancelled());
+                }
+            };
+        }
+
+        self.waker = Some(cx.waker().clone());
         Poll::Pending
     }
 }
