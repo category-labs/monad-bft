@@ -22,6 +22,7 @@ use opentelemetry_sdk::{
     Resource,
 };
 use tokio::task::{AbortHandle, JoinSet};
+use tracing::warn;
 
 /// A OpenTelemetry executor for recording metrics
 pub struct OpenTelemetryExecutor<ST, SCT> {
@@ -97,6 +98,7 @@ where
         };
         let meter_provider = opentelemetry_otlp::new_pipeline()
             .metrics(opentelemetry_sdk::runtime::Tokio)
+            .with_period(interval)
             .with_exporter(
                 opentelemetry_otlp::new_exporter()
                     .tonic()
@@ -107,7 +109,7 @@ where
                 "basic-otlp-metrics-example",
             )]))
             .build()
-            .unwrap();
+            .expect("failed to initialize opentelemetry_otlp metrics pipeline");
 
         let meter = meter_provider.meter("node");
         let counters = COUNTERS
@@ -272,6 +274,14 @@ where
     }
 }
 
+impl<ST, SCT> Drop for OpenTelemetryExecutor<ST, SCT> {
+    fn drop(&mut self) {
+        if let Err(e) = self.meter_provider.shutdown() {
+            warn!("opentelemetry meter provider already shut down");
+        }
+    }
+}
+
 impl<ST, SCT> Executor for OpenTelemetryExecutor<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
@@ -281,6 +291,7 @@ where
 
     fn replay(&mut self, mut _commands: Vec<Self::Command>) {}
 
+    //////// WIP
     fn exec(&mut self, commands: Vec<Self::Command>) {
         let mut wake = false;
         for command in commands {
