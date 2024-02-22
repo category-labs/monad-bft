@@ -6,13 +6,13 @@ use std::{
 
 use alloy_rlp::Decodable;
 use clap::Parser;
-use heed::{types::SerdeBincode, Database, EnvOpenOptions};
+use heed::{types::SerdeBincode, Database, Env, EnvOpenOptions};
 use monad_crypto::hasher::{Blake3Hash, Hash, Hasher};
 use notify::{
     event::{AccessKind, AccessMode},
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
-use reth_primitives::{Block, B256};
+use reth_primitives::{Block, BlockHash, TxHash, B256};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -33,17 +33,119 @@ struct Args {
 }
 
 const KECCAK_HDR_LEN: u64 = 32;
-const ETH_TXN_HASH_DB: &str = "ethtxnhashdb";
 
-type DatabaseType = Database<SerdeBincode<EthTxKey>, SerdeBincode<EthTxData>>;
+const BLOCK_DB_MAP_SIZE: usize = 512 * 1000 * 1024 * 1024;
+
+const BLOCK_TABLE_NAME: &str = "blocktable";
+const BLOCK_NUM_TABLE_NAME: &str = "blocknumtable";
+const TXN_HASH_TABLE_NAME: &str = "txnhashtable";
+// TODO const BLOCK_TAG_TABLE_NAME: &str = "blocktagtable";
+
+type BlockTableType = Database<SerdeBincode<BlockTableKey>, SerdeBincode<BlockValue>>;
+type BlockNumTableType = Database<SerdeBincode<BlockNumTableKey>, SerdeBincode<BlockTableKey>>;
+type TxnHashTableType = Database<SerdeBincode<EthTxKey>, SerdeBincode<EthTxValue>>;
+// TODO type BlockTagTable...
 
 #[derive(Debug, Serialize, Deserialize)]
-struct EthTxKey(B256);
+struct EthTxKey(TxHash);
 
 #[derive(Debug, Serialize, Deserialize)]
-struct EthTxData {
-    block_hash: B256,
-    block_num: u64,
+struct BlockNumTableKey(u64);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BlockTableKey(BlockHash);
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EthTxValue {
+    block_hash: BlockTableKey,
+    transaction_index: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BlockValue {
+    block: Block,
+}
+
+fn create_tables(blockdb_path: &Path) -> io::Result<Env> {
+    std::fs::create_dir_all(blockdb_path)?;
+    let blockdb_env = EnvOpenOptions::new()
+        .map_size(BLOCK_DB_MAP_SIZE)
+        .max_dbs(8)
+        .open(blockdb_path)
+        .expect("db failed");
+
+    let _: BlockTableType = blockdb_env.create_database(Some(BLOCK_TABLE_NAME)).unwrap();
+    let _: BlockNumTableType = blockdb_env
+        .create_database(Some(BLOCK_NUM_TABLE_NAME))
+        .unwrap();
+    let _: TxnHashTableType = blockdb_env
+        .create_database(Some(TXN_HASH_TABLE_NAME))
+        .unwrap();
+
+    Ok(blockdb_env)
+}
+
+fn update_tables(block: Block, blockdb_env: Env) {
+    let block_hash = BlockTableKey(block.header.hash_slow());
+
+    // put txn hashes into table
+    let txn_hash_table: TxnHashTableType = blockdb_env
+        .open_database(Some(TXN_HASH_TABLE_NAME))
+        .expect("txn_hash_table should exist")
+        .unwrap();
+    let mut txn_hash_table_txn = blockdb_env
+        .write_txn()
+        .expect("txn_hash_table txn create failed");
+
+    for (i, eth_tx) in block.body.iter().enumerate() {
+        let key = EthTxKey(eth_tx.recalculate_hash());
+        let value = EthTxValue {
+            block_hash: block_hash.clone(),
+            transaction_index: i as u64,
+        };
+        txn_hash_table
+            .put(&mut txn_hash_table_txn, &key, &value)
+            .expect("txn_hash_table put failed");
+    }
+    txn_hash_table_txn
+        .commit()
+        .expect("txn_hash_table commit failed");
+
+    // put block numbers into table
+    let block_num_table: BlockNumTableType = blockdb_env
+        .open_database(Some(BLOCK_NUM_TABLE_NAME))
+        .expect("block_num_table should exist")
+        .unwrap();
+    let mut block_num_table_txn = blockdb_env
+        .write_txn()
+        .expect("block_num_table txn create failed");
+    let block_num_table_key = BlockNumTableKey(block.number);
+    let block_num_table_value = block_hash.clone();
+    block_num_table
+        .put(
+            &mut block_num_table_txn,
+            &block_num_table_key,
+            &block_num_table_value,
+        )
+        .expect("block_num_table put failed");
+    block_num_table_txn
+        .commit()
+        .expect("block_num_table commit failed");
+
+    // put full block into table
+    let block_table: BlockTableType = blockdb_env
+        .open_database(Some(BLOCK_TABLE_NAME))
+        .expect("block_table should exist")
+        .unwrap();
+    let mut block_table_txn = blockdb_env
+        .write_txn()
+        .expect("block_table txn create failed");
+    let block_table_key = block_hash;
+    let block_table_value = BlockValue { block };
+    block_table
+        .put(&mut block_table_txn, &block_table_key, &block_table_value)
+        .expect("block_table put failed");
+    block_table_txn.commit().expect("block_table commit failed");
 }
 
 #[tokio::main]
@@ -68,27 +170,20 @@ async fn main() -> io::Result<()> {
             .max_dbs(3)
             .open(args.blockdb_path)
             .expect("db failed");
-        let db: DatabaseType = blockdb_env
-            .open_database(Some(ETH_TXN_HASH_DB))
+        let db: TxnHashTableType = blockdb_env
+            .open_database(Some(TXN_HASH_TABLE_NAME))
             .expect("db should exist")
             .unwrap();
 
         let db_txn = blockdb_env.write_txn().expect("db txn create failed");
-        let data: Option<EthTxData> = db.get(&db_txn, &ethkey).unwrap();
+        let data: Option<EthTxValue> = db.get(&db_txn, &ethkey).unwrap();
 
         println!("found: {:?}", data);
 
         return Ok(());
     }
 
-    // create the block db stuff
-    std::fs::create_dir_all(&args.blockdb_path)?;
-    let blockdb_env = EnvOpenOptions::new()
-        .map_size(10 * 1024 * 1024)
-        .max_dbs(3)
-        .open(args.blockdb_path)
-        .expect("db failed");
-    let _db: DatabaseType = blockdb_env.create_database(Some(ETH_TXN_HASH_DB)).unwrap();
+    let blockdb_env = create_tables(&args.blockdb_path)?;
 
     if let Err(e) = async_watch(args.ledger_path, Some(blockdb_env)).await {
         println!("error: {:?}", e)
@@ -165,27 +260,8 @@ fn process_block(path: &PathBuf, blockdb_env: Option<heed::Env>) -> (u64, u64, H
     let b = Block::decode(&mut &buf[..]);
     match b {
         Ok(block) => {
-            // spawn write to db thread
             if let Some(env) = blockdb_env {
-                let db_block = block.clone();
-                tokio::task::spawn_blocking(move || {
-                    let db: DatabaseType = env
-                        .open_database(Some(ETH_TXN_HASH_DB))
-                        .expect("db should exist")
-                        .unwrap();
-                    let mut db_txn = env.write_txn().expect("db txn create failed");
-
-                    for eth_tx in &db_block.body {
-                        let key = EthTxKey(eth_tx.recalculate_hash());
-                        let value = EthTxData {
-                            block_hash: db_block.header.hash_slow(),
-                            block_num: db_block.number,
-                        };
-                        db.put(&mut db_txn, &key, &value).expect("db put failed");
-                    }
-
-                    db_txn.commit().expect("db commit failed");
-                });
+                update_tables(block.clone(), env);
             }
 
             // get data on the block
