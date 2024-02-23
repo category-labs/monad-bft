@@ -21,12 +21,13 @@ members = [
     "monad-keystore",
     "monad-ledger",
     "monad-mock-swarm",
+    "monad-multi-sig",
     "monad-node",
     "monad-proto",
     "monad-quic",
-    "monad-multi-sig",
     "monad-randomized-tests",
     "monad-router-scheduler",
+    "monad-rpc",
     "monad-secp",
     "monad-state",
     "monad-testground",
@@ -53,6 +54,8 @@ reth-primitives = { git = "https://github.com/paradigmxyz/reth.git", rev = "685d
 alloy-primitives = "0.6"
 alloy-rlp = "0.3"
 
+actix-http = "3.6.0"
+actix-web = "4.5.1"
 aes = "0.8.3"
 as-any = "0.3.1"
 async-trait = "0.1"
@@ -71,6 +74,7 @@ ctr = "0.9.2"
 env_logger = "0.10"
 fastrand = "2.0"
 flate2 = "1.0"
+flume = "0.11.0"
 futures = "0.3"
 futures-util = "0.3"
 getrandom = "0.2"
