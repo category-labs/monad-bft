@@ -1,0 +1,3 @@
+[submodule "monad-triedb/triedb-driver/monad-trie"]
+	path = monad-triedb/triedb-driver/monad-trie
+	url = git@github.com:monad-crypto/monad-trie
