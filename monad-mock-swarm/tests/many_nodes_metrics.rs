@@ -75,6 +75,7 @@ fn many_nodes_metrics() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })

@@ -5,13 +5,15 @@ use std::{
 };
 
 use common::QuicSwarm;
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
+    fetch_metric,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -67,6 +69,7 @@ fn many_nodes_noser() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -77,7 +80,10 @@ fn many_nodes_noser() {
     swarm.batch_step_until(&mut UntilTerminator::new().until_tick(Duration::from_secs(4)));
     swarm_ledger_verification(&swarm, 1024);
 
-    let verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+    let mut verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier.metrics_happy_path(&node_ids, &swarm);
+
     assert!(verifier.verify(&swarm));
 }
 
@@ -135,6 +141,7 @@ fn many_nodes_quic_latency() {
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -143,13 +150,35 @@ fn many_nodes_quic_latency() {
 
     let mut swarm = swarm_config.build();
     swarm.batch_step_until(&mut UntilTerminator::new().until_block(100));
-    swarm_ledger_verification(&swarm, 100);
+
+    let min_ledger_len = 100;
+    swarm_ledger_verification(&swarm, min_ledger_len);
 
     // quic router scheduler loses the first message when it's handshaking
     // handshake takes less than consensus round timer
     // initial timeout is sent out at t=consensus_round_timer=4*delta
-    let verifier = MockSwarmVerifier::default()
+    let mut verifier = MockSwarmVerifier::default()
         .tick_range(happy_path_tick_by_block(100, delta) + 4 * delta, 10 * delta);
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier
+        .metric_exact(
+            &node_ids,
+            fetch_metric!(blocksync_events.blocksync_request),
+            0,
+        )
+        // handle proposal for all blocks in ledger
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.handle_proposal),
+            min_ledger_len as u64,
+        )
+        // vote for all blocks in ledger
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.created_vote),
+            min_ledger_len as u64,
+        );
     assert!(verifier.verify(&swarm));
 }
 
@@ -212,6 +241,7 @@ fn many_nodes_quic_bw() {
                         ))),
                         BytesTransformer::Bw(BwTransformer::new(1000, Duration::from_millis(10))),
                     ],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -223,10 +253,31 @@ fn many_nodes_quic_bw() {
     let tick1 = swarm
         .batch_step_until(&mut UntilTerminator::new().until_block(100))
         .unwrap();
-    swarm_ledger_verification(&swarm, 100);
 
-    let verifier =
+    let max_block_sync_requests = 10;
+    let min_ledger_len = 100;
+    swarm_ledger_verification(&swarm, min_ledger_len);
+
+    let mut verifier =
         MockSwarmVerifier::default().tick_range(Duration::from_secs(122), Duration::from_secs(1));
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier
+        .metric_maximum(
+            &node_ids,
+            fetch_metric!(blocksync_events.blocksync_request),
+            max_block_sync_requests,
+        )
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.handle_proposal),
+            min_ledger_len as u64 - max_block_sync_requests,
+        )
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.created_vote),
+            min_ledger_len as u64 - max_block_sync_requests,
+        );
     assert!(verifier.verify(&swarm));
 
     // The first ~130 rounds are all timing out as the QUIC protocol is learning

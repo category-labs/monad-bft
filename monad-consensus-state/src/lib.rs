@@ -423,13 +423,18 @@ where
                 version,
             ));
 
-            if self.nodeid
-                == election.get_leader(
-                    self.pacemaker.get_current_round(),
-                    epoch,
-                    validator_set.get_members(),
-                )
-            {
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let (next_round, next_epoch, next_validator_set) = {
+                let next_round = self.pacemaker.get_current_round();
+                let next_epoch = epoch_manager.get_epoch(next_round);
+                let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
+                    todo!("handle non-existent validatorset for next round epoch");
+                };
+                (next_round, next_epoch, next_validator_set.get_members())
+            };
+
+            if self.nodeid == election.get_leader(next_round, next_epoch, next_validator_set) {
                 cmds.extend(self.process_new_round_event(
                     tx_pool,
                     validator_set,
@@ -540,13 +545,18 @@ where
                 });
             cmds.extend(advance_round_cmds);
 
-            if self.nodeid
-                == election.get_leader(
-                    self.pacemaker.get_current_round(),
-                    epoch,
-                    validator_set.get_members(),
-                )
-            {
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let (next_round, next_epoch, next_validator_set) = {
+                let next_round = self.pacemaker.get_current_round();
+                let next_epoch = epoch_manager.get_epoch(next_round);
+                let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
+                    todo!("handle non-existent validatorset for next round epoch");
+                };
+                (next_round, next_epoch, next_validator_set.get_members())
+            };
+
+            if self.nodeid == election.get_leader(next_round, next_epoch, next_validator_set) {
                 cmds.extend(self.process_new_round_event(
                     tx_pool,
                     validator_set,

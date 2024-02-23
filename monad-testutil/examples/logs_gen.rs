@@ -116,6 +116,7 @@ pub fn generate_log(
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(100),
                     ))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })

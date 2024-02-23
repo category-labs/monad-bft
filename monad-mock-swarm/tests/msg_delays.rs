@@ -1,6 +1,7 @@
 mod common;
 use std::{collections::BTreeSet, time::Duration};
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
@@ -63,6 +64,7 @@ fn two_nodes() {
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
                         delta,
                     ))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -79,6 +81,10 @@ fn two_nodes() {
     // Assert it takes less than the max time because actual latency is less
     // than theoretical max because of XOR
     let max_time = happy_path_tick_by_block(100, delta);
-    let verifier = MockSwarmVerifier::default().tick_range(max_time / 2, max_time / 2);
+    let mut verifier = MockSwarmVerifier::default().tick_range(max_time / 2, max_time / 2);
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier.metrics_happy_path(&node_ids, &swarm);
+
     assert!(verifier.verify(&swarm));
 }

@@ -166,6 +166,7 @@ fn many_nodes_nop_timeout() -> u128 {
                         ))),
                         BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
                     ],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -238,6 +239,7 @@ fn many_nodes_bls_timeout() -> u128 {
                         ))),
                         BytesTransformer::Bw(BwTransformer::new(4, Duration::from_secs(1))),
                     ],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })

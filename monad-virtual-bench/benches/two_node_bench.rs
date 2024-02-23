@@ -56,6 +56,7 @@ fn two_nodes_virtual() -> u128 {
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(1),
                     ))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })

@@ -1,12 +1,14 @@
 mod common;
 use std::{collections::BTreeSet, env};
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
+    fetch_metric,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -103,6 +105,7 @@ fn nodes_with_random_latency(latency_seed: u64) {
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, delta),
                     )],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -110,17 +113,36 @@ fn nodes_with_random_latency(latency_seed: u64) {
     );
 
     let mut swarm = swarm_config.build();
+    let min_ledger_len = 2000;
     while swarm
-        .step_until(&mut UntilTerminator::new().until_block(2000))
+        .step_until(&mut UntilTerminator::new().until_block(min_ledger_len))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 1998);
-    let max_tick = happy_path_tick_by_block(2000, delta);
+
+    let max_blocksync_requests = 30;
+    let max_tick = happy_path_tick_by_block(min_ledger_len, delta);
     println!(
         "tick {:?} max tick {:?}",
         swarm.peek_tick().unwrap(),
         max_tick
     );
-    let verifier = MockSwarmVerifier::default().tick_range(max_tick / 2, max_tick / 2);
+    let mut verifier = MockSwarmVerifier::default().tick_range(max_tick / 2, max_tick / 2);
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier
+        .metric_range(
+            &node_ids,
+            fetch_metric!(consensus_events.process_qc),
+            min_ledger_len as u64 - max_blocksync_requests,
+            min_ledger_len as u64 + 2,
+        )
+        .metric_maximum(
+            &node_ids,
+            fetch_metric!(blocksync_events.blocksync_request),
+            max_blocksync_requests,
+        );
+
     assert!(verifier.verify(&swarm));
+
+    swarm_ledger_verification(&swarm, min_ledger_len);
 }

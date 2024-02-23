@@ -65,6 +65,7 @@ pub fn simulation_make() -> *mut Simulation {
                         vec![GenericTransformer::Latency(LatencyTransformer::new(
                             Duration::from_millis(10),
                         ))],
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })

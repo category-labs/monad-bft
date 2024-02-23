@@ -67,6 +67,7 @@ fn two_nodes() {
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(1),
                     ))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })

@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
     block::{Block, BlockType},
@@ -18,7 +19,7 @@ use monad_crypto::{
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
     mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::SwarmRelation,
-    terminator::UntilTerminator,
+    terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -136,6 +137,7 @@ pub fn recover_nodes_msg_delays(
                     vec![GenericTransformer::XorLatency(XorLatencyTransformer::new(
                         delta,
                     ))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -145,6 +147,12 @@ pub fn recover_nodes_msg_delays(
     let mut nodes = swarm_config.build();
     let mut term = UntilTerminator::new().until_block(num_blocks_before);
     while nodes.step_until(&mut term).is_some() {}
+
+    let mut verifier = MockSwarmVerifier::default();
+    let node_ids: Vec<ID<_>> = nodes.states().keys().copied().collect_vec();
+    verifier.metrics_happy_path(&node_ids, &nodes);
+
+    assert!(verifier.verify(&nodes));
 
     // can skip this verification so we don't have two cases failing for the same reason
     let node_ledger_before = nodes
@@ -195,6 +203,7 @@ pub fn recover_nodes_msg_delays(
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, val_set_update_interval),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })

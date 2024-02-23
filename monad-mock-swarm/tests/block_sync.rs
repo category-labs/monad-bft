@@ -6,12 +6,14 @@ mod test {
         time::Duration,
     };
 
+    use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+        block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
     use monad_mock_swarm::{
+        fetch_metric,
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm},
@@ -63,7 +65,7 @@ mod test {
 
         let filter_peers = HashSet::from([ID::new(*all_peers.first().unwrap())]);
 
-        let mut pipeline = vec![
+        let mut outbound_pipeline = vec![
             MonadMessageTransformer::Filter(FilterTransformer {
                 drop_block_sync: true,
                 ..Default::default()
@@ -85,7 +87,8 @@ mod test {
                         MockWALoggerConfig::default(),
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators, SeqNum(2000)),
-                        pipeline.clone(),
+                        outbound_pipeline.clone(),
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -124,8 +127,8 @@ mod test {
         verify_but_first(&swarm);
 
         // remove blackout but still ban block sync
-        pipeline = pipeline[0..2].to_vec();
-        swarm.update_pipeline_for_all(pipeline.clone());
+        outbound_pipeline = outbound_pipeline[0..2].to_vec();
+        swarm.update_outbound_pipeline_for_all(outbound_pipeline.clone());
 
         // run for 5 sec to allow the blackout node to be aware of the world state,
         // however, it start to attempting block sync, but will not succeed
@@ -134,8 +137,8 @@ mod test {
 
         verify_but_first(&swarm);
         // remove the block sync filter
-        pipeline = pipeline[1..2].to_vec();
-        swarm.update_pipeline_for_all(pipeline);
+        outbound_pipeline = outbound_pipeline[1..2].to_vec();
+        swarm.update_outbound_pipeline_for_all(outbound_pipeline);
 
         // run for sufficiently long
         terminator = terminator.until_tick(Duration::from_secs(30));
@@ -200,6 +203,7 @@ mod test {
                             )),
                             GenericTransformer::Drop(DropTransformer::new()),
                         ],
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -282,6 +286,7 @@ mod test {
                                 Duration::from_millis(400),
                             )),
                         ],
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -295,7 +300,39 @@ mod test {
         {}
         swarm_ledger_verification(&swarm, 20);
 
-        let verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+        let ledger_len = swarm
+            .states()
+            .values()
+            .map(|node| node.executor.ledger().get_blocks().len())
+            .max()
+            .unwrap();
+        let running_nodes_ids = swarm
+            .states()
+            .values()
+            .filter_map(|node| (node.id != first_node).then_some(node.id))
+            .collect_vec();
+
+        let mut verifier = MockSwarmVerifier::default().tick_range(Duration::from_secs(4), delta);
+
+        verifier
+            .metric_exact(
+                &running_nodes_ids,
+                fetch_metric!(blocksync_events.blocksync_request),
+                0,
+            )
+            // handle proposal for all blocks in ledger
+            .metric_minimum(
+                &running_nodes_ids,
+                fetch_metric!(consensus_events.handle_proposal),
+                ledger_len as u64,
+            )
+            // vote for all blocks in ledger
+            .metric_minimum(
+                &running_nodes_ids,
+                fetch_metric!(consensus_events.created_vote),
+                ledger_len as u64,
+            );
+
         assert!(verifier.verify(&swarm));
     }
 
@@ -373,6 +410,7 @@ mod test {
                             GenericTransformer::Periodic(PeriodicTransformer::new(from, to)),
                             GenericTransformer::Drop(DropTransformer::new()),
                         ],
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -386,7 +424,39 @@ mod test {
         {}
         swarm_ledger_verification(&swarm, 20);
 
-        let verifier = MockSwarmVerifier::default().tick_range(until, delta);
+        let ledger_len = swarm
+            .states()
+            .values()
+            .map(|node| node.executor.ledger().get_blocks().len())
+            .max()
+            .unwrap();
+        let running_nodes_ids = swarm
+            .states()
+            .values()
+            .filter_map(|node| (!filter_peers.contains(&node.id)).then_some(node.id))
+            .collect_vec();
+
+        let mut verifier = MockSwarmVerifier::default().tick_range(until, delta);
+
+        verifier
+            .metric_exact(
+                &running_nodes_ids,
+                fetch_metric!(blocksync_events.blocksync_request),
+                0,
+            )
+            // handle proposal for all blocks in ledger
+            .metric_minimum(
+                &running_nodes_ids,
+                fetch_metric!(consensus_events.handle_proposal),
+                ledger_len as u64,
+            )
+            // vote for all blocks in ledger
+            .metric_minimum(
+                &running_nodes_ids,
+                fetch_metric!(consensus_events.created_vote),
+                ledger_len as u64,
+            );
+
         assert!(verifier.verify(&swarm));
     }
 }

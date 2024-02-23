@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-use hex::ToHex;
 use monad_consensus_types::metrics::Metrics;
-use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
+use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_transformer::ID;
 use monad_types::Round;
 
@@ -11,9 +10,9 @@ use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 type FetchMetricFunction = fn(&Metrics) -> (u64, &str);
 
 #[macro_export]
-macro_rules! fetch_metrics {
+macro_rules! fetch_metric {
     ( $( $k:ident ).+ ) => {{
-         |s: &Metrics| { (s.$($k).+, stringify!($($k).+)) }
+        |s: &Metrics| { (s.$($k).+, stringify!($($k).+)) }
     }};
 }
 
@@ -35,7 +34,9 @@ enum ExpectedMetric {
     // Expect metric is in the range [lower, upper]
     Range(u64, u64),
     // Minimum metric value
-    Threshold(u64),
+    Minimum(u64),
+    // Maximum metric value
+    Maximum(u64),
 }
 
 #[derive(Debug)]
@@ -76,43 +77,214 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
     }
 
     pub fn metric_exact(
-        mut self,
-        node_ids: Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        &mut self,
+        node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
         fetch_metric: FetchMetricFunction,
         value: u64,
-    ) -> Self {
+    ) -> &mut Self {
         for node_id in node_ids {
             self.metrics
-                .push((node_id, fetch_metric, ExpectedMetric::Exact(value)));
+                .push((*node_id, fetch_metric, ExpectedMetric::Exact(value)));
         }
         self
     }
 
     pub fn metric_range(
-        mut self,
-        node_ids: Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        &mut self,
+        node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
         fetch_metric: FetchMetricFunction,
         lower: u64,
         upper: u64,
-    ) -> Self {
+    ) -> &mut Self {
         for node_id in node_ids {
             self.metrics
-                .push((node_id, fetch_metric, ExpectedMetric::Range(lower, upper)));
+                .push((*node_id, fetch_metric, ExpectedMetric::Range(lower, upper)));
         }
         self
     }
 
-    pub fn metric_threshold(
-        mut self,
-        node_ids: Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+    pub fn metric_minimum(
+        &mut self,
+        node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
         fetch_metric: FetchMetricFunction,
         minimum: u64,
-    ) -> Self {
+    ) -> &mut Self {
         for node_id in node_ids {
             self.metrics
-                .push((node_id, fetch_metric, ExpectedMetric::Threshold(minimum)));
+                .push((*node_id, fetch_metric, ExpectedMetric::Minimum(minimum)));
         }
         self
+    }
+
+    pub fn metric_maximum(
+        &mut self,
+        node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        fetch_metric: FetchMetricFunction,
+        maximum: u64,
+    ) -> &mut Self {
+        for node_id in node_ids {
+            self.metrics
+                .push((*node_id, fetch_metric, ExpectedMetric::Maximum(maximum)));
+        }
+        self
+    }
+
+    // Happy path metrics for a node should be independent of the path taken by its peers
+    pub fn metrics_happy_path(
+        &mut self,
+        node_ids: &Vec<ID<CertificateSignaturePubKey<S::SignatureType>>>,
+        swarm: &Nodes<S>,
+    ) {
+        let num_nodes_total = swarm.states.len() as u64;
+        // TODO: add stake awareness
+        let super_majority_nodes = num_nodes_total * 2 / 3 + 1;
+        let max_byzantine_nodes = num_nodes_total - super_majority_nodes;
+
+        // initial local timeout
+        self.metric_exact(node_ids, fetch_metric!(consensus_events.local_timeout), 1)
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.failed_txn_validation),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.invalid_proposal_round_leader),
+                0,
+            )
+            // should not miss a block in between
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.out_of_order_proposals),
+                0,
+            )
+            // initial TC. If the node is in the happy path, it should never create a TC otherwise
+            .metric_exact(node_ids, fetch_metric!(consensus_events.created_tc), 1)
+            // should always create a proposal
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.abstain_proposal),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.creating_empty_block_proposal),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.rx_execution_lagging),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.rx_missing_state_root),
+                0,
+            )
+            // first proposal in Round 2 with TC
+            .metric_maximum(
+                node_ids,
+                fetch_metric!(consensus_events.proposal_with_tc),
+                1,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(consensus_events.failed_verify_randao_reveal_sig),
+                0,
+            )
+            // blocksync metrics:
+            // should not request blocksync
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.blocksync_request),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.blocksync_response_successful),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.blocksync_response_failed),
+                0,
+            )
+            .metric_exact(
+                node_ids,
+                fetch_metric!(blocksync_events.blocksync_response_unexpected),
+                0,
+            );
+
+        for node_id in node_ids {
+            let node = swarm.states.get(node_id).unwrap();
+            let peer_id = node_id.get_peer_id();
+            let ledger = node.executor.ledger().get_blocks();
+            let ledger_len = ledger.len() as u64;
+            // ledger should have genesis block
+            assert!(ledger_len > 0);
+
+            let blocks_proposed: Vec<_> =
+                ledger.iter().filter(|b| (b.author == *peer_id)).collect();
+            // number of blocks authored in the ledger <= number of rounds as leader
+            // NOTE: '<=' is used since blocks can be rejected
+            let num_blocks_authored = blocks_proposed.len() as u64;
+
+            // should handle proposal for all blocks in ledger
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.handle_proposal),
+                ledger_len,
+            );
+            // should vote for every block in the ledger
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.created_vote),
+                ledger_len,
+            );
+            // votes from f peers after receiving 2f+1 votes as a leader
+            // NOTE: malicious votes should be rejected before reaching consensus
+            self.metric_maximum(
+                node_ids,
+                fetch_metric!(consensus_events.old_vote_received),
+                (num_blocks_authored + 1) * max_byzantine_nodes,
+            );
+            // votes from 2f+1 peers as a leader
+            // except if the node is a leader in round 2 when it receives timeouts instead
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.vote_received),
+                (num_blocks_authored - 1) * super_majority_nodes,
+            );
+            // should create a QC everytime the node is a leader
+            // except for block produced in round 2 which uses TC from round 1
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.created_qc),
+                num_blocks_authored - 1,
+            );
+            // a node processes an old QC (generated by itself) when it receives it
+            // in the proposal for next round
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.process_old_qc),
+                num_blocks_authored,
+            );
+            // should create proposals for all blocks authored in ledger
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.creating_proposal),
+                num_blocks_authored,
+            );
+            // should update state root for all blocks in ledger
+            // (exception for the last block since tests may end
+            // as soon as it is committed)
+            // NOTE: doesn't take into account the execution delay
+            self.metric_minimum(
+                &vec![*node_id],
+                fetch_metric!(consensus_events.state_root_update),
+                ledger_len - 1,
+            );
+        }
     }
 }
 
@@ -147,14 +319,13 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
 
         for (node_id, fetch_metric, expected_metric) in self.metrics.iter() {
             let node = swarm.states.get(node_id).unwrap();
-            let node_id_as_hex: String = node_id.get_peer_id().pubkey().bytes().encode_hex();
             let (actual_metric, metric_name) = fetch_metric(node.state.metrics());
             match expected_metric {
                 ExpectedMetric::Exact(metric) => {
                     if actual_metric != *metric {
                         eprintln!(
                             "Metric verify error: node_id: {}, metric: {}, expected={:?} actual={:?}",
-                            node_id_as_hex, metric_name, metric, actual_metric
+                            node_id, metric_name, metric, actual_metric
                         );
                         verification_passed = false;
                     }
@@ -163,16 +334,25 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
                     if actual_metric < *lower || actual_metric > *upper {
                         eprintln!(
                             "Metric verify error: node_id: {}, metric: {}, expected=[{:?},{:?}] actual={:?}",
-                            node_id_as_hex, metric_name, lower, upper, actual_metric
+                            node_id, metric_name, lower, upper, actual_metric
                         );
                         verification_passed = false;
                     }
                 }
-                ExpectedMetric::Threshold(minimum) => {
+                ExpectedMetric::Minimum(minimum) => {
                     if actual_metric < *minimum {
                         eprintln!(
                             "Metric verify error: node_id: {}, metric: {}, expected>={:?} actual={:?}",
-                            node_id_as_hex, metric_name, minimum, actual_metric
+                            node_id, metric_name, minimum, actual_metric
+                        );
+                        verification_passed = false;
+                    }
+                }
+                ExpectedMetric::Maximum(maximum) => {
+                    if actual_metric > *maximum {
+                        eprintln!(
+                            "Metric verify error: node_id: {}, metric: {}, expected<={:?} actual={:?}",
+                            node_id, metric_name, maximum, actual_metric
                         );
                         verification_passed = false;
                     }

@@ -39,7 +39,8 @@ pub struct NodeBuilder<S: SwarmRelation> {
     pub replay_events: Vec<MonadEvent<S::SignatureType, S::SignatureCollectionType>>,
     pub router_scheduler: S::RouterScheduler,
     pub state_root_executor: S::StateRootHashExecutor,
-    pub pipeline: S::Pipeline,
+    pub outbound_pipeline: S::Pipeline,
+    pub inbound_pipeline: S::Pipeline,
     pub seed: u64,
 }
 impl<S: SwarmRelation> NodeBuilder<S> {
@@ -58,7 +59,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         logger_builder: impl PersistenceLoggerBuilder<PersistenceLogger = S::Logger>,
         router_scheduler: S::RouterScheduler,
         state_root_executor: S::StateRootHashExecutor,
-        pipeline: S::Pipeline,
+        outbound_pipeline: S::Pipeline,
+        inbound_pipeline: S::Pipeline,
         seed: u64,
     ) -> Self {
         let (logger, replay_events) = logger_builder.build().unwrap();
@@ -69,7 +71,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             replay_events,
             router_scheduler,
             state_root_executor,
-            pipeline,
+            outbound_pipeline,
+            inbound_pipeline,
             seed,
         }
     }
@@ -111,7 +114,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             replay_events: self.replay_events,
             router_scheduler: Box::new(self.router_scheduler),
             state_root_executor: Box::new(self.state_root_executor),
-            pipeline: Box::new(self.pipeline),
+            outbound_pipeline: Box::new(self.outbound_pipeline),
+            inbound_pipeline: Box::new(self.inbound_pipeline),
             seed: self.seed,
         }
     }
@@ -133,7 +137,8 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             executor,
             state,
             logger: self.logger,
-            pipeline: self.pipeline,
+            outbound_pipeline: self.outbound_pipeline,
+            inbound_pipeline: self.inbound_pipeline,
             pending_inbound_messages: Default::default(),
             rng: ChaCha20Rng::seed_from_u64(rng.gen()),
             current_seed: rng.gen(),
@@ -149,7 +154,8 @@ where
     pub executor: MockExecutor<S>,
     pub state: SwarmRelationStateType<S>,
     pub logger: S::Logger,
-    pub pipeline: S::Pipeline,
+    pub outbound_pipeline: S::Pipeline,
+    pub inbound_pipeline: S::Pipeline,
     pub pending_inbound_messages: BTreeMap<
         Duration,
         VecDeque<LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>>,
@@ -180,6 +186,23 @@ impl<S: SwarmRelation> Node<S> {
             Some(events[self.current_seed % events.len()])
         } else {
             None
+        }
+    }
+
+    pub fn push_inbound_message(
+        &mut self,
+        sched_tick: Duration,
+        message: LinkMessage<CertificateSignaturePubKey<S::SignatureType>, S::TransportMessage>,
+    ) {
+        let inbound_transformed = self.inbound_pipeline.process(message);
+        for (inbound_delay, msg) in inbound_transformed {
+            // final tick = from_tick + outbound pipeline delay + inbound pipeline delay
+            let inbound_tick = sched_tick + inbound_delay;
+
+            self.pending_inbound_messages
+                .entry(inbound_tick)
+                .or_default()
+                .push_back(msg);
         }
     }
 
@@ -224,16 +247,13 @@ impl<S: SwarmRelation> Node<S> {
 
                                 from_tick: tick,
                             };
-                            let transformed = self.pipeline.process(lm);
-                            for (delay, msg) in transformed {
+                            let outbound_transformed = self.outbound_pipeline.process(lm);
+                            for (delay, msg) in outbound_transformed {
                                 let sched_tick = tick + delay;
 
                                 // FIXME-3: do we need to transform msg to self?
                                 if msg.to == self.id {
-                                    self.pending_inbound_messages
-                                        .entry(sched_tick)
-                                        .or_default()
-                                        .push_back(msg)
+                                    self.push_inbound_message(sched_tick, msg);
                                 } else {
                                     emitted_messages.push((sched_tick, msg))
                                 }

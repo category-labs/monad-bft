@@ -5,14 +5,15 @@ use std::{
     time::Duration,
 };
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block_validator::MockValidator, metrics::Metrics, payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_mock_swarm::{
-    mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
-    terminator::UntilTerminator,
+    fetch_metric, mock_swarm::SwarmBuilder, node::NodeBuilder, swarm_relation::NoSerSwarm,
+    terminator::UntilTerminator, verifier::MockSwarmVerifier,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
@@ -106,8 +107,8 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
                     MockWALoggerConfig::default(),
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                     vec![
-                        GenericTransformer::Latency(LatencyTransformer::new(delta)),
                         GenericTransformer::Partition(PartitionTransformer(filter_peers.clone())),
                         GenericTransformer::Replay(ReplayTransformer::new(
                             Duration::from_millis(500),
@@ -127,27 +128,111 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         .is_some()
     {}
 
-    let longest_ledger = swarm
+    let longest_ledger_before = swarm
         .states()
         .values()
         .map(|s| s.executor.ledger().get_blocks().len())
         .max()
         .unwrap();
 
+    let nodes_except_first: Vec<ID<_>> = swarm
+        .states()
+        .keys()
+        .filter(|&node_id| *node_id != first_node)
+        .copied()
+        .collect_vec();
+
+    let mut verifier_before_delayed_messages = MockSwarmVerifier::default();
+    verifier_before_delayed_messages
+        .metric_exact(
+            &nodes_except_first,
+            fetch_metric!(blocksync_events.blocksync_request),
+            0,
+        )
+        // handle proposal for all blocks in ledger
+        .metric_minimum(
+            &nodes_except_first,
+            fetch_metric!(consensus_events.handle_proposal),
+            longest_ledger_before as u64,
+        )
+        // vote for all blocks in ledger
+        .metric_minimum(
+            &nodes_except_first,
+            fetch_metric!(consensus_events.created_vote),
+            longest_ledger_before as u64,
+        )
+        // enter rounds using QC except round 2
+        .metric_minimum(
+            &nodes_except_first,
+            fetch_metric!(consensus_events.enter_new_round_qc),
+            longest_ledger_before as u64 - 1,
+        );
+
+    assert!(verifier_before_delayed_messages.verify(&swarm));
+
     while swarm
         .step_until(&mut UntilTerminator::new().until_tick(Duration::from_millis(1000)))
         .is_some()
     {}
-
-    // TODO: assert block sync is not triggered too many times the replaying
-    // node might call block sync when the events are replayed out of order. we
-    // want to assert that it used the filtered messages to recover, rather than
-    // asking blocks from peers
 
     // validators should produce the same number of blocks as a working swarm
     // after replay
     //
     // the reverse function of happy_path_tick_by_block
     let expected_blocks = (Duration::from_millis(500).as_millis() / delta.as_millis() - 1) / 2 - 2;
-    swarm_ledger_verification(&swarm, longest_ledger + expected_blocks as usize);
+    swarm_ledger_verification(&swarm, longest_ledger_before + expected_blocks as usize);
+
+    let longest_ledger_after = swarm
+        .states()
+        .values()
+        .map(|s| s.executor.ledger().get_blocks().len())
+        .max()
+        .unwrap();
+
+    let blocksync_requests_range = match direction {
+        // when replayed forward, node should populate blocktree in order
+        TransformerReplayOrder::Forward => (0, 0),
+        // when replayed in reverse, should request every block in ledger
+        // +1 is the case where the proposal to commit the last block in
+        // ledger is in flight and not delivered to all peers yet
+        // +2 is the case where the proposal to commit the last block in
+        // ledger is received by all peers
+        TransformerReplayOrder::Reverse => (longest_ledger_before + 1, longest_ledger_before + 2),
+        // when replayed in random order, could be any number of requests
+        TransformerReplayOrder::Random(_) => (0, longest_ledger_before + 2),
+    };
+
+    let mut verifier_after_delayed_messages = MockSwarmVerifier::default();
+    verifier_after_delayed_messages
+        .metric_exact(
+            &nodes_except_first,
+            fetch_metric!(blocksync_events.blocksync_request),
+            0,
+        )
+        // handle proposal for all blocks in ledger
+        .metric_minimum(
+            &nodes_except_first,
+            fetch_metric!(consensus_events.handle_proposal),
+            longest_ledger_after as u64,
+        )
+        // vote for all blocks in ledger
+        .metric_minimum(
+            &nodes_except_first,
+            fetch_metric!(consensus_events.created_vote),
+            longest_ledger_after as u64,
+        )
+        // enter rounds using QC except round 2
+        .metric_minimum(
+            &nodes_except_first,
+            fetch_metric!(consensus_events.enter_new_round_qc),
+            longest_ledger_after as u64 - 1,
+        )
+        .metric_range(
+            &vec![first_node],
+            fetch_metric!(blocksync_events.blocksync_request),
+            blocksync_requests_range.0 as u64,
+            blocksync_requests_range.1 as u64,
+        );
+
+    assert!(verifier_after_delayed_messages.verify(&swarm));
 }

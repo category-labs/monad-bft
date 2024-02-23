@@ -15,7 +15,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_gossip::mock::MockGossipConfig;
 use monad_mock_swarm::{
-    fetch_metrics,
+    fetch_metric,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
     swarm_relation::NoSerSwarm,
@@ -74,6 +74,7 @@ fn two_nodes_noser() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -90,13 +91,9 @@ fn two_nodes_noser() {
     // the calculation is correct with two nodes because NoSerRouterScheduler
     // always sends the message over the network/transformer, even for it's for
     // self. Otherwise the time is shorter with two nodes, like QUIC test
-    let verifier = MockSwarmVerifier::default()
-        .tick_range(happy_path_tick_by_block(1026, delta), delta)
-        .metric_exact(
-            node_ids,
-            fetch_metrics!(consensus_events.commit_empty_block),
-            0,
-        );
+    let mut verifier =
+        MockSwarmVerifier::default().tick_range(happy_path_tick_by_block(1026, delta), delta);
+    verifier.metrics_happy_path(&node_ids, &swarm);
     assert!(verifier.verify(&swarm));
 
     swarm_ledger_verification(&swarm, 1024);
@@ -156,6 +153,7 @@ fn two_nodes_quic_latency() {
                     .build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![BytesTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -167,7 +165,9 @@ fn two_nodes_quic_latency() {
         .step_until(&mut UntilTerminator::new().until_block(1000))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 998);
+
+    let min_ledger_len = 1000;
+    swarm_ledger_verification(&swarm, min_ledger_len);
 
     // 1 extra round trip because of QUIC handshake two nodes with QUIC router
     // scheduler finishes faster than normal happy path because
@@ -176,10 +176,30 @@ fn two_nodes_quic_latency() {
     //
     // Being more lenient here because the QUICRouterScheduler and 2 nodes case
     // isn't particular interesting
-    let verifier = MockSwarmVerifier::default().tick_range(
+    let mut verifier = MockSwarmVerifier::default().tick_range(
         happy_path_tick_by_block(1000, delta) / 2 + 2 * delta,
         delta * 10,
     );
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier
+        .metric_exact(
+            &node_ids,
+            fetch_metric!(blocksync_events.blocksync_request),
+            0,
+        )
+        // handle proposal for all blocks in ledger
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.handle_proposal),
+            min_ledger_len as u64,
+        )
+        // vote for all blocks in ledger
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.created_vote),
+            min_ledger_len as u64,
+        );
     assert!(verifier.verify(&swarm));
 }
 
@@ -253,6 +273,7 @@ fn two_nodes_quic_bw() {
                         BytesTransformer::Latency(LatencyTransformer::new(delta)),
                         BytesTransformer::Bw(BwTransformer::new(8, Duration::from_millis(10))),
                     ],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -264,13 +285,35 @@ fn two_nodes_quic_bw() {
         .step_until(&mut UntilTerminator::new().until_block(1000))
         .is_some()
     {}
-    swarm_ledger_verification(&swarm, 998);
+
+    let max_block_sync_requests = 5;
+    // 998 instead of 1000 to account for missed proposals due to BW limit
+    let min_ledger_len = 998;
+    swarm_ledger_verification(&swarm, min_ledger_len);
 
     // this is empirical, don't want to spend too much time figuring out a
     // degenerative case
-    let verifier =
+    let mut verifier =
         MockSwarmVerifier::default().tick_range(Duration::from_secs(5), Duration::from_secs(1));
     assert!(verifier.verify(&swarm));
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier
+        .metric_maximum(
+            &node_ids,
+            fetch_metric!(blocksync_events.blocksync_request),
+            max_block_sync_requests,
+        )
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.handle_proposal),
+            min_ledger_len as u64 - max_block_sync_requests,
+        )
+        .metric_minimum(
+            &node_ids,
+            fetch_metric!(consensus_events.created_vote),
+            min_ledger_len as u64 - max_block_sync_requests,
+        );
 
     let dropped_msg = counter_get(counter, None, "bwtransformer_dropped_msg");
     assert!(dropped_msg.is_some());

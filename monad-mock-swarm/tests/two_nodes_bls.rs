@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
@@ -108,6 +109,7 @@ fn two_nodes_bls() {
                     NoSerRouterConfig::new(all_peers.clone()).build(),
                     MockStateRootHashNop::new(validators, SeqNum(2000)),
                     vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -124,7 +126,11 @@ fn two_nodes_bls() {
     // the calculation is correct with two nodes because NoSerRouterScheduler
     // always sends the message over the network/transformer, even for it's for
     // self
-    let verifier =
+    let mut verifier =
         MockSwarmVerifier::default().tick_range(happy_path_tick_by_block(100, delta), delta);
+
+    let node_ids = swarm.states().keys().copied().collect_vec();
+    verifier.metrics_happy_path(&node_ids, &swarm);
+
     assert!(verifier.verify(&swarm));
 }

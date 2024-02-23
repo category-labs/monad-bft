@@ -2955,7 +2955,6 @@ dependencies = [
  "bytes",
  "criterion",
  "futures",
- "hex",
  "itertools 0.10.5",
  "monad-async-state-verify",
  "monad-bls",

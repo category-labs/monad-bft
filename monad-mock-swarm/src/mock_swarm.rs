@@ -92,10 +92,7 @@ where
                 // if message must be delivered, then node must exists
                 assert!(!self.must_deliver || node.is_some());
                 if let Some(node) = node {
-                    node.pending_inbound_messages
-                        .entry(sched_tick)
-                        .or_default()
-                        .push_back(message);
+                    node.push_inbound_message(sched_tick, message);
                 };
             }
             if let Some((tick, event)) = emitted_event {
@@ -116,7 +113,7 @@ where
                         .states
                         .get(&id)
                         .expect("must exist")
-                        .pipeline
+                        .outbound_pipeline
                         .min_external_delay();
                 // max safe tick is (min_unsafe_tick - EPSILON)
                 min_unsafe_tick - Duration::from_nanos(1)
@@ -144,10 +141,7 @@ where
                 assert!(!self.must_deliver || node.is_some());
 
                 if let Some(node) = node {
-                    node.pending_inbound_messages
-                        .entry(sched_tick)
-                        .or_default()
-                        .push_back(message);
+                    node.push_inbound_message(sched_tick, message);
                 };
             }
         }
@@ -176,20 +170,22 @@ where
         self.states.insert(node.id, node);
     }
 
-    pub fn update_pipeline_for_all(&mut self, pipeline: S::Pipeline)
+    pub fn update_outbound_pipeline_for_all(&mut self, new_pipeline: S::Pipeline)
     where
         S::Pipeline: Clone,
     {
         for node in &mut self.states.values_mut() {
-            node.pipeline = pipeline.clone();
+            node.outbound_pipeline = new_pipeline.clone();
         }
     }
-    pub fn update_pipeline(
+    pub fn update_outbound_pipeline(
         &mut self,
         id: &ID<CertificateSignaturePubKey<S::SignatureType>>,
-        pipeline: S::Pipeline,
+        new_pipeline: S::Pipeline,
     ) {
-        self.states.get_mut(id).map(|node| node.pipeline = pipeline);
+        self.states
+            .get_mut(id)
+            .map(|node| node.outbound_pipeline = new_pipeline);
     }
 }
 

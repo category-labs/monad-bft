@@ -9,7 +9,8 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+        block::Block, block_validator::MockValidator, metrics::Metrics, payload::StateRoot,
+        txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -17,11 +18,12 @@ mod test {
     };
     use monad_executor_glue::MonadEvent;
     use monad_mock_swarm::{
+        fetch_metric,
         mock_swarm::SwarmBuilder,
         node::{Node, NodeBuilder},
         swarm_relation::{NoSerSwarm, SwarmRelation},
         terminator::UntilTerminator,
-        verifier::{happy_path_tick_by_round, MockSwarmVerifier},
+        verifier::{happy_path_tick_by_block, happy_path_tick_by_round, MockSwarmVerifier},
     };
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -170,6 +172,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -206,8 +209,12 @@ mod test {
 
         // expect to take (1<timeout> + (epoch_start_round - 1 <the leader
         // enters before delivered to other nodes>) * 2<round trip>) * delta
-        let verifier = MockSwarmVerifier::default()
+        let mut verifier = MockSwarmVerifier::default()
             .tick_range(happy_path_tick_by_round(epoch_start_round, delta), delta);
+
+        let node_ids = nodes.states().keys().copied().collect_vec();
+        verifier.metrics_happy_path(&node_ids, &nodes);
+
         assert!(verifier.verify(&nodes));
     }
 
@@ -254,6 +261,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashNop::new(validators, val_set_update_interval),
                         regular_pipeline.clone(),
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -270,15 +278,25 @@ mod test {
         // verify all nodes are in epoch 1
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
 
+        let node_ids = nodes.states().keys().copied().collect_vec();
+        let mut verifier_before_blackout = MockSwarmVerifier::default().tick_range(
+            happy_path_tick_by_block(update_block_num.0 as usize - 1, delta),
+            delta,
+        );
+        verifier_before_blackout.metrics_happy_path(&node_ids, &nodes);
+        assert!(verifier_before_blackout.verify(&nodes));
+
         // blackout one node and let other nodes continue
         let blackout_node_id = nodes.states().values().collect_vec().first().unwrap().id;
+        println!("blackout node: {}", blackout_node_id);
+
         let filter_one_node = HashSet::from([blackout_node_id]);
         let blackout_pipeline = vec![
-            GenericTransformer::Latency(LatencyTransformer::new(Duration::from_millis(1))),
+            GenericTransformer::Latency(LatencyTransformer::new(delta)),
             GenericTransformer::Partition(PartitionTransformer(filter_one_node)),
             GenericTransformer::Drop(DropTransformer::new()),
         ];
-        nodes.update_pipeline_for_all(blackout_pipeline);
+        nodes.update_outbound_pipeline_for_all(blackout_pipeline);
 
         let mut term_on_schedule_epoch =
             UntilTerminator::new().until_block(update_block_num.0 as usize);
@@ -286,6 +304,7 @@ mod test {
 
         let nodes_vec = nodes.states().values().collect_vec();
         let (blackout_node, running_nodes) = nodes_vec.split_first().unwrap();
+        let running_nodes_ids = running_nodes.iter().map(|node| node.id).collect_vec();
 
         // verify the running nodes scheduled next epoch
         let epoch_start_round =
@@ -300,7 +319,7 @@ mod test {
         );
 
         // remove blackout for the blackout node
-        nodes.update_pipeline_for_all(regular_pipeline);
+        nodes.update_outbound_pipeline_for_all(regular_pipeline);
 
         // run sufficiently long for the blackout node to finish blocksync
         let mut term_on_schedule_epoch_2 =
@@ -314,14 +333,44 @@ mod test {
             Epoch(2),
         );
 
-        // TODO: add tick and metrics assertions, expected below but it's
-        // failing
+        // during blackout, if the blackout node is a leader for a round,
+        // it doesn't collect votes or propose a block. this causes TCs to
+        // be formed in two consecutive rounds
+        // TODO: add tick assertions. need to account for blackout node consequences.
+        // Updating pipelines between subsequent step_until calls doesn't take effect
+        // immediately since `pending_inbound_messages` may already be populated.
+        let mut verifier_after_blackout = MockSwarmVerifier::default();
+        verifier_after_blackout
+            .metric_exact(
+                &running_nodes_ids,
+                fetch_metric!(blocksync_events.blocksync_request),
+                0,
+            )
+            // handle proposal for all blocks in ledger
+            .metric_minimum(
+                &running_nodes_ids,
+                fetch_metric!(consensus_events.handle_proposal),
+                update_block_num.0 + 10,
+            )
+            // vote for all blocks in ledger
+            .metric_minimum(
+                &running_nodes_ids,
+                fetch_metric!(consensus_events.created_vote),
+                update_block_num.0 + 10,
+            )
+            .metric_maximum(
+                &vec![blackout_node_id],
+                fetch_metric!(blocksync_events.blocksync_request),
+                2,
+            )
+            // initial TC + max timeouts during blackout
+            .metric_maximum(
+                &node_ids,
+                fetch_metric!(consensus_events.local_timeout),
+                1 + 8,
+            );
 
-        // let verifier = MockSwarmVerifier::default().tick_range(
-        //     happy_path_tick_by_block(update_block_num.0 as usize + 10, delta),
-        //     delta,
-        // );
-        // assert!(verifier.verify(&nodes));
+        assert!(verifier_after_blackout.verify(&nodes));
     }
 
     #[test]
@@ -381,6 +430,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashSwap::new(validators, val_set_update_interval),
                         regular_pipeline.clone(),
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -435,6 +485,7 @@ mod test {
             .values()
             .map(|node| node.executor.ledger().get_blocks().clone())
             .collect_vec();
+        let max_ledger_blocks = ledgers.iter().map(|ledger| ledger.len()).max().unwrap();
 
         for ledger in ledgers {
             for block in ledger {
@@ -447,6 +498,32 @@ mod test {
                 }
             }
         }
+
+        let mut verifier = MockSwarmVerifier::default();
+        let node_ids = nodes.states().keys().copied().collect_vec();
+        verifier
+            .metric_exact(
+                &node_ids,
+                fetch_metric!(blocksync_events.blocksync_request),
+                0,
+            )
+            // handle proposal for all blocks in ledger
+            .metric_minimum(
+                &node_ids,
+                fetch_metric!(consensus_events.handle_proposal),
+                max_ledger_blocks as u64,
+            )
+            // vote for all blocks in ledger
+            .metric_minimum(
+                &node_ids,
+                fetch_metric!(consensus_events.created_vote),
+                max_ledger_blocks as u64,
+            )
+            // initial TC + account for TC whenever emmitted messages
+            // are dropped during `step_until`
+            .metric_maximum(&node_ids, fetch_metric!(consensus_events.local_timeout), 4);
+
+        assert!(verifier.verify(&nodes));
     }
 
     #[test_case(SeqNum(100), Round(10), 1000; "update_interval: 100, epoch_start_delay: 10")]
@@ -493,6 +570,7 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockStateRootHashSwap::new(validators, val_set_update_interval),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
+                        vec![],
                         seed.try_into().unwrap(),
                     )
                 })
@@ -506,10 +584,22 @@ mod test {
         {}
         swarm_ledger_verification(&swarm, until_block);
 
-        // TODO: assert no round except first times out
         // resume tick assertions
-        // let verifier = MockSwarmVerifier::default()
-        //     .tick_range(happy_path_tick_by_block(until_block, delta), delta);
-        // assert!(verifier.verify(&swarm));
+        let mut verifier = MockSwarmVerifier::default()
+            .tick_range(happy_path_tick_by_block(until_block, delta), delta);
+        let node_ids = swarm.states().keys().copied().collect_vec();
+        // TODO: all the metrics here should be equal to happy path metrics
+        // but since validator switching is mimicked using unstaked validators,
+        // there are extra messages sent from unstaked validators which are
+        // ignored. should change it back to happy path once they are seperated
+        verifier
+            .metric_exact(&node_ids, fetch_metric!(consensus_events.local_timeout), 1)
+            .metric_exact(
+                &node_ids,
+                fetch_metric!(consensus_events.remote_timeout_msg),
+                3,
+            );
+
+        assert!(verifier.verify(&swarm));
     }
 }

@@ -1,8 +1,10 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::Block, block_validator::MockValidator, metrics::Metrics, payload::StateRoot,
+    txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -10,11 +12,13 @@ use monad_crypto::{
 };
 use monad_executor_glue::MonadEvent;
 use monad_mock_swarm::{
+    fetch_metric,
     mock::MockExecutor,
     mock_swarm::{Nodes, SwarmBuilder},
     node::{Node, NodeBuilder},
     swarm_relation::SwarmRelation,
     terminator::UntilTerminator,
+    verifier::MockSwarmVerifier,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
@@ -178,6 +182,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
                     vec![GenericTransformer::Latency(LatencyTransformer::new(
                         Duration::from_millis(1),
                     ))],
+                    vec![],
                     default_seed,
                 )
             })
@@ -212,6 +217,11 @@ fn replay_one_honest(failure_idx: &[usize]) {
         .map(|node| node.executor.ledger().get_blocks().len())
         .max()
         .unwrap();
+    let mut phase_1_verifier = MockSwarmVerifier::default();
+    let ids: Vec<ID<_>> = swarm.states().keys().copied().collect_vec();
+    phase_1_verifier.metrics_happy_path(&ids, &swarm);
+
+    assert!(phase_1_verifier.verify(&swarm));
 
     println!("Phase 1 completes");
     // bring down 2 nodes
@@ -238,6 +248,33 @@ fn replay_one_honest(failure_idx: &[usize]) {
         .max()
         .unwrap();
 
+    let mut phase_2_verifier = MockSwarmVerifier::default();
+    let ids: Vec<ID<_>> = swarm.states().keys().copied().collect_vec();
+    phase_2_verifier
+        .metric_exact(&ids, fetch_metric!(blocksync_events.blocksync_request), 0)
+        // handle proposal for all blocks in ledger
+        .metric_minimum(
+            &ids,
+            fetch_metric!(consensus_events.handle_proposal),
+            phase_two_length as u64,
+        )
+        // vote for all blocks in ledger
+        .metric_minimum(
+            &ids,
+            fetch_metric!(consensus_events.created_vote),
+            phase_two_length as u64,
+        )
+        // enter rounds using QC except round 2
+        .metric_minimum(
+            &ids,
+            fetch_metric!(consensus_events.enter_new_round_qc),
+            phase_two_length as u64 - 1,
+        )
+        // initial TC to enter round 2 only
+        .metric_exact(&ids, fetch_metric!(consensus_events.enter_new_round_tc), 1);
+
+    assert!(phase_2_verifier.verify(&swarm));
+
     println!("Phase 2 completes");
     // bring up failed nodes with the replay logs
     let node0_logger_config = MockMemLoggerConfig::new(node0.logger.log);
@@ -255,6 +292,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             vec![GenericTransformer::Latency(LatencyTransformer::new(
                 Duration::from_millis(1),
             ))],
+            vec![],
             default_seed,
         ));
     }
@@ -271,6 +309,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             vec![GenericTransformer::Latency(LatencyTransformer::new(
                 Duration::from_millis(1),
             ))],
+            vec![],
             default_seed,
         ));
     }
@@ -308,12 +347,39 @@ fn replay_one_honest(failure_idx: &[usize]) {
     );
     assert!(liveness::<ReplaySwarm>(&swarm, phase_two_length));
 
+    let phase_three_length = swarm
+        .states()
+        .values()
+        .map(|node| node.executor.ledger().get_blocks().len())
+        .max()
+        .unwrap();
+
+    let mut phase_3_verifier = MockSwarmVerifier::default();
+    let ids: Vec<ID<_>> = swarm.states().keys().copied().collect_vec();
+    phase_3_verifier
+        .metric_exact(&ids, fetch_metric!(blocksync_events.blocksync_request), 0)
+        // handle proposal for all blocks in ledger
+        .metric_minimum(
+            &ids,
+            fetch_metric!(consensus_events.handle_proposal),
+            phase_three_length as u64,
+        )
+        // vote for all blocks in ledger
+        .metric_minimum(
+            &ids,
+            fetch_metric!(consensus_events.created_vote),
+            phase_three_length as u64,
+        )
+        // enter rounds using QC except round 2
+        .metric_minimum(
+            &ids,
+            fetch_metric!(consensus_events.enter_new_round_qc),
+            phase_three_length as u64 - 1,
+        );
+
+    assert!(phase_3_verifier.verify(&swarm));
+
     swarm_ledger_verification(&swarm, phase_one_length + 1);
 
     println!("Phase 3 completes");
-
-    // assert that block sync isn't triggered
-    for s in swarm.states().values() {
-        assert_eq!(0, s.state.metrics().blocksync_events.blocksync_request);
-    }
 }

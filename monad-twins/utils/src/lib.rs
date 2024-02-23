@@ -74,7 +74,7 @@ where
             false, // drop_state_root
         );
 
-        let pipeline = vec![
+        let outbound_pipeline = vec![
             MonadMessageTransformer::Twins(twins_transformer),
             MonadMessageTransformer::RandLatency(RandLatencyTransformer::new(
                 rng.gen(),
@@ -93,7 +93,8 @@ where
             )
             .build(),
             MockStateRootHashNop::new(validators, monad_types::SeqNum(TWINS_STATE_ROOT_DELAY)),
-            pipeline,
+            outbound_pipeline,
+            vec![],
             seed,
         ));
     }
@@ -117,7 +118,7 @@ where
         ];
 
         for id in ids {
-            swarm.update_pipeline(&id, pipeline.clone());
+            swarm.update_outbound_pipeline(&id, pipeline.clone());
         }
         // extend the expected termination condition
         terminator.extend_all(liveness_length);

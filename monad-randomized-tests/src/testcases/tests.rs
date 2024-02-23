@@ -63,6 +63,7 @@ fn random_latency_test(latency_seed: u64) {
                     vec![GenericTransformer::RandLatency(
                         RandLatencyTransformer::new(latency_seed, Duration::from_millis(330)),
                     )],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
@@ -127,6 +128,7 @@ fn delayed_message_test(latency_seed: u64) {
                             TransformerReplayOrder::Random(latency_seed),
                         )),
                     ],
+                    vec![],
                     seed.try_into().unwrap(),
                 )
             })
