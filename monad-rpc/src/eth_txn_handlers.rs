@@ -1,11 +1,12 @@
 use alloy_primitives::aliases::{B160, B256};
 use log::{debug, trace};
+use monad_blockdb::{BlockTableKey, EthTxKey};
 use reth_primitives::{BlockHash, TransactionSigned};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    blockdb::{BlockDbEnv, BlockTableKey, EthTxKey},
+    blockdb::BlockDbEnv,
     eth_json_types::{
         deserialize_fixed_data, deserialize_quantity, deserialize_unformatted_data, EthHash,
         Quantity, UnformattedData,

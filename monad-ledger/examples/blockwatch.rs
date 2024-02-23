@@ -6,14 +6,18 @@ use std::{
 
 use alloy_rlp::Decodable;
 use clap::Parser;
-use heed::{types::SerdeBincode, Database, Env, EnvOpenOptions};
+use heed::{Env, EnvOpenOptions};
+use monad_blockdb::{
+    BlockNumTableKey, BlockNumTableType, BlockTableKey, BlockTableType, BlockValue, EthTxKey,
+    EthTxValue, TxnHashTableType, BLOCK_DB_MAP_SIZE, BLOCK_DB_NUM_DBS, BLOCK_NUM_TABLE_NAME,
+    BLOCK_TABLE_NAME, TXN_HASH_TABLE_NAME,
+};
 use monad_crypto::hasher::{Blake3Hash, Hash, Hasher};
 use notify::{
     event::{AccessKind, AccessMode},
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
-use reth_primitives::{Block, BlockHash, TxHash, B256};
-use serde::{Deserialize, Serialize};
+use reth_primitives::{Block, B256};
 use tokio::sync::mpsc;
 
 #[derive(Parser, Debug)]
@@ -34,43 +38,11 @@ struct Args {
 
 const KECCAK_HDR_LEN: u64 = 32;
 
-const BLOCK_DB_MAP_SIZE: usize = 512 * 1000 * 1024 * 1024;
-
-const BLOCK_TABLE_NAME: &str = "blocktable";
-const BLOCK_NUM_TABLE_NAME: &str = "blocknumtable";
-const TXN_HASH_TABLE_NAME: &str = "txnhashtable";
-// TODO const BLOCK_TAG_TABLE_NAME: &str = "blocktagtable";
-
-type BlockTableType = Database<SerdeBincode<BlockTableKey>, SerdeBincode<BlockValue>>;
-type BlockNumTableType = Database<SerdeBincode<BlockNumTableKey>, SerdeBincode<BlockTableKey>>;
-type TxnHashTableType = Database<SerdeBincode<EthTxKey>, SerdeBincode<EthTxValue>>;
-// TODO type BlockTagTable...
-
-#[derive(Debug, Serialize, Deserialize)]
-struct EthTxKey(TxHash);
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BlockNumTableKey(u64);
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct BlockTableKey(BlockHash);
-
-#[derive(Debug, Serialize, Deserialize)]
-struct EthTxValue {
-    block_hash: BlockTableKey,
-    transaction_index: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BlockValue {
-    block: Block,
-}
-
 fn create_tables(blockdb_path: &Path) -> io::Result<Env> {
     std::fs::create_dir_all(blockdb_path)?;
     let blockdb_env = EnvOpenOptions::new()
         .map_size(BLOCK_DB_MAP_SIZE)
-        .max_dbs(8)
+        .max_dbs(BLOCK_DB_NUM_DBS)
         .open(blockdb_path)
         .expect("db failed");
 

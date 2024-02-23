@@ -2647,6 +2647,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-blockdb"
+version = "0.1.0"
+dependencies = [
+ "heed",
+ "reth-primitives",
+ "serde",
+]
+
+[[package]]
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
@@ -2923,6 +2932,7 @@ dependencies = [
  "clap 4.4.10",
  "futures",
  "heed",
+ "monad-blockdb",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-tx",
@@ -3115,6 +3125,7 @@ dependencies = [
  "futures",
  "heed",
  "log",
+ "monad-blockdb",
  "reth-primitives",
  "serde",
  "serde_json",

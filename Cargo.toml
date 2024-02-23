@@ -2,6 +2,7 @@
 
 members = [
     "monad-async-state-verify",
+    "monad-blockdb",
     "monad-blocktree",
     "monad-bls",
     "monad-compress",

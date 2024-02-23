@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-blockdb = { path = "../monad-blockdb" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }
