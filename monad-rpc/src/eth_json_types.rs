@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use monad_blockdb::BlockTagKey;
 use serde::{Deserialize, Deserializer};
 
 use crate::hex::{decode, decode_quantity, DecodeHexError};
@@ -77,11 +78,7 @@ where
 #[derive(Debug, PartialEq, Eq)]
 pub enum BlockTags {
     Number(Quantity),
-    Earliest,
-    Latest,
-    Safe,
-    Finalized,
-    Pending,
+    Default(BlockTagKey),
 }
 
 impl FromStr for BlockTags {
@@ -89,11 +86,11 @@ impl FromStr for BlockTags {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "earliest" => Ok(Self::Earliest),
-            "latest" => Ok(Self::Latest),
-            "safe" => Ok(Self::Safe),
-            "finalized" => Ok(Self::Finalized),
-            "pending" => Ok(Self::Pending),
+            "earliest" => Ok(Self::Default(BlockTagKey::Latest)),
+            "latest" => Ok(Self::Default(BlockTagKey::Latest)),
+            "safe" => Ok(Self::Default(BlockTagKey::Latest)),
+            "finalized" => Ok(Self::Default(BlockTagKey::Finalized)),
+            "pending" => Ok(Self::Default(BlockTagKey::Latest)),
             _ => decode_quantity(s).map(|q| Self::Number(Quantity(q))),
         }
     }
@@ -110,6 +107,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use monad_blockdb::BlockTagKey;
     use serde::Deserialize;
     use serde_json::json;
 
@@ -206,7 +204,7 @@ mod tests {
     #[test]
     fn test_block_enums() {
         let x: OneBlockParam = serde_json::from_value(json!(["latest"])).unwrap();
-        assert_eq!(BlockTags::Latest, x.a);
+        assert_eq!(BlockTags::Default(BlockTagKey::Latest), x.a);
 
         let x: OneBlockParam = serde_json::from_value(json!(["0xffacb0"])).unwrap();
         assert_eq!(BlockTags::Number(Quantity(16755888)), x.a);

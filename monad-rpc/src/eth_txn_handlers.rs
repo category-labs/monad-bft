@@ -8,8 +8,8 @@ use serde_json::Value;
 use crate::{
     blockdb::BlockDbEnv,
     eth_json_types::{
-        deserialize_fixed_data, deserialize_quantity, deserialize_unformatted_data, EthHash,
-        Quantity, UnformattedData,
+        deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
+        deserialize_unformatted_data, BlockTags, EthHash, Quantity, UnformattedData,
     },
     jsonrpc::JsonRpcError,
 };
@@ -115,7 +115,7 @@ pub async fn monad_eth_getTransactionByHash(
     let block_key = result.block_hash;
     let block_hash = block_key.0;
     let block = blockdb_env
-        .get_block(block_key)
+        .get_block_by_hash(block_key)
         .await
         .expect("txn was found so its block should exist");
 
@@ -158,7 +158,7 @@ pub async fn monad_eth_getBlockByHash(
     blockdb_env: BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    trace!("moand_eth_getBlockByHash: {params:?}");
+    trace!("monad_eth_getBlockByHash: {params:?}");
 
     let p: MonadEthGetBlockByHashParams = match serde_json::from_value(params) {
         Ok(s) => s,
@@ -169,7 +169,7 @@ pub async fn monad_eth_getBlockByHash(
     };
 
     let key = BlockTableKey(BlockHash::new(p.block_hash.0));
-    let Some(value) = blockdb_env.get_block(key).await else {
+    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
         return serialize_result(MonadEthGetBlockByHashReturn { block_object: None });
     };
 
@@ -209,7 +209,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
     blockdb_env: BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
-    trace!("moand_eth_getTransactionByBlockHashAndIndex: {params:?}");
+    trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
 
     let p: MonadEthGetTransactionByBlockHashAndIndexParams = match serde_json::from_value(params) {
         Ok(s) => s,
@@ -220,7 +220,7 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
     };
 
     let key = BlockTableKey(BlockHash::new(p.block_hash.0));
-    let Some(value) = blockdb_env.get_block(key).await else {
+    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
         return serialize_result(MonadEthGetTransactionByBlockHashAndIndexReturn {
             tx_object: None,
         });
@@ -245,4 +245,73 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
     };
 
     serialize_result(retval)
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockTransactionCountByHashParams {
+    #[serde(deserialize_with = "deserialize_fixed_data")]
+    block_hash: EthHash,
+}
+
+#[derive(Serialize, Debug)]
+struct MonadEthGetBlockTransactionCountByHashReturn {
+    count: u64,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockTransactionCountByHash(
+    blockdb_env: BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
+
+    let p: MonadEthGetBlockTransactionCountByHashParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let key = BlockTableKey(BlockHash::new(p.block_hash.0));
+    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
+        return serialize_result(MonadEthGetBlockTransactionCountByHashReturn { count: 0 });
+    };
+
+    let count = value.block.body.len() as u64;
+    serialize_result(MonadEthGetBlockTransactionCountByHashReturn { count })
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockTransactionCountByNumberParams {
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_tag: BlockTags,
+}
+
+#[derive(Serialize, Debug)]
+struct MonadEthGetBlockTransactionCountByNumberReturn {
+    count: u64,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockTransactionCountByNumber(
+    blockdb_env: BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
+
+    let p: MonadEthGetBlockTransactionCountByNumberParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+        return serialize_result(MonadEthGetBlockTransactionCountByNumberReturn { count: 0 });
+    };
+
+    let count = value.block.body.len() as u64;
+    serialize_result(MonadEthGetBlockTransactionCountByNumberReturn { count })
 }

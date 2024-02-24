@@ -2,6 +2,7 @@ use actix_web::{web, App, HttpResponse, HttpServer};
 use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
+    monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
     monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByHash,
 };
 use futures::SinkExt;
@@ -74,6 +75,20 @@ async fn rpc_select(
         "eth_getTransactionByBlockHashAndIndex" => {
             if let Some(reader) = &app_state.blockdb_reader {
                 monad_eth_getTransactionByBlockHashAndIndex(reader.clone(), params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_getBlockTransactionCountByHash" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_getBlockTransactionCountByHash(reader.clone(), params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_getBlockTransactionCountByNumber" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_getBlockTransactionCountByNumber(reader.clone(), params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }

@@ -8,9 +8,10 @@ use alloy_rlp::Decodable;
 use clap::Parser;
 use heed::{Env, EnvOpenOptions};
 use monad_blockdb::{
-    BlockNumTableKey, BlockNumTableType, BlockTableKey, BlockTableType, BlockValue, EthTxKey,
-    EthTxValue, TxnHashTableType, BLOCK_DB_MAP_SIZE, BLOCK_DB_NUM_DBS, BLOCK_NUM_TABLE_NAME,
-    BLOCK_TABLE_NAME, TXN_HASH_TABLE_NAME,
+    BlockNumTableKey, BlockNumTableType, BlockTableKey, BlockTableType, BlockTagKey,
+    BlockTagTableType, BlockTagValue, BlockValue, EthTxKey, EthTxValue, TxnHashTableType,
+    BLOCK_DB_MAP_SIZE, BLOCK_DB_NUM_DBS, BLOCK_NUM_TABLE_NAME, BLOCK_TABLE_NAME,
+    BLOCK_TAG_TABLE_NAME, TXN_HASH_TABLE_NAME,
 };
 use monad_crypto::hasher::{Blake3Hash, Hash, Hasher};
 use notify::{
@@ -52,6 +53,9 @@ fn create_tables(blockdb_path: &Path) -> io::Result<Env> {
         .unwrap();
     let _: TxnHashTableType = blockdb_env
         .create_database(Some(TXN_HASH_TABLE_NAME))
+        .unwrap();
+    let _: BlockTagTableType = blockdb_env
+        .create_database(Some(BLOCK_TAG_TABLE_NAME))
         .unwrap();
 
     Ok(blockdb_env)
@@ -112,12 +116,36 @@ fn update_tables(block: Block, blockdb_env: Env) {
     let mut block_table_txn = blockdb_env
         .write_txn()
         .expect("block_table txn create failed");
-    let block_table_key = block_hash;
+    let block_table_key = block_hash.clone();
     let block_table_value = BlockValue { block };
     block_table
         .put(&mut block_table_txn, &block_table_key, &block_table_value)
         .expect("block_table put failed");
     block_table_txn.commit().expect("block_table commit failed");
+
+    // update the blocktag table
+    let block_tag_table: BlockTagTableType = blockdb_env
+        .open_database(Some(BLOCK_TAG_TABLE_NAME))
+        .expect("block_tag_table should exist")
+        .unwrap();
+    let mut block_tag_table_txn = blockdb_env
+        .write_txn()
+        .expect("block_tag_table txn create failed");
+    let block_tag_value = BlockTagValue { block_hash };
+    block_tag_table
+        .put(
+            &mut block_tag_table_txn,
+            &BlockTagKey::Latest,
+            &block_tag_value,
+        )
+        .expect("block_tag_table put failed");
+    block_tag_table
+        .put(
+            &mut block_tag_table_txn,
+            &BlockTagKey::Finalized,
+            &block_tag_value,
+        )
+        .expect("block_tag_table put failed");
 }
 
 #[tokio::main]
