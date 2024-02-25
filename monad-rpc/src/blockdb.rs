@@ -7,7 +7,6 @@ use monad_blockdb::{
     BLOCK_DB_NUM_DBS, BLOCK_NUM_TABLE_NAME, BLOCK_TABLE_NAME, BLOCK_TAG_TABLE_NAME,
     TXN_HASH_TABLE_NAME,
 };
-use tokio::task;
 
 use crate::eth_json_types::BlockTags;
 
@@ -38,7 +37,9 @@ impl BlockDbEnv {
 
     pub async fn get_txn(&self, key: EthTxKey) -> Option<EthTxValue> {
         let env = self.blockdb_env.clone();
-        task::spawn_blocking(move || {
+        let (send, recv) = tokio::sync::oneshot::channel();
+
+        rayon::spawn(move || {
             let db: TxnHashTableType = env
                 .open_database(Some(TXN_HASH_TABLE_NAME))
                 .expect("txn_hash_table should exist")
@@ -49,15 +50,16 @@ impl BlockDbEnv {
                 .expect("get operation should not fail");
 
             let _ = db_txn.commit();
-            data
-        })
-        .await
-        .expect("tokio spawn_blocking should not fail")
+            let _ = send.send(data);
+        });
+        recv.await.expect("rayon panic get_txn")
     }
 
     pub async fn get_block_by_hash(&self, key: BlockTableKey) -> Option<BlockValue> {
         let env = self.blockdb_env.clone();
-        task::spawn_blocking(move || {
+        let (send, recv) = tokio::sync::oneshot::channel();
+
+        rayon::spawn(move || {
             let db: BlockTableType = env
                 .open_database(Some(BLOCK_TABLE_NAME))
                 .expect("block_table should exist")
@@ -68,15 +70,16 @@ impl BlockDbEnv {
                 .expect("get operation should not fail");
 
             let _ = db_txn.commit();
-            data
-        })
-        .await
-        .expect("tokio spawn_blocking should not fail")
+            let _ = send.send(data);
+        });
+        recv.await.expect("rayon panic get_block_by_hash")
     }
 
     pub async fn get_block_by_tag(&self, tag: BlockTags) -> Option<BlockValue> {
         let env = self.blockdb_env.clone();
-        task::spawn_blocking(move || {
+        let (send, recv) = tokio::sync::oneshot::channel();
+
+        rayon::spawn(move || {
             let block_table_key = match tag {
                 BlockTags::Number(q) => {
                     let db: BlockNumTableType = env
@@ -108,7 +111,8 @@ impl BlockDbEnv {
             let db_txn = env.read_txn().expect("read txn failed");
 
             let Some(block_table_key) = block_table_key else {
-                return None;
+                let _ = send.send(None);
+                return;
             };
 
             let block_data: Option<BlockValue> = db
@@ -116,9 +120,8 @@ impl BlockDbEnv {
                 .expect("get operation should not fail");
 
             let _ = db_txn.commit();
-            block_data
-        })
-        .await
-        .expect("tokio spawn_blocking should not fail")
+            let _ = send.send(block_data);
+        });
+        recv.await.expect("rayon panic get_block_by_tag")
     }
 }

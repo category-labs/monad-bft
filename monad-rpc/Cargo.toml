@@ -23,6 +23,7 @@ flume = { workspace = true }
 futures = { workspace = true }
 heed = { workspace = true }
 log = { workspace = true }
+rayon = { workspace = true }
 reth-primitives = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

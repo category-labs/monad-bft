@@ -28,7 +28,7 @@ mod mempool_tx;
 
 async fn rpc_handler(
     body: bytes::Bytes,
-    app_state: web::Data<MonadApp>,
+    app_state: web::Data<MonadRpcResources>,
 ) -> Result<HttpResponse, actix_web::Error> {
     trace!("rpc_handler: {body:?}");
 
@@ -50,7 +50,7 @@ async fn rpc_handler(
 }
 
 async fn rpc_select(
-    app_state: &MonadApp,
+    app_state: &MonadRpcResources,
     method: &str,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -98,9 +98,21 @@ async fn rpc_select(
 }
 
 #[derive(Clone)]
-struct MonadApp {
+struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
     blockdb_reader: Option<BlockDbEnv>,
+}
+
+impl MonadRpcResources {
+    pub fn new(
+        mempool_sender: flume::Sender<TransactionSigned>,
+        blockdb_reader: Option<BlockDbEnv>,
+    ) -> Self {
+        Self {
+            mempool_sender,
+            blockdb_reader,
+        }
+    }
 }
 
 #[actix_web::main]
@@ -121,20 +133,24 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build_global()
+        .expect("thread pool with 4 threads");
+
     // main server app
     HttpServer::new(move || {
         App::new()
             .app_data(web::JsonConfig::default().limit(8192))
             .service(
                 web::resource("/")
-                    .app_data(web::Data::new(MonadApp {
-                        mempool_sender: ipc_sender.clone(),
-                        blockdb_reader: args
-                            .blockdb_path
+                    .app_data(web::Data::new(MonadRpcResources::new(
+                        ipc_sender.clone(),
+                        args.blockdb_path
                             .clone()
                             .map(|p| BlockDbEnv::new(&p))
                             .flatten(),
-                    }))
+                    )))
                     .route(web::post().to(rpc_handler)),
             )
     })
@@ -159,20 +175,20 @@ mod tests {
 
     use super::*;
 
-    struct MonadAppState {
+    struct MonadRpcResourcesState {
         ipc_receiver: flume::Receiver<TransactionSigned>,
     }
 
     async fn init_server() -> (
         impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
-        MonadAppState,
+        MonadRpcResourcesState,
     ) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
-        let m = MonadAppState { ipc_receiver };
+        let m = MonadRpcResourcesState { ipc_receiver };
         let app = test::init_service(
             App::new().service(
                 web::resource("/")
-                    .app_data(web::Data::new(MonadApp {
+                    .app_data(web::Data::new(MonadRpcResources {
                         mempool_sender: ipc_sender.clone(),
                         blockdb_reader: None,
                     }))
