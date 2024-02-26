@@ -106,3 +106,10 @@ docker compose down $node_services
 # return to starting dir
 popd
 
+docker build $image_root/python -t monad-python
+
+# verify ledger
+docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 scripts/verify-ledger.py -c 3 -l ledger -n 300"
+# inspect the blocks, verify content
+docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py"
+
