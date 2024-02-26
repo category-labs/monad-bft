@@ -181,7 +181,7 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
     BlockBody {
         transactions,
         ommers: Vec::default(),
-        withdrawals: None,
+        withdrawals: Some(Vec::default()),
     }
 }
 
