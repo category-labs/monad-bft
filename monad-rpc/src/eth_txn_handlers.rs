@@ -9,7 +9,8 @@ use crate::{
     blockdb::BlockDbEnv,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, deserialize_quantity,
-        deserialize_unformatted_data, BlockTags, EthHash, Quantity, UnformattedData,
+        deserialize_unformatted_data, serialize_result, BlockTags, EthHash, Quantity,
+        UnformattedData,
     },
     jsonrpc::JsonRpcError,
 };
@@ -37,13 +38,6 @@ struct TransactionObject {
 struct MonadEthSendRawTransactionParams {
     #[serde(deserialize_with = "deserialize_unformatted_data")]
     hex_tx: UnformattedData,
-}
-
-fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
-    serde_json::to_value(value).map_err(|e| {
-        debug!("blockdb serialize error {:?}", e);
-        JsonRpcError::internal_error()
-    })
 }
 
 // TODO: need to support EIP-4844 transactions
@@ -94,7 +88,7 @@ struct MonadEthGetTransactionByHashReturn {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getTransactionByHash(
-    blockdb_env: BlockDbEnv,
+    blockdb_env: &BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
@@ -155,7 +149,7 @@ struct MonadEthGetBlockByHashReturn {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getBlockByHash(
-    blockdb_env: BlockDbEnv,
+    blockdb_env: &BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_getBlockByHash: {params:?}");
@@ -206,7 +200,7 @@ struct MonadEthGetTransactionByBlockHashAndIndexReturn {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getTransactionByBlockHashAndIndex(
-    blockdb_env: BlockDbEnv,
+    blockdb_env: &BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_getTransactionByBlockHashAndIndex: {params:?}");
@@ -260,7 +254,7 @@ struct MonadEthGetBlockTransactionCountByHashReturn {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getBlockTransactionCountByHash(
-    blockdb_env: BlockDbEnv,
+    blockdb_env: &BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
@@ -295,7 +289,7 @@ struct MonadEthGetBlockTransactionCountByNumberReturn {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getBlockTransactionCountByNumber(
-    blockdb_env: BlockDbEnv,
+    blockdb_env: &BlockDbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");

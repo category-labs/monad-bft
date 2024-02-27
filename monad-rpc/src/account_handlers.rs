@@ -1,10 +1,13 @@
 use log::{debug, trace};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    eth_json_types::{deserialize_block_tags, deserialize_fixed_data, BlockTags, EthAddress},
+    eth_json_types::{
+        deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
+    },
     jsonrpc::JsonRpcError,
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 #[derive(Deserialize, Debug)]
@@ -15,8 +18,18 @@ struct MonadEthGetBalanceParams {
     block: BlockTags,
 }
 
+#[derive(Serialize, Debug)]
+struct MonadEthGetBalanceReturn {
+    balance: String,
+}
+
+// FIXME: triedb related gets are supposed to use blocknumber in the key as well but its not
+// supported yet and can only return for latest block -- add block num to key when there is support
 #[allow(non_snake_case)]
-pub async fn monad_eth_getBalance(params: Value) -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_getBalance(
+    triedb_env: &TriedbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_getBalance: {params:?}");
 
     let p: MonadEthGetBalanceParams = match serde_json::from_value(params) {
@@ -27,5 +40,11 @@ pub async fn monad_eth_getBalance(params: Value) -> Result<Value, JsonRpcError> 
         }
     };
 
-    Ok(().into())
+    match triedb_env.get_account(p.account).await {
+        TriedbResult::Null => Ok(serde_json::Value::Null),
+        TriedbResult::RlpParseError => Err(JsonRpcError::internal_error()),
+        TriedbResult::Account(_, balance, _) => serialize_result(MonadEthGetBalanceReturn {
+            balance: format!("0x{:x}", balance),
+        }),
+    }
 }

@@ -12,6 +12,7 @@ bench = false
 
 [dependencies]
 monad-blockdb = { path = "../monad-blockdb" }
+monad-triedb = { path = "../monad-triedb" }
 
 actix-http = { workspace = true }
 actix-web = { workspace = true }

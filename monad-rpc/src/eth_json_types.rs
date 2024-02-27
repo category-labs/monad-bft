@@ -1,9 +1,14 @@
 use std::str::FromStr;
 
+use log::debug;
 use monad_blockdb::BlockTagKey;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
-use crate::hex::{decode, decode_quantity, DecodeHexError};
+use crate::{
+    hex::{decode, decode_quantity, DecodeHexError},
+    jsonrpc::JsonRpcError,
+};
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
@@ -103,6 +108,13 @@ where
     let buf = String::deserialize(deserializer)?;
     BlockTags::from_str(&buf)
         .map_err(|e| serde::de::Error::custom(format!("BlockTags parse failed: {e:?}")))
+}
+
+pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
+    serde_json::to_value(value).map_err(|e| {
+        debug!("blockdb serialize error {:?}", e);
+        JsonRpcError::internal_error()
+    })
 }
 
 #[cfg(test)]

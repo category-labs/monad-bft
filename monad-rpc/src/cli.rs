@@ -11,6 +11,9 @@ pub struct Cli {
     #[arg(long)]
     pub blockdb_path: Option<PathBuf>,
 
+    #[arg(long)]
+    pub triedb_path: Option<PathBuf>,
+
     #[arg(long, default_value_t = String::from("0.0.0.0"))]
     pub rpc_addr: String,
 

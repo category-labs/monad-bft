@@ -1,3 +1,4 @@
+use account_handlers::monad_eth_getBalance;
 use actix_web::{web, App, HttpResponse, HttpServer};
 use clap::Parser;
 use cli::Cli;
@@ -9,6 +10,7 @@ use futures::SinkExt;
 use log::{debug, trace};
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
+use triedb::TriedbEnv;
 
 use crate::{
     blockdb::BlockDbEnv,
@@ -25,6 +27,7 @@ mod eth_txn_handlers;
 mod hex;
 mod jsonrpc;
 mod mempool_tx;
+mod triedb;
 
 async fn rpc_handler(
     body: bytes::Bytes,
@@ -60,35 +63,42 @@ async fn rpc_select(
         }
         "eth_getTransactionByHash" => {
             if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_getTransactionByHash(reader.clone(), params).await
+                monad_eth_getTransactionByHash(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
         }
         "eth_getBlockByHash" => {
             if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_getBlockByHash(reader.clone(), params).await
+                monad_eth_getBlockByHash(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
         }
         "eth_getTransactionByBlockHashAndIndex" => {
             if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_getTransactionByBlockHashAndIndex(reader.clone(), params).await
+                monad_eth_getTransactionByBlockHashAndIndex(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
         }
         "eth_getBlockTransactionCountByHash" => {
             if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_getBlockTransactionCountByHash(reader.clone(), params).await
+                monad_eth_getBlockTransactionCountByHash(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
         }
         "eth_getBlockTransactionCountByNumber" => {
             if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_getBlockTransactionCountByNumber(reader.clone(), params).await
+                monad_eth_getBlockTransactionCountByNumber(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_getBalance" => {
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_getBalance(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
@@ -101,16 +111,19 @@ async fn rpc_select(
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
     blockdb_reader: Option<BlockDbEnv>,
+    triedb_reader: Option<TriedbEnv>,
 }
 
 impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TransactionSigned>,
         blockdb_reader: Option<BlockDbEnv>,
+        triedb_reader: Option<TriedbEnv>,
     ) -> Self {
         Self {
             mempool_sender,
             blockdb_reader,
+            triedb_reader,
         }
     }
 }
@@ -150,6 +163,7 @@ async fn main() -> std::io::Result<()> {
                             .clone()
                             .map(|p| BlockDbEnv::new(&p))
                             .flatten(),
+                        args.triedb_path.clone().as_deref().map(TriedbEnv::new),
                     )))
                     .route(web::post().to(rpc_handler)),
             )
@@ -191,6 +205,7 @@ mod tests {
                     .app_data(web::Data::new(MonadRpcResources {
                         mempool_sender: ipc_sender.clone(),
                         blockdb_reader: None,
+                        triedb_reader: None,
                     }))
                     .route(web::post().to(rpc_handler)),
             ),
