@@ -1,17 +1,27 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     marker::Unpin,
     ops::DerefMut,
+    path::Path,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
 
 use futures::Stream;
-use monad_consensus_types::block::BlockType;
+use heed::{Env as LmdbEnv, EnvOpenOptions};
+use monad_blockdb::{
+    BftLedgerTableType, BFT_LEDGER_TABLE_NAME, BLOCK_DB_MAP_SIZE, BLOCK_DB_NUM_DBS,
+};
+use monad_consensus_types::{
+    block::{Block, BlockType},
+    signature_collection::SignatureCollection,
+};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor::Executor;
 use monad_executor_glue::LedgerCommand;
+use monad_proto::proto::block::ProtoBlock;
 use monad_types::{BlockId, NodeId};
+use prost::Message;
 use tracing::warn;
 
 /// A ledger for commited Monad Blocks
@@ -110,6 +120,151 @@ impl<PT: PubKey, O: BlockType, E> MockLedger<PT, O, E> {
     }
     pub fn get_blocks(&self) -> &Vec<O> {
         &self.blockchain
+    }
+}
+
+pub struct BlockDbLedger<SCT: SignatureCollection, PT: PubKey, E> {
+    blockdb_env: LmdbEnv,
+    recent_blocks: VecDeque<Block<SCT>>,
+    max_size_recent_blocks: usize,
+    ledger_fetches:
+        HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<Block<SCT>>) -> E) + Send + Sync>>,
+    waker: Option<Waker>,
+}
+
+impl<SCT: SignatureCollection, PT: PubKey, E> BlockDbLedger<SCT, PT, E> {
+    pub fn new(blockdb_path: &Path, max_size_recent_blocks: usize) -> Self {
+        let blockdb_env = blockdb_init(blockdb_path).expect("db failed");
+
+        Self {
+            blockdb_env,
+            recent_blocks: VecDeque::new(),
+            max_size_recent_blocks,
+            ledger_fetches: HashMap::default(),
+            waker: None,
+        }
+    }
+}
+
+pub fn blockdb_store_bftblocks<SCT: SignatureCollection>(
+    blockdb_env: LmdbEnv,
+    blocks: Vec<Block<SCT>>,
+) {
+    let bftblock_table: BftLedgerTableType = blockdb_env
+        .open_database(Some(BFT_LEDGER_TABLE_NAME))
+        .expect("bftblock_table should exist")
+        .unwrap();
+    let mut bftblock_table_txn = blockdb_env
+        .write_txn()
+        .expect("bftblock_table txn create failed");
+
+    for block in blocks {
+        let pblock: ProtoBlock = (&block).into();
+        let data = pblock.encode_to_vec();
+        let block_id = block.get_id();
+
+        bftblock_table
+            .put(&mut bftblock_table_txn, &block_id.0, &data)
+            .expect("bftblock table put failed");
+    }
+    bftblock_table_txn
+        .commit()
+        .expect("bftblock_table commit failed");
+}
+
+fn blockdb_init(blockdb_path: &Path) -> std::io::Result<LmdbEnv> {
+    // TODO this won't work long term...monad-node should make the blockdb and then pass the
+    // env around to executors that need it...so the path parameter here should change to a env
+    // param
+    let blockdb_env = EnvOpenOptions::new()
+        .map_size(BLOCK_DB_MAP_SIZE)
+        .max_dbs(BLOCK_DB_NUM_DBS)
+        .open(blockdb_path)
+        .expect("db failed");
+
+    let _: BftLedgerTableType = blockdb_env
+        .create_database(Some(BFT_LEDGER_TABLE_NAME))
+        .unwrap();
+
+    Ok(blockdb_env)
+}
+
+impl<SCT: SignatureCollection, PT: PubKey, E> Executor for BlockDbLedger<SCT, PT, E> {
+    type Command = LedgerCommand<PT, Block<SCT>, E>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            LedgerCommand::LedgerFetch(..) => false,
+            LedgerCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        for command in commands {
+            match command {
+                LedgerCommand::LedgerCommit(blocks) => {
+                    // not awaiting this thread because
+                    // lmdb has locking so multiple writer threads is handled there.
+                    // we are only ever adding new blocks so order of writes does not matter
+                    let lmdb_env = self.blockdb_env.clone();
+                    let blocks_copy = blocks.clone();
+                    tokio::task::spawn_blocking(move || {
+                        blockdb_store_bftblocks(lmdb_env, blocks_copy);
+                    });
+
+                    for block in blocks {
+                        if self.recent_blocks.len() >= self.max_size_recent_blocks {
+                            self.recent_blocks.pop_back();
+                        }
+                        self.recent_blocks.push_front(block);
+                    }
+
+                    debug_assert!(self.recent_blocks.len() <= self.max_size_recent_blocks);
+                }
+                LedgerCommand::LedgerFetch(node_id, block_id, cb) => {
+                    if self
+                        .ledger_fetches
+                        .insert((node_id, block_id), cb)
+                        .is_some()
+                    {
+                        warn!(
+                            "MockLedger received duplicate fetch from {:?} for block {:?}",
+                            node_id, block_id
+                        );
+                    }
+                }
+            }
+        }
+        if !self.ledger_fetches.is_empty() {
+            if let Some(waker) = self.waker.take() {
+                waker.wake()
+            }
+        }
+    }
+}
+
+impl<SCT: SignatureCollection, PT: PubKey, E> Stream for BlockDbLedger<SCT, PT, E>
+where
+    Self: Unpin,
+{
+    type Item = E;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        if let Some((node_id, block_id)) = this.ledger_fetches.keys().next().cloned() {
+            let cb = this.ledger_fetches.remove(&(node_id, block_id)).unwrap();
+
+            if let Some(fetched_block) = this.recent_blocks.iter().find(|&b| b.get_id() == block_id)
+            {
+                return Poll::Ready(Some(cb(Some(fetched_block.clone()))));
+            }
+        }
+
+        self.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 

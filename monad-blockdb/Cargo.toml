@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+
 heed = { workspace = true }
 reth-primitives = { workspace = true }
 serde = { workspace = true }
