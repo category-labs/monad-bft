@@ -13,8 +13,8 @@ import shutil
 import secrets
 from collections import defaultdict
 from dataclasses import dataclass
-import yaml
 import tomli_w
+import json
 
 blst_bindings_path = (
     Path(os.path.dirname(os.path.realpath(__file__))) / "blst/bindings/python"
@@ -105,23 +105,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
     node_count = args.count
 
-    compose_path = Path(os.getcwd()) / "compose.yaml"
-    if not compose_path.exists():
-        print(f"compose.yml {compose_path} doesn't exist in cwd")
+    topology_path = Path(os.getcwd()) / "topology.json"
+    if not topology_path.exists():
+        print(f"topology file {topology_path} doesn't exist in cwd")
         sys.exit(1)
 
-    with open(compose_path, "r") as f:
-        compose_yaml = yaml.safe_load(f)
+    with open(topology_path, "r") as f:
+        topology_json = json.load(f)
 
-    for service_name, service in compose_yaml["services"].items():
-        if "volumes" not in service.keys():
-            continue
-        volumes = service["volumes"]
-        for v in volumes:
-            if v.split(":")[1] == "/monad":
-                volume = v.split(":")[0]
-        volume = (Path(os.getcwd()) / volume).name
-        peers[volume].service = service_name
+    for region in topology_json:
+        for node in region["nodes"]:
+            volume = node["volume"]
+            service_name = node["service"]
+            peers[volume].service = service_name
 
     volume_list = [Path(vol) for vol in peers.keys()]
     if node_count != len(volume_list):

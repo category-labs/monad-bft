@@ -1,3 +1,5 @@
+# Default monad node
+
 # builder stage
 FROM rust:1-buster AS builder
 WORKDIR /usr/src/monad-bft

@@ -7,6 +7,17 @@ services:
       dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
     image: image0:latest
 
+  build_rpc:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/rpc/Dockerfile
+    image: rpc:latest
+
+  build_python:
+    build:
+      context: ${FLEXNET_IMAGE_ROOT}/python
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
+    image: monad-python:latest
 
   node0_us:
     image: image0:latest
@@ -19,8 +30,28 @@ services:
       - NET_ADMIN
     entrypoint: ["bash", "/monad/scripts/run.sh"]
 
+  rpc0:
+    image: rpc:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node0:/monad
+    expose:
+      - 8080
+    entrypoint: ["bash", "/monad/scripts/rpc.sh"]
 
-  node1_eu:
+  rpc_blaster:
+    image: monad-python:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./rpc_blaster:/monad
+      - ./data:/data
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  node1_us:
     image: image0:latest
     environment:
       - HOST_UID=${HOST_UID}
@@ -31,7 +62,6 @@ services:
       - NET_ADMIN
     entrypoint: ["bash", "/monad/scripts/run.sh"]
 
-
   node2_eu:
     image: image0:latest
     environment:
@@ -39,6 +69,17 @@ services:
       - HOST_GID=${HOST_GID}
     volumes:
       - ./node2:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  node3_eu:
+    image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node3:/monad
     cap_add:
       - NET_ADMIN
     entrypoint: ["bash", "/monad/scripts/run.sh"]

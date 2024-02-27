@@ -11,6 +11,12 @@
                 "volume": "node0",
                 "up_Mbps": 100,
                 "down_Mbps": 100
+            },
+            {
+                "service": "node1_us",
+                "volume": "node1",
+                "up_Mbps": 100,
+                "down_Mbps": 100
             }
         ]
     },
@@ -22,14 +28,14 @@
         ],
         "nodes": [
             {
-                "service": "node1_eu",
-                "volume": "node1",
+                "service": "node2_eu",
+                "volume": "node2",
                 "up_Mbps": 100,
                 "down_Mbps": 100
             },
             {
-                "service": "node2_eu",
-                "volume": "node2",
+                "service": "node3_eu",
+                "volume": "node3",
                 "up_Mbps": 100,
                 "down_Mbps": 100
             }

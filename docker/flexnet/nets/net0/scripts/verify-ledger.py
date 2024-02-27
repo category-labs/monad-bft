@@ -1,9 +1,9 @@
-import yaml
 import argparse
 from pathlib import Path
 import os
 import sys
 import filecmp
+import json
 
 """
 Diff the ledgers
@@ -61,24 +61,20 @@ if __name__ == "__main__":
     ledger_dir = args.ledger
     ledger_min_length = args.blocks
 
-    compose_path = Path(os.getcwd()) / "compose.yaml"
-    if not compose_path.exists():
-        print(f"compose.yml {compose_path} doesn't exist in cwd")
+    # parse the volume paths
+    topology_path = Path(os.getcwd()) / "topology.json"
+    if not topology_path.exists():
+        print(f"topology file {topology_path} doesn't exist in cwd")
         sys.exit(1)
 
-    with open(compose_path, "r") as f:
-        compose_yaml = yaml.safe_load(f)
+    with open(topology_path, "r") as f:
+        topology_json = json.load(f)
 
-    # parse the volume paths
     volume_paths = []
-    for service_name, service in compose_yaml["services"].items():
-        if "volumes" not in service.keys():
-            continue
-        volumes = service["volumes"]
-        for v in volumes:
-            if v.split(":")[1] == "/monad":
-                volume = v.split(":")[0]
-        volume_paths.append(Path(os.getcwd()) / volume)
+    for region in topology_json:
+        for node in region["nodes"]:
+            volume = node["volume"]
+            volume_paths.append(Path(os.getcwd()) / volume)
 
     ledger_paths = [vol_path / ledger_dir for vol_path in volume_paths]
 

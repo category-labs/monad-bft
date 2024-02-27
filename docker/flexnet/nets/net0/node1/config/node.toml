@@ -11,12 +11,17 @@ beneficiary = "0x0000000000000000000000000000000000000000"
 [[bootstrap.peers]]
 address = "node0_us:8888"
 mempool_address = "node0_us:8889"
-secp256k1_pubkey = "0x02b0b53e1c8132629cac9dc52357f3867576a29fba4fc686501caa8b7c21992612"
+secp256k1_pubkey = "0x03944c0a7bc04ed26eaadefbb5c906a911fcdfa03b2cbec44dbd237a0c6fa5fac3"
 
 [[bootstrap.peers]]
 address = "node2_eu:8888"
 mempool_address = "node2_eu:8889"
-secp256k1_pubkey = "0x03521142713b444ebab11ade695747e1cad3c6a11f5a5b451f99419b1f88d4932f"
+secp256k1_pubkey = "0x03d28ecb0bb09653a70a02f7e4b67f712c687671dcda1eab405d8b06125639b330"
+
+[[bootstrap.peers]]
+address = "node3_eu:8888"
+mempool_address = "node3_eu:8889"
+secp256k1_pubkey = "0x02d4e32608ad688a803afd2a925f548a2e49b0db589ed1b688fe1034d2c05469a2"
 
 [network]
 bind_address_host = "0.0.0.0"

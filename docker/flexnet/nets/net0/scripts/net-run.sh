@@ -96,8 +96,8 @@ export HOST_UID=$(id -u)
 
 pushd $vol_root
 
-build_services=$(docker compose config --services | grep build_image)
-node_services=$(docker compose config --services | grep node)
+build_services=$(docker compose config --services | grep build)
+node_services=$(docker compose config --services | grep -v build)
 docker compose build $build_services &&
 docker compose up --detach $node_services
 sleep 30
@@ -106,10 +106,9 @@ docker compose down $node_services
 # return to starting dir
 popd
 
-docker build $image_root/python -t monad-python
 
 # verify ledger
 docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 scripts/verify-ledger.py -c 3 -l ledger -n 300"
 # inspect the blocks, verify content
-docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py"
+docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json"
 

@@ -19,9 +19,9 @@ mempool_address = "node1_us:8889"
 secp256k1_pubkey = "0x0311681fdf843a7fa790565a6fbaebc4d492a564d4d869b32099b6fc1ae49c7fdb"
 
 [[bootstrap.peers]]
-address = "node3_eu:8888"
-mempool_address = "node3_eu:8889"
-secp256k1_pubkey = "0x02d4e32608ad688a803afd2a925f548a2e49b0db589ed1b688fe1034d2c05469a2"
+address = "node2_eu:8888"
+mempool_address = "node2_eu:8889"
+secp256k1_pubkey = "0x03d28ecb0bb09653a70a02f7e4b67f712c687671dcda1eab405d8b06125639b330"
 
 [network]
 bind_address_host = "0.0.0.0"
