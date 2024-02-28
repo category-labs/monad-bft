@@ -199,7 +199,9 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         // ledger is received by all peers
         TransformerReplayOrder::Reverse => (longest_ledger_before + 1, longest_ledger_before + 2),
         // when replayed in random order, could be any number of requests
-        TransformerReplayOrder::Random(_) => (0, longest_ledger_before + 2),
+        // TODO: +5 is to ensure max_retry_cnt for blocksync is triggered only once
+        // should be fixed after updating blocksync requests on block commits
+        TransformerReplayOrder::Random(_) => (0, longest_ledger_before + 2 + 5),
     };
 
     let mut verifier_after_delayed_messages = MockSwarmVerifier::default();

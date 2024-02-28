@@ -121,6 +121,9 @@ pub struct BlockSyncRequester<ST, SCT: SignatureCollection> {
     /// before giving up on that specific request
     tmo_duration: Duration,
 
+    /// max retries per block before giving up on the block
+    max_retry_cnt: usize,
+
     _phantom: PhantomData<ST>,
 }
 
@@ -129,11 +132,16 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new(my_id: NodeId<SCT::NodeIdPubKey>, tmo_duration: Duration) -> Self {
+    pub fn new(
+        my_id: NodeId<SCT::NodeIdPubKey>,
+        tmo_duration: Duration,
+        max_retry_cnt: usize,
+    ) -> Self {
         Self {
             requests: HashMap::new(),
             my_id,
             tmo_duration,
+            max_retry_cnt,
             _phantom: PhantomData,
         }
     }
@@ -182,6 +190,13 @@ where
         let id = qc.get_block_id();
 
         if self.requests.contains_key(&id) {
+            debug!(
+                "Block sync request for block already in flight: bid={:?}",
+                id
+            );
+            return vec![];
+        } else if req_cnt > self.max_retry_cnt {
+            debug!("Block sync exceeded max retries: bid={:?}", id);
             return vec![];
         }
 
@@ -353,8 +368,12 @@ mod test {
     #[test]
     fn test_handle_request_block_sync_message_basic_functionality() {
         let keypair = get_key::<ST>(6);
-        let mut manager =
-            BlockSyncRequester::<ST, SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
+        let max_retry_cnt = 1;
+        let mut manager = BlockSyncRequester::<ST, SC>::new(
+            NodeId::new(keypair.pubkey()),
+            Duration::MAX,
+            max_retry_cnt,
+        );
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let mut metrics = Metrics::default();
@@ -422,8 +441,12 @@ mod test {
     #[test]
     fn test_handle_request() {
         let keypair = get_key::<ST>(6);
-        let mut manager =
-            BlockSyncRequester::<ST, SC>::new(NodeId::new(keypair.pubkey()), Duration::MAX);
+        let max_retry_cnt = 2;
+        let mut manager = BlockSyncRequester::<ST, SC>::new(
+            NodeId::new(keypair.pubkey()),
+            Duration::MAX,
+            max_retry_cnt,
+        );
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
         let transaction_validator = TV::default();
@@ -720,7 +743,8 @@ mod test {
         let members = valset.get_members().keys().cloned().collect_vec();
         let mut metrics = Metrics::default();
         let my_id = members[0];
-        let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
+        let max_retry_cnt = 300;
+        let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX, max_retry_cnt);
 
         let qc = &QC::new(
             QcInfo {
@@ -790,8 +814,9 @@ mod test {
         let (_, _, valset, _) =
             create_keys_w_validators::<ST, SC, _>(30, ValidatorSetFactory::default());
         let mut metrics = Metrics::default();
+        let max_retry_cnt = 3;
         let my_id = *valset.get_members().iter().next().unwrap().0;
-        let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX);
+        let mut manager = BlockSyncRequester::<ST, SC>::new(my_id, Duration::MAX, max_retry_cnt);
 
         let block = {
             let payload = Payload {

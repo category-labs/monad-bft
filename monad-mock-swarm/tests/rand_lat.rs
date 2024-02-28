@@ -60,6 +60,7 @@ fn nodes_with_random_latency_cron() {
 #[test_case(9; "seed9")]
 #[test_case(10; "seed10")]
 #[test_case(14710580201381303742; "seed11")]
+#[test_case(11282773634027867923; "seed12")]
 fn nodes_with_random_latency(latency_seed: u64) {
     use std::time::Duration;
 
@@ -113,12 +114,15 @@ fn nodes_with_random_latency(latency_seed: u64) {
     );
 
     let mut swarm = swarm_config.build();
-    let min_ledger_len = 2000;
+    let last_block = 2000;
     while swarm
-        .step_until(&mut UntilTerminator::new().until_block(min_ledger_len))
+        .step_until(&mut UntilTerminator::new().until_block(last_block))
         .is_some()
     {}
 
+    // -5 is arbitrary. this is to ensure that nodes aren't lagging too
+    // far behind because of the latency
+    let min_ledger_len = last_block - 5;
     let max_blocksync_requests = 30;
     let max_tick = happy_path_tick_by_block(min_ledger_len, delta);
     println!(

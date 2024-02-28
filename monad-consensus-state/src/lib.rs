@@ -212,7 +212,12 @@ where
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
             // as 1 * delta for original ask, 2 * delta for reaction from peer
-            block_sync_requester: BlockSyncRequester::new(NodeId::new(my_pubkey), config.delta * 3),
+            // TODO: make max_retry_cnt configurable
+            block_sync_requester: BlockSyncRequester::new(
+                NodeId::new(my_pubkey),
+                config.delta * 3,
+                5,
+            ),
             keypair,
             cert_keypair,
             beneficiary,
