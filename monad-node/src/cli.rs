@@ -30,6 +30,10 @@ pub struct Cli {
     // Set the path where the execution ledger will be stored
     #[arg(long)]
     pub execution_ledger_path: PathBuf,
+    //
+    // Set the path where the blockdb will be stored
+    #[arg(long)]
+    pub blockdb_path: PathBuf,
 
     /// Set a custom monad mempool ipc path
     #[arg(long)]

@@ -9,6 +9,7 @@ use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
 use monad_async_state_verify::PeerAsyncStateVerify;
+use monad_blockdb::BlockDbBuilder;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
@@ -183,11 +184,15 @@ async fn run(
         Updater::boxed(NopMetricsExecutor::default())
     };
 
+    let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
         ledger: MockLedger::default(),
-        execution_ledger: MonadBlockFileLedger::new(node_state.execution_ledger_path),
+        execution_ledger: MonadBlockFileLedger::new(
+            node_state.execution_ledger_path,
+            blockdb.clone(),
+        ),
         checkpoint: MockCheckpoint::default(),
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
         ipc: IpcReceiver::new(node_state.mempool_ipc_path, 1000).expect("uds bind failed"),

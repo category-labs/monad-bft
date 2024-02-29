@@ -6,8 +6,9 @@ use std::{
     path::PathBuf,
 };
 
-use alloy_primitives::{keccak256, Bloom, Bytes, FixedBytes, U256};
+use alloy_primitives::{Bloom, Bytes, FixedBytes, U256};
 use alloy_rlp::Encodable;
+use monad_blockdb::BlockDb;
 use monad_consensus_types::{
     block::{Block as MonadBlock, BlockType},
     payload::{ExecutionArtifacts, FullTransactionList},
@@ -17,8 +18,10 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_eth_tx::EthFullTransactionList;
 use monad_executor::Executor;
 use monad_executor_glue::ExecutionLedgerCommand;
+use monad_proto::proto::block::ProtoBlock;
 use monad_types::SeqNum;
-use reth_primitives::{BlockBody, Header};
+use prost::Message;
+use reth_primitives::{Block, BlockBody, Header};
 
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to a file which is read by Execution client
@@ -87,6 +90,7 @@ where
 /// number
 pub struct MonadBlockFileLedger<SCT> {
     dir_path: PathBuf,
+    blockdb: BlockDb,
     phantom: PhantomData<SCT>,
 }
 
@@ -94,7 +98,7 @@ impl<SCT> MonadBlockFileLedger<SCT>
 where
     SCT: SignatureCollection + Clone,
 {
-    pub fn new(dir_path: PathBuf) -> Self {
+    pub fn new(dir_path: PathBuf, blockdb: BlockDb) -> Self {
         match fs::create_dir(&dir_path) {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
@@ -102,6 +106,7 @@ where
         }
         Self {
             dir_path,
+            blockdb,
             phantom: PhantomData,
         }
     }
@@ -135,9 +140,27 @@ where
         for command in commands {
             match command {
                 ExecutionLedgerCommand::LedgerCommit(full_blocks) => {
-                    for full_block in full_blocks {
-                        self.write_block(full_block.get_seq_num(), &encode_full_block(full_block))
-                            .unwrap();
+                    let eth_blocks: Vec<Block> = full_blocks.iter().map(create_eth_block).collect();
+                    let encoded_blocks: Vec<(SeqNum, Vec<u8>)> =
+                        std::iter::zip(eth_blocks.iter(), full_blocks.iter())
+                            .map(|(eth, monad)| (monad.get_seq_num(), encode_eth_block(eth)))
+                            .collect();
+
+                    let env = self.blockdb.clone();
+                    tokio::task::spawn_blocking(move || {
+                        for (eth_block, bft_block) in
+                            std::iter::zip(eth_blocks.into_iter(), full_blocks.iter())
+                        {
+                            let bft_id = bft_block.get_id();
+                            let pblock: ProtoBlock = bft_block.into();
+                            let data = pblock.encode_to_vec();
+
+                            env.write_eth_and_bft_blocks(eth_block, bft_id.0 .0, &data);
+                        }
+                    });
+
+                    for (seqnum, b) in encoded_blocks {
+                        self.write_block(seqnum, &b).unwrap();
                     }
                 }
             }
@@ -153,19 +176,35 @@ fn encode_full_block<SCT: SignatureCollection>(block: MonadBlock<SCT>) -> Vec<u8
     let block_body = generate_block_body(&block.payload.txns);
 
     // the payload inside the monad block will be used to generate the eth header
+    let header = generate_header(&block, &block_body);
+
+    let mut header_bytes = Vec::default();
+    header.encode(&mut header_bytes);
+
+    let block = block_body.create_block(header);
+
+    let mut buf = vec![];
+    block.encode(&mut buf);
+
+    buf
+}
+
+fn create_eth_block<SCT: SignatureCollection>(block: &MonadBlock<SCT>) -> Block {
+    // use the full transactions to create the eth block body
+    let block_body = generate_block_body(&block.payload.txns);
+
+    // the payload inside the monad block will be used to generate the eth header
     let header = generate_header(block, &block_body);
 
     let mut header_bytes = Vec::default();
     header.encode(&mut header_bytes);
 
-    let header_hash = keccak256(header_bytes);
+    block_body.create_block(header)
+}
 
-    let block = block_body.create_block(header);
-
-    let mut buf = Vec::from(header_hash.0);
-
+fn encode_eth_block(block: &Block) -> Vec<u8> {
+    let mut buf = Vec::default();
     block.encode(&mut buf);
-
     buf
 }
 
@@ -188,7 +227,7 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
 // TODO-2: Review integration with execution team
 /// Use data from the MonadBlock to generate an Ethereum Header
 fn generate_header<SCT: SignatureCollection>(
-    monad_block: MonadBlock<SCT>,
+    monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
 ) -> Header {
     let ExecutionArtifacts {
@@ -202,7 +241,7 @@ fn generate_header<SCT: SignatureCollection>(
 
     let mut randao_reveal_hasher = HasherType::new();
 
-    randao_reveal_hasher.update(monad_block.payload.randao_reveal.0);
+    randao_reveal_hasher.update(monad_block.payload.randao_reveal.0.clone());
 
     Header {
         parent_hash: FixedBytes(*parent_hash.deref()),
@@ -227,78 +266,5 @@ fn generate_header<SCT: SignatureCollection>(
         excess_blob_gas: None,
         parent_beacon_block_root: None,
         extra_data: Bytes::default(),
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use monad_consensus_types::{
-        block::Block,
-        ledger::CommitResult,
-        payload::{Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal},
-        quorum_certificate::{QcInfo, QuorumCertificate},
-        state_root_hash::StateRootHash,
-        voting::{Vote, VoteInfo},
-    };
-    use monad_crypto::{
-        certificate_signature::{CertificateKeyPair, CertificateSignature},
-        hasher::Hash,
-        NopSignature,
-    };
-    use monad_eth_types::{EthAddress, EMPTY_RLP_TX_LIST};
-    use monad_multi_sig::MultiSig;
-    use monad_types::{BlockId, NodeId, Round, SeqNum};
-
-    use crate::encode_full_block;
-
-    #[test]
-    fn encode_full_block_header_hash() {
-        let pubkey =
-            <<NopSignature as CertificateSignature>::KeyPairType as CertificateKeyPair>::from_bytes(&mut [127; 32])
-                .unwrap()
-                .pubkey();
-
-        let block = Block::<MultiSig<NopSignature>>::new(
-            NodeId::new(pubkey),
-            Round(0),
-            &Payload {
-                txns: FullTransactionList::new(vec![EMPTY_RLP_TX_LIST].into()),
-                header: ExecutionArtifacts {
-                    parent_hash: StateRootHash::default(),
-                    state_root: StateRootHash::default(),
-                    transactions_root: Hash::default(),
-                    receipts_root: Hash::default(),
-                    logs_bloom: Bloom::zero(),
-                    gas_used: Gas::default(),
-                },
-                seq_num: SeqNum(0),
-                beneficiary: EthAddress::default(),
-                randao_reveal: RandaoReveal::default(),
-            },
-            &QuorumCertificate::new(
-                QcInfo {
-                    vote: Vote {
-                        vote_info: VoteInfo {
-                            id: BlockId(Hash([0x00_u8; 32])),
-                            round: Round(0),
-                            parent_id: BlockId(Hash([0x00_u8; 32])),
-                            parent_round: Round(0),
-                            seq_num: SeqNum(0),
-                        },
-                        ledger_commit_info: CommitResult::NoCommit,
-                    },
-                },
-                MultiSig::default(),
-            ),
-        );
-
-        let bytes = encode_full_block(block);
-
-        // Check that encode_full_block starts with keccak header hash
-        assert!(bytes.starts_with(&[
-            0x7f, 0x83, 0xd1, 0xb6, 0x3c, 0x1a, 0xd1, 0xec, 0xd8, 0x98, 0xe1, 0x83, 0xcf, 0x1a,
-            0x18, 0x5a, 0x73, 0xbf, 0xd2, 0x9c, 0x86, 0xe2, 0xda, 0x36, 0xb, 0x27, 0xc9, 0xcc,
-            0x79, 0x87, 0xf7, 0x8,
-        ]));
     }
 }

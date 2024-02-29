@@ -15,27 +15,24 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
+monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+prost = { workspace = true }
 reth-primitives = { workspace = true }
 tempfile = { workspace = true }
-
-[dev-dependencies]
-monad-eth-types = { path = "../monad-eth-types" }
-monad-multi-sig = { path = "../monad-multi-sig" }
-monad-types = { path = "../monad-types" }
-
-clap = { workspace = true, features = ["derive"] }
-futures = { workspace = true }
-heed = { workspace = true }
-serde = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",
     "rt",
 ]}
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
+serde = { workspace = true }
 notify = "6.1.1"
 
 [[example]]

@@ -1,3 +1,4 @@
 /target
+/docker/devnet/monad/blockdb
 /docker/devnet/monad/ledger
 /docker/devnet/monad/wal
