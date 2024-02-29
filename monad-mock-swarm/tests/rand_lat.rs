@@ -61,6 +61,7 @@ fn nodes_with_random_latency_cron() {
 #[test_case(10; "seed10")]
 #[test_case(14710580201381303742; "seed11")]
 #[test_case(11282773634027867923; "seed12")]
+#[test_case(11868595526945931122; "seed13")]
 fn nodes_with_random_latency(latency_seed: u64) {
     use std::time::Duration;
 
@@ -134,11 +135,15 @@ fn nodes_with_random_latency(latency_seed: u64) {
 
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier
+        // the node with the max blocksync requests could have the least
+        // blocks in its ledger.
+        // the last_block is committed by processing 2 QCs after it. there
+        // should be no branching
         .metric_range(
             &node_ids,
             fetch_metric!(consensus_events.process_qc),
             min_ledger_len as u64 - max_blocksync_requests,
-            min_ledger_len as u64 + 2,
+            last_block as u64 + 2,
         )
         .metric_maximum(
             &node_ids,
