@@ -45,7 +45,7 @@ use error::NodeSetupError;
 use monad_opentelemetry_executor::OpenTelemetryExecutor;
 
 mod state;
-use state::NodeState;
+use state::{build_otel_provider, NodeState};
 
 type SignatureType = SecpSignature;
 type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
@@ -63,16 +63,43 @@ fn main() {
         .map_err(|e| e.into())
         .unwrap_or_else(|e: NodeSetupError| cmd.error(e.kind(), e).exit());
 
-    if let Err(e) = runtime.block_on(run(cmd)) {
+    if let Err(e) = runtime.block_on(wrapped_run(cmd)) {
         log::error!("monad consensus node crashed: {:?}", e);
     }
 }
 
-async fn run(mut cmd: clap::Command) -> Result<(), ()> {
+async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
     // NodeState::setup needs to be called within a tokio runtime
     let node_state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
     drop(cmd);
 
+    let maybe_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
+        build_otel_provider(
+            endpoint,
+            format!("monad-node-{:?}", &node_state.secp256k1_identity.pubkey()),
+        )
+        .expect("failed to build otel monad-node")
+    });
+
+    let fut = run(node_state);
+    if let Some(provider) = &maybe_provider {
+        use tracing::instrument::WithSubscriber;
+        fut.with_subscriber({
+            use opentelemetry::trace::TracerProvider;
+            use tracing_subscriber::layer::SubscriberExt;
+
+            let tracer = provider.tracer("opentelemetry");
+            let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+            tracing_subscriber::Registry::default().with(telemetry)
+        })
+        .boxed()
+    } else {
+        fut.boxed()
+    }
+    .await
+}
+
+async fn run(node_state: NodeState) -> Result<(), ()> {
     let router = build_router::<
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,

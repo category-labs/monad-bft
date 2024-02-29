@@ -52,7 +52,15 @@ impl NodeState {
             toml::from_str(&std::fs::read_to_string(cli.genesis_config)?)?;
 
         let otel_context = if let Some(otel_endpoint) = &cli.otel_endpoint {
-            Some(build_otel_context(otel_endpoint)?)
+            let provider = build_otel_provider(otel_endpoint, "monad-coordinator".to_owned())?;
+
+            let context = {
+                let tracer = provider.tracer("opentelemetry");
+                let span = tracer.start("exec");
+                span.span_context().clone()
+            };
+
+            Some(opentelemetry::Context::default().with_remote_span_context(context))
         } else {
             None
         };
@@ -104,7 +112,10 @@ fn load_bls12_381_keypair(path: &PathBuf) -> Result<BlsKeyPair, NodeSetupError> 
     })
 }
 
-fn build_otel_context(otel_endpoint: &String) -> Result<opentelemetry::Context, NodeSetupError> {
+pub fn build_otel_provider(
+    otel_endpoint: &String,
+    service_name: String,
+) -> Result<opentelemetry::sdk::trace::TracerProvider, NodeSetupError> {
     let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(
         opentelemetry_otlp::new_exporter()
             .tonic()
@@ -116,15 +127,10 @@ fn build_otel_context(otel_endpoint: &String) -> Result<opentelemetry::Context, 
         .with_config(opentelemetry::sdk::trace::config().with_resource(
             opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                "monad-coordinator",
+                service_name,
             )]),
         ))
         .with_batch_exporter(exporter, opentelemetry::runtime::Tokio);
 
-    let provider = provider_builder.build();
-
-    let tracer = provider.tracer("opentelemetry");
-    let span = tracer.start("exec");
-
-    Ok(opentelemetry::Context::default().with_remote_span_context(span.span_context().clone()))
+    Ok(provider_builder.build())
 }
