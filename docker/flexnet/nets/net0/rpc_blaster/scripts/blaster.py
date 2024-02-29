@@ -3,7 +3,9 @@ import argparse
 from jsonrpcclient import request, parse, Ok
 import json
 import requests
+from requests.adapters import HTTPAdapter
 from time import sleep
+from urllib3.util.retry import Retry
 
 
 if __name__ == "__main__":
@@ -22,25 +24,22 @@ if __name__ == "__main__":
     with open(data_path, "r") as f:
         txns_json = json.load(f)
 
+    session = requests.Session()
+    retry = Retry(connect=3, backoff_factor=1)
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
     # read from a json file and send requests to server
     for txn in txns_json:
         raw_txn = txn["transaction"]
         json_rpc_request = request("eth_sendRawTransaction", params=[raw_txn])
-        for _ in range(5):
-            try:
-                response = requests.post(rpc_addr, json=json_rpc_request)
-            # rpc server might not be running, retry..
-            except Exception as e:
-                print("rpc connection error: ", e)
-                sleep(0.5)
-                continue
-            break
-        
+        response = session.post(rpc_addr, json=json_rpc_request)
         parsed = parse(response.json())
 
         if isinstance(parsed, Ok):
             resp_hash = parsed.result
             if resp_hash == txn["hash"]:
+                print(f"submitted tx {txn["hash"]}")
                 txn["submitted"] = True
             else:
                 print(f"Expected txn hash: {txn["hash"]}, got {resp_hash}")

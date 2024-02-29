@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   build_monad_bft:
     build:
