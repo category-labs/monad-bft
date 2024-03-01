@@ -234,7 +234,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 {
                     let _ledger_span = ledger_span.enter();
-                    let _wal_event_span = tracing::info_span!("wal_event_span", ?event).entered();
+                    let _wal_event_span = tracing::info_span!("wal_event_span").entered();
                     if let Err(err) = wal.push(&event) {
                         event!(
                             Level::ERROR,

@@ -6,6 +6,7 @@ use log::info;
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider};
+use opentelemetry_api::{trace::SpanBuilder, Context};
 use opentelemetry_otlp::WithExportConfig;
 use zeroize::Zeroize;
 
@@ -56,7 +57,10 @@ impl NodeState {
 
             let context = {
                 let tracer = provider.tracer("opentelemetry");
-                let span = tracer.start("exec");
+                let span = SpanBuilder::from_name("exec")
+                    .with_trace_id(15.into())
+                    .with_span_id(15.into());
+                let span = Context::map_current(|cx| tracer.build_with_context(span, cx));
                 span.span_context().clone()
             };
 
