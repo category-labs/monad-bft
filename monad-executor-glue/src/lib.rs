@@ -235,7 +235,7 @@ pub enum ValidatorEvent<SCT: SignatureCollection> {
     UpdateValidators((ValidatorData<SCT>, Epoch)),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum MempoolEvent<SCT: SignatureCollection> {
     /// Txns that are incoming from other Nodes
     CascadeTxns {
@@ -244,6 +244,25 @@ pub enum MempoolEvent<SCT: SignatureCollection> {
     },
     /// Txns that are incoming via RPC (users)
     UserTxns(Vec<Bytes>),
+}
+
+impl<SCT: SignatureCollection> Debug for MempoolEvent<SCT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CascadeTxns { sender, txns } => f
+                .debug_struct("CascadeTxns")
+                .field("sender", &sender)
+                .field("txns", &txns)
+                .finish(),
+            Self::UserTxns(txns) => f
+                .debug_struct("UserTxns")
+                .field(
+                    "txns_len_bytes",
+                    &txns.iter().map(Bytes::len).sum::<usize>(),
+                )
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

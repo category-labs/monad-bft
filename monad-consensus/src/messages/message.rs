@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use bytes::Bytes;
 use monad_consensus_types::{
     block::{BlockType, UnverifiedBlock},
@@ -141,9 +143,17 @@ impl<T: SignatureCollection> Hashable for BlockSyncResponseMessage<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CascadeTxMessage {
     pub txns: Bytes,
+}
+
+impl Debug for CascadeTxMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CascadeTxMessage")
+            .field("txns_len_bytes", &self.txns.len())
+            .finish()
+    }
 }
 
 impl Hashable for CascadeTxMessage {
