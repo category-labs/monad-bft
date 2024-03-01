@@ -3169,6 +3169,7 @@ dependencies = [
  "reth-primitives",
  "serde",
  "serde_json",
+ "test-case",
  "tokio",
  "tokio-util",
 ]

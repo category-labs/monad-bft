@@ -13,6 +13,34 @@ pub struct Request {
     pub id: Value,
 }
 
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RequestWrapper<T> {
+    /// To be JSON-RPC spec-compliant, `Batch(Vec<T>)` needs to be the first variant in this enum.
+    /// To see why, refer to these examples from https://www.jsonrpc.org/specification
+    ///
+    /// ```
+    /// rpc call with an invalid Batch (but not empty):
+    /// --> [1]
+    /// <-- [
+    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}
+    /// ]
+    /// rpc call with invalid Batch:
+    ///
+    /// --> [1,2,3]
+    /// <-- [
+    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null},
+    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null},
+    ///   {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null}
+    /// ]
+    /// ```
+    ///
+    /// If `Batch(Vec<T>)` is not the first variant, we will fail to return a batched JSON array of
+    /// the individual failure responses and instead return a single JSON object as a failure response.
+    Batch(Vec<T>),
+    Single(T),
+}
+
 impl Request {
     #[allow(dead_code)]
     pub fn new(method: String, params: Value, id: Value) -> Self {
@@ -35,6 +63,13 @@ pub struct Response {
     pub id: Value,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ResponseWrapper<T> {
+    Single(T),
+    Batch(Vec<T>),
+}
+
 impl Response {
     pub fn new(result: Option<Value>, error: Option<JsonRpcError>, id: Value) -> Self {
         Self {
@@ -43,6 +78,17 @@ impl Response {
             error,
             id,
         }
+    }
+
+    pub fn from_result(request_id: Value, result: Result<Value, JsonRpcError>) -> Self {
+        match result {
+            Ok(v) => Self::new(Some(v), None, request_id),
+            Err(e) => Self::new(None, Some(e), request_id),
+        }
+    }
+
+    pub fn from_error(error: JsonRpcError) -> Self {
+        Self::new(None, Some(error), Value::Null)
     }
 }
 

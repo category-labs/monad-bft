@@ -7,7 +7,7 @@ use eth_txn_handlers::{
     monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByHash,
 };
 use futures::SinkExt;
-use log::{debug, trace};
+use log::{debug, info};
 use reth_primitives::TransactionSigned;
 use serde_json::Value;
 use triedb::TriedbEnv;
@@ -15,7 +15,7 @@ use triedb::TriedbEnv;
 use crate::{
     blockdb::BlockDbEnv,
     eth_txn_handlers::{monad_eth_getBlockByHash, monad_eth_sendRawTransaction},
-    jsonrpc::JsonRpcError,
+    jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
 };
 
@@ -29,27 +29,52 @@ mod jsonrpc;
 mod mempool_tx;
 mod triedb;
 
-async fn rpc_handler(
-    body: bytes::Bytes,
-    app_state: web::Data<MonadRpcResources>,
-) -> Result<HttpResponse, actix_web::Error> {
-    trace!("rpc_handler: {body:?}");
-
-    let request: Result<jsonrpc::Request, serde_json::Error> = serde_json::from_slice(&body);
-    let request = match request {
+async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
+    let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(e) => {
-            debug!("parse error: {e}");
-            return Ok(HttpResponse::Ok().json(jsonrpc::JsonRpcError::parse_error()));
+            debug!("parse error: {e} {body:?}");
+            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
         }
     };
 
-    let response = match rpc_select(&app_state, &request.method, request.params).await {
-        Ok(v) => jsonrpc::Response::new(Some(v), None, request.id),
-        Err(e) => jsonrpc::Response::new(None, Some(e), request.id),
+    let response = match request {
+        RequestWrapper::Single(json_request) => {
+            let Ok(request) = serde_json::from_value::<Request>(json_request) else {
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
+            };
+            ResponseWrapper::Single(Response::from_result(
+                request.id,
+                rpc_select(&app_state, &request.method, request.params).await,
+            ))
+        }
+        RequestWrapper::Batch(json_batch_request) => {
+            if json_batch_request.is_empty() {
+                return HttpResponse::Ok()
+                    .json(Response::from_error(JsonRpcError::invalid_request()));
+            }
+            let batch_response =
+                futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
+                    let app_state = app_state.clone(); // cheap copy
+                    async move {
+                        let Ok(request) = serde_json::from_value::<Request>(json_request) else {
+                            return (Value::Null, Err(JsonRpcError::invalid_request()));
+                        };
+                        let (state, id, method, params) =
+                            (app_state, request.id, request.method, request.params);
+                        (id, rpc_select(&state, &method, params).await)
+                    }
+                }))
+                .await
+                .into_iter()
+                .map(|(request_id, response)| Response::from_result(request_id, response))
+                .collect::<Vec<_>>();
+            ResponseWrapper::Batch(batch_response)
+        }
     };
 
-    Ok(HttpResponse::Ok().json(response))
+    info!("rpc_request/response: {body:?} => {response:?}");
+    HttpResponse::Ok().json(&response)
 }
 
 async fn rpc_select(
@@ -185,7 +210,8 @@ mod tests {
         sign_message, AccessList, Address, Transaction, TransactionKind, TransactionSigned,
         TxEip1559, TxLegacy, B256,
     };
-    use serde_json::json;
+    use serde_json::{json, Number};
+    use test_case::test_case;
 
     use super::*;
 
@@ -272,7 +298,12 @@ mod tests {
         let b = to_bytes(resp.into_body())
             .await
             .unwrap_or_else(|_| panic!("body to_bytes failed"));
-        serde_json::from_slice(&b).unwrap()
+        serde_json::from_slice(&b)
+            .map_err(|e| {
+                println!("failed to serialize {:?}", &b);
+                e
+            })
+            .unwrap()
     }
 
     #[actix_web::test]
@@ -339,5 +370,45 @@ mod tests {
                 .unwrap_or_else(|_| panic!("testcase {i}: nothing was sent on channel"));
             assert_eq!(expected_hash, txn.hash());
         }
+    }
+
+    #[allow(non_snake_case)]
+    #[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)); "empty batch")]
+    #[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null)]); "invalid batch but not empty")]
+    #[test_case(json!([1, 2, 3, 4]),
+    ResponseWrapper::Batch(vec![
+        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
+        Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
+    ]); "multiple invalid batch")]
+    #[test_case(json!([
+        {"jsonrpc": "2.0", "method": "subtract", "params": [42, 43], "id": 1},
+        1,
+        {"jsonrpc": "2.0", "method": "subtract", "params": [42, 43], "id": 1}
+    ]),
+    ResponseWrapper::Batch(
+        vec![
+            Response::new(None, Some(JsonRpcError::method_not_found()), Value::Number(Number::from(1))),
+            Response::new(None, Some(JsonRpcError::invalid_request()), Value::Null),
+            Response::new(None, Some(JsonRpcError::method_not_found()), Value::Number(Number::from(1))),
+        ],
+    ); "partial success")]
+    #[actix_web::test]
+    async fn json_rpc_specification_batch_compliance(
+        payload: Value,
+        expected: ResponseWrapper<Response>,
+    ) {
+        let (app, _) = init_server().await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .set_payload(payload.to_string())
+            .to_request();
+
+        let resp = app.call(req).await.unwrap();
+        let resp: jsonrpc::ResponseWrapper<Response> =
+            serde_json::from_value(recover_response_body(resp).await).unwrap();
+        assert_eq!(resp, expected);
     }
 }
