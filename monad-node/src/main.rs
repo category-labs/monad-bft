@@ -4,6 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use chrono::Utc;
 use clap::CommandFactory;
 use config::{NodeBootstrapPeerConfig, NodeNetworkConfig};
 use futures_util::{FutureExt, StreamExt};
@@ -16,7 +17,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
-use monad_executor_glue::{Message, MetricsCommand, MonadEvent};
+use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
 use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
@@ -191,7 +192,8 @@ async fn run(
         metrics: metrics_executor,
     };
 
-    let logger_config = WALoggerConfig::new(node_state.wal_path.clone(), true);
+    let logger_config: WALoggerConfig<LogFriendlyMonadEvent<_, _>> =
+        WALoggerConfig::new(node_state.wal_path.clone(), true);
     let Ok((mut wal, wal_events)) = logger_config.build() else {
         event!(
             Level::ERROR,
@@ -226,7 +228,7 @@ async fn run(
     executor.exec(init_commands);
 
     for wal_event in wal_events {
-        let cmds = state.update(wal_event);
+        let cmds = state.update(wal_event.event);
         executor.replay(cmds);
     }
 
@@ -252,6 +254,11 @@ async fn run(
                     return Err(());
                 };
 
+                let event = LogFriendlyMonadEvent {
+                    timestamp: Utc::now(),
+                    event,
+                };
+
                 {
                     let _ledger_span = ledger_span.enter();
                     let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
@@ -263,8 +270,8 @@ async fn run(
 
                 let commands = {
                     let _ledger_span = ledger_span.enter();
-                    let _event_span = tracing::trace_span!("event_span", ?event).entered();
-                    state.update(event)
+                    let _event_span = tracing::trace_span!("event_span", ?event.event).entered();
+                    state.update(event.event)
                 };
 
                 executor.exec(commands);

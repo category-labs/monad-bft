@@ -21,13 +21,45 @@ pub struct WALoggerConfig<M> {
     _marker: PhantomData<M>,
 }
 
-impl<M> WALoggerConfig<M> {
+impl<M> WALoggerConfig<M>
+where
+    M: Serializable<Bytes> + Deserializable<[u8]> + Debug,
+{
     pub fn new(file_path: PathBuf, sync: bool) -> Self {
         Self {
             file_path,
             sync,
             _marker: PhantomData,
         }
+    }
+
+    pub fn load_read_only(self, start: usize, end: usize) -> Result<Vec<M>, WALError> {
+        let file = AppendOnlyFile::read_only(self.file_path)?;
+        let mut logger = WALogger {
+            _marker: PhantomData,
+            file_handle: file,
+            sync: self.sync,
+        };
+        let mut msg_vec = Vec::new();
+        let mut n = start;
+
+        while n < end {
+            match logger.load_one() {
+                Ok((msg, _)) => {
+                    msg_vec.push(msg);
+                }
+                Err(WALError::IOError(err)) => match err.kind() {
+                    io::ErrorKind::UnexpectedEof => {
+                        return Ok(msg_vec);
+                    }
+                    _ => return Err(WALError::IOError(err)),
+                },
+                Err(err) => return Err(err),
+            }
+            n += 1;
+        }
+
+        Ok(msg_vec)
     }
 }
 

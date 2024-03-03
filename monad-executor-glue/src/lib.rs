@@ -2,7 +2,8 @@ pub mod convert;
 
 use std::fmt::Debug;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
+use chrono::{DateTime, Utc};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
@@ -320,5 +321,107 @@ where
 {
     fn serialize(&self) -> Bytes {
         crate::convert::interface::serialize_event(self)
+    }
+}
+
+impl<ST, SCT> std::fmt::Display for MonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection,
+{
+    // TODO impl Display for each individual event instead
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s: String = match self {
+            MonadEvent::ConsensusEvent(ConsensusEvent::Message {
+                sender,
+                unverified_message: _,
+            }) => {
+                format!("ConsensusEvent::Message from {sender}")
+            }
+            MonadEvent::ConsensusEvent(ConsensusEvent::Timeout(TimeoutVariant::Pacemaker)) => {
+                format!("ConsensusEvent::Timeout Pacemaker local timeout")
+            }
+            MonadEvent::ConsensusEvent(_) => "CONSENSUS".to_string(),
+            MonadEvent::BlockSyncEvent(_) => "BLOCKSYNC".to_string(),
+            MonadEvent::ValidatorEvent(_) => "VALIDATOR".to_string(),
+            MonadEvent::MempoolEvent(MempoolEvent::CascadeTxns { sender, txns: _ }) => {
+                format!("MempoolEvent::CascadeTxns from {sender}")
+            }
+            MonadEvent::MempoolEvent(MempoolEvent::UserTxns(txns)) => {
+                format!("MempoolEvent::UserTxns -- number of txns: {}", txns.len())
+            }
+            MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
+                format!(
+                    "AsyncStateVerifyEvent::LocalStateRoot -- round:{} seqnum:{} hash:{}",
+                    root.round.0,
+                    root.seq_num.0,
+                    root.state_root_hash.0.to_string()
+                )
+            }
+            MonadEvent::AsyncStateVerifyEvent(_) => "ASYNCSTATEVERIFY".to_string(),
+            MonadEvent::MetricsEvent(_) => "METRICS".to_string(),
+        };
+
+        write!(f, "{}", s)
+    }
+}
+
+/// Wrapper around MonadEvent to capture more information that is useful in logs for
+/// retrospection
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogFriendlyMonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection,
+{
+    pub timestamp: DateTime<Utc>,
+    pub event: MonadEvent<ST, SCT>,
+}
+
+type EventHeaderType = u32;
+const EVENT_HEADER_LEN: usize = std::mem::size_of::<EventHeaderType>();
+
+impl<ST, SCT> monad_types::Deserializable<[u8]> for LogFriendlyMonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    type ReadError = monad_proto::error::ProtoError;
+    fn deserialize(data: &[u8]) -> Result<Self, Self::ReadError> {
+        let mut offset = 0;
+        let header: [u8; 4] = data[0..EVENT_HEADER_LEN].try_into().unwrap();
+        let ts_size = EventHeaderType::from_le_bytes(header) as usize;
+        offset += EVENT_HEADER_LEN;
+
+        let ts: DateTime<Utc> = bincode::deserialize(&data[offset..offset + ts_size]).unwrap();
+        offset += ts_size;
+
+        let event = crate::convert::interface::deserialize_event(&data[offset..])?;
+
+        Ok(LogFriendlyMonadEvent {
+            timestamp: ts,
+            event,
+        })
+    }
+}
+
+impl<ST, SCT> monad_types::Serializable<Bytes> for LogFriendlyMonadEvent<ST, SCT>
+where
+    ST: CertificateSignatureRecoverable,
+    SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+{
+    fn serialize(&self) -> Bytes {
+        let mut b = BytesMut::new();
+
+        let ts = bincode::serialize(&self.timestamp).unwrap();
+        let len = (ts.len() as EventHeaderType).to_le_bytes();
+
+        b.put(&len[..]);
+        b.put(&ts[..]);
+
+        let ev = crate::convert::interface::serialize_event(&self.event);
+        b.put(&ev[..]);
+
+        b.into()
     }
 }

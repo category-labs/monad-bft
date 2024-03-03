@@ -14,6 +14,7 @@ monad-types = { path = "../monad-types" }
 bytes = { workspace = true }
 
 [dev-dependencies]
+monad-bls = { path = "../monad-bls" }
 monad-consensus = { path = "../monad-consensus" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
@@ -27,8 +28,13 @@ monad-testutil = { path = "../monad-testutil" }
 monad-types = { path = "../monad-types" }
 monad-validator = { path = "../monad-validator" }
 
+chrono = { workspace = true }
+clap = { workspace = true }
 criterion = { workspace = true }
+itertools = { workspace = true }
 tempfile = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
 
 [[bench]]
 name = "raw_bench"
@@ -37,3 +43,6 @@ harness = false
 [[bench]]
 name = "event_bench"
 harness = false
+
+[[example]]
+name = "wal-tool"

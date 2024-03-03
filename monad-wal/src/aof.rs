@@ -20,6 +20,11 @@ impl AppendOnlyFile {
         Ok(Self { file })
     }
 
+    pub fn read_only(file_path: PathBuf) -> io::Result<Self> {
+        let file = OpenOptions::new().read(true).open(file_path)?;
+        Ok(Self { file })
+    }
+
     pub fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
         self.file.read_exact(buf)
     }
