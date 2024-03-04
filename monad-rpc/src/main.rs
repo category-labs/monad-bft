@@ -157,6 +157,8 @@ impl MonadRpcResources {
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
+    env_logger::try_init().expect("failed to initialize logger");
+
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
     // channel to send

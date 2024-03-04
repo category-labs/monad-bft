@@ -3159,6 +3159,7 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "clap 4.4.10",
+ "env_logger",
  "flume",
  "futures",
  "heed",
