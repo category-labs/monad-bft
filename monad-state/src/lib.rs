@@ -459,7 +459,7 @@ where
             SCT,
         >,
     > {
-        let _event_span = tracing::info_span!("event_span", ?event).entered();
+        let _event_span = tracing::debug_span!("event_span", ?event).entered();
 
         match event {
             MonadEvent::ConsensusEvent(consensus_event) => {

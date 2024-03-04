@@ -189,11 +189,11 @@ where
             match command {
                 RouterCommand::Publish { target, message } => {
                     let message = {
-                        let mut _ser_span = tracing::info_span!("serialize_span").entered();
+                        let mut _ser_span = tracing::trace_span!("serialize_span").entered();
                         message.serialize()
                     };
                     let mut _publish_span =
-                        tracing::info_span!("publish_span", message_len = message.len()).entered();
+                        tracing::debug_span!("publish_span", message_len = message.len()).entered();
                     self.gossip.send(self.current_time, target, message);
 
                     if let Some(waker) = self.waker.take() {
@@ -322,7 +322,7 @@ where
             ConnectionManagerEvent::Emit(from, app_message) => {
                 let message = {
                     let mut _deser_span =
-                        tracing::info_span!("deserialize_span", message_len = app_message.len())
+                        tracing::trace_span!("deserialize_span", message_len = app_message.len())
                             .entered();
                     match M::deserialize(&app_message) {
                         Ok(m) => m,
@@ -330,7 +330,7 @@ where
                     }
                 };
                 let event = {
-                    let mut _message_to_event_span = tracing::info_span!(
+                    let mut _message_to_event_span = tracing::trace_span!(
                         "message_to_event_span",
                         message_len = app_message.len()
                     )
@@ -357,7 +357,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.0.lock().unwrap();
-        let mut _router_poll_span = tracing::info_span!("router_poll_span").entered();
+        let mut _router_poll_span = tracing::trace_span!("router_poll_span").entered();
 
         if this.waker.is_none() {
             this.waker = Some(cx.waker().clone());

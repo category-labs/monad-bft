@@ -259,6 +259,7 @@ where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     {
+        tracing::info_span!("handle_proposal_span", ?author);
         debug!("Proposal Message: {:?}", p);
         metrics.consensus_events.handle_proposal += 1;
         let mut cmds = Vec::new();
@@ -801,6 +802,7 @@ where
 
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
             ConsensusAction::Propose(h, pending_blocktree_txs) => {
+                tracing::info_span!("create_proposal_span", ?round);
                 metrics.consensus_events.creating_proposal += 1;
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
@@ -826,6 +828,7 @@ where
                 vec![]
             }
             ConsensusAction::ProposeEmpty => {
+                tracing::info_span!("create_proposal_empty_span", ?round);
                 // Don't have the necessary state root hash ready so propose
                 // a NULL block
                 metrics.consensus_events.creating_empty_block_proposal += 1;

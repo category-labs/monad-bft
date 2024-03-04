@@ -96,7 +96,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
             payload: payload.clone(),
             qc: qc.clone(),
             id: {
-                let mut _block_hash_span = tracing::info_span!("block_hash_span").entered();
+                let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
                 let mut state = HasherType::new();
                 author.hash(&mut state);
                 state.update(round.as_bytes());

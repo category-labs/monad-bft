@@ -1,6 +1,6 @@
 use std::{
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -34,6 +34,11 @@ use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
 use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing_subscriber::{
+    fmt::{format::FmtSpan, Layer},
+    layer::SubscriberExt,
+    EnvFilter, Registry,
+};
 
 mod cli;
 use cli::Cli;
@@ -52,10 +57,6 @@ type SignatureCollectionType = BlsSignatureCollection<CertificateSignaturePubKey
 
 fn main() {
     let mut cmd = Cli::command();
-
-    env_logger::try_init()
-        .map_err(NodeSetupError::EnvLoggerError)
-        .unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -81,22 +82,33 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
         .expect("failed to build otel monad-node")
     });
 
-    let fut = run(node_state);
     if let Some(provider) = &maybe_provider {
-        use tracing::instrument::WithSubscriber;
-        fut.with_subscriber({
-            use opentelemetry::trace::TracerProvider;
-            use tracing_subscriber::layer::SubscriberExt;
+        use opentelemetry::trace::TracerProvider;
 
-            let tracer = provider.tracer("opentelemetry");
-            let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-            tracing_subscriber::Registry::default().with(telemetry)
-        })
-        .boxed()
+        let tracer = provider.tracer("opentelemetry");
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = Registry::default()
+            .with(EnvFilter::from_default_env())
+            .with(
+                Layer::default()
+                    .with_writer(std::io::stdout)
+                    .with_span_events(FmtSpan::CLOSE),
+            )
+            .with(telemetry);
+
+        tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
     } else {
-        fut.boxed()
+        let subscriber = Registry::default()
+            .with(EnvFilter::from_default_env())
+            .with(
+                Layer::default()
+                    .with_writer(std::io::stdout)
+                    .with_span_events(FmtSpan::CLOSE),
+            );
+        tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
     }
-    .await
+
+    run(node_state).await
 }
 
 async fn run(node_state: NodeState) -> Result<(), ()> {
@@ -203,11 +215,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         let cmds = state.update(wal_event);
         executor.replay(cmds);
     }
-    let total_start = Instant::now();
-    let mut start = total_start;
-    let mut last_printed_len = 0;
-
-    const BLOCK_INTERVAL: usize = 100;
 
     let mut last_ledger_len = executor.ledger().get_blocks().len();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
@@ -234,7 +241,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 {
                     let _ledger_span = ledger_span.enter();
-                    let _wal_event_span = tracing::info_span!("wal_event_span").entered();
+                    let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
                     if let Err(err) = wal.push(&event) {
                         event!(
                             Level::ERROR,
@@ -247,7 +254,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
                 let commands = {
                     let _ledger_span = ledger_span.enter();
-                    let _event_span = tracing::info_span!("event_span", ?event).entered();
+                    let _event_span = tracing::trace_span!("event_span", ?event).entered();
                     state.update(event)
                 };
 
@@ -262,17 +269,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     if let Some(cx) = &node_state.otel_context {
                         ledger_span.set_parent(cx.clone());
                     }
-                }
-
-                if ledger_len >= last_printed_len + BLOCK_INTERVAL {
-                    event!(
-                        Level::INFO,
-                        ledger_len = ledger_len,
-                        elapsed_ms = start.elapsed().as_millis(),
-                        "100 blocks"
-                    );
-                    start = Instant::now();
-                    last_printed_len = ledger_len / BLOCK_INTERVAL * BLOCK_INTERVAL;
                 }
             }
         }

@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
@@ -57,9 +60,20 @@ impl NodeState {
 
             let context = {
                 let tracer = provider.tracer("opentelemetry");
+                let start_time = {
+                    let unix_ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("can't compute elapsed time");
+                    let round_seconds = 60 * 60 * 24;
+                    let rounded_duration =
+                        Duration::from_secs(unix_ts.as_secs() / round_seconds * round_seconds);
+                    UNIX_EPOCH + rounded_duration
+                };
                 let span = SpanBuilder::from_name("exec")
                     .with_trace_id(15.into())
-                    .with_span_id(15.into());
+                    .with_span_id(15.into())
+                    .with_start_time(start_time)
+                    .with_end_time(start_time + Duration::from_secs(1));
                 let span = Context::map_current(|cx| tracer.build_with_context(span, cx));
                 span.span_context().clone()
             };

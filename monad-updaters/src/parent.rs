@@ -45,7 +45,7 @@ where
     type Command = Command<E, OM, B, C, SCT>;
 
     fn replay(&mut self, commands: Vec<Self::Command>) {
-        let _exec_span = tracing::info_span!("replay_span", num_cmds = commands.len()).entered();
+        let _exec_span = tracing::trace_span!("replay_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
             timer_cmds,
@@ -67,7 +67,7 @@ where
     }
 
     fn exec(&mut self, commands: Vec<Command<E, OM, B, C, SCT>>) {
-        let _exec_span = tracing::info_span!("exec_span", num_cmds = commands.len()).entered();
+        let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let (
             router_cmds,
             timer_cmds,

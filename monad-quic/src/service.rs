@@ -138,7 +138,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        let mut _router_poll_span = tracing::info_span!("router_poll_span").entered();
+        let mut _router_poll_span = tracing::trace_span!("router_poll_span").entered();
 
         let this = self.deref_mut();
         if this.waker.is_none() {

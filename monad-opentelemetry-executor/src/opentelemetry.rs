@@ -458,7 +458,7 @@ where
     type Item = MonadEvent<ST, SCT>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut _timer_poll_span = tracing::info_span!("timer_poll_span").entered();
+        let mut _otel_poll_span = tracing::trace_span!("otel_poll_span").entered();
 
         let this = self.deref_mut();
 
