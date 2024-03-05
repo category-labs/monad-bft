@@ -281,14 +281,14 @@ where
                         if let Some(local_root) = block_state.local_root {
                             if local_root != info {
                                 warn!(
-                                    "conflicting local state root local={:?} quorum={:?}",
-                                    local_root, block_state.local_root
+                                    "local execution result differ from quorum local={:?} quorum={:?}",
+                                    local_root, info
                                 );
                             }
                         } else {
                             info!("local execution delayed");
                         }
-                        // TODO: record the quorum
+
                         block_state.quorum = Some(StateRootCertificate { info, sigs: sigcol });
                         break;
                     }

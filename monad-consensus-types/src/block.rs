@@ -72,6 +72,8 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
             .field("qc_info", &self.qc.info)
             .field("qc", &self.qc)
             .field("id", &self.id)
+            .field("txn_payload_len", &self.payload.txns.bytes().len())
+            .field("execution_state_root", &self.payload.header.state_root)
             .finish_non_exhaustive()
     }
 }

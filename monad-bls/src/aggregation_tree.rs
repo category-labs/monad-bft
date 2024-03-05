@@ -135,12 +135,21 @@ fn merge_nodes<PT: PubKey>(
     cert
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BlsSignatureCollection<PT: PubKey> {
     pub signers: BitVec<usize, Lsb0>,
     pub sig: BlsAggregateSignature,
 
     pub(crate) _phantom: PhantomData<PT>,
+}
+
+impl<PT: PubKey> std::fmt::Debug for BlsSignatureCollection<PT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlsSignatureCollection")
+            .field("signers", &format_args!("{}", &self.signers))
+            .field("sig", &self.sig)
+            .finish()
+    }
 }
 
 impl<PT: PubKey> Hashable for BlsSignatureCollection<PT> {

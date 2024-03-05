@@ -25,7 +25,7 @@ impl std::error::Error for Error {}
 
 impl std::fmt::Debug for PubKey {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let ser = self.bytes();
+        let ser = self.bytes_compressed();
         write!(
             f,
             "{:02x}{:02x}..{:02x}{:02x}",

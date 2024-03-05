@@ -649,6 +649,10 @@ where
     /// arrive after the delay-gap between execution so they need to be handled
     /// asynchronously
     pub fn handle_state_root_update(&mut self, seq_num: SeqNum, root_hash: StateRootHash) {
+        debug!(
+            "handle_state_root_update seq_num: {:?} state root: {:?}",
+            seq_num, root_hash
+        );
         self.state_root_validator.add_state_root(seq_num, root_hash)
     }
 

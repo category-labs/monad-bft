@@ -17,6 +17,7 @@ monad-validator = { path = "../monad-validator" }
 
 bitvec = { workspace = true, features = ["serde"] }
 blst = { workspace = true }
+hex = { workspace = true }
 prost = { workspace = true }
 serde_cbor = { workspace = true }
 zeroize = { workspace = true }

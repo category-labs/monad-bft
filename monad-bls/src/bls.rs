@@ -93,8 +93,16 @@ fn map_err_to_result(bls_error: blst::BLST_ERROR) -> Result<(), BlsError> {
 #[derive(Debug, Clone, Copy)]
 pub struct BlsAggregatePubKey(blst_core::AggregatePublicKey);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct BlsPubKey(blst_core::PublicKey);
+
+impl std::fmt::Debug for BlsPubKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("BlsPubKey")
+            .field(&hex::encode(self.compress()))
+            .finish()
+    }
+}
 
 impl From<blst_core::PublicKey> for BlsPubKey {
     fn from(value: blst_core::PublicKey) -> Self {
@@ -278,11 +286,29 @@ impl BlsKeyPair {
 }
 
 /// Similar to [BlsAggregatePubKey] and [BlsPubKey]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct BlsAggregateSignature(blst_core::AggregateSignature);
 
-#[derive(Debug, Clone, Copy)]
+/// Output the signature serialized bytes in hex string
+impl std::fmt::Debug for BlsAggregateSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("BlsAggregateSignature")
+            .field(&hex::encode(self.serialize()))
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct BlsSignature(blst_core::Signature);
+
+/// Output the signature serialized bytes in hex string
+impl std::fmt::Debug for BlsSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("BlsSignature")
+            .field(&hex::encode(self.serialize()))
+            .finish()
+    }
+}
 
 impl From<blst_core::Signature> for BlsSignature {
     fn from(value: blst_core::Signature) -> Self {
