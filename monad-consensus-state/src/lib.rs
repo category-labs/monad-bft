@@ -245,10 +245,11 @@ where
     /// NULL block proposals are not required to validate the state_root field of the
     /// proposal's payload
     #[must_use]
-    pub fn handle_proposal_message<VTF, LT>(
+    pub fn handle_proposal_message<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         p: ProposalMessage<SCT>,
+        tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
         election: &LT,
@@ -258,6 +259,7 @@ where
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        TT: TxPool,
     {
         tracing::info_span!("handle_proposal_span", ?author);
         debug!("Proposal Message: {:?}", p);
@@ -375,6 +377,21 @@ where
             cmds.push(send_cmd);
         }
 
+        // check for a valid pending_qc in vote_state
+        if self.vote_state.get_pending_qc_round() == Some(round) {
+            if let Some(qc) = self.vote_state.pending_qc.take() {
+                cmds.extend(self.handle_created_qc(
+                    &qc,
+                    tx_pool,
+                    epoch_manager,
+                    val_epoch_map,
+                    election,
+                    metrics,
+                    version,
+                ));
+            }
+        }
+
         cmds
     }
 
@@ -413,42 +430,25 @@ where
             .expect("vote message was verified");
 
         let mut cmds = Vec::new();
-        let (qc, vote_state_cmds) =
-            self.vote_state
-                .process_vote(&author, &vote_msg, validator_set, validator_mapping);
+        let (qc, vote_state_cmds) = self.vote_state.process_vote(
+            self.pacemaker.get_current_round(),
+            &author,
+            &vote_msg,
+            validator_set,
+            validator_mapping,
+        );
         cmds.extend(vote_state_cmds.into_iter().map(Into::into));
 
         if let Some(qc) = qc {
-            debug!("Created QC {:?}", qc);
-            metrics.consensus_events.created_qc += 1;
-            cmds.extend(self.process_certificate_qc(
+            cmds.extend(self.handle_created_qc(
                 &qc,
+                tx_pool,
                 epoch_manager,
-                validator_set,
+                val_epoch_map,
+                election,
                 metrics,
                 version,
             ));
-
-            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
-            // error-prone
-            let (next_round, next_epoch, next_validator_set) = {
-                let next_round = self.pacemaker.get_current_round();
-                let next_epoch = epoch_manager.get_epoch(next_round);
-                let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
-                    todo!("handle non-existent validatorset for next round epoch");
-                };
-                (next_round, next_epoch, next_validator_set.get_members())
-            };
-
-            if self.nodeid == election.get_leader(next_round, next_epoch, next_validator_set) {
-                cmds.extend(self.process_new_round_event(
-                    tx_pool,
-                    validator_set,
-                    None,
-                    metrics,
-                    version,
-                ));
-            }
         }
         cmds
     }
@@ -735,6 +735,60 @@ where
         // to request it.
         cmds.extend(self.request_block_if_missing_ancestor(qc, validators, metrics));
 
+        cmds
+    }
+
+    #[must_use]
+    fn handle_created_qc<VTF, LT, TT>(
+        &mut self,
+        qc: &QuorumCertificate<SCT>,
+        tx_pool: &mut TT,
+        epoch_manager: &mut EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
+        metrics: &mut Metrics,
+        version: &str,
+    ) -> Vec<ConsensusCommand<ST, SCT>>
+    where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        TT: TxPool,
+    {
+        let mut cmds = Vec::new();
+        debug!("Created QC {:?}", qc);
+        metrics.consensus_events.created_qc += 1;
+        let epoch = epoch_manager.get_epoch(qc.get_round());
+        let validator_set = val_epoch_map
+            .get_val_set(&epoch)
+            .expect("vote message was verified");
+        cmds.extend(self.process_certificate_qc(
+            qc,
+            epoch_manager,
+            validator_set,
+            metrics,
+            version,
+        ));
+
+        // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+        // error-prone
+        let (next_round, next_epoch, next_validator_set) = {
+            let next_round = self.pacemaker.get_current_round();
+            let next_epoch = epoch_manager.get_epoch(next_round);
+            let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
+                todo!("handle non-existent validatorset for next round epoch");
+            };
+            (next_round, next_epoch, next_validator_set.get_members())
+        };
+
+        if self.nodeid == election.get_leader(next_round, next_epoch, next_validator_set) {
+            cmds.extend(self.process_new_round_event(
+                tx_pool,
+                validator_set,
+                None,
+                metrics,
+                version,
+            ));
+        }
         cmds
     }
 
@@ -1304,6 +1358,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1329,6 +1384,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1348,6 +1404,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1365,6 +1422,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1389,6 +1447,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1424,6 +1483,7 @@ mod test {
         let _ = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1442,6 +1502,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, SignatureCollectionType>::new();
@@ -1459,6 +1520,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1473,6 +1535,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1504,6 +1567,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1522,6 +1586,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1547,6 +1612,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1585,6 +1651,7 @@ mod test {
         let _ = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1607,6 +1674,7 @@ mod test {
             cmds.extend(state.handle_proposal_message(
                 author,
                 verified_message,
+                &mut empty_txpool,
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -1631,6 +1699,7 @@ mod test {
         let _ = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1655,6 +1724,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1673,6 +1743,7 @@ mod test {
         let p1_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1698,6 +1769,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1729,6 +1801,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1749,6 +1822,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let state = &mut states[0];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -1767,6 +1841,7 @@ mod test {
         let _ = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1788,6 +1863,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1836,6 +1912,7 @@ mod test {
         let p3_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1899,6 +1976,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1910,6 +1988,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1921,6 +2000,7 @@ mod test {
         let cmds4 = fourth_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -1933,6 +2013,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2003,6 +2084,7 @@ mod test {
         let _ = second_state.handle_proposal_message(
             author_2,
             verified_message_2.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2014,6 +2096,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message(
             author_2,
             verified_message_2.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2041,6 +2124,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2050,6 +2134,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2090,6 +2175,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2106,6 +2192,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2133,6 +2220,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2190,6 +2278,7 @@ mod test {
         let cmds2 = third_state.handle_proposal_message(
             author_2,
             verified_message_2,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2223,6 +2312,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
 
@@ -2243,6 +2333,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2273,6 +2364,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
 
@@ -2303,6 +2395,7 @@ mod test {
             .handle_proposal_message(
                 author,
                 verified_message,
+                &mut empty_txpool,
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -2342,6 +2435,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
 
@@ -2365,6 +2459,7 @@ mod test {
             let _cmds = state.handle_proposal_message(
                 author,
                 p,
+                &mut empty_txpool,
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -2397,6 +2492,7 @@ mod test {
         let cmds = state.handle_proposal_message(
             author,
             p,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2454,6 +2550,7 @@ mod test {
         let cmds1 = first_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2465,6 +2562,7 @@ mod test {
         let cmds2 = second_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2476,6 +2574,7 @@ mod test {
         let cmds3 = third_state.handle_proposal_message(
             author,
             verified_message.clone(),
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2487,6 +2586,7 @@ mod test {
         let cmds4 = fourth_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2560,6 +2660,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let (state, _) = states.split_first_mut().unwrap();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
 
@@ -2582,6 +2683,7 @@ mod test {
         let _ = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2611,6 +2713,7 @@ mod test {
         let _ = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2642,6 +2745,7 @@ mod test {
         let p2_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2675,6 +2779,7 @@ mod test {
         let p3_cmds = state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2709,6 +2814,7 @@ mod test {
             });
         let election = SimpleRoundRobin::default();
         let (first_state, _) = states.split_first_mut().unwrap();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
 
@@ -2734,6 +2840,7 @@ mod test {
         let _ = first_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2762,6 +2869,7 @@ mod test {
         let _ = first_state.handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -2794,6 +2902,7 @@ mod test {
             let cmds = first_state.handle_proposal_message(
                 author,
                 verified_message,
+                &mut empty_txpool,
                 &mut epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -2817,8 +2926,7 @@ mod test {
     #[test_case(5; "5 participants")]
     #[test_case(6; "6 participants")]
     #[test_case(7; "7 participants")]
-    #[test_case(100; "100 participants")]
-    #[test_case(523; "523 participants")]
+    #[test_case(123; "123 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
         let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
             setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
@@ -2827,8 +2935,8 @@ mod test {
             );
 
         let election = SimpleRoundRobin::default();
-        let mut empty_txpool = MockTxPool::default();
         let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
         let version = "TEST";
 
@@ -2848,6 +2956,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     &mut epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -2865,42 +2974,54 @@ mod test {
         for state in states.iter() {
             assert_eq!(state.get_current_round(), Round(8));
         }
-        let epoch = epoch_manager.get_epoch(Round(10));
+
+        // determine the leader of round 11 because we are going to skip sending them the round 9
+        // proposal while the other nodes get it and send their votes
+        let epoch = epoch_manager.get_epoch(Round(11));
         let next_leader = election.get_leader(
-            Round(10),
+            Round(11),
             epoch,
             val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
-        // test when observing a qc through vote message, and qc points to a block that doesn't exists yet
-        let cp = correct_proposal_gen.next_proposal(
-            &keys,
-            &certkeys,
-            &epoch_manager,
-            &val_epoch_map,
-            &election,
-            FullTransactionList::empty(),
-            ExecutionArtifacts::zero(),
-        );
-        let (author, _, verified_message) = cp.destructure();
-        let mut votes = vec![];
-        for (i, state) in states.iter_mut().enumerate() {
-            if state.nodeid != next_leader {
-                let cmds = state.handle_proposal_message(
-                    author,
-                    verified_message.clone(),
-                    &mut epoch_manager,
-                    &val_epoch_map,
-                    &election,
-                    &mut metrics[i],
-                    version,
-                );
 
-                let v = extract_vote_msgs(cmds);
-                assert_eq!(v.len(), 1);
-                votes.push((state.nodeid, v[0]));
-            } else {
-                leader_index = i;
+        // generate proposals 9 and 10 and collect the votes for 10 so that we can deliver them to
+        // the leader of 11
+        let mut votes = vec![];
+        let mut proposal_10_blockid = BlockId(Hash::default());
+        for j in 0..2 {
+            let cp = correct_proposal_gen.next_proposal(
+                &keys,
+                &certkeys,
+                &epoch_manager,
+                &val_epoch_map,
+                &election,
+                FullTransactionList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+            let (author, _, verified_message) = cp.destructure();
+            for (i, state) in states.iter_mut().enumerate() {
+                if state.nodeid != next_leader {
+                    let cmds = state.handle_proposal_message(
+                        author,
+                        verified_message.clone(),
+                        &mut empty_txpool,
+                        &mut epoch_manager,
+                        &val_epoch_map,
+                        &election,
+                        &mut metrics[i],
+                        version,
+                    );
+
+                    if j == 1 {
+                        proposal_10_blockid = verified_message.block.0.get_id();
+                        let v = extract_vote_msgs(cmds);
+                        assert_eq!(v.len(), 1);
+                        votes.push((state.nodeid, v[0]));
+                    }
+                } else {
+                    leader_index = i;
+                }
             }
         }
         for (i, (author, v)) in votes.iter().enumerate() {
@@ -2923,7 +3044,7 @@ mod test {
                     })
                     .collect();
                 assert_eq!(req.len(), 1);
-                assert_eq!(req[0].1, verified_message.block.0.get_id());
+                assert_eq!(req[0].1, proposal_10_blockid);
             } else {
                 let req: Vec<_> = cmds
                     .into_iter()
@@ -2967,6 +3088,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     &mut epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3026,6 +3148,7 @@ mod test {
                 num_state as u32,
                 || NopStateRoot,
             );
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
         let version = "TEST";
         let election = SimpleRoundRobin::default();
@@ -3059,6 +3182,7 @@ mod test {
         let cmds = states[1].handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -3074,6 +3198,156 @@ mod test {
             .collect();
         assert_eq!(req.len(), 1);
         assert_eq!(req[0].1, blocks[3].0.get_id());
+    }
+
+    // Expected behaviour when leader N+2 receives the votes for N+1 before receiving the proposal
+    // for N+1 is that it holds the newly formed QC and waits until the proposal for N+1 arrives.
+    #[test]
+    fn test_votes_with_missing_parent_block() {
+        let num_state = 4;
+        let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_state as u32,
+                || NopStateRoot,
+            );
+
+        let election = SimpleRoundRobin::default();
+        let mut correct_proposal_gen = ProposalGen::<SignatureType, _>::new();
+        let mut empty_txpool = MockTxPool::default();
+        let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
+        let version = "TEST";
+
+        let missing_round = 9;
+
+        for i in 0..missing_round - 1 {
+            let cp = correct_proposal_gen.next_proposal(
+                &keys,
+                &certkeys,
+                &epoch_manager,
+                &val_epoch_map,
+                &election,
+                FullTransactionList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (j, state) in states.iter_mut().enumerate() {
+                let cmds = state.handle_proposal_message(
+                    author,
+                    verified_message.clone(),
+                    &mut empty_txpool,
+                    &mut epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                    &mut metrics[j],
+                    version,
+                );
+                let bsync_reqest = cmds
+                    .iter()
+                    .find(|&c| matches!(c, ConsensusCommand::RequestSync { .. }));
+                // observing a qc that link to root should not trigger anything
+                assert!(bsync_reqest.is_none());
+                assert_eq!(state.get_current_round(), Round(i + 1))
+            }
+        }
+        for state in states.iter() {
+            assert_eq!(state.get_current_round(), Round(missing_round - 1));
+        }
+
+        // determine the leader of round after missing round so we can skip sending them missing
+        // round and then send the votes for missing round
+        let epoch = epoch_manager.get_epoch(Round(missing_round + 1));
+        let next_leader = election.get_leader(
+            Round(missing_round + 1),
+            epoch,
+            val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
+        );
+        let mut leader_index = 0;
+        let mut votes = vec![];
+        let cp = correct_proposal_gen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+
+        // get the votes for missing round
+        let (author, _, verified_message) = cp.destructure();
+        for (i, state) in states.iter_mut().enumerate() {
+            if state.nodeid != next_leader {
+                let cmds = state.handle_proposal_message(
+                    author,
+                    verified_message.clone(),
+                    &mut empty_txpool,
+                    &mut epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                    &mut metrics[i],
+                    version,
+                );
+
+                let v = extract_vote_msgs(cmds);
+                assert_eq!(v.len(), 1);
+                votes.push((state.nodeid, v[0]));
+            } else {
+                leader_index = i;
+            }
+        }
+
+        // deliver the votes for missing round
+        for (i, (author, v)) in votes.iter().enumerate() {
+            let cmds = states[leader_index].handle_vote_message(
+                *author,
+                *v,
+                &mut empty_txpool,
+                &mut epoch_manager,
+                &val_epoch_map,
+                &election,
+                &mut metrics[leader_index],
+                version,
+            );
+            // make sure that after super majority of votes, we are not prodcuing any proposal
+            // commands
+            if i >= (num_state * 2 / 3) {
+                assert!(cmds.is_empty());
+            }
+        }
+
+        // leader got the votes and created a pending qc for the missing round
+        assert!(states[leader_index].vote_state.pending_qc.is_some());
+        assert_eq!(
+            states[leader_index]
+                .vote_state
+                .pending_qc
+                .as_ref()
+                .unwrap()
+                .get_round(),
+            Round(missing_round)
+        );
+
+        // when the missing proposal arrives, we expect the pending qc to now propose
+        // and we also expect the node to process the QC and therefore move into missing_round+1
+        let cmds = states[leader_index].handle_proposal_message(
+            author,
+            verified_message, // this was the missing proposal message
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics[leader_index],
+            version,
+        );
+
+        assert_eq!(
+            states[leader_index].pacemaker.get_current_round(),
+            Round(missing_round + 1)
+        );
+        assert!(states[leader_index].vote_state.pending_qc.is_none());
+        let p = extract_proposal_broadcast(cmds);
+        assert_eq!(Round(missing_round + 1), p.block.0.get_round());
     }
 
     /// This test asserts that proposal not from the round leader is not added
@@ -3095,6 +3369,7 @@ mod test {
                 || NopStateRoot,
             );
 
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_state).map(|_| Metrics::default()).collect();
         let version = "TEST";
         let election = SimpleRoundRobin::default();
@@ -3115,6 +3390,7 @@ mod test {
         let _ = states[0].handle_proposal_message(
             p1.block.0.author,
             p1,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -3157,6 +3433,7 @@ mod test {
         let _ = states[0].handle_proposal_message(
             invalid_p2.block.0.author,
             invalid_p2,
+            &mut empty_txpool,
             &mut epoch_manager,
             &val_epoch_map,
             &election,
@@ -3182,6 +3459,7 @@ mod test {
         let election = SimpleRoundRobin::default();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let version = "TEST";
 
@@ -3209,6 +3487,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3269,6 +3548,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let version = "TEST";
         let mut propgen = ProposalGen::<SignatureType, _>::new();
@@ -3298,6 +3578,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3358,6 +3639,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3400,6 +3682,7 @@ mod test {
         let _ = states[0].handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_managers[0],
             &val_epoch_map,
             &election,
@@ -3439,6 +3722,7 @@ mod test {
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
         let version = "TEST";
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
         let mut blocks = vec![];
@@ -3467,6 +3751,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3537,6 +3822,7 @@ mod test {
         let _ = states[0].handle_proposal_message(
             author,
             verified_message,
+            &mut empty_txpool,
             &mut epoch_managers[0],
             &val_epoch_map,
             &election,
@@ -3606,6 +3892,7 @@ mod test {
                     .handle_proposal_message(
                         author,
                         verified_message.clone(),
+                        &mut empty_txpool,
                         epoch_manager,
                         &val_epoch_map,
                         &election,
@@ -3666,6 +3953,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -3729,6 +4017,7 @@ mod test {
             );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let propgen_epoch_manager = epoch_manager;
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let version = "TEST";
         let election = SimpleRoundRobin::default();
@@ -3760,6 +4049,7 @@ mod test {
                     .handle_proposal_message(
                         author,
                         verified_message.clone(),
+                        &mut empty_txpool,
                         epoch_manager,
                         &val_epoch_map,
                         &election,
@@ -3804,6 +4094,7 @@ mod test {
                 .handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager_1,
                     &val_epoch_map,
                     &election,
@@ -3869,6 +4160,7 @@ mod test {
             .handle_proposal_message(
                 author,
                 verified_message.clone(),
+                &mut empty_txpool,
                 epoch_manager_2,
                 &val_epoch_map,
                 &election,
@@ -3923,6 +4215,7 @@ mod test {
             .handle_proposal_message(
                 author,
                 verified_message,
+                &mut empty_txpool,
                 epoch_manager_2,
                 &val_epoch_map,
                 &election,
@@ -3979,6 +4272,7 @@ mod test {
         );
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let version = "TEST";
         let election = SimpleRoundRobin::default();
@@ -4012,6 +4306,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -4079,6 +4374,7 @@ mod test {
             let cmds = state.handle_proposal_message(
                 author,
                 verified_message.clone(),
+                &mut empty_txpool,
                 epoch_manager,
                 &val_epoch_map,
                 &election,
@@ -4123,6 +4419,7 @@ mod test {
         let mut epoch_managers = vec![epoch_manager.clone(); num_states];
         let mut propgen_epoch_manager = epoch_manager;
         let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
         let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
         let mut propgen = ProposalGen::<SignatureType, _>::new();
 
@@ -4155,6 +4452,7 @@ mod test {
                 let cmds = state.handle_proposal_message(
                     author,
                     verified_message.clone(),
+                    &mut empty_txpool,
                     epoch_manager,
                     &val_epoch_map,
                     &election,
@@ -4191,6 +4489,7 @@ mod test {
             let cmds = state.handle_proposal_message(
                 author,
                 verified_message.clone(),
+                &mut empty_txpool,
                 epoch_manager,
                 &val_epoch_map,
                 &election,

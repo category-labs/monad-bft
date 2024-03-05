@@ -119,6 +119,7 @@ where
                     ProtocolMessage::Proposal(msg) => self.consensus.handle_proposal_message(
                         author,
                         msg,
+                        self.txpool,
                         self.epoch_manager,
                         self.val_epoch_map,
                         self.leader_election,
