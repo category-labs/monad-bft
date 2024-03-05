@@ -276,7 +276,7 @@ async fn run(
                     ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
 
                     if let Some((cx, expiry)) = &mut otel_context {
-                        if *expiry > SystemTime::now() {
+                        if *expiry < SystemTime::now() {
                             let (new_cx, new_expiry) = build_otel_context(
                                 maybe_coordinator_provider
                                     .as_ref()
@@ -352,16 +352,14 @@ fn build_otel_context(provider: &TracerProvider) -> (Context, SystemTime) {
     };
     let context = {
         let span = SpanBuilder::from_name("exec")
-            .with_trace_id((15_u128 << 100 | u128::from(start_seconds)).into())
+            .with_trace_id((1_u128 << 64 | u128::from(start_seconds)).into())
             .with_span_id(15.into())
             .with_start_time(start_time)
             .with_end_time(start_time + Duration::from_secs(1));
         use opentelemetry::trace::{Tracer, TracerProvider};
-        let span = Context::map_current(|cx| {
-            provider
-                .tracer("opentelemetry")
-                .build_with_context(span, cx)
-        });
+        let span = provider
+            .tracer("opentelemetry")
+            .build_with_context(span, &Context::default());
         span.span_context().clone()
     };
 
