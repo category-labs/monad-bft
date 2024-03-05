@@ -10,7 +10,7 @@ use rand::RngCore;
 use reth_primitives::{
     sign_message, Address, Transaction, TransactionKind, TransactionSigned, TxLegacy, B256,
 };
-use tokio::net::UnixStream;
+use tokio::{net::UnixStream, time};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
 pub struct MempoolTxIpcSender {
@@ -76,6 +76,9 @@ struct Args {
 
     #[arg(long)]
     ipc_path: PathBuf,
+
+    #[arg(long, default_value_t = u32::MAX)]
+    tps: u32,
 }
 
 #[tokio::main]
@@ -84,8 +87,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut sender = MempoolTxIpcSender::new(args.ipc_path).await?;
 
     let txs: Vec<_> = (0..args.num_tx).map(|_| make_tx(args.input_len)).collect();
+    let interval = time::Duration::from_secs(1) / args.tps;
     for tx in txs {
+        let start_time = time::Instant::now();
         sender.send(tx).await?;
+
+        if let Some(sleep_duration) = start_time.elapsed().checked_sub(interval) {
+            time::sleep(sleep_duration).await;
+        }
     }
 
     Ok(())
