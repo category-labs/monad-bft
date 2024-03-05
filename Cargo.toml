@@ -122,6 +122,7 @@ rand_chacha = "0.3"
 raptorq = "1.8"
 rayon = "1.7"
 rcgen = "0.11"
+reqwest = { version = "0.11", features = ["json"] }
 ring = "0.17"
 rustls = "0.21"
 scrypt = { version = "0.11", default-features = false }
