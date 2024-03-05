@@ -1,0 +1,54 @@
+[package]
+name = "monad-mock-node"
+description = "Monad consensus node with mocked execution"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[[bin]]
+name = "monad-mock-node"
+bench = false
+
+[dependencies]
+monad-async-state-verify = { path = "../monad-async-state-verify" }
+monad-consensus-state = { path = "../monad-consensus-state" }
+monad-consensus-types = { path = "../monad-consensus-types" }
+monad-bls = { path = "../monad-bls" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-txpool = { path = "../monad-eth-txpool" }
+monad-eth-types = { path = "../monad-eth-types", features = ["serde"] }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-gossip = { path = "../monad-gossip" }
+monad-ipc = { path = "../monad-ipc" }
+monad-quic = { path = "../monad-quic" }
+monad-ledger = { path = "../monad-ledger" }
+monad-secp = { path = "../monad-secp" }
+monad-state = { path = "../monad-state" }
+monad-types = { path = "../monad-types" }
+monad-updaters = { path = "../monad-updaters", features = ["tokio"] }
+monad-validator = { path = "../monad-validator" }
+monad-wal = { path = "../monad-wal" }
+monad-opentelemetry-executor = { path = "../monad-opentelemetry-executor" }
+
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+env_logger = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+log = { workspace = true }
+opentelemetry = { workspace = true, features = ["rt-tokio"] }
+opentelemetry_api = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["metrics"] }
+opentelemetry-semantic-conventions = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+toml = { workspace = true }
+tracing = { workspace = true, features = ["log"] }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true }
+zeroize = { workspace = true }

@@ -2969,6 +2969,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-mock-node"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.5",
+ "bytes",
+ "clap 4.4.10",
+ "env_logger",
+ "futures-util",
+ "hex",
+ "log",
+ "monad-async-state-verify",
+ "monad-bls",
+ "monad-consensus-state",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-txpool",
+ "monad-eth-types",
+ "monad-executor",
+ "monad-executor-glue",
+ "monad-gossip",
+ "monad-ipc",
+ "monad-ledger",
+ "monad-opentelemetry-executor",
+ "monad-quic",
+ "monad-secp",
+ "monad-state",
+ "monad-types",
+ "monad-updaters",
+ "monad-validator",
+ "monad-wal",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_api",
+ "rand_chacha",
+ "serde",
+ "thiserror",
+ "tokio",
+ "toml 0.7.8",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
