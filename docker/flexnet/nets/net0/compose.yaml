@@ -1,19 +1,25 @@
 version: '3.8'
 
 services:
-  build_image0:
+  build_monad_bft:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/monad-bft-builder/Dockerfile
+    image: monad-bft-builder:latest
+
+  runner_image0:
     build: 
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
     image: image0:latest
 
-  build_rpc:
+  runner_rpc:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${FLEXNET_IMAGE_ROOT}/rpc/Dockerfile
     image: rpc:latest
 
-  build_python:
+  runner_python:
     build:
       context: ${FLEXNET_IMAGE_ROOT}/python
       dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile

@@ -1,20 +1,10 @@
-FROM rust:1-buster AS builder
-
-# builder stage
-WORKDIR /usr/src/monad-bft
-RUN apt update
-RUN apt install -y clang
-
-COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/monad-bft/target \
-    cargo build --release --bin monad-rpc && \
-    mv target/release/monad-rpc monad-rpc-bin
-
-# runner stage
+# RPC server
 FROM debian:buster-slim
 WORKDIR /usr/src/monad-bft
 
-COPY --from=builder /usr/src/monad-bft/monad-rpc-bin /usr/local/bin/monad-rpc
+ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+
+COPY --from=monad-bft-builder /output/release/monad-rpc /usr/local/bin/monad-rpc
+COPY --from=monad-bft-builder /output/release/lib/*.so /usr/local/lib
 
 ENV RUST_LOG=info

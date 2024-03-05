@@ -97,7 +97,9 @@ export HOST_UID=$(id -u)
 pushd $vol_root
 
 build_services=$(docker compose config --services | grep build)
-node_services=$(docker compose config --services | grep -v build)
+runner_services=$(docker compose config --services | grep runner)
+node_services=$(docker compose config --services | grep -v -E "(build|runner)")
+
 docker compose build $build_services &&
 docker compose up --detach $node_services
 sleep 30
