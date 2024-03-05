@@ -38,10 +38,10 @@ pub enum NodeSetupError {
     TomlDeError(#[from] toml::de::Error),
 
     #[error(transparent)]
-    TraceError(#[from] opentelemetry_api::trace::TraceError),
+    TraceError(#[from] opentelemetry::trace::TraceError),
 
     #[error(transparent)]
-    MetricsError(#[from] opentelemetry_api::metrics::MetricsError),
+    MetricsError(#[from] opentelemetry::metrics::MetricsError),
 }
 
 impl NodeSetupError {

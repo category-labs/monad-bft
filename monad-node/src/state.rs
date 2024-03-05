@@ -1,15 +1,10 @@
-use std::{
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, time::Duration};
 
 use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
 use log::info;
 use monad_bls::BlsKeyPair;
 use monad_secp::KeyPair;
-use opentelemetry::trace::{Span, TraceContextExt, Tracer, TracerProvider};
-use opentelemetry_api::{trace::SpanBuilder, Context};
 use opentelemetry_otlp::WithExportConfig;
 use zeroize::Zeroize;
 
@@ -29,7 +24,6 @@ pub struct NodeState {
     pub wal_path: PathBuf,
     pub execution_ledger_path: PathBuf,
     pub mempool_ipc_path: PathBuf,
-    pub otel_context: Option<opentelemetry::Context>,
     pub otel_endpoint: Option<String>,
     pub record_metrics_interval: Option<Duration>,
 }
@@ -55,34 +49,6 @@ impl NodeState {
         let genesis_config: GenesisConfig =
             toml::from_str(&std::fs::read_to_string(cli.genesis_config)?)?;
 
-        let otel_context = if let Some(otel_endpoint) = &cli.otel_endpoint {
-            let provider = build_otel_provider(otel_endpoint, "monad-coordinator".to_owned())?;
-
-            let context = {
-                let tracer = provider.tracer("opentelemetry");
-                let start_time = {
-                    let unix_ts = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("can't compute elapsed time");
-                    let round_seconds = 60 * 60 * 24;
-                    let rounded_duration =
-                        Duration::from_secs(unix_ts.as_secs() / round_seconds * round_seconds);
-                    UNIX_EPOCH + rounded_duration
-                };
-                let span = SpanBuilder::from_name("exec")
-                    .with_trace_id(15.into())
-                    .with_span_id(15.into())
-                    .with_start_time(start_time)
-                    .with_end_time(start_time + Duration::from_secs(1));
-                let span = Context::map_current(|cx| tracer.build_with_context(span, cx));
-                span.span_context().clone()
-            };
-
-            Some(opentelemetry::Context::default().with_remote_span_context(context))
-        } else {
-            None
-        };
-
         Ok(Self {
             node_config,
             genesis_config,
@@ -93,7 +59,6 @@ impl NodeState {
             wal_path: cli.wal_path,
             execution_ledger_path: cli.execution_ledger_path,
             mempool_ipc_path: cli.mempool_ipc_path,
-            otel_context,
             otel_endpoint: cli.otel_endpoint,
             record_metrics_interval: cli
                 .record_metrics_interval_seconds

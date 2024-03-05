@@ -1,6 +1,6 @@
 use std::{
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -31,6 +31,11 @@ use monad_updaters::{
 };
 use monad_validator::{simple_round_robin::SimpleRoundRobin, validator_set::ValidatorSetFactory};
 use monad_wal::{wal::WALoggerConfig, PersistenceLoggerBuilder};
+use opentelemetry::{
+    sdk::trace::TracerProvider,
+    trace::{Span, SpanBuilder, TraceContextExt},
+    Context,
+};
 use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -74,6 +79,7 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
     let node_state = NodeState::setup(&mut cmd).unwrap_or_else(|e| cmd.error(e.kind(), e).exit());
     drop(cmd);
 
+    // if provider is dropped, then traces stop getting sent silently...
     let maybe_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
         build_otel_provider(
             endpoint,
@@ -84,7 +90,6 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
 
     if let Some(provider) = &maybe_provider {
         use opentelemetry::trace::TracerProvider;
-
         let tracer = provider.tracer("opentelemetry");
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
         let subscriber = Registry::default()
@@ -108,10 +113,19 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
         tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
     }
 
-    run(node_state).await
+    // if provider is dropped, then traces stop getting sent silently...
+    let maybe_coordinator_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
+        build_otel_provider(endpoint, "monad-coordinator".to_owned())
+            .expect("failed to build otel monad-coordinator")
+    });
+
+    run(maybe_coordinator_provider, node_state).await
 }
 
-async fn run(node_state: NodeState) -> Result<(), ()> {
+async fn run(
+    maybe_coordinator_provider: Option<TracerProvider>,
+    node_state: NodeState,
+) -> Result<(), ()> {
     let router = build_router::<
         MonadMessage<SignatureType, SignatureCollectionType>,
         VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
@@ -216,10 +230,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         executor.replay(cmds);
     }
 
+    let mut otel_context = maybe_coordinator_provider.as_ref().map(build_otel_context);
+
     let mut last_ledger_len = executor.ledger().get_blocks().len();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
 
-    if let Some(cx) = &node_state.otel_context {
+    if let Some((cx, _expiry)) = &otel_context {
         ledger_span.set_parent(cx.clone());
     }
 
@@ -232,10 +248,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             }
             event = executor.next() => {
                 let Some(event) = event else {
-                    event!(
-                        Level::ERROR,
-                        "parent executor returned none!"
-                    );
+                    event!(Level::ERROR, "parent executor returned none!");
                     return Err(());
                 };
 
@@ -243,11 +256,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let _ledger_span = ledger_span.enter();
                     let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
                     if let Err(err) = wal.push(&event) {
-                        event!(
-                            Level::ERROR,
-                            ?err,
-                            "failed to push to wal",
-                        );
+                        event!(Level::ERROR, ?err, "failed to push to wal",);
                         return Err(());
                     }
                 };
@@ -266,7 +275,16 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     last_ledger_len = ledger_len;
                     ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
 
-                    if let Some(cx) = &node_state.otel_context {
+                    if let Some((cx, expiry)) = &mut otel_context {
+                        if *expiry > SystemTime::now() {
+                            let (new_cx, new_expiry) = build_otel_context(
+                                maybe_coordinator_provider
+                                    .as_ref()
+                                    .expect("coordinator must exist"),
+                            );
+                            *cx = new_cx;
+                            *expiry = new_expiry;
+                        }
                         ledger_span.set_parent(cx.clone());
                     }
                 }
@@ -317,5 +335,38 @@ where
                 .collect(),
         },
         gossip,
+    )
+}
+
+/// Returns (otel_context, expiry)
+fn build_otel_context(provider: &TracerProvider) -> (Context, SystemTime) {
+    const ROUND_SECONDS: u64 = 60 * 10; // 10 minutes
+
+    let (start_time, start_seconds) = {
+        let unix_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("can't compute elapsed time");
+        let start_seconds = unix_ts.as_secs() / ROUND_SECONDS * ROUND_SECONDS;
+        let rounded_duration = Duration::from_secs(start_seconds);
+        (UNIX_EPOCH + rounded_duration, start_seconds)
+    };
+    let context = {
+        let span = SpanBuilder::from_name("exec")
+            .with_trace_id((15_u128 << 100 | u128::from(start_seconds)).into())
+            .with_span_id(15.into())
+            .with_start_time(start_time)
+            .with_end_time(start_time + Duration::from_secs(1));
+        use opentelemetry::trace::{Tracer, TracerProvider};
+        let span = Context::map_current(|cx| {
+            provider
+                .tracer("opentelemetry")
+                .build_with_context(span, cx)
+        });
+        span.span_context().clone()
+    };
+
+    (
+        Context::default().with_remote_span_context(context),
+        start_time + Duration::from_secs(ROUND_SECONDS),
     )
 }

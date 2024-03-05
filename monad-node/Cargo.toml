@@ -39,7 +39,6 @@ futures-util = { workspace = true }
 hex = { workspace = true }
 log = { workspace = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
-opentelemetry_api = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
 serde = { workspace = true }
