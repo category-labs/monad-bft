@@ -18,6 +18,7 @@ use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum, Stake};
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
+use tracing::debug;
 
 pub trait MockableStateRootHash:
     Executor<Command = StateRootHashCommand<Self::Block>> + Stream<Item = Self::Event> + Unpin
@@ -53,12 +54,21 @@ pub struct MockStateRootHashNop<B, ST, SCT: SignatureCollection> {
     genesis_validator_data: ValidatorData<SCT>,
     next_val_data: Option<ValidatorData<SCT>>,
     val_set_update_interval: SeqNum,
+    calc_state_root: fn(SeqNum) -> StateRootHash,
 
     waker: Option<Waker>,
     phantom: PhantomData<(B, ST)>,
 }
 
 impl<B, ST, SCT: SignatureCollection> MockStateRootHashNop<B, ST, SCT> {
+    /// Defines how an honest mock execution calculates state root hash
+    fn state_root_honest(seq_num: SeqNum) -> StateRootHash {
+        let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
+        let mut hash = StateRootHash(Hash([0; 32]));
+        gen.fill_bytes(&mut hash.0 .0);
+        hash
+    }
+
     pub fn new(
         genesis_validator_data: ValidatorData<SCT>,
         val_set_update_interval: SeqNum,
@@ -69,9 +79,16 @@ impl<B, ST, SCT: SignatureCollection> MockStateRootHashNop<B, ST, SCT> {
             genesis_validator_data,
             next_val_data: None,
             val_set_update_interval,
+            calc_state_root: Self::state_root_honest,
+
             waker: None,
             phantom: PhantomData,
         }
+    }
+
+    /// Change how state root hash is calculated
+    pub fn inject_byzantine_srh(&mut self, calc_srh: fn(SeqNum) -> StateRootHash) {
+        self.calc_state_root = calc_srh;
     }
 }
 
@@ -115,12 +132,14 @@ where
                     // that it is deterministic between nodes
                     let seq_num = block.get_seq_num();
                     let round = block.get_round();
-                    let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
-                    let mut hash = StateRootHash(Hash([0; 32]));
-                    gen.fill_bytes(&mut hash.0 .0);
+                    let state_root_hash = (self.calc_state_root)(seq_num);
+                    debug!(
+                        "block number {:?} state root hash {:?}",
+                        seq_num.0, state_root_hash
+                    );
 
                     self.state_root_update = Some(StateRootHashInfo {
-                        state_root_hash: hash,
+                        state_root_hash,
                         seq_num,
                         round,
                     });
