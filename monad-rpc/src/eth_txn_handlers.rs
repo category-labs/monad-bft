@@ -242,6 +242,62 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
 }
 
 #[derive(Deserialize, Debug)]
+struct MonadEthGetTransactionByBlockNumberAndIndexParams {
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_tag: BlockTags,
+    #[serde(deserialize_with = "deserialize_quantity")]
+    index: Quantity,
+}
+
+#[derive(Serialize, Debug)]
+struct MonadEthGetTransactionByBlockNumberAndIndexReturn {
+    tx_object: Option<TransactionObject>,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
+    blockdb_env: &BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getTransactionByBlockNumberAndIndex: {params:?}");
+
+    let p: MonadEthGetTransactionByBlockNumberAndIndexParams = match serde_json::from_value(params)
+    {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+        return serialize_result(MonadEthGetTransactionByBlockNumberAndIndexReturn {
+            tx_object: None,
+        });
+    };
+
+    let Some(transaction) = value.block.body.get(p.index.0 as usize) else {
+        return serialize_result(MonadEthGetTransactionByBlockNumberAndIndexReturn {
+            tx_object: None,
+        });
+    };
+
+    let to = transaction.transaction.to().unwrap();
+    let from = transaction.recover_signer().unwrap();
+    let retval = MonadEthGetTransactionByBlockNumberAndIndexReturn {
+        tx_object: Some(TransactionObject {
+            block_hash: B256::new(*value.block.header.hash_slow()),
+            block_number: value.block.number,
+            transaction_index: p.index.0,
+            to: to.into(),
+            from: from.into(),
+        }),
+    };
+
+    serialize_result(retval)
+}
+
+#[derive(Deserialize, Debug)]
 struct MonadEthGetBlockTransactionCountByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,

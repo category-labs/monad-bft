@@ -8,7 +8,8 @@ use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
     monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
-    monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByHash,
+    monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByBlockNumberAndIndex,
+    monad_eth_getTransactionByHash,
 };
 use futures::SinkExt;
 use log::{debug, info};
@@ -108,6 +109,13 @@ async fn rpc_select(
         "eth_getTransactionByBlockHashAndIndex" => {
             if let Some(reader) = &app_state.blockdb_reader {
                 monad_eth_getTransactionByBlockHashAndIndex(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_getTransactionByBlockNumberAndIndex" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_getTransactionByBlockNumberAndIndex(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
