@@ -4,6 +4,26 @@ pub enum DecodeHexError {
     ParseErr,
 }
 
+fn nibble_to_char(nibble: u8) -> char {
+    let nibble = nibble & 0xF;
+    if nibble < 0xA {
+        (b'0' + nibble) as char
+    } else {
+        (b'a' + nibble - 0xA) as char
+    }
+}
+
+pub fn encode(bytes: &[u8]) -> String {
+    let mut chars = vec!['0', 'x'];
+
+    for byte in bytes {
+        chars.push(nibble_to_char(byte >> 4));
+        chars.push(nibble_to_char(*byte));
+    }
+
+    chars.into_iter().collect()
+}
+
 pub fn decode(s: &str) -> Result<Vec<u8>, DecodeHexError> {
     if s.len() & 1 == 1 || s.is_empty() {
         return Err(DecodeHexError::InvalidLen);
@@ -57,7 +77,7 @@ fn decode_even_suffix(s: &str) -> Result<Vec<u8>, DecodeHexError> {
 
 #[cfg(test)]
 mod test {
-    use crate::hex::{decode, decode_quantity, DecodeHexError};
+    use crate::hex::{decode, decode_quantity, encode, DecodeHexError};
 
     #[test]
     fn test_hex_invalid_len() {
@@ -80,6 +100,16 @@ mod test {
         )
         .is_ok());
         assert_eq!(Ok(vec![]), decode("0x"));
+    }
+
+    #[test]
+    fn test_hex_encode() {
+        assert_eq!(&encode(&[171_u8]), "0xab");
+
+        let hex =
+            "0xd46e8dd67c5d32be8d46e8dd67c5d32be8058bb8eb970870f072445675058bb8eb970870f072445675";
+        let bytes = decode(hex).unwrap();
+        assert_eq!(&encode(&bytes), hex);
     }
 
     #[test]

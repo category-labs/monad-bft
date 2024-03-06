@@ -8,6 +8,7 @@ use crate::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
         EthStorageKey,
     },
+    hex,
     jsonrpc::JsonRpcError,
     triedb::{TriedbEnv, TriedbResult},
 };
@@ -78,7 +79,7 @@ pub async fn monad_eth_getCode(
 
     match triedb_env.get_code(code_hash).await {
         TriedbResult::Null => Ok(serde_json::Value::Null),
-        TriedbResult::Code(code) => serialize_result(format!("0x{:x?}", code)),
+        TriedbResult::Code(code) => serialize_result(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error()),
     }
 }
@@ -112,7 +113,7 @@ pub async fn monad_eth_getStorageAt(
 
     match triedb_env.get_storage_at(p.account, p.position).await {
         TriedbResult::Null => Ok(serde_json::Value::Null),
-        TriedbResult::Storage(storage) => serialize_result(format!("0x{:x?}", storage)),
+        TriedbResult::Storage(storage) => serialize_result(hex::encode(&storage)),
         _ => Err(JsonRpcError::internal_error()),
     }
 }

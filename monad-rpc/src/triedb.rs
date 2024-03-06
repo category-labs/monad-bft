@@ -82,12 +82,16 @@ impl TriedbEnv {
                 return;
             };
 
-            let Ok(storage) = <[u8; 32]>::try_from(result) else {
-                debug!("storage value is not 32 bytes");
+            if result.len() > 32 {
+                debug!("storage value is max 32 bytes");
                 let _ = send.send(TriedbResult::EncodingError);
                 return;
-            };
-            let _ = send.send(TriedbResult::Storage(storage));
+            }
+            let mut storage_value = [0_u8; 32];
+            for (byte, storage) in result.into_iter().rev().zip(storage_value.iter_mut().rev()) {
+                *storage = byte;
+            }
+            let _ = send.send(TriedbResult::Storage(storage_value));
         });
         recv.await.expect("rayon panic get_account")
     }
