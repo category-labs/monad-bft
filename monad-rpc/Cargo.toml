@@ -14,8 +14,13 @@ bench = false
 monad-blockdb = { path = "../monad-blockdb" }
 monad-triedb = { path = "../monad-triedb" }
 
+actix = { workspace = true }
+actix-codec = { workspace = true }
 actix-http = { workspace = true }
+actix-http-test = { workspace = true }
+actix-test = { worspace = true }
 actix-web = { workspace = true }
+actix-web-actors = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
@@ -23,6 +28,7 @@ clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
+futures-util = { workspace = true }
 heed = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }

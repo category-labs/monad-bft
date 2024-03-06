@@ -2,7 +2,12 @@ use account_handlers::{
     monad_eth_accounts, monad_eth_coinbase, monad_eth_getBalance, monad_eth_getCode,
     monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_syncing,
 };
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix::prelude::*;
+use actix_http::body::BoxBody;
+use actix_web::{
+    dev::{ServiceFactory, ServiceRequest, ServiceResponse},
+    web, App, Error, HttpResponse, HttpServer,
+};
 use blockdb_handlers::{monad_eth_blockNumber, monad_eth_chainId};
 use clap::Parser;
 use cli::Cli;
@@ -24,6 +29,7 @@ use crate::{
     },
     jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
+    websocket::Disconnect,
 };
 
 mod account_handlers;
@@ -36,6 +42,7 @@ mod hex;
 mod jsonrpc;
 mod mempool_tx;
 mod triedb;
+mod websocket;
 
 async fn rpc_handler(body: bytes::Bytes, app_state: web::Data<MonadRpcResources>) -> HttpResponse {
     let request: RequestWrapper<Value> = match serde_json::from_slice(&body) {
@@ -221,6 +228,14 @@ struct MonadRpcResources {
     triedb_reader: Option<TriedbEnv>,
 }
 
+impl Handler<Disconnect> for MonadRpcResources {
+    type Result = ();
+
+    fn handle(&mut self, msg: Disconnect, ctx: &mut Self::Context) -> Self::Result {
+        debug!("received disconnect {:?}", ctx);
+    }
+}
+
 impl MonadRpcResources {
     pub fn new(
         mempool_sender: flume::Sender<TransactionSigned>,
@@ -233,6 +248,28 @@ impl MonadRpcResources {
             triedb_reader,
         }
     }
+}
+
+impl Actor for MonadRpcResources {
+    type Context = Context<Self>;
+}
+
+pub fn create_app<S: 'static>(
+    app_data: S,
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Response = ServiceResponse<BoxBody>,
+        Config = (),
+        InitError = (),
+        Error = Error,
+    >,
+> {
+    App::new()
+        .app_data(web::JsonConfig::default().limit(8192))
+        .app_data(web::Data::new(app_data))
+        .service(web::resource("/").route(web::post().to(rpc_handler)))
+        .service(web::resource("/ws/").route(web::get().to(websocket::handler)))
 }
 
 #[actix_web::main]
@@ -259,27 +296,21 @@ async fn main() -> std::io::Result<()> {
         .num_threads(4)
         .build_global()
         .expect("thread pool with 4 threads");
+    let resources = MonadRpcResources::new(
+        ipc_sender.clone(),
+        args.blockdb_path
+            .clone()
+            .map(|p| BlockDbEnv::new(&p))
+            .flatten(),
+        args.triedb_path.clone().as_deref().map(TriedbEnv::new),
+    )
+    .start();
 
     // main server app
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::JsonConfig::default().limit(8192))
-            .service(
-                web::resource("/")
-                    .app_data(web::Data::new(MonadRpcResources::new(
-                        ipc_sender.clone(),
-                        args.blockdb_path
-                            .clone()
-                            .map(|p| BlockDbEnv::new(&p))
-                            .flatten(),
-                        args.triedb_path.clone().as_deref().map(TriedbEnv::new),
-                    )))
-                    .route(web::post().to(rpc_handler)),
-            )
-    })
-    .bind((args.rpc_addr, args.rpc_port))?
-    .run()
-    .await
+    HttpServer::new(move || create_app(resources.clone()))
+        .bind((args.rpc_addr, args.rpc_port))?
+        .run()
+        .await
 }
 
 #[cfg(test)]
@@ -288,7 +319,7 @@ mod tests {
     use actix_web::{
         body::{to_bytes, MessageBody},
         dev::{Service, ServiceResponse},
-        test, web, App, Error,
+        test, Error,
     };
     use reth_primitives::{
         sign_message, AccessList, Address, Transaction, TransactionKind, TransactionSigned,
@@ -299,27 +330,21 @@ mod tests {
 
     use super::*;
 
-    struct MonadRpcResourcesState {
-        ipc_receiver: flume::Receiver<TransactionSigned>,
+    pub struct MonadRpcResourcesState {
+        pub ipc_receiver: flume::Receiver<TransactionSigned>,
     }
 
-    async fn init_server() -> (
+    pub async fn init_server() -> (
         impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
         MonadRpcResourcesState,
     ) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
         let m = MonadRpcResourcesState { ipc_receiver };
-        let app = test::init_service(
-            App::new().service(
-                web::resource("/")
-                    .app_data(web::Data::new(MonadRpcResources {
-                        mempool_sender: ipc_sender.clone(),
-                        blockdb_reader: None,
-                        triedb_reader: None,
-                    }))
-                    .route(web::post().to(rpc_handler)),
-            ),
-        )
+        let app = test::init_service(create_app(MonadRpcResources {
+            mempool_sender: ipc_sender.clone(),
+            blockdb_reader: None,
+            triedb_reader: None,
+        }))
         .await;
         (app, m)
     }
