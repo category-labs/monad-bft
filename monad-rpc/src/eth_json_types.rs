@@ -12,6 +12,7 @@ use crate::{
 
 pub type EthAddress = FixedData<20>;
 pub type EthHash = FixedData<32>;
+pub type EthStorageKey = FixedData<32>;
 
 // https://ethereum.org/developers/docs/apis/json-rpc#unformatted-data-encoding
 #[derive(Debug, PartialEq, Eq)]
