@@ -1,0 +1,135 @@
+services:
+  build_monad_bft:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/monad-bft-builder/Dockerfile
+    image: monad-bft-builder:latest
+
+  runner_image0:
+    build: 
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
+    image: image0:latest
+
+  build_python:
+    build:
+      context: ${FLEXNET_IMAGE_ROOT}/python
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
+    image: monad-python:latest
+
+  runner_ethtx:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/ethtx/Dockerfile
+    image: ethtx:latest
+
+  node0:
+    image: image0:latest
+    volumes:
+      - ./node0:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  
+  ethtx0:
+    image: ethtx:latest
+    volumes:
+      - ./node0:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+
+  node1:
+    image: image0:latest
+    volumes:
+      - ./node1:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  ethtx1:
+    image: ethtx:latest
+    volumes:
+      - ./node1:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+
+  node2:
+    image: image0:latest
+    volumes:
+      - ./node2:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  ethtx2:
+    image: ethtx:latest
+    volumes:
+      - ./node2:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+
+  node3:
+    image: image0:latest
+    volumes:
+      - ./node3:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  ethtx3:
+    image: ethtx:latest
+    volumes:
+      - ./node3:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+
+  node4:
+    image: image0:latest
+    volumes:
+      - ./node4:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  
+  ethtx4:
+    image: ethtx:latest
+    volumes:
+      - ./node4:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]  
+
+  node5:
+    image: image0:latest
+    volumes:
+      - ./node5:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  
+  ethtx5:
+    image: ethtx:latest
+    volumes:
+      - ./node5:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+
+  node6:
+    image: image0:latest
+    volumes:
+      - ./node6:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+  
+  ethtx6:
+    image: ethtx:latest
+    volumes:
+      - ./node6:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+  
+  # jaeger:
+  #   image: jaegertracing/all-in-one:1.54
+  #   ports:
+  #     - 16686:16686 
+  #   expose: 
+  #     - 4317:4317
+
+
+networks:
+  default:
+    driver: bridge
+    

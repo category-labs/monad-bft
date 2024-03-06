@@ -154,17 +154,9 @@ if __name__ == "__main__":
 
     # per node: generate keys on the first pass
     for vol_path in volume_list:
-        if not vol_path.exists():
-            print(f"node volume {vol_path} doesn't exist")
-            sys.exit(1)
-
-        if not vol_path.is_dir():
-            print(f"node volume {vol_path} is not a directory")
-            sys.exit(1)
-
         # clear the current config dir
         config_path = vol_path / "config"
-        config_path.mkdir(exist_ok=True)
+        config_path.mkdir(parents=True, exist_ok=True)
         for item in config_path.iterdir():
             if item.is_dir():
                 shutil.rmtree(item)
@@ -228,6 +220,7 @@ if __name__ == "__main__":
 
     for vol_path in volume_list:
         genesis_toml_path = vol_path / "config" / "genesis.toml"
+        genesis_toml_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(genesis_toml_path, "wb+") as f:
             f.write(WARNING.encode("utf-8"))
