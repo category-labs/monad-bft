@@ -340,7 +340,7 @@ where
 
 /// Returns (otel_context, expiry)
 fn build_otel_context(provider: &TracerProvider) -> (Context, SystemTime) {
-    const ROUND_SECONDS: u64 = 60 * 10; // 10 minutes
+    const ROUND_SECONDS: u64 = 60 * 1; // 1 minute
 
     let (start_time, start_seconds) = {
         let unix_ts = SystemTime::now()
