@@ -96,7 +96,7 @@ fn load_bls12_381_keypair(path: &PathBuf) -> Result<BlsKeyPair, NodeSetupError> 
 }
 
 pub fn build_otel_provider(
-    otel_endpoint: &String,
+    otel_endpoint: &str,
     service_name: String,
 ) -> Result<opentelemetry::sdk::trace::TracerProvider, NodeSetupError> {
     let exporter = opentelemetry_otlp::SpanExporterBuilder::Tonic(

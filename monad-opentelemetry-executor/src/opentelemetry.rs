@@ -121,7 +121,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection,
 {
-    pub fn new<T: Into<String>>(endpoint: T, interval: Duration, enable_grpc_gzip: bool) -> Self {
+    pub fn new(
+        endpoint: impl Into<String>,
+        service_name: String,
+        interval: Duration,
+        enable_grpc_gzip: bool,
+    ) -> Self {
         let mut exporter = opentelemetry_otlp::new_exporter()
             .tonic()
             .with_endpoint(endpoint.into());
@@ -139,7 +144,7 @@ where
             // .with_aggregation_selector(AggregationSelector {})
             .with_resource(Resource::new(vec![KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                "monad_node",
+                service_name,
             )]))
             .build()
             .expect("failed to initialize opentelemetry_otlp metrics pipeline");

@@ -173,6 +173,7 @@ async fn run(
             node_state.otel_endpoint.expect(
                 "cannot specify record metrics interval without specifying OpenTelemetry endpoint",
             ),
+            format!("monad-node-{:?}", &node_state.secp256k1_identity.pubkey()),
             record_metrics_interval,
             /*enable_grpc_gzip=*/ false,
         ))
