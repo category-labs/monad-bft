@@ -113,3 +113,10 @@ pub async fn monad_eth_coinbase(triedb_env: &TriedbEnv) -> Result<Value, JsonRpc
 
     serialize_result(retval)
 }
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_accounts(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_accounts");
+
+    serialize_result(serde_json::Value::Array(vec![]))
+}

@@ -1,5 +1,6 @@
 use account_handlers::{
-    monad_eth_coinbase, monad_eth_getBalance, monad_eth_getTransactionCount, monad_eth_syncing,
+    monad_eth_accounts, monad_eth_coinbase, monad_eth_getBalance, monad_eth_getTransactionCount,
+    monad_eth_syncing,
 };
 use actix_web::{web, App, HttpResponse, HttpServer};
 use blockdb_handlers::{monad_eth_blockNumber, monad_eth_chainId};
@@ -167,6 +168,16 @@ async fn rpc_select(
                 Err(JsonRpcError::method_not_supported())
             }
         }
+        "eth_accounts" => {
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_accounts(reader).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_sendTransaction" => Err(JsonRpcError::method_not_supported()),
+        "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
+        "eth_sign" => Err(JsonRpcError::method_not_supported()),
         _ => Err(JsonRpcError::method_not_found()),
     }
 }
