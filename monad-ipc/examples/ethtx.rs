@@ -15,6 +15,8 @@ use serde_json::json;
 use tokio::{net::UnixStream, time};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
+const GEN_TX_MAX: usize = 10_000;
+
 pub struct MempoolTxIpcSender {
     writer: FramedWrite<UnixStream, LengthDelimitedCodec>,
 }
@@ -145,22 +147,47 @@ async fn send_requests<'a, C: Iterator<Item = &'a TransactionSigned>>(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let main_start = time::Instant::now();
+
     let args = Args::parse();
-    let txs: Vec<_> = (0..args.num_tx).map(|_| make_tx(args.input_len)).collect();
+    // cap random generated txns because it's time consuming
+    // cycle through txns if num_tx is higher
+    let gen_tx = args.num_tx.min(GEN_TX_MAX);
+    let txs: Vec<_> = (0..gen_tx).map(|_| make_tx(args.input_len)).collect();
+    let main_elapsed = main_start.elapsed();
+    println!("Finished generating tx at {:?}", main_elapsed);
     match args.transport {
         Transport::Ipc { ipc_path, tps } => {
             let mut sender = MempoolTxIpcSender::new(ipc_path).await?;
 
             let interval = time::Duration::from_secs(1) / tps;
-            for tx in txs {
-                let start_time = time::Instant::now();
-                sender.send(tx).await?;
 
-                if let Some(sleep_duration) = interval.checked_sub(start_time.elapsed()) {
-                    time::sleep(sleep_duration).await;
+            let mut txn_sent = 0;
+            let mut running_tps = 0;
+            let mut last_stamp = time::Instant::now();
+            while txn_sent < args.num_tx {
+                for tx in &txs {
+                    let start_time = time::Instant::now();
+                    sender.send(tx.clone()).await?;
+
+                    txn_sent += 1;
+                    if txn_sent >= args.num_tx {
+                        break;
+                    }
+
+                    // tps reporting
+                    running_tps += 1;
+                    if last_stamp.elapsed() > time::Duration::from_secs(1) {
+                        last_stamp = time::Instant::now();
+                        println!("Running tps: {:?}", running_tps);
+                        running_tps = 0;
+                    }
+
+                    if let Some(sleep_duration) = interval.checked_sub(start_time.elapsed()) {
+                        time::sleep(sleep_duration).await;
+                    }
                 }
             }
-
             Ok(())
         }
         Transport::Rpc {
