@@ -15,6 +15,7 @@ pub struct TriedbEnv {
 pub enum TriedbResult {
     Null,
     RlpParseError,
+    // (nonce, balance, code_hash)
     Account(u128, u128, [u8; 32]),
 }
 

@@ -1,5 +1,8 @@
-use account_handlers::monad_eth_getBalance;
+use account_handlers::{
+    monad_eth_coinbase, monad_eth_getBalance, monad_eth_getTransactionCount, monad_eth_syncing,
+};
 use actix_web::{web, App, HttpResponse, HttpServer};
+use blockdb_handlers::{monad_eth_blockNumber, monad_eth_chainId};
 use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
@@ -21,6 +24,7 @@ use crate::{
 
 mod account_handlers;
 mod blockdb;
+mod blockdb_handlers;
 mod cli;
 mod eth_json_types;
 mod eth_txn_handlers;
@@ -124,6 +128,41 @@ async fn rpc_select(
         "eth_getBalance" => {
             if let Some(reader) = &app_state.triedb_reader {
                 monad_eth_getBalance(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_getTransactionCount" => {
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_getTransactionCount(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_blockNumber" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_blockNumber(reader).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_chainId" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_chainId(reader).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_syncing" => {
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_syncing(reader).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_coinbase" => {
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_coinbase(reader).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
