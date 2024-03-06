@@ -192,6 +192,7 @@ async fn rpc_select(
         "eth_sendTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_sign" => Err(JsonRpcError::method_not_supported()),
+        "eth_hashrate" => Err(JsonRpcError::method_not_supported()),
         _ => Err(JsonRpcError::method_not_found()),
     }
 }
