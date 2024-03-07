@@ -96,6 +96,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         self.current_round
     }
 
+    pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<SCT>> {
+        &self.last_round_tc
+    }
+
     fn get_round_timer(&self) -> Duration {
         self.delta * 4
     }

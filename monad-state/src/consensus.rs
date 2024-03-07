@@ -197,15 +197,16 @@ where
                         }
                     }
                     .into_inner();
-                let current_epoch = self
-                    .epoch_manager
-                    .get_epoch(self.consensus.get_current_round());
-                let val_set = self
-                    .val_epoch_map
-                    .get_val_set(&current_epoch)
-                    .expect("current validator set should be in the map");
-                self.consensus
-                    .handle_block_sync(sender, validated_response, val_set, self.metrics)
+                self.consensus.handle_block_sync(
+                    sender,
+                    validated_response,
+                    self.txpool,
+                    self.epoch_manager,
+                    self.val_epoch_map,
+                    self.leader_election,
+                    self.metrics,
+                    self.version.protocol_version,
+                )
             }
         };
         let consensus_cmds = vec;

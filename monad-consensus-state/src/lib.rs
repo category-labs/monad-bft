@@ -80,6 +80,8 @@ where
     // so that users have options for securely storing their keys
     keypair: ST::KeyPairType,
     cert_keypair: SignatureCollectionKeyPairType<SCT>,
+
+    last_proposed_round: Round,
 }
 
 /// Consensus algorithm's configurable parameters
@@ -222,6 +224,9 @@ where
             keypair,
             cert_keypair,
             beneficiary,
+
+            // initial value here doesn't matter; it just must increase monotonically
+            last_proposed_round: Round(0),
         }
     }
 
@@ -321,9 +326,15 @@ where
         }
 
         // at this point, block is valid and can be added to the blocktree
-        self.pending_block_tree
-            .add(block.clone())
-            .expect("Failed to add block to blocktree");
+        cmds.extend(self.try_add_blocktree(
+            tx_pool,
+            epoch_manager,
+            val_epoch_map,
+            election,
+            metrics,
+            version,
+            &block,
+        ));
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
         // before R because of network conditions. The proposals are still valid but
@@ -378,21 +389,6 @@ where
             cmds.push(send_cmd);
         }
 
-        // check for a valid pending_qc in vote_state
-        if self.vote_state.get_pending_qc_round() == Some(round) {
-            if let Some(qc) = self.vote_state.pending_qc.take() {
-                cmds.extend(self.handle_created_qc(
-                    &qc,
-                    tx_pool,
-                    epoch_manager,
-                    val_epoch_map,
-                    election,
-                    metrics,
-                    version,
-                ));
-            }
-        }
-
         cmds
     }
 
@@ -422,6 +418,8 @@ where
         }
         metrics.consensus_events.vote_received += 1;
 
+        let mut cmds = Vec::new();
+
         let epoch = epoch_manager.get_epoch(vote_msg.vote.vote_info.round);
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
@@ -429,20 +427,24 @@ where
         let validator_mapping = val_epoch_map
             .get_cert_pubkeys(&epoch)
             .expect("vote message was verified");
-
-        let mut cmds = Vec::new();
-        let (qc, vote_state_cmds) = self.vote_state.process_vote(
-            self.pacemaker.get_current_round(),
-            &author,
-            &vote_msg,
-            validator_set,
-            validator_mapping,
-        );
+        let (maybe_qc, vote_state_cmds) =
+            self.vote_state
+                .process_vote(&author, &vote_msg, validator_set, validator_mapping);
         cmds.extend(vote_state_cmds.into_iter().map(Into::into));
 
-        if let Some(qc) = qc {
-            cmds.extend(self.handle_created_qc(
+        if let Some(qc) = maybe_qc {
+            debug!("Created QC {:?}", qc);
+            metrics.consensus_events.created_qc += 1;
+
+            cmds.extend(self.process_certificate_qc(
                 &qc,
+                epoch_manager,
+                validator_set,
+                metrics,
+                version,
+            ));
+
+            cmds.extend(self.try_propose(
                 tx_pool,
                 epoch_manager,
                 val_epoch_map,
@@ -450,7 +452,8 @@ where
                 metrics,
                 version,
             ));
-        }
+        };
+
         cmds
     }
 
@@ -551,27 +554,14 @@ where
                     )
                 });
             cmds.extend(advance_round_cmds);
-
-            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
-            // error-prone
-            let (next_round, next_epoch, next_validator_set) = {
-                let next_round = self.pacemaker.get_current_round();
-                let next_epoch = epoch_manager.get_epoch(next_round);
-                let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
-                    todo!("handle non-existent validatorset for next round epoch");
-                };
-                (next_round, next_epoch, next_validator_set.get_members())
-            };
-
-            if self.nodeid == election.get_leader(next_round, next_epoch, next_validator_set) {
-                cmds.extend(self.process_new_round_event(
-                    tx_pool,
-                    validator_set,
-                    Some(tc),
-                    metrics,
-                    version,
-                ));
-            }
+            cmds.extend(self.try_propose(
+                tx_pool,
+                epoch_manager,
+                val_epoch_map,
+                election,
+                metrics,
+                version,
+            ));
         }
 
         cmds
@@ -585,23 +575,35 @@ where
     /// due to the original proposal arriving before the requested block is returned,
     /// or the requested block is no longer relevant due to prune
     #[must_use]
-    pub fn handle_block_sync<VT>(
+    pub fn handle_block_sync<VTF, LT, TT>(
         &mut self,
         author: NodeId<SCT::NodeIdPubKey>,
         msg: BlockSyncResponseMessage<SCT>,
-        validators: &VT,
+
+        tx_pool: &mut TT,
+        epoch_manager: &mut EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
         metrics: &mut Metrics,
+        version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
-        VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        TT: TxPool,
     {
         let mut cmds = vec![];
+
+        let current_epoch = epoch_manager.get_epoch(self.get_current_round());
+        let val_set = val_epoch_map
+            .get_val_set(&current_epoch)
+            .expect("current validator set should be in the map");
 
         let bid = msg.get_block_id();
         let block_sync_result = self.block_sync_requester.handle_response(
             &author,
             msg,
-            validators,
+            val_set,
             &self.block_validator,
             metrics,
         );
@@ -611,11 +613,17 @@ where
             BlockSyncResult::Success(block) => {
                 if self.pending_block_tree.is_valid_to_insert(&block) {
                     cmds.extend(
-                        self.request_block_if_missing_ancestor(&block.qc, validators, metrics),
+                        self.request_block_if_missing_ancestor(&block.qc, val_set, metrics),
                     );
-                    self.pending_block_tree
-                        .add(block)
-                        .expect("failed to add block to tree during block sync");
+                    cmds.extend(self.try_add_blocktree(
+                        tx_pool,
+                        epoch_manager,
+                        val_epoch_map,
+                        election,
+                        metrics,
+                        version,
+                        &block,
+                    ));
                 }
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
@@ -744,13 +752,47 @@ where
         // to request it.
         cmds.extend(self.request_block_if_missing_ancestor(qc, validators, metrics));
 
+        // update vote_state round
+        // it's ok if not leader for round; we will never propose
+        self.vote_state
+            .start_new_round(self.pacemaker.get_current_round());
+
         cmds
     }
 
     #[must_use]
-    fn handle_created_qc<VTF, LT, TT>(
+    fn try_add_blocktree<VTF, LT, TT>(
         &mut self,
-        qc: &QuorumCertificate<SCT>,
+        tx_pool: &mut TT,
+        epoch_manager: &mut EpochManager,
+        val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
+        election: &LT,
+        metrics: &mut Metrics,
+        version: &str,
+
+        block: &Block<SCT>,
+    ) -> Vec<ConsensusCommand<ST, SCT>>
+    where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        TT: TxPool,
+    {
+        self.pending_block_tree
+            .add(block.clone())
+            .expect("Failed to add block to blocktree");
+        self.try_propose(
+            tx_pool,
+            epoch_manager,
+            val_epoch_map,
+            election,
+            metrics,
+            version,
+        )
+    }
+
+    #[must_use]
+    fn try_propose<VTF, LT, TT>(
+        &mut self,
         tx_pool: &mut TT,
         epoch_manager: &mut EpochManager,
         val_epoch_map: &ValidatorsEpochMapping<VTF, SCT>,
@@ -764,44 +806,52 @@ where
         TT: TxPool,
     {
         let mut cmds = Vec::new();
-        debug!("Created QC {:?}", qc);
-        metrics.consensus_events.created_qc += 1;
-        let epoch = epoch_manager.get_epoch(qc.get_round());
-        let validator_set = val_epoch_map
-            .get_val_set(&epoch)
-            .expect("vote message was verified");
-        cmds.extend(self.process_certificate_qc(
-            qc,
-            epoch_manager,
+
+        let (round, epoch, validator_set) = {
+            let round = self.pacemaker.get_current_round();
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let epoch = epoch_manager.get_epoch(round);
+            let Some(validator_set) = val_epoch_map.get_val_set(&epoch) else {
+                todo!("handle non-existent validatorset for next round epoch");
+            };
+            (round, epoch, validator_set)
+        };
+
+        // check that self is leader
+        if self.nodeid != election.get_leader(round, epoch, validator_set.get_members()) {
+            return cmds;
+        }
+
+        // make sure we haven't proposed in this round
+        if round <= self.last_proposed_round {
+            return cmds;
+        }
+
+        // check that we have path to root
+        if !self
+            .pending_block_tree
+            .has_path_to_root(&self.high_qc.get_block_id())
+        {
+            return cmds;
+        }
+
+        // we passed all try_propose guards, so begin proposing
+        self.last_proposed_round = round;
+
+        let last_round_tc = self.pacemaker.get_last_round_tc().clone();
+        cmds.extend(self.process_new_round_event(
+            tx_pool,
             validator_set,
+            last_round_tc,
             metrics,
             version,
         ));
-
-        // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
-        // error-prone
-        let (next_round, next_epoch, next_validator_set) = {
-            let next_round = self.pacemaker.get_current_round();
-            let next_epoch = epoch_manager.get_epoch(next_round);
-            let Some(next_validator_set) = val_epoch_map.get_val_set(&next_epoch) else {
-                todo!("handle non-existent validatorset for next round epoch");
-            };
-            (next_round, next_epoch, next_validator_set.get_members())
-        };
-
-        if self.nodeid == election.get_leader(next_round, next_epoch, next_validator_set) {
-            cmds.extend(self.process_new_round_event(
-                tx_pool,
-                validator_set,
-                None,
-                metrics,
-                version,
-            ));
-        }
         cmds
     }
 
     /// called when the node is entering a new round and is the leader for that round
+    /// TODO this function can be folded into try_propose; it's only called there
     #[must_use]
     fn process_new_round_event<VT, TT: TxPool>(
         &mut self,
@@ -814,9 +864,6 @@ where
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
-        self.vote_state
-            .start_new_round(self.pacemaker.get_current_round());
-
         let node_id = self.nodeid;
         let round = self.pacemaker.get_current_round();
         let high_qc = self.high_qc.clone();
@@ -1299,7 +1346,6 @@ mod test {
         let mut empty_txpool = MockTxPool::default();
         let mut metrics = Metrics::default();
         let version = "TEST";
-
         let state = &mut states[0];
         assert_eq!(state.high_qc.get_round(), Round(0));
 
@@ -2173,7 +2219,16 @@ mod test {
 
         let msg = BlockSyncResponseMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
-        let _ = second_state.handle_block_sync(routing_target, msg, valset, &mut metrics[1]);
+        let _ = second_state.handle_block_sync(
+            routing_target,
+            msg,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics[1],
+            version,
+        );
 
         // in the next round, second_state should recover and able to commit
         let cp4 = correct_proposal_gen.next_proposal(
@@ -2253,7 +2308,16 @@ mod test {
 
         let mal_sync = BlockSyncResponseMessage::NotAvailable(block_2.0.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
-        let cmds3 = third_state.handle_block_sync(author_2, mal_sync, valset, &mut metrics[2]);
+        let cmds3 = third_state.handle_block_sync(
+            author_2,
+            mal_sync,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics[2],
+            version,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 2);
         let res = cmds3
@@ -2264,7 +2328,16 @@ mod test {
 
         let sync = BlockSyncResponseMessage::BlockFound(block_3);
 
-        let cmds3 = third_state.handle_block_sync(*peer, sync.clone(), valset, &mut metrics[2]);
+        let cmds3 = third_state.handle_block_sync(
+            *peer,
+            sync.clone(),
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics[2],
+            version,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3
@@ -2279,7 +2352,16 @@ mod test {
             panic!("request sync is not found")
         };
         // repeated handling of the requested block should be ignored
-        let cmds3 = third_state.handle_block_sync(*peer, sync, valset, &mut metrics[2]);
+        let cmds3 = third_state.handle_block_sync(
+            *peer,
+            sync,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics[2],
+            version,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 3);
         let res = cmds3
@@ -2307,7 +2389,16 @@ mod test {
 
         let sync = BlockSyncResponseMessage::BlockFound(block_2);
         // request sync which did not arrive in time should be ignored.
-        let cmds3 = third_state.handle_block_sync(*peer_2, sync, valset, &mut metrics[2]);
+        let cmds3 = third_state.handle_block_sync(
+            *peer_2,
+            sync,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics[2],
+            version,
+        );
 
         assert_eq!(third_state.pending_block_tree.size(), 4);
         let res = cmds3
@@ -3049,6 +3140,7 @@ mod test {
                 &mut metrics[leader_index],
                 version,
             );
+
             if i == (num_state * 2 / 3) {
                 let req: Vec<(NodeId<_>, BlockId)> = cmds
                     .into_iter()
@@ -3215,7 +3307,7 @@ mod test {
     }
 
     // Expected behaviour when leader N+2 receives the votes for N+1 before receiving the proposal
-    // for N+1 is that it holds the newly formed QC and waits until the proposal for N+1 arrives.
+    // for N+1 is that it creates the QC, but does not send the proposal until N+1 arrives.
     #[test]
     fn test_votes_with_missing_parent_block() {
         let num_state = 4;
@@ -3326,21 +3418,19 @@ mod test {
             // make sure that after super majority of votes, we are not prodcuing any proposal
             // commands
             if i >= (num_state * 2 / 3) {
-                assert!(cmds.is_empty());
+                let proposal_exists = cmds.into_iter().any(|c| match c {
+                    ConsensusCommand::Publish {
+                        target: RouterTarget::Broadcast,
+                        message,
+                    } => matches!(
+                        &message.deref().deref().message,
+                        ProtocolMessage::Proposal(_)
+                    ),
+                    _ => false,
+                });
+                assert!(!proposal_exists);
             }
         }
-
-        // leader got the votes and created a pending qc for the missing round
-        assert!(states[leader_index].vote_state.pending_qc.is_some());
-        assert_eq!(
-            states[leader_index]
-                .vote_state
-                .pending_qc
-                .as_ref()
-                .unwrap()
-                .get_round(),
-            Round(missing_round)
-        );
 
         // when the missing proposal arrives, we expect the pending qc to now propose
         // and we also expect the node to process the QC and therefore move into missing_round+1
@@ -3359,7 +3449,6 @@ mod test {
             states[leader_index].pacemaker.get_current_round(),
             Round(missing_round + 1)
         );
-        assert!(states[leader_index].vote_state.pending_qc.is_none());
         let p = extract_proposal_broadcast(cmds);
         assert_eq!(Round(missing_round + 1), p.block.0.get_round());
     }
@@ -4197,7 +4286,16 @@ mod test {
         for block in block_sync_blocks.into_iter().rev() {
             let msg = BlockSyncResponseMessage::BlockFound(block);
             // blocksync response for state 2
-            let _ = state_2.handle_block_sync(state_1.nodeid, msg, val_set, &mut metrics[1]);
+            let _ = state_2.handle_block_sync(
+                state_1.nodeid,
+                msg,
+                &mut empty_txpool,
+                epoch_manager_2,
+                &val_epoch_map,
+                &election,
+                &mut metrics[1],
+                version,
+            );
         }
 
         // blocks aren't committed immediately after blocksync is finished
