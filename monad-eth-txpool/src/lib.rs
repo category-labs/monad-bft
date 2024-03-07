@@ -51,14 +51,20 @@ impl TxPool for EthTxPool {
             txs.push(tx.clone());
         }
 
+        let proposal_num_tx = txs.len();
+        let full_tx_list = EthFullTransactionList(txs).rlp_encode();
+
+        tracing::info!(
+            proposal_num_tx,
+            proposal_total_gas = total_gas,
+            proposal_tx_bytes = full_tx_list.len()
+        );
+
         // TODO cascading behaviour for leftover txns once we have an idea of how we want
         // to forward
         self.0.clear();
         let leftovers = None;
 
-        (
-            FullTransactionList::new(EthFullTransactionList(txs).rlp_encode()),
-            leftovers,
-        )
+        (FullTransactionList::new(full_tx_list), leftovers)
     }
 }

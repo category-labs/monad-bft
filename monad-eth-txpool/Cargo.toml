@@ -12,3 +12,4 @@ monad-eth-tx = { path = "../monad-eth-tx" }
 
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
+tracing = { workspace = true }
