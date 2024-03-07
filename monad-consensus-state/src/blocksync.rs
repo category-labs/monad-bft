@@ -19,7 +19,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_types::{BlockId, NodeId, TimeoutVariant};
+use monad_types::{BlockId, NodeId, SeqNum, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::debug;
 
@@ -30,7 +30,7 @@ const DEFAULT_NODE_INDEX: usize = 0;
 /// Represents a blocksync request that has been made and
 /// that we are waiting for
 #[derive(PartialEq, Eq, Debug, Clone)]
-struct InFlightRequest<SCT: SignatureCollection> {
+pub struct InFlightRequest<SCT: SignatureCollection> {
     /// The node we are requesting the block from
     req_target: NodeId<SCT::NodeIdPubKey>,
 
@@ -264,6 +264,7 @@ where
                 metrics,
             ))
         } else {
+            // Could be the case that the request was removed
             BlockSyncResult::UnexpectedResponse
         }
     }
@@ -310,6 +311,15 @@ where
         }
 
         (peer, cnt)
+    }
+
+    pub fn remove_old_requests(&mut self, seq_num: SeqNum) {
+        self.requests
+            .retain(|_, req| req.qc.get_seq_num() > seq_num);
+    }
+
+    pub fn requests(&self) -> &HashMap<BlockId, InFlightRequest<SCT>> {
+        &self.requests
     }
 }
 
@@ -986,5 +996,112 @@ mod test {
         };
 
         assert!(bid == qc.get_block_id());
+    }
+
+    #[test]
+    fn test_remove_old_requests() {
+        let keypair = get_key::<ST>(7);
+        let max_retry_cnt = 1;
+        let mut manager = BlockSyncRequester::<ST, SC>::new(
+            NodeId::new(keypair.pubkey()),
+            Duration::MAX,
+            max_retry_cnt,
+        );
+        let (_, _, valset, _) =
+            create_keys_w_validators::<ST, SC, _>(4, ValidatorSetFactory::default());
+        let mut metrics = Metrics::default();
+
+        // first QC with seq_num 1
+        let qc_1 = &QC::new(
+            QcInfo {
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x01_u8; 32])),
+                        round: Round(1),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(1),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
+                },
+            },
+            SC::with_pubkeys(&[]),
+        );
+
+        let cmds = manager.request::<VT>(qc_1, &valset, &mut metrics);
+
+        assert!(cmds.len() == 2);
+        let (peer, bid) = match cmds[0] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+
+        assert!(&peer == valset.get_members().iter().next().unwrap().0);
+        assert!(bid == qc_1.get_block_id());
+
+        // second QC with seq_num 2
+        let qc_2 = &QC::new(
+            QcInfo {
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x02_u8; 32])),
+                        round: Round(2),
+                        parent_id: BlockId(Hash([0x02_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(2),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
+                },
+            },
+            SC::with_pubkeys(&[]),
+        );
+        let cmds = manager.request::<VT>(qc_2, &valset, &mut metrics);
+
+        assert!(cmds.len() == 2);
+        let (peer, bid) = match cmds[0] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+
+        assert!(&peer == valset.get_members().iter().next().unwrap().0);
+        assert!(bid == qc_2.get_block_id());
+
+        // third QC with seq_num 3
+        let qc_3 = &QC::new(
+            QcInfo {
+                vote: Vote {
+                    vote_info: VoteInfo {
+                        id: BlockId(Hash([0x03_u8; 32])),
+                        round: Round(3),
+                        parent_id: BlockId(Hash([0x03_u8; 32])),
+                        parent_round: Round(0),
+                        seq_num: SeqNum(3),
+                    },
+                    ledger_commit_info: CommitResult::NoCommit,
+                },
+            },
+            SC::with_pubkeys(&[]),
+        );
+        let cmds = manager.request::<VT>(qc_3, &valset, &mut metrics);
+
+        assert!(cmds.len() == 2);
+        let (peer, bid) = match cmds[0] {
+            ConsensusCommand::RequestSync { peer, block_id } => (peer, block_id),
+            _ => panic!("manager didn't request a block when no inflight block is observed"),
+        };
+
+        assert!(&peer == valset.get_members().iter().next().unwrap().0);
+        assert!(bid == qc_3.get_block_id());
+
+        // commit block with seq_num 2
+        manager.remove_old_requests(SeqNum(2));
+
+        // there should only be one request left
+        assert!(manager.requests.len() == 1);
+
+        // request for seq_num 3 should still be in flight
+        let block_3_request = manager.requests.get(&qc_3.get_block_id());
+        assert!(block_3_request.is_some());
+        assert!(block_3_request.unwrap().qc.get_seq_num() == SeqNum(3));
     }
 }

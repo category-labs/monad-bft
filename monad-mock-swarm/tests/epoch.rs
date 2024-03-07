@@ -154,6 +154,7 @@ mod test {
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
             majority_threshold,      // state root quorum threshold
+            5,                       // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -240,6 +241,7 @@ mod test {
             val_set_update_interval, // val_set_update_interval
             Round(20),               // epoch_start_delay
             majority_threshold,      // state root quorum threshold
+            5,                       // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -394,6 +396,7 @@ mod test {
             val_set_update_interval,  // val_set_update_interval
             Round(20),                // epoch_start_delay
             majority_threshold,       // state root quorum threshold
+            5,                        // max_blocksync_retries
         );
 
         let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0]
@@ -552,6 +555,7 @@ mod test {
             val_set_update_interval, // val_set_update_interval
             epoch_start_delay,       // epoch_start_delay
             majority_threshold,      // state root quorum threshold
+            5,                       // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

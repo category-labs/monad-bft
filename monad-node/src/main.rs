@@ -223,6 +223,7 @@ async fn run(
             proposal_gas_limit: 800_000_000,
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
+            max_blocksync_retries: 5,
         },
     };
     let (mut state, init_commands) = builder.build();

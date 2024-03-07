@@ -322,6 +322,7 @@ where
                         proposal_gas_limit: 800_000_000,
                         propose_with_missing_blocks: false,
                         delta: Duration::from_millis(args.delta_ms),
+                        max_blocksync_retries: 5,
                     },
                 },
             }

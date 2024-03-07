@@ -60,6 +60,7 @@ fn all_messages_delayed_cron() {
 fn all_messages_delayed(direction: TransformerReplayOrder) {
     // tracing_subscriber::fmt::init();
     let delta = Duration::from_millis(1);
+    let max_blocksync_retries = 5;
     let state_configs = make_state_configs::<NoSerSwarm>(
         4, // num_nodes
         ValidatorSetFactory::default,
@@ -77,11 +78,12 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
             )
         },
         PeerAsyncStateVerify::new,
-        delta,              // delta
-        10,                 // proposal_tx_limit
-        SeqNum(2000),       // val_set_update_interval
-        Round(50),          // epoch_start_delay
-        majority_threshold, // state root quorum threshold
+        delta,                 // delta
+        10,                    // proposal_tx_limit
+        SeqNum(2000),          // val_set_update_interval
+        Round(50),             // epoch_start_delay
+        majority_threshold,    // state root quorum threshold
+        max_blocksync_retries, // max_blocksync_retries
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -199,9 +201,9 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
         // ledger is received by all peers
         TransformerReplayOrder::Reverse => (longest_ledger_before + 1, longest_ledger_before + 2),
         // when replayed in random order, could be any number of requests
-        // TODO: +5 is to ensure max_retry_cnt for blocksync is triggered only once
-        // should be fixed after updating blocksync requests on block commits
-        TransformerReplayOrder::Random(_) => (0, longest_ledger_before + 2 + 5),
+        // max_blocksync_retries is to ensure that failed blocksync is not
+        // triggered too many times
+        TransformerReplayOrder::Random(_) => (0, longest_ledger_before + 2 + max_blocksync_retries),
     };
 
     let mut verifier_after_delayed_messages = MockSwarmVerifier::default();

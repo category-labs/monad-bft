@@ -104,6 +104,7 @@ pub fn recover_nodes_msg_delays(
         val_set_update_interval, // val_set_update_interval
         epoch_start_delay,       // epoch_start_delay
         majority_threshold,      // state root quorum threshold
+        5,                       // max_blocksync_retries
     );
 
     // create the log file path
@@ -187,6 +188,7 @@ pub fn recover_nodes_msg_delays(
         val_set_update_interval, // val_set_update_interval
         epoch_start_delay,       // epoch_start_delay
         majority_threshold,      // state root quorum threshold
+        5,                       // max_blocksync_retries
     );
 
     let swarm_config_clone = SwarmBuilder::<ReplaySwarm>(

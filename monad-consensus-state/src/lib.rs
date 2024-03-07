@@ -98,6 +98,8 @@ pub struct ConsensusConfig {
     /// delta should be approximately equal to the upper bound of message
     /// delivery during a broadcast
     pub delta: Duration,
+    /// Maximum number of blocksync retries allowed per block
+    pub max_blocksync_retries: usize,
 }
 
 impl<ST, SCT, BVT, SVT> PartialEq for ConsensusState<ST, SCT, BVT, SVT>
@@ -212,11 +214,10 @@ where
             // assuming 2 * delta is the duration which it takes for perfect message transmission
             // 3 * delta is a reasonable amount for timeout, (4 * delta is good too)
             // as 1 * delta for original ask, 2 * delta for reaction from peer
-            // TODO: make max_retry_cnt configurable
             block_sync_requester: BlockSyncRequester::new(
                 NodeId::new(my_pubkey),
                 config.delta * 3,
-                5,
+                config.max_blocksync_retries,
             ),
             keypair,
             cert_keypair,
@@ -693,6 +694,10 @@ where
             );
 
             if !blocks_to_commit.is_empty() {
+                // remove inflight requests for older blocks
+                self.block_sync_requester
+                    .remove_old_requests(blocks_to_commit.last().unwrap().get_seq_num());
+
                 for block in blocks_to_commit.iter() {
                     epoch_manager.schedule_epoch_start(block.get_seq_num(), block.get_round());
                     if block.payload.txns == FullTransactionList::empty() {
@@ -1095,6 +1100,10 @@ where
         &self.pending_block_tree
     }
 
+    pub fn block_sync_requester(&self) -> &BlockSyncRequester<ST, SCT> {
+        &self.block_sync_requester
+    }
+
     pub fn get_current_round(&self) -> Round {
         self.pacemaker.get_current_round()
     }
@@ -1220,6 +1229,7 @@ mod test {
                         proposal_gas_limit: 8_000_000,
                         propose_with_missing_blocks: false,
                         delta: Duration::from_secs(1),
+                        max_blocksync_retries: 5,
                     },
                     EthAddress::default(),
                     std::mem::replace(&mut dupkeys[i], default_key),
@@ -4504,5 +4514,107 @@ mod test {
             let vote_messages = extract_vote_msgs(cmds);
             assert!(vote_messages.len() == 1);
         }
+    }
+
+    #[test]
+    fn test_remove_old_blocksync_requests() {
+        let (keys, certkeys, mut epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(4, || {
+                NopStateRoot
+            });
+        let election = SimpleRoundRobin::default();
+        let mut empty_txpool = MockTxPool::default();
+        let state = &mut states[0];
+        let mut metrics = Metrics::default();
+        let version = "TEST";
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+
+        // round 1 proposal
+        let p1 = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_1, _, verified_message_1) = p1.destructure();
+        let block_1_id = verified_message_1.block.0.get_id();
+
+        // round 2 proposal
+        let p2 = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_2, _, verified_message_2) = p2.destructure();
+        let _ = state.handle_proposal_message(
+            author_2,
+            verified_message_2,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics,
+            version,
+        );
+        // should be in round 2 and request block 1
+        assert!(state.get_current_round() == Round(2));
+        assert!(state
+            .block_sync_requester()
+            .requests()
+            .contains_key(&block_1_id));
+
+        // handle proposal for block 1
+        let _ = state.handle_proposal_message(
+            author_1,
+            verified_message_1,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics,
+            version,
+        );
+        // should still be in round 2 and block 1 request should exist
+        assert!(state.get_current_round() == Round(2));
+        assert!(state
+            .block_sync_requester()
+            .requests()
+            .contains_key(&block_1_id));
+
+        // round 3 proposal
+        let p3 = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author_3, _, verified_message_3) = p3.destructure();
+        let _ = state.handle_proposal_message(
+            author_3,
+            verified_message_3,
+            &mut empty_txpool,
+            &mut epoch_manager,
+            &val_epoch_map,
+            &election,
+            &mut metrics,
+            version,
+        );
+        // should be in round 3 and remove block 1 request
+        assert!(state.get_current_round() == Round(3));
+        assert!(!state
+            .block_sync_requester()
+            .requests()
+            .contains_key(&block_1_id));
+        assert!(state.block_sync_requester().requests().is_empty());
     }
 }

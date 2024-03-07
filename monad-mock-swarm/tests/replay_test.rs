@@ -142,6 +142,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
         majority_threshold, // state root quorum threshold
+        5,                  // max_blocksync_retries
     );
     let node_ids: Vec<_> = state_configs
         .iter()
@@ -165,6 +166,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
         SeqNum(2000),       // val_set_update_interval
         Round(50),          // epoch_start_delay
         majority_threshold, // state root quorum threshold
+        5,                  // max_blocksync_retries
     );
 
     let swarm_config = SwarmBuilder::<ReplaySwarm>(

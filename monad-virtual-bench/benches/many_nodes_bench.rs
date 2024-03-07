@@ -129,6 +129,7 @@ fn many_nodes_nop_timeout() -> u128 {
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
         majority_threshold,        // state root quorum threshold
+        5,                         // max_blocksync_retries
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -202,6 +203,7 @@ fn many_nodes_bls_timeout() -> u128 {
         SeqNum(2000),              // val_set_update_interval
         Round(50),                 // epoch_start_delay
         majority_threshold,        // state root quorum threshold
+        5,                         // max_blocksync_retries
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()

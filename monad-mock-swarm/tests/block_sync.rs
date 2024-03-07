@@ -57,6 +57,7 @@ mod test {
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
+            5,                  // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -172,6 +173,7 @@ mod test {
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
+            5,                  // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -249,6 +251,7 @@ mod test {
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
+            5,                  // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -376,6 +379,7 @@ mod test {
             SeqNum(2000),       // val_set_update_interval
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
+            5,                  // max_blocksync_retries
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

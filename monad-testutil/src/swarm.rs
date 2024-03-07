@@ -25,6 +25,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     val_set_update_interval: SeqNum,
     epoch_start_delay: Round,
     state_root_quorum_threshold: fn(Stake) -> Stake,
+    max_blocksync_retries: usize,
 ) -> Vec<
     MonadStateBuilder<
         S::SignatureType,
@@ -81,6 +82,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 proposal_gas_limit: 30_000_000,
                 propose_with_missing_blocks: false,
                 delta,
+                max_blocksync_retries,
             },
         })
         .collect()
