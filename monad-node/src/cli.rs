@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::mode::RunModeCommand;
+
 #[derive(Debug, Parser)]
 #[command(name = "monad-node", about, long_about = None)]
 pub struct Cli {
@@ -36,6 +38,11 @@ pub struct Cli {
     /// Set the opentelemetry OTLP exporter endpoint
     #[arg(long)]
     pub otel_endpoint: Option<String>,
+
+    /// Default to run in prod mode
+    /// Passing "testmode" enables test only arguments
+    #[command(subcommand)]
+    pub run_mode: Option<RunModeCommand>,
 
     #[arg(long, requires = "otel_endpoint")]
     pub record_metrics_interval_seconds: Option<u64>,

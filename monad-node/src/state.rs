@@ -12,6 +12,7 @@ use crate::{
     cli::Cli,
     config::{GenesisConfig, NodeConfig},
     error::NodeSetupError,
+    mode::RunModeCommand,
 };
 
 pub struct NodeState {
@@ -26,6 +27,8 @@ pub struct NodeState {
     pub mempool_ipc_path: PathBuf,
     pub otel_endpoint: Option<String>,
     pub record_metrics_interval: Option<Duration>,
+
+    pub run_mode: RunModeCommand,
 }
 
 impl NodeState {
@@ -49,6 +52,8 @@ impl NodeState {
         let genesis_config: GenesisConfig =
             toml::from_str(&std::fs::read_to_string(cli.genesis_config)?)?;
 
+        let run_mode = cli.run_mode.unwrap_or_default();
+
         Ok(Self {
             node_config,
             genesis_config,
@@ -63,6 +68,8 @@ impl NodeState {
             record_metrics_interval: cli
                 .record_metrics_interval_seconds
                 .and_then(|s| Some(Duration::from_secs(s))),
+
+            run_mode,
         })
     }
 }

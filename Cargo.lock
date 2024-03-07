@@ -3136,6 +3136,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
+ "rand_chacha",
  "serde",
  "thiserror",
  "tokio",

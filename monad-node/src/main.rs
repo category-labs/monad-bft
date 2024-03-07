@@ -12,9 +12,12 @@ use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block_validator::MockValidator, payload::NopStateRoot, validator_data::ValidatorData,
+    block_validator::MockValidator,
+    payload::{NopStateRoot, StateRoot, StateRootValidator},
+    state_root_hash::StateRootHash,
+    validator_data::ValidatorData,
 };
-use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+use monad_crypto::{certificate_signature::CertificateSignaturePubKey, hasher::Hash};
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
@@ -37,11 +40,15 @@ use opentelemetry::{
     trace::{Span, SpanBuilder, TraceContextExt},
     Context,
 };
+use rand_chacha::{
+    rand_core::{RngCore, SeedableRng},
+    ChaChaRng,
+};
 use tokio::signal;
 use tracing::{event, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
-    fmt::{format::FmtSpan, Layer},
+    fmt::{format::FmtSpan, Layer as FmtLayer},
     layer::SubscriberExt,
     EnvFilter, Registry,
 };
@@ -50,6 +57,7 @@ mod cli;
 use cli::Cli;
 
 mod config;
+mod mode;
 
 mod error;
 use error::NodeSetupError;
@@ -89,30 +97,24 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
         .expect("failed to build otel monad-node")
     });
 
-    if let Some(provider) = &maybe_provider {
+    let maybe_telemetry = if let Some(provider) = &maybe_provider {
         use opentelemetry::trace::TracerProvider;
         let tracer = provider.tracer("opentelemetry");
-        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-        let subscriber = Registry::default()
-            .with(EnvFilter::from_default_env())
-            .with(
-                Layer::default()
-                    .with_writer(std::io::stdout)
-                    .with_span_events(FmtSpan::CLOSE),
-            )
-            .with(telemetry);
-
-        tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
+        Some(tracing_opentelemetry::layer().with_tracer(tracer))
     } else {
-        let subscriber = Registry::default()
-            .with(EnvFilter::from_default_env())
-            .with(
-                Layer::default()
-                    .with_writer(std::io::stdout)
-                    .with_span_events(FmtSpan::CLOSE),
-            );
-        tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
-    }
+        None
+    };
+
+    let subscriber = Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(
+            FmtLayer::default()
+                .with_writer(std::io::stdout)
+                .with_span_events(FmtSpan::CLOSE),
+        )
+        .with(maybe_telemetry);
+
+    tracing::subscriber::set_global_default(subscriber).expect("failed to set logger");
 
     // if provider is dropped, then traces stop getting sent silently...
     let maybe_coordinator_provider = node_state.otel_endpoint.as_ref().map(|endpoint| {
@@ -204,13 +206,13 @@ async fn run(
         return Err(());
     };
 
-    let builder = MonadStateBuilder {
+    let mut builder = MonadStateBuilder {
         version: MonadVersion::new("ALPHA"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: EthTxPool::default(),
         block_validator: MockValidator,
-        state_root_validator: NopStateRoot {},
+        state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),
         validators,
         key: node_state.secp256k1_identity,
@@ -226,6 +228,30 @@ async fn run(
             max_blocksync_retries: 5,
         },
     };
+
+    // parse test mode commands
+    match node_state.run_mode {
+        mode::RunModeCommand::ProdMode => {}
+        mode::RunModeCommand::TestMode {
+            byzantine_execution,
+        } => {
+            if byzantine_execution {
+                executor
+                    .state_root_hash
+                    .inject_byzantine_srh(|seq_num: SeqNum| {
+                        let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
+                        let mut hash = [0_u8; 32];
+                        let mut discard = [0_u8; 32];
+                        gen.fill_bytes(&mut discard);
+                        gen.fill_bytes(&mut hash);
+                        StateRootHash(Hash(hash))
+                    });
+            }
+            // use real StateRootValidator
+            builder.state_root_validator = Box::new(StateRoot::new(SeqNum(4)));
+        }
+    }
+
     let (mut state, init_commands) = builder.build();
     executor.exec(init_commands);
 

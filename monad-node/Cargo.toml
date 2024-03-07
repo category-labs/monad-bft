@@ -42,6 +42,7 @@ log = { workspace = true }
 opentelemetry = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics"] }
 opentelemetry-semantic-conventions = { workspace = true }
+rand_chacha = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
