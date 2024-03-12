@@ -159,6 +159,9 @@ where
     {
         let msg = HasherType::hash_object(&self.obj);
 
+        // If the node is lagging too far behind, it wouldn't know when the
+        // next epoch is starting. The epoch retrieved here may be incorrect.
+        // TODO: Need to check that case. Should trigger statesync.
         let epoch = epoch_manager.get_epoch(self.obj.obj.get_round());
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
@@ -424,6 +427,9 @@ impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
             return Err(Error::AuthorNotSender);
         }
 
+        // If the node is lagging too far behind, it wouldn't know when the
+        // next epoch is starting. The epoch retrieved here may be incorrect.
+        // TODO: Need to check that case. Should trigger statesync.
         let epoch = epoch_manager.get_epoch(self.obj.info.round);
         let valset = val_epoch_map
             .get_val_set(&epoch)
@@ -461,6 +467,9 @@ where
     VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
 {
     if let Some(tc) = tc {
+        // If the node is lagging too far behind, it wouldn't know when the
+        // next epoch is starting. The epoch retrieved here may be incorrect.
+        // TODO: Need to check that case. Should trigger statesync.
         let tc_epoch = epoch_manager.get_epoch(tc.round);
         let validator_set = val_epoch_map
             .get_val_set(&tc_epoch)
@@ -471,6 +480,9 @@ where
         verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
 
+    // If the node is lagging too far behind, it wouldn't know when the
+    // next epoch is starting. The epoch retrieved here may be incorrect.
+    // TODO: Need to check that case. Should trigger statesync.
     let qc_epoch = epoch_manager.get_epoch(qc.get_round());
     let validator_set = val_epoch_map
         .get_val_set(&qc_epoch)

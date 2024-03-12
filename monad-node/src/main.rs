@@ -226,6 +226,7 @@ async fn run(
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
             max_blocksync_retries: 5,
+            state_sync_threshold: SeqNum(100),
         },
     };
 

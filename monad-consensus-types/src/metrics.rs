@@ -43,6 +43,7 @@ pub struct ConsensusEvents {
     pub state_root_update: u64,
     pub enter_new_round_qc: u64,
     pub enter_new_round_tc: u64,
+    pub trigger_state_sync: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]

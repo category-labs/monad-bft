@@ -102,6 +102,11 @@ pub struct ConsensusConfig {
     pub delta: Duration,
     /// Maximum number of blocksync retries allowed per block
     pub max_blocksync_retries: usize,
+    /// If the node is lagging over state_sync_threshold blocks behind,
+    /// then it should trigger statesync.
+    /// Lagging (0, state_sync_threshold) blocks: request blocksync
+    /// Lagging  >= state_sync_threshold  blocks: trigger statesync
+    pub state_sync_threshold: SeqNum,
 }
 
 impl<ST, SCT, BVT, SVT> PartialEq for ConsensusState<ST, SCT, BVT, SVT>
@@ -990,6 +995,19 @@ where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         if let Some(qc) = self.pending_block_tree.get_missing_ancestor(qc) {
+            let max_seq_num_to_request =
+                self.pending_block_tree.get_root_seq_num() + self.config.state_sync_threshold;
+
+            if qc.get_seq_num() >= max_seq_num_to_request {
+                // TODO: This should trigger statesync. Remove blocksync request.
+                warn!(
+                    "Lagging over {:?} blocks behind. Trigger statesync",
+                    self.config.state_sync_threshold
+                );
+
+                metrics.consensus_events.trigger_state_sync += 1;
+            }
+
             self.block_sync_requester
                 .request::<VT>(&qc, validators, metrics)
         } else {
@@ -1277,6 +1295,7 @@ mod test {
                         propose_with_missing_blocks: false,
                         delta: Duration::from_secs(1),
                         max_blocksync_retries: 5,
+                        state_sync_threshold: SeqNum(100),
                     },
                     EthAddress::default(),
                     std::mem::replace(&mut dupkeys[i], default_key),
@@ -4714,5 +4733,98 @@ mod test {
             .requests()
             .contains_key(&block_1_id));
         assert!(state.block_sync_requester().requests().is_empty());
+    }
+
+    #[test]
+    fn test_request_over_state_sync_threshold() {
+        let num_states = 4;
+        let (keys, certkeys, epoch_manager, val_epoch_map, mut states) =
+            setup::<SignatureType, SignatureCollectionType, StateRootValidatorType>(
+                num_states as u32,
+                || NopStateRoot,
+            );
+        let mut epoch_managers = vec![epoch_manager.clone(); num_states];
+        let election = SimpleRoundRobin::default();
+        let mut propgen = ProposalGen::<SignatureType, _>::new();
+        let mut blocks = vec![];
+        let mut empty_txpool = MockTxPool::default();
+        let mut metrics: Vec<Metrics> = (0..num_states).map(|_| Metrics::default()).collect();
+        let version = "TEST";
+
+        // Sequence number of the block after which state sync should be triggered
+        let state_sync_threshold_block = states[0].config.state_sync_threshold;
+        // Round number of that block is the same as its sequence number (NO TCs in between)
+        let state_sync_threshold_round = Round(state_sync_threshold_block.0);
+
+        let (first_state, other_states) = states.split_first_mut().unwrap();
+        let (first_state_epoch_manager, other_epoch_managers) =
+            epoch_managers.split_first_mut().unwrap();
+        let (first_state_metrics, other_metrics) = metrics.split_first_mut().unwrap();
+
+        // handle proposals for 3 states until state_sync_threshold
+        for _ in 0..state_sync_threshold_round.0 {
+            let cp = propgen.next_proposal(
+                &keys,
+                &certkeys,
+                &epoch_manager,
+                &val_epoch_map,
+                &election,
+                FullTransactionList::empty(),
+                ExecutionArtifacts::zero(),
+            );
+
+            let (author, _, verified_message) = cp.destructure();
+            for (i, (state, epoch_manager)) in other_states
+                .iter_mut()
+                .zip(other_epoch_managers.iter_mut())
+                .enumerate()
+            {
+                let cmds = state.handle_proposal_message(
+                    author,
+                    verified_message.clone(),
+                    &mut empty_txpool,
+                    epoch_manager,
+                    &val_epoch_map,
+                    &election,
+                    &mut other_metrics[i],
+                    version,
+                );
+                // state should not request blocksync
+                let bsync_cmds: Vec<_> = cmds
+                    .iter()
+                    .filter_map(|c| match c {
+                        ConsensusCommand::RequestSync { peer: _, block_id } => Some(block_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(bsync_cmds.is_empty());
+            }
+
+            blocks.push(verified_message.block);
+        }
+
+        let cp = propgen.next_proposal(
+            &keys,
+            &certkeys,
+            &epoch_manager,
+            &val_epoch_map,
+            &election,
+            FullTransactionList::empty(),
+            ExecutionArtifacts::zero(),
+        );
+        let (author, _, verified_message) = cp.destructure();
+        let _cmds = first_state.handle_proposal_message(
+            author,
+            verified_message,
+            &mut empty_txpool,
+            first_state_epoch_manager,
+            &val_epoch_map,
+            &election,
+            first_state_metrics,
+            version,
+        );
+
+        // Should trigger state sync (only metric assertion for now)
+        assert_eq!(first_state_metrics.consensus_events.trigger_state_sync, 1);
     }
 }

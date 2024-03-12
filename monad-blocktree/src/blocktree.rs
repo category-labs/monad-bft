@@ -7,7 +7,7 @@ use monad_consensus_types::{
     signature_collection::SignatureCollection,
 };
 use monad_tracing_counter::inc_count;
-use monad_types::{BlockId, Round};
+use monad_types::{BlockId, Round, SeqNum};
 use tracing::trace;
 
 type Result<T> = StdResult<T, BlockTreeError>;
@@ -35,6 +35,7 @@ impl std::error::Error for BlockTreeError {
 #[derive(Debug, PartialEq, Eq)]
 struct Root {
     round: Round,
+    seq_num: SeqNum,
     block_id: BlockId,
 }
 
@@ -52,6 +53,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         Self {
             root: Root {
                 round: root.info.get_round(),
+                seq_num: root.get_seq_num(),
                 block_id: root.get_block_id(),
             },
             tree: HashMap::new(),
@@ -114,6 +116,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         // new root should be set to QC of the block that's the new root
         self.root = Root {
             round: new_root_block.get_round(),
+            seq_num: new_root_block.get_seq_num(),
             block_id: new_root_block.get_id(),
         };
 
@@ -208,6 +211,10 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
     pub fn size(&self) -> usize {
         self.tree.len()
+    }
+
+    pub fn get_root_seq_num(&self) -> SeqNum {
+        self.root.seq_num
     }
 }
 

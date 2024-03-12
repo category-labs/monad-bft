@@ -352,6 +352,7 @@ where
                 propose_with_missing_blocks: false,
                 delta: Duration::from_millis(delta_ms),
                 max_blocksync_retries: 5,
+                state_sync_threshold: SeqNum(100),
             },
         })
         .collect();

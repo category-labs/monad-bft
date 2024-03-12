@@ -79,6 +79,9 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
             metrics.validation_errors.invalid_seq_num += 1;
         }
         validation::Error::ValidatorDataUnavailable => {
+            // This error occurs when the node knows when the next epoch starts, but
+            // didn't get enough execution deltas to build the next validator set.
+            // TODO: This should trigger statesync
             metrics.validation_errors.val_data_unavailable += 1;
         }
         validation::Error::InvalidVoteMessage => {

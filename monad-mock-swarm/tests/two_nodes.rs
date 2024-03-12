@@ -57,6 +57,7 @@ fn two_nodes_noser() {
         Round(50),          // epoch_start_delay
         majority_threshold, // state root quorum threshold
         5,                  // max_blocksync_retries
+        SeqNum(100),        // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -123,6 +124,7 @@ fn two_nodes_quic_latency() {
         Round(50),          // epoch_start_delay
         majority_threshold, // state root quorum threshold
         5,                  // max_blocksync_retries
+        SeqNum(100),        // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
@@ -241,6 +243,7 @@ fn two_nodes_quic_bw() {
         Round(50),          // epoch_start_delay
         majority_threshold, // state root quorum threshold
         5,                  // max_blocksync_retries
+        SeqNum(100),        // state_sync_threshold
     );
     let all_peers: BTreeSet<_> = state_configs
         .iter()
