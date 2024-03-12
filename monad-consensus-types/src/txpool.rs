@@ -45,6 +45,7 @@ use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 const MOCK_DEFAULT_SEED: u64 = 1;
 const TXN_SIZE: usize = 32;
 
+#[derive(Clone)]
 pub struct MockTxPool {
     rng: ChaCha20Rng,
 }

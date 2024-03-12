@@ -9,10 +9,10 @@ use monad_consensus::{
 };
 use monad_consensus_state::{
     command::{Checkpoint, ConsensusCommand},
-    ConsensusState,
+    ConsensusState, NodeState,
 };
 use monad_consensus_types::{
-    block::Block, block_validator::BlockValidator, metrics::Metrics, payload::StateRootValidator,
+    block::Block, block_validator::BlockValidator, payload::StateRootValidator,
     signature_collection::SignatureCollection, txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
@@ -23,12 +23,9 @@ use monad_executor_glue::{
     RouterCommand, StateRootHashCommand, TimerCommand,
 };
 use monad_types::{RouterTarget, TimeoutVariant};
-use monad_validator::{
-    epoch_manager::EpochManager, leader_election::LeaderElection,
-    validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
-};
+use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorSetTypeFactory};
 
-use crate::{handle_validation_error, MonadState, MonadVersion, VerifiedMonadMessage};
+use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
 pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
 where
@@ -37,16 +34,9 @@ where
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     consensus: &'a mut ConsensusState<ST, SCT, BVT, SVT>,
+    node_state: NodeState<'a, ST, SCT, VTF, LT, TT>,
 
-    /// Consensus needs these states to process messages
-    epoch_manager: &'a mut EpochManager,
-    val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
-    leader_election: &'a LT,
-    txpool: &'a mut TT,
-    metrics: &'a mut Metrics,
-    version: &'a MonadVersion,
-
-    _phantom: PhantomData<(ST, ASVT)>,
+    _phantom: PhantomData<ASVT>,
 }
 
 impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -65,12 +55,15 @@ where
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
-            epoch_manager: &mut monad_state.epoch_manager,
-            val_epoch_map: &monad_state.val_epoch_map,
-            leader_election: &monad_state.leader_election,
-            txpool: &mut monad_state.txpool,
-            metrics: &mut monad_state.metrics,
-            version: &monad_state.version,
+            node_state: NodeState {
+                epoch_manager: &mut monad_state.epoch_manager,
+                val_epoch_map: &monad_state.val_epoch_map,
+                election: &monad_state.leader_election,
+                tx_pool: &mut monad_state.txpool,
+                metrics: &mut monad_state.metrics,
+                version: monad_state.version.protocol_version,
+                _phantom: PhantomData,
+            },
             _phantom: PhantomData,
         }
     }
@@ -85,13 +78,13 @@ where
                 unverified_message,
             } => {
                 let verified_message = match unverified_message.verify(
-                    self.epoch_manager,
-                    self.val_epoch_map,
+                    self.node_state.epoch_manager,
+                    self.node_state.val_epoch_map,
                     &sender.pubkey(),
                 ) {
                     Ok(m) => m,
                     Err(e) => {
-                        handle_validation_error(e, self.metrics);
+                        handle_validation_error(e, self.node_state.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -102,13 +95,13 @@ where
 
                 // Validated message according to consensus protocol spec
                 let validated_mesage = match verified_message.validate(
-                    self.epoch_manager,
-                    self.val_epoch_map,
-                    self.version.protocol_version,
+                    self.node_state.epoch_manager,
+                    self.node_state.val_epoch_map,
+                    self.node_state.version,
                 ) {
                     Ok(m) => m.into_inner(),
                     Err(e) => {
-                        handle_validation_error(e, self.metrics);
+                        handle_validation_error(e, self.node_state.metrics);
                         // TODO-2: collect evidence
                         let evidence_cmds = vec![];
                         return evidence_cmds;
@@ -116,67 +109,51 @@ where
                 };
 
                 match validated_mesage {
-                    ProtocolMessage::Proposal(msg) => self.consensus.handle_proposal_message(
-                        author,
-                        msg,
-                        self.txpool,
-                        self.epoch_manager,
-                        self.val_epoch_map,
-                        self.leader_election,
-                        self.metrics,
-                        self.version.protocol_version,
-                    ),
-                    ProtocolMessage::Vote(msg) => self.consensus.handle_vote_message(
-                        author,
-                        msg,
-                        self.txpool,
-                        self.epoch_manager,
-                        self.val_epoch_map,
-                        self.leader_election,
-                        self.metrics,
-                        self.version.protocol_version,
-                    ),
-                    ProtocolMessage::Timeout(msg) => self.consensus.handle_timeout_message(
-                        author,
-                        msg,
-                        self.txpool,
-                        self.epoch_manager,
-                        self.val_epoch_map,
-                        self.leader_election,
-                        self.metrics,
-                        self.version.protocol_version,
-                    ),
+                    ProtocolMessage::Proposal(msg) => {
+                        self.consensus
+                            .handle_proposal_message(author, msg, &mut self.node_state)
+                    }
+                    ProtocolMessage::Vote(msg) => {
+                        self.consensus
+                            .handle_vote_message(author, msg, &mut self.node_state)
+                    }
+                    ProtocolMessage::Timeout(msg) => {
+                        self.consensus
+                            .handle_timeout_message(author, msg, &mut self.node_state)
+                    }
                 }
             }
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
                 TimeoutVariant::Pacemaker => self
                     .consensus
-                    .handle_timeout_expiry(self.metrics)
+                    .handle_timeout_expiry(self.node_state.metrics)
                     .into_iter()
                     .map(|cmd| {
                         ConsensusCommand::from_pacemaker_command(
                             self.consensus.get_keypair(),
                             self.consensus.get_cert_keypair(),
-                            self.version.protocol_version,
+                            self.node_state.version,
                             cmd,
                         )
                     })
                     .collect(),
                 TimeoutVariant::BlockSync(bid) => {
                     let current_epoch = self
+                        .node_state
                         .epoch_manager
                         .get_epoch(self.consensus.get_current_round());
                     let val_set = self
+                        .node_state
                         .val_epoch_map
                         .get_val_set(&current_epoch)
                         .expect("current validator set should be in the map");
                     self.consensus
-                        .handle_block_sync_tmo(bid, val_set, self.metrics)
+                        .handle_block_sync_tmo(bid, val_set, self.node_state.metrics)
                 }
             },
 
             ConsensusEvent::StateUpdate(info) => {
-                self.metrics.consensus_events.state_root_update += 1;
+                self.node_state.metrics.consensus_events.state_root_update += 1;
                 self.consensus
                     .handle_state_root_update(info.seq_num, info.state_root_hash);
                 Vec::new()
@@ -186,27 +163,20 @@ where
                 sender,
                 unvalidated_response,
             } => {
-                let validated_response =
-                    match unvalidated_response.validate(self.epoch_manager, self.val_epoch_map) {
-                        Ok(req) => req,
-                        Err(e) => {
-                            handle_validation_error(e, self.metrics);
-                            // TODO-2: collect evidence
-                            let evidence_cmds = vec![];
-                            return evidence_cmds;
-                        }
+                let validated_response = match unvalidated_response
+                    .validate(self.node_state.epoch_manager, self.node_state.val_epoch_map)
+                {
+                    Ok(req) => req,
+                    Err(e) => {
+                        handle_validation_error(e, self.node_state.metrics);
+                        // TODO-2: collect evidence
+                        let evidence_cmds = vec![];
+                        return evidence_cmds;
                     }
-                    .into_inner();
-                self.consensus.handle_block_sync(
-                    sender,
-                    validated_response,
-                    self.txpool,
-                    self.epoch_manager,
-                    self.val_epoch_map,
-                    self.leader_election,
-                    self.metrics,
-                    self.version.protocol_version,
-                )
+                }
+                .into_inner();
+                self.consensus
+                    .handle_block_sync(sender, validated_response, &mut self.node_state)
             }
         };
         let consensus_cmds = vec;

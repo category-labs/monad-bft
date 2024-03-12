@@ -29,6 +29,7 @@ use monad_validator::{
     validators_epoch_mapping::ValidatorsEpochMapping,
 };
 
+#[derive(Clone)]
 pub struct ProposalGen<ST, SCT> {
     round: Round,
     qc: QuorumCertificate<SCT>,

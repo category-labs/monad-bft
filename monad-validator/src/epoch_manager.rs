@@ -4,7 +4,7 @@ use monad_types::{Epoch, Round, SeqNum};
 
 /// Stores epoch related information and the associated round numbers
 /// of each epoch
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct EpochManager {
     /// validator set is updated every 'val_set_update_interval'
     /// blocks
