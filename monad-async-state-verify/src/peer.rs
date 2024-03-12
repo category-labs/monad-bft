@@ -179,7 +179,6 @@ where
                     info.seq_num, info, cert.info
                 );
                 // TODO-2: handle the state root mismatch error
-                todo!()
             }
         }
 

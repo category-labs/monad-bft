@@ -1,0 +1,8 @@
+# ethtx: a tool to send random eth transactions over UNIX sockets
+
+FROM debian:buster-slim
+WORKDIR /usr/src/monad-bft
+
+COPY --from=monad-bft-builder /output/bin/ethtx /usr/local/bin/ethtx
+
+ENV RUST_LOG=info

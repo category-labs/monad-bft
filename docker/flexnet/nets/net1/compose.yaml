@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  build_monad_bft:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/monad-bft-builder/Dockerfile
+    image: monad-bft-builder:latest
+
+  runner_image0:
+    build: 
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/image0/Dockerfile
+    image: image0:latest
+
+  runner_rpc:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/rpc/Dockerfile
+    image: rpc:latest
+
+  build_python:
+    build:
+      context: ${FLEXNET_IMAGE_ROOT}/python
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
+    image: monad-python:latest
+
+  runner_ethtx:
+    build:
+      context: ${MONAD_BFT_ROOT}
+      dockerfile: ${FLEXNET_IMAGE_ROOT}/ethtx/Dockerfile
+    image: ethtx:latest
+
+  node0:
+    image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node0:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  rpc0:
+    image: rpc:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node0:/monad
+    expose:
+      - 8080
+    entrypoint: ["bash", "/monad/scripts/rpc.sh"]
+
+  rpc_blaster:
+    image: monad-python:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./rpc_blaster:/monad
+      - ./data:/data
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  node1:
+    image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node1:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  ethtx1:
+    image: ethtx:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node1:/monad
+    entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
+  
+  node2:
+    image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node2:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+  node3:
+    image: image0:latest
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+    volumes:
+      - ./node3:/monad
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["bash", "/monad/scripts/run.sh"]
+
+networks:
+  default:
+    driver: bridge
+    

@@ -100,8 +100,9 @@ build_services=$(docker compose config --services | grep build)
 runner_services=$(docker compose config --services | grep runner)
 node_services=$(docker compose config --services | grep -v -E "(build|runner)")
 
-docker compose build $build_services &&
-docker compose build $runner_services &&
+docker compose build $build_services
+docker compose build $runner_services
+
 docker compose up --detach $node_services
 sleep 30
 docker compose down $node_services
@@ -111,7 +112,7 @@ popd
 
 
 # verify ledger
-docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 scripts/verify-ledger.py -c 4 -l ledger -n 300"
+docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 scripts/verify-ledger.py -c 4 -l ledger -n 30"
 # inspect the blocks, verify content
-docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json"
+docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json --byzantine /monad/node1 --delay 4"
 

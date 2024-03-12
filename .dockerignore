@@ -5,6 +5,8 @@
 
 /docker/devnet/monad
 /docker/devnet/wal
+/docker/flexnet/logs
+/docker/flexnet/save_logs
 
 **/.git
 **/target

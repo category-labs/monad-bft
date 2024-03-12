@@ -15,6 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import tomli_w
 import json
+import random
 
 blst_bindings_path = (
     Path(os.path.dirname(os.path.realpath(__file__))) / "blst/bindings/python"
@@ -66,8 +67,24 @@ def rand_32_bytes() -> bytes:
     return secrets.token_bytes(32)
 
 
-def gen_secp_key(config_path, volume):
-    secret = rand_32_bytes()
+def seeded_32_bytes(seed: bytes) -> bytes:
+    random.seed(seed)
+
+    random_bytes = bytes([random.randint(0, 255) for _ in range(32)])
+    return random_bytes
+
+
+def gen_secret_bytes(config_path: Path, volume: str, seed: bytes) -> bytes:
+    if seed is None:
+        return rand_32_bytes()
+    else:
+        path_bytes = config_path.as_posix().encode("utf-8")
+        volume_bytes = volume.encode("utf-8")
+        return seeded_32_bytes(path_bytes + volume_bytes + seed)
+
+
+def gen_secp_key(config_path, volume, seed):
+    secret = gen_secret_bytes(config_path, volume, seed)
     secret_b64 = base64.standard_b64encode(secret)
 
     with open(config_path / "id-secp", "w+") as f:
@@ -80,8 +97,8 @@ def gen_secp_key(config_path, volume):
     peers[volume].secp_pubkey = pk
 
 
-def gen_bls_key(config_path, volume):
-    secret = rand_32_bytes()
+def gen_bls_key(config_path, volume, seed):
+    secret = gen_secret_bytes(config_path, volume, seed)
     secret_b64 = base64.standard_b64encode(secret)
 
     with open(config_path / "id-bls", "w+") as f:
@@ -101,9 +118,20 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("-c", "--count", type=int, help="Node count", required=True)
+    parser.add_argument(
+        "-s",
+        "--seed",
+        type=str,
+        help="Seed for key generation",
+        required=False,
+    )
 
     args = parser.parse_args()
     node_count = args.count
+    if args.seed is not None:
+        seed = args.seed.encode("utf-8")
+    else:
+        seed = None
 
     topology_path = Path(os.getcwd()) / "topology.json"
     if not topology_path.exists():
@@ -143,8 +171,8 @@ if __name__ == "__main__":
             else:
                 item.unlink()
 
-        gen_secp_key(config_path, vol_path.name)
-        gen_bls_key(config_path, vol_path.name)
+        gen_secp_key(config_path, vol_path.name, seed)
+        gen_bls_key(config_path, vol_path.name, seed)
 
     # per node: create node.toml
     for vol_path in volume_list:
@@ -152,7 +180,9 @@ if __name__ == "__main__":
         node_toml_path = vol_path / "config" / "node.toml"
 
         toml = {}
-        toml["beneficiary"] = "0x0000000000000000000000000000000000000000"
+        # use the first 20 bytes of the secp_pubkey as the beneficiary address
+        # 42 = 2 ("0x") + 40 (20 bytes of hex string)
+        toml["beneficiary"] = peers[this_volume].secp_pubkey[:42]
 
         local_peers = []
         for volume, peer in peers.items():
