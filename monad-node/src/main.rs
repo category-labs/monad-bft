@@ -111,7 +111,8 @@ async fn wrapped_run(mut cmd: clap::Command) -> Result<(), ()> {
         .with(
             FmtLayer::default()
                 .with_writer(std::io::stdout)
-                .with_span_events(FmtSpan::CLOSE),
+                .with_span_events(FmtSpan::CLOSE)
+                .with_ansi(false),
         )
         .with(maybe_telemetry);
 

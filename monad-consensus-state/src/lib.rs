@@ -609,7 +609,12 @@ where
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
             BlockSyncResult::UnexpectedResponse => {
-                debug!("Block sync unexpected response: author={:?}", author);
+                // In an all honest environment, this is likely due to block
+                // sync taking too long. The first block sync request times out,
+                // and the state issues another request, wiping the record for
+                // the first request. When the first response comes back, it
+                // triggers this warning
+                warn!("Block sync unexpected response: author={:?}", author);
             }
         }
         cmds

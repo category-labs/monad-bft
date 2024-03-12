@@ -21,7 +21,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::{BlockId, NodeId, SeqNum, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetType;
-use tracing::debug;
+use tracing::{debug, info_span, warn, Span};
 
 use crate::command::ConsensusCommand;
 
@@ -29,7 +29,7 @@ const DEFAULT_NODE_INDEX: usize = 0;
 
 /// Represents a blocksync request that has been made and
 /// that we are waiting for
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct InFlightRequest<SCT: SignatureCollection> {
     /// The node we are requesting the block from
     req_target: NodeId<SCT::NodeIdPubKey>,
@@ -39,7 +39,20 @@ pub struct InFlightRequest<SCT: SignatureCollection> {
 
     /// The QC which triggers this request for a missing block
     qc: QuorumCertificate<SCT>,
+
+    /// The logging span
+    span: Span,
 }
+
+impl<SCT: SignatureCollection> PartialEq for InFlightRequest<SCT> {
+    fn eq(&self, other: &Self) -> bool {
+        self.req_target.eq(&other.req_target)
+            && self.retry_cnt.eq(&other.retry_cnt)
+            && self.qc.eq(&other.qc)
+    }
+}
+
+impl<SCT: SignatureCollection> Eq for InFlightRequest<SCT> {}
 
 /// Possible results from handling a BlockSyncMessage, which is
 /// the reply to a request
@@ -99,11 +112,13 @@ impl<SCT: SignatureCollection> InFlightRequest<SCT> {
         req_target: NodeId<SCT::NodeIdPubKey>,
         retry_cnt: usize,
         qc: QuorumCertificate<SCT>,
+        span: Span,
     ) -> Self {
         Self {
             req_target,
             retry_cnt,
             qc,
+            span,
         }
     }
 }
@@ -200,7 +215,6 @@ where
             return vec![];
         }
 
-        debug!("Block sync request: bid={:?}, qc={:?}", id, qc);
         metrics.blocksync_events.blocksync_request += 1;
 
         let (req_peer, cnt) = self.choose_peer(
@@ -213,7 +227,13 @@ where
                 .collect::<Vec<_>>(),
             req_cnt,
         );
-        let req = InFlightRequest::new(req_peer, cnt, qc.clone());
+        debug!(
+            "Block sync request: bid={:?}, qc={:?} peer={:?}",
+            id, qc, req_peer
+        );
+        let span = info_span!("block_sync_request_span", bid=?id, peer=?req_peer);
+        let _enter = span.enter();
+        let req = InFlightRequest::new(req_peer, cnt, qc.clone(), span.clone());
         let req_cmd = self.create_request_command(&req);
         self.requests.insert(id, req);
 
@@ -246,6 +266,7 @@ where
         }
 
         if let Some(pending_req) = self.requests.remove(&bid) {
+            let _enter = pending_req.span.enter();
             match msg {
                 BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
                     if let Some(block) =
@@ -280,6 +301,7 @@ where
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
+        debug!("Block sync timeout bid={:?}", bid);
         // avoid duplicate logging
         let mut cmds = vec![ConsensusCommand::ScheduleReset(TimeoutVariant::BlockSync(
             bid,
@@ -292,6 +314,8 @@ where
                 pending_req.retry_cnt + 1,
                 metrics,
             ));
+        } else {
+            warn!("Unexpected block sync timeout bid={:?}", bid);
         }
         cmds
     }
