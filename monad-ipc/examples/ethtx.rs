@@ -165,9 +165,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let mut txn_sent = 0;
             let mut running_tps = 0;
             let mut last_stamp = time::Instant::now();
+            let mut start_time = time::Instant::now();
             while txn_sent < args.num_tx {
                 for tx in &txs {
-                    let start_time = time::Instant::now();
                     sender.send(tx.clone()).await?;
 
                     txn_sent += 1;
@@ -184,7 +184,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
 
                     if let Some(sleep_duration) = interval.checked_sub(start_time.elapsed()) {
+                        start_time += sleep_duration;
                         time::sleep(sleep_duration).await;
+                    } else {
+                        start_time = time::Instant::now();
                     }
                 }
             }

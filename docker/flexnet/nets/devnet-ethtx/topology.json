@@ -1,0 +1,88 @@
+[
+    {
+        "name": "us",
+        "latencies_ms": [
+            {
+                "latency": 1,
+                "jitter": 0,
+                "correlation": 0,
+                "loss": 0.0
+            },
+            {
+                "latency": 100,
+                "jitter": 0,
+                "correlation": 0,
+                "loss": 0.005
+            }
+        ],
+        "nodes": [
+            {
+                "service": "node0",
+                "volume": "node0",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            },
+            {
+                "service": "node1",
+                "volume": "node1",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            },
+            {
+                "service": "node2",
+                "volume": "node2",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            },
+            {
+                "service": "node3",
+                "volume": "node3",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            }
+        ]
+    },
+    {
+        "name": "europe",
+        "latencies_ms": [
+            {
+                "latency": 100,
+                "jitter": 0,
+                "correlation": 0,
+                "loss": 0.005
+            },
+            {
+                "latency": 1,
+                "jitter": 0,
+                "correlation": 0,
+                "loss": 0.0
+            }
+        ],
+        "nodes": [
+            {
+                "service": "node4",
+                "volume": "node4",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            },
+            {
+                "service": "node5",
+                "volume": "node5",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            },
+            {
+                "service": "node6",
+                "volume": "node6",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            },
+            {
+                "service": "node7",
+                "volume": "node7",
+                "up_Mbps": 1000,
+                "down_Mbps": 1000
+            }
+        ]
+    }
+]
