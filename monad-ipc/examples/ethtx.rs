@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let start_time = time::Instant::now();
         sender.send(tx).await?;
 
-        if let Some(sleep_duration) = start_time.elapsed().checked_sub(interval) {
+        if let Some(sleep_duration) = interval.checked_sub(start_time.elapsed()) {
             time::sleep(sleep_duration).await;
         }
     }
