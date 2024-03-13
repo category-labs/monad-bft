@@ -198,4 +198,8 @@ impl TriedbEnv {
 
         (key, num_nibbles)
     }
+
+    pub fn path(&self) -> PathBuf {
+        self.triedb_path.clone()
+    }
 }

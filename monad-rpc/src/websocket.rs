@@ -101,7 +101,9 @@ mod tests {
     use futures_util::{SinkExt as _, StreamExt as _};
     use reth_primitives::TransactionSigned;
 
-    use crate::{create_app, tests::MonadRpcResourcesState, MonadRpcResources};
+    use crate::{
+        create_app, tests::MonadRpcResourcesState, ExecutionLedgerPath, MonadRpcResources,
+    };
 
     fn create_test_server() -> (MonadRpcResourcesState, actix_test::TestServer) {
         let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
@@ -109,6 +111,7 @@ mod tests {
             mempool_sender: ipc_sender,
             blockdb_reader: None,
             triedb_reader: None,
+            execution_ledger_path: ExecutionLedgerPath(None),
         }
         .start();
         (

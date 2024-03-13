@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use account_handlers::{
     monad_eth_accounts, monad_eth_coinbase, monad_eth_getBalance, monad_eth_getCode,
     monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_syncing,
@@ -26,6 +28,7 @@ use triedb::TriedbEnv;
 
 use crate::{
     blockdb::BlockDbEnv,
+    call::monad_eth_call,
     eth_txn_handlers::monad_eth_sendRawTransaction,
     gas_handlers::{monad_eth_estimateGas, monad_eth_gasPrice, monad_eth_maxPriorityFeePerGas},
     jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
@@ -36,6 +39,7 @@ use crate::{
 mod account_handlers;
 mod blockdb;
 mod blockdb_handlers;
+mod call;
 mod cli;
 mod eth_json_types;
 mod eth_txn_handlers;
@@ -100,6 +104,28 @@ async fn rpc_select(
     params: Value,
 ) -> Result<Value, JsonRpcError> {
     match method {
+        "eth_call" => {
+            let Some(reader) = &app_state.blockdb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(triedb_env) = &app_state.triedb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
+                debug!("execution ledger path was not set");
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            monad_eth_call(
+                reader,
+                &triedb_env.path(),
+                execution_ledger_path.as_path(),
+                params,
+            )
+            .await
+        }
         "eth_sendRawTransaction" => {
             monad_eth_sendRawTransaction(app_state.mempool_sender.clone(), params).await
         }
@@ -238,11 +264,15 @@ async fn rpc_select(
     }
 }
 
+#[derive(Debug, Clone)]
+struct ExecutionLedgerPath(pub Option<PathBuf>);
+
 #[derive(Clone)]
 struct MonadRpcResources {
     mempool_sender: flume::Sender<TransactionSigned>,
     blockdb_reader: Option<BlockDbEnv>,
     triedb_reader: Option<TriedbEnv>,
+    execution_ledger_path: ExecutionLedgerPath,
 }
 
 impl Handler<Disconnect> for MonadRpcResources {
@@ -258,11 +288,13 @@ impl MonadRpcResources {
         mempool_sender: flume::Sender<TransactionSigned>,
         blockdb_reader: Option<BlockDbEnv>,
         triedb_reader: Option<TriedbEnv>,
+        execution_ledger_path: Option<PathBuf>,
     ) -> Self {
         Self {
             mempool_sender,
             blockdb_reader,
             triedb_reader,
+            execution_ledger_path: ExecutionLedgerPath(execution_ledger_path),
         }
     }
 }
@@ -321,6 +353,7 @@ async fn main() -> std::io::Result<()> {
             .map(|p| BlockDbEnv::new(&p))
             .flatten(),
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
+        args.execution_ledger_path,
     );
 
     // main server app
@@ -361,6 +394,7 @@ mod tests {
             mempool_sender: ipc_sender.clone(),
             blockdb_reader: None,
             triedb_reader: None,
+            execution_ledger_path: ExecutionLedgerPath(None),
         }))
         .await;
         (app, m)

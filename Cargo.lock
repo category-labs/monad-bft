@@ -3697,6 +3697,7 @@ dependencies = [
  "heed",
  "log",
  "monad-blockdb",
+ "monad-cxx",
  "monad-triedb",
  "rayon",
  "reth-primitives",
