@@ -9,6 +9,9 @@ pub struct Cli {
     pub ipc_path: PathBuf,
 
     #[arg(long)]
+    pub execution_ledger_path: Option<PathBuf>,
+
+    #[arg(long)]
     pub blockdb_path: Option<PathBuf>,
 
     #[arg(long)]

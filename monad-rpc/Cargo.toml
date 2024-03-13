@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 monad-blockdb = { path = "../monad-blockdb" }
 monad-triedb = { path = "../monad-triedb" }
+monad-cxx = { path = "../monad-cxx" }
 
 actix = { workspace = true }
 actix-codec = { workspace = true }
