@@ -18,7 +18,7 @@ actix = { workspace = true }
 actix-codec = { workspace = true }
 actix-http = { workspace = true }
 actix-http-test = { workspace = true }
-actix-test = { worspace = true }
+actix-test = { workspace = true }
 actix-web = { workspace = true }
 actix-web-actors = { workspace = true }
 alloy-primitives = { workspace = true }
