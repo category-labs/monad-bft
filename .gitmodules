@@ -4,3 +4,6 @@
 [submodule "docker/flexnet/common/blst"]
 	path = docker/flexnet/common/blst
 	url = https://github.com/supranational/blst.git
+[submodule "monad-cxx/monad-execution"]
+	path = monad-cxx/monad-execution
+	url = git@github.com:monad-crypto/monad.git
