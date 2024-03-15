@@ -32,17 +32,10 @@ pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, Js
     })
 }
 
-#[derive(Serialize, Debug)]
-struct MonadEthChainIdReturn {
-    number: String,
-}
-
 // TODO: does chainId come from a config file?
 #[allow(non_snake_case)]
 pub async fn monad_eth_chainId(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_chainId");
 
-    serialize_result(MonadEthChainIdReturn {
-        number: format!("0x{:x}", 1337),
-    })
+    serialize_result(format!("0x{:x}", 1337))
 }
