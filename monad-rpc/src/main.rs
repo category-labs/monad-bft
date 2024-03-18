@@ -19,7 +19,11 @@ use triedb::TriedbEnv;
 
 use crate::{
     blockdb::BlockDbEnv,
-    eth_txn_handlers::{monad_eth_getBlockByHash, monad_eth_sendRawTransaction},
+    eth_txn_handlers::{
+        monad_eth_getBlockByHash,
+        monad_eth_getBlockByNumber,
+        monad_eth_sendRawTransaction
+    },
     jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
 };
@@ -102,6 +106,13 @@ async fn rpc_select(
         "eth_getBlockByHash" => {
             if let Some(reader) = &app_state.blockdb_reader {
                 monad_eth_getBlockByHash(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_getBlockByNumber" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_getBlockByNumber(reader, params).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }

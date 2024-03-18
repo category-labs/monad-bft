@@ -186,6 +186,55 @@ pub async fn monad_eth_getBlockByHash(
 }
 
 #[derive(Deserialize, Debug)]
+struct MonadEthGetBlockByNumberParams {
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_number: BlockTags,
+    return_full_txns: bool,
+}
+
+#[derive(Serialize, Debug)]
+struct MonadEthGetBlockByNumberReturn {
+    block_object: Option<BlockObject>,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockByNumber(
+    blockdb_env: &BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockByNumber: {params:?}");
+
+    let p: MonadEthGetBlockByNumberParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
+        return serialize_result(MonadEthGetBlockByNumberReturn { block_object: None });
+    };
+
+    //TODO: check value.return_full_txns...
+
+    let block_object = BlockObject {
+        block_hash: value.block.hash_slow(),
+        block_number: value.block.number,
+        size: value.block.size() as u64,
+        gas_limit: value.block.gas_limit,
+        gas_used: value.block.gas_used,
+        transactions: value.block.body.iter().map(|t| t.hash()).collect(),
+    };
+
+    let retval = MonadEthGetBlockByNumberReturn {
+        block_object: Some(block_object),
+    };
+
+    serialize_result(retval)
+}
+
+#[derive(Deserialize, Debug)]
 struct MonadEthGetTransactionByBlockHashAndIndexParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
