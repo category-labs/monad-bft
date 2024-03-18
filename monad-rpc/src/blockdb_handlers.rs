@@ -1,6 +1,5 @@
 use log::trace;
 use monad_blockdb::BlockTagKey;
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
