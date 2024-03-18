@@ -8,7 +8,9 @@ use actix_web::{
     dev::{ServiceFactory, ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
-use blockdb_handlers::{monad_eth_blockNumber, monad_eth_chainId};
+use blockdb_handlers::{
+    monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash, monad_eth_getBlockByNumber,
+};
 use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
@@ -24,9 +26,7 @@ use triedb::TriedbEnv;
 
 use crate::{
     blockdb::BlockDbEnv,
-    eth_txn_handlers::{
-        monad_eth_getBlockByHash, monad_eth_getBlockByNumber, monad_eth_sendRawTransaction,
-    },
+    eth_txn_handlers::monad_eth_sendRawTransaction,
     jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
     websocket::Disconnect,
