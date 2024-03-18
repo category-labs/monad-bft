@@ -9,11 +9,6 @@ use crate::{
     jsonrpc::JsonRpcError,
 };
 
-#[derive(Serialize, Debug)]
-struct MonadEthBlockNumberReturn {
-    number: String,
-}
-
 #[allow(non_snake_case)]
 pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_blockNumber");
@@ -22,14 +17,10 @@ pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, Js
         .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
         .await
     else {
-        return serialize_result(MonadEthBlockNumberReturn {
-            number: format!("0x{:x}", 0),
-        });
+        return serialize_result(format!("0x{:x}", 0));
     };
 
-    serialize_result(MonadEthBlockNumberReturn {
-        number: format!("0x{:x}", block.block.number),
-    })
+    serialize_result(format!("0x{:x}", block.block.number))
 }
 
 // TODO: does chainId come from a config file?
