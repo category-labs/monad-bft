@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     marker::Unpin,
     ops::DerefMut,
     pin::Pin,
@@ -110,6 +110,103 @@ impl<PT: PubKey, O: BlockType, E> MockLedger<PT, O, E> {
     }
     pub fn get_blocks(&self) -> &Vec<O> {
         &self.blockchain
+    }
+}
+
+pub struct BoundedLedger<PT: PubKey, O: BlockType, E> {
+    recent_blocks: VecDeque<O>,
+    max_blocks: usize,
+    num_commits: usize,
+    ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
+    waker: Option<Waker>,
+}
+
+impl<PT: PubKey, O: BlockType, E> BoundedLedger<PT, O, E> {
+    pub fn new(max_blocks: usize) -> Self {
+        Self {
+            recent_blocks: VecDeque::new(),
+            max_blocks,
+            num_commits: 0,
+            ledger_fetches: HashMap::default(),
+            waker: None,
+        }
+    }
+}
+
+impl<PT: PubKey, O: BlockType, E> Executor for BoundedLedger<PT, O, E> {
+    type Command = LedgerCommand<PT, O, E>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            LedgerCommand::LedgerFetch(..) => false,
+            LedgerCommand::LedgerCommit(..) => true,
+        });
+        self.exec(commands)
+    }
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        for command in commands {
+            match command {
+                LedgerCommand::LedgerCommit(blocks) => {
+                    self.num_commits += blocks.len();
+                    for block in blocks {
+                        if self.recent_blocks.len() >= self.max_blocks {
+                            self.recent_blocks.pop_back();
+                        }
+                        self.recent_blocks.push_front(block);
+                    }
+
+                    debug_assert!(self.recent_blocks.len() <= self.max_blocks);
+                }
+                LedgerCommand::LedgerFetch(node_id, block_id, cb) => {
+                    if self
+                        .ledger_fetches
+                        .insert((node_id, block_id), cb)
+                        .is_some()
+                    {
+                        warn!(
+                            "MockLedger received duplicate fetch from {:?} for block {:?}",
+                            node_id, block_id
+                        );
+                    }
+                }
+            }
+        }
+        if !self.ledger_fetches.is_empty() {
+            if let Some(waker) = self.waker.take() {
+                waker.wake()
+            }
+        }
+    }
+}
+
+impl<PT: PubKey, O: BlockType, E> Stream for BoundedLedger<PT, O, E>
+where
+    Self: Unpin,
+{
+    type Item = E;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        if let Some((node_id, block_id)) = this.ledger_fetches.keys().next().cloned() {
+            let cb = this.ledger_fetches.remove(&(node_id, block_id)).unwrap();
+
+            if let Some(fetched_block) = this.recent_blocks.iter().find(|&b| b.get_id() == block_id)
+            {
+                return Poll::Ready(Some(cb(Some(fetched_block.clone()))));
+            }
+        }
+
+        self.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl<PT: PubKey, O: BlockType, E> BoundedLedger<PT, O, E> {
+    pub fn get_num_commits(&self) -> usize {
+        self.num_commits
     }
 }
 

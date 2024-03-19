@@ -30,7 +30,7 @@ use monad_secp::{KeyPair, SecpSignature};
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
-    checkpoint::MockCheckpoint, ledger::MockLedger, loopback::LoopbackExecutor,
+    checkpoint::MockCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
     nop_metrics::NopMetricsExecutor, parent::ParentExecutor, state_root_hash::MockStateRootHashNop,
     timer::TokioTimer, BoxUpdater, Updater,
 };
@@ -185,10 +185,11 @@ async fn run(
     };
 
     let blockdb = BlockDbBuilder::create(&node_state.blockdb_path);
+    let state_sync_bound: usize = 100;
     let mut executor = ParentExecutor {
         router,
         timer: TokioTimer::default(),
-        ledger: MockLedger::default(),
+        ledger: BoundedLedger::new(state_sync_bound),
         execution_ledger: MonadBlockFileLedger::new(
             node_state.execution_ledger_path,
             blockdb.clone(),
@@ -231,7 +232,7 @@ async fn run(
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
             max_blocksync_retries: 5,
-            state_sync_threshold: SeqNum(100),
+            state_sync_threshold: SeqNum(state_sync_bound as u64),
         },
     };
 
@@ -268,7 +269,7 @@ async fn run(
 
     let mut otel_context = maybe_coordinator_provider.as_ref().map(build_otel_context);
 
-    let mut last_ledger_len = executor.ledger().get_blocks().len();
+    let mut last_ledger_len = executor.ledger().get_num_commits();
     let mut ledger_span = tracing::info_span!("ledger_span", last_ledger_len);
 
     if let Some((cx, _expiry)) = &otel_context {
@@ -310,7 +311,7 @@ async fn run(
 
                 executor.exec(commands);
 
-                let ledger_len = executor.ledger().get_blocks().len();
+                let ledger_len = executor.ledger().get_num_commits();
 
                 if ledger_len > last_ledger_len {
                     last_ledger_len = ledger_len;
