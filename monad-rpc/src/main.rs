@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use account_handlers::{
     monad_eth_accounts, monad_eth_coinbase, monad_eth_getBalance, monad_eth_getCode,
-    monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_syncing,
+    monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_getTransactionReceipt,
+    monad_eth_syncing,
 };
 use actix::prelude::*;
 use actix_http::body::BoxBody;
@@ -255,6 +256,17 @@ async fn rpc_select(
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
+        }
+        "eth_getTransactionReceipt" => {
+            let Some(triedb_reader) = &app_state.triedb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(blockdb_reader) = &app_state.blockdb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            monad_eth_getTransactionReceipt(blockdb_reader, triedb_reader, params).await
         }
         "eth_sendTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),

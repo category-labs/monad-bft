@@ -3838,6 +3838,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen 0.69.4",
  "cmake",
+ "log",
 ]
 
 [[package]]

@@ -22,8 +22,7 @@ if(CMAKE_BUILD_TARGET STREQUAL "triedb_driver")
 
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-  add_subdirectory("monad-trie/monad-core" EXCLUDE_FROM_ALL) # needed for monad-trie
-  add_subdirectory("monad-trie" EXCLUDE_FROM_ALL)
+  add_subdirectory("../../monad-cxx/monad-execution" "monad-execution-build") # needed for monad-trie
 
   add_library(
     triedb_driver SHARED
