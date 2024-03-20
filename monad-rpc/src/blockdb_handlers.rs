@@ -2,6 +2,7 @@ use alloy_primitives::aliases::B256;
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockTagKey, BlockValue};
 use reth_primitives::BlockHash;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -11,7 +12,6 @@ use crate::{
     },
     jsonrpc::JsonRpcError,
 };
-use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Debug)]
 struct BlockObject {
