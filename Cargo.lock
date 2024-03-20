@@ -3528,6 +3528,8 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

@@ -39,6 +39,7 @@ jobs:
           -D clippy::bool_comparison
           -D unused_imports
           -D unused_parens
+          -D deprecated
           -A clippy::type_complexity
           -A clippy::int_plus_one
           -A clippy::uninlined-format-args

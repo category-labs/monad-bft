@@ -35,6 +35,8 @@ itertools = { workspace = true }
 tempfile = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [[bench]]
 name = "raw_bench"

@@ -41,7 +41,21 @@ where
             sync: self.sync,
         };
         let mut msg_vec = Vec::new();
-        let mut n = start;
+
+        let mut n = 0;
+        while n < start {
+            match logger.load_one() {
+                Ok(_) => {}
+                Err(WALError::IOError(err)) => match err.kind() {
+                    io::ErrorKind::UnexpectedEof => {
+                        return Ok(msg_vec);
+                    }
+                    _ => return Err(WALError::IOError(err)),
+                },
+                Err(err) => return Err(err),
+            }
+            n += 1;
+        }
 
         while n < end {
             match logger.load_one() {

@@ -123,6 +123,15 @@ impl<S: CertificateSignatureRecoverable, M> Unverified<S, M> {
     }
 }
 
+impl<S: CertificateSignatureRecoverable, M> Unverified<S, Unvalidated<M>> {
+    /// Test only getter. Never use in production
+    /// Returns underlying object bypassing the access control rule
+    #[deprecated(note = "Never use in production. Only access message after verifying")]
+    pub fn get_obj_unsafe(&self) -> &M {
+        &self.obj.obj
+    }
+}
+
 impl<S: CertificateSignatureRecoverable, M> From<Verified<S, M>> for Unverified<S, M> {
     fn from(verified: Verified<S, M>) -> Self {
         verified.message

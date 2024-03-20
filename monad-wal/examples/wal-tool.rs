@@ -1,13 +1,15 @@
+#![allow(deprecated)]
 use std::{
     cmp::min,
-    collections::HashMap,
-    io::{self, stdout, Result, Stdout},
+    collections::{BTreeMap, HashMap},
+    fs,
+    io::{self, stdout, BufWriter, Result, Stdout},
     path::PathBuf,
     rc::Rc,
 };
 
-use chrono::TimeDelta;
-use clap::Parser;
+use chrono::{DateTime, TimeDelta, Utc};
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -15,6 +17,8 @@ use crossterm::{
 };
 use itertools::Itertools;
 use monad_bls::BlsSignatureCollection;
+use monad_consensus::messages::consensus_message::ProtocolMessage;
+use monad_consensus_types::block::BlockType;
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::{LogFriendlyMonadEvent, MonadEvent};
 use monad_secp::SecpSignature;
@@ -24,6 +28,7 @@ use ratatui::{
     widgets::{block::*, *},
     Frame,
 };
+use serde::Serialize;
 
 type SigType = SecpSignature;
 type SigColType = BlsSignatureCollection<CertificateSignaturePubKey<SigType>>;
@@ -35,11 +40,24 @@ struct Args {
     #[arg(long)]
     wal_path: PathBuf,
 
-    #[arg(long)]
+    #[arg(long, default_value_t = 0)]
     start: usize,
 
-    #[arg(long)]
+    #[arg(long, default_value_t = usize::MAX)]
     end: usize,
+
+    #[command(subcommand)]
+    mode: ModeCommand,
+}
+
+#[derive(Debug, Default, Subcommand)]
+enum ModeCommand {
+    #[default]
+    View,
+    Stat {
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -457,17 +475,71 @@ impl Widget for &EventListWidget {
     }
 }
 
+#[derive(Debug, Serialize, Default)]
+struct EventStat {
+    block_time: BTreeMap<u64, DateTime<Utc>>,
+}
+
+struct StatExtractor {
+    events: Vec<WrappedEvent>,
+}
+
+impl StatExtractor {
+    fn new(wal_path: PathBuf, start: usize, end: usize) -> Self {
+        let logger_config: WALoggerConfig<WrappedEvent> = WALoggerConfig::new(wal_path, true);
+
+        let wal_events = match logger_config.load_read_only(start, end) {
+            Ok(a) => a,
+            Err(e) => panic!("open failed {e}"),
+        };
+        Self { events: wal_events }
+    }
+
+    fn extract(&self) -> EventStat {
+        let mut stat = EventStat::default();
+        for event in &self.events {
+            match &event.event {
+                MonadEvent::ConsensusEvent(monad_executor_glue::ConsensusEvent::Message {
+                    sender: _,
+                    unverified_message,
+                }) => {
+                    let msg = unverified_message.get_obj_unsafe();
+                    match &msg.message {
+                        ProtocolMessage::Proposal(p) => {
+                            let r = p.block.0.get_round();
+                            stat.block_time.insert(r.0, event.timestamp);
+                        }
+                        _ => continue,
+                    }
+                }
+                _ => continue,
+            }
+        }
+        stat
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     assert!(args.start < args.end);
 
-    let mut terminal = tui_init()?;
-    terminal.clear()?;
+    match args.mode {
+        ModeCommand::View => {
+            let mut terminal = tui_init()?;
+            terminal.clear()?;
+            let app_result = MainView::new(args.wal_path, args.start, args.end).run(&mut terminal);
 
-    let app_result = MainView::new(args.wal_path, args.start, args.end).run(&mut terminal);
-
-    tui_restore()?;
-    app_result
+            tui_restore()?;
+            app_result
+        }
+        ModeCommand::Stat { output } => {
+            let stat = StatExtractor::new(args.wal_path, args.start, args.end).extract();
+            let file = fs::File::create(output).unwrap();
+            let writer = BufWriter::new(file);
+            serde_json::to_writer(writer, &stat).unwrap();
+            Ok(())
+        }
+    }
 }
 
 fn counter(events: &Vec<WalEvent>) -> HashMap<String, u64> {
