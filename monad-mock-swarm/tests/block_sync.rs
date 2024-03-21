@@ -58,7 +58,7 @@ mod test {
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
             5,                  // max_blocksync_retries
-            SeqNum(100),        // state_sync_threshold
+            SeqNum(1000),       // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -383,7 +383,7 @@ mod test {
             Round(50),          // epoch_start_delay
             majority_threshold, // state root quorum threshold
             5,                  // max_blocksync_retries
-            SeqNum(100),        // state_sync_threshold
+            SeqNum(2000),       // state_sync_threshold
         );
         let all_peers: BTreeSet<_> = state_configs
             .iter()

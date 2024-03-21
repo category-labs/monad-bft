@@ -966,17 +966,23 @@ where
                 self.pending_block_tree.get_root_seq_num() + self.config.state_sync_threshold;
 
             if qc.get_seq_num() >= max_seq_num_to_request {
-                // TODO: This should trigger statesync. Remove blocksync request.
+                // TODO: This should trigger statesync.
                 warn!(
                     "Lagging over {:?} blocks behind. Trigger statesync",
                     self.config.state_sync_threshold
                 );
 
                 metrics.consensus_events.trigger_state_sync += 1;
-            }
 
-            self.block_sync_requester
-                .request::<VT>(&qc, validators, metrics)
+                // Remove older blocks from the blocktree
+                self.pending_block_tree
+                    .remove_old_blocks(qc.get_seq_num() - self.config.state_sync_threshold);
+
+                vec![]
+            } else {
+                self.block_sync_requester
+                    .request::<VT>(&qc, validators, metrics)
+            }
         } else {
             vec![]
         }

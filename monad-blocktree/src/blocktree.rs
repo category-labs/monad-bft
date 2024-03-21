@@ -199,6 +199,11 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         None
     }
 
+    /// Remove all blocks which are older than the given sequence number
+    pub fn remove_old_blocks(&mut self, seq_num: SeqNum) {
+        self.tree.retain(|_, b| b.get_seq_num() >= seq_num);
+    }
+
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
     pub fn is_valid_to_insert(&self, b: &Block<SCT>) -> bool {
