@@ -15,6 +15,10 @@ use crate::eth_json_types::BlockTags;
 #[derive(Clone)]
 pub struct BlockDbEnv {
     blockdb_env: Env,
+    block_dbi: BlockTableType,
+    block_num_dbi: BlockNumTableType,
+    txn_hash_dbi: TxnHashTableType,
+    block_tag_dbi: BlockTagTableType,
 }
 
 impl BlockDbEnv {
@@ -29,7 +33,32 @@ impl BlockDbEnv {
                 .open(blockdb_path);
 
             match blockdb_env {
-                Ok(env) => Some(Self { blockdb_env: env }),
+                Ok(env) => {
+                    let block_dbi: BlockTableType = env
+                        .open_database(Some(BLOCK_TABLE_NAME))
+                        .expect("block_dbi should exist")
+                        .unwrap();
+                    let block_num_dbi: BlockNumTableType = env
+                        .open_database(Some(BLOCK_NUM_TABLE_NAME))
+                        .expect("block_num_dbi should exist")
+                        .unwrap();
+                    let txn_hash_dbi: TxnHashTableType = env
+                        .open_database(Some(TXN_HASH_TABLE_NAME))
+                        .expect("txn_hash_dbi should exist")
+                        .unwrap();
+                    let block_tag_dbi: BlockTagTableType = env
+                        .open_database(Some(BLOCK_TAG_TABLE_NAME))
+                        .expect("block_tag_dbi should exist")
+                        .unwrap();
+
+                    Some(Self {
+                        blockdb_env: env,
+                        block_dbi,
+                        block_num_dbi,
+                        txn_hash_dbi,
+                        block_tag_dbi,
+                    })
+                }
                 Err(_) => None,
             }
         }
@@ -37,15 +66,12 @@ impl BlockDbEnv {
 
     pub async fn get_txn(&self, key: EthTxKey) -> Option<EthTxValue> {
         let env = self.blockdb_env.clone();
+        let dbi = self.txn_hash_dbi;
         let (send, recv) = tokio::sync::oneshot::channel();
 
         rayon::spawn(move || {
-            let db: TxnHashTableType = env
-                .open_database(Some(TXN_HASH_TABLE_NAME))
-                .expect("txn_hash_table should exist")
-                .unwrap();
             let db_txn = env.read_txn().expect("read txn failed");
-            let data: Option<EthTxValue> = db
+            let data: Option<EthTxValue> = dbi
                 .get(&db_txn, &key)
                 .expect("get operation should not fail");
 
@@ -57,15 +83,12 @@ impl BlockDbEnv {
 
     pub async fn get_block_by_hash(&self, key: BlockTableKey) -> Option<BlockValue> {
         let env = self.blockdb_env.clone();
+        let dbi = self.block_dbi;
         let (send, recv) = tokio::sync::oneshot::channel();
 
         rayon::spawn(move || {
-            let db: BlockTableType = env
-                .open_database(Some(BLOCK_TABLE_NAME))
-                .expect("block_table should exist")
-                .unwrap();
             let db_txn = env.read_txn().expect("read txn failed");
-            let data: Option<BlockValue> = db
+            let data: Option<BlockValue> = dbi
                 .get(&db_txn, &key)
                 .expect("get operation should not fail");
 
@@ -77,37 +100,29 @@ impl BlockDbEnv {
 
     pub async fn get_block_by_tag(&self, tag: BlockTags) -> Option<BlockValue> {
         let env = self.blockdb_env.clone();
+        let block_num_dbi = self.block_num_dbi;
+        let block_tag_dbi = self.block_tag_dbi;
+        let block_dbi = self.block_dbi;
         let (send, recv) = tokio::sync::oneshot::channel();
 
         rayon::spawn(move || {
             let block_table_key = match tag {
                 BlockTags::Number(q) => {
-                    let db: BlockNumTableType = env
-                        .open_database(Some(BLOCK_NUM_TABLE_NAME))
-                        .expect("block_num_table should exist")
-                        .unwrap();
                     let db_txn = env.read_txn().expect("read txn failed");
-                    let result: Option<BlockTableKey> = db
+                    let result: Option<BlockTableKey> = block_num_dbi
                         .get(&db_txn, &BlockNumTableKey(q.0))
                         .expect("get operation should not fail");
                     result
                 }
                 BlockTags::Default(t) => {
-                    let db: BlockTagTableType = env
-                        .open_database(Some(BLOCK_TAG_TABLE_NAME))
-                        .expect("block_tag_table should exist")
-                        .unwrap();
                     let db_txn = env.read_txn().expect("read txn failed");
-                    let result: Option<BlockTagValue> =
-                        db.get(&db_txn, &t).expect("get operation should not fail");
+                    let result: Option<BlockTagValue> = block_tag_dbi
+                        .get(&db_txn, &t)
+                        .expect("get operation should not fail");
                     result.map(|r| r.block_hash)
                 }
             };
 
-            let db: BlockTableType = env
-                .open_database(Some(BLOCK_TABLE_NAME))
-                .expect("block_table should exist")
-                .unwrap();
             let db_txn = env.read_txn().expect("read txn failed");
 
             let Some(block_table_key) = block_table_key else {
@@ -115,7 +130,7 @@ impl BlockDbEnv {
                 return;
             };
 
-            let block_data: Option<BlockValue> = db
+            let block_data: Option<BlockValue> = block_dbi
                 .get(&db_txn, &block_table_key)
                 .expect("get operation should not fail");
 
