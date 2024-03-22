@@ -42,7 +42,7 @@ pub struct OpenTelemetryExecutor<ST, SCT> {
     phantom: PhantomData<(ST, SCT)>,
 }
 
-const COUNTERS: [&str; 46] = [
+const COUNTERS: [&str; 47] = [
     "invalid_author",
     "not_well_formed_sig",
     "invalid_signature",
@@ -82,6 +82,7 @@ const COUNTERS: [&str; 46] = [
     "state_root_update",
     "enter_new_round_qc",
     "enter_new_round_tc",
+    "trigger_state_sync",
     "prune_success",
     "add_success",
     "add_dup",
@@ -370,6 +371,11 @@ where
             "enter_new_round_tc",
             metrics.consensus_events.enter_new_round_tc
                 - cached_metrics.consensus_events.enter_new_round_tc,
+        );
+        self.record(
+            "trigger_state_sync",
+            metrics.consensus_events.trigger_state_sync
+                - cached_metrics.consensus_events.trigger_state_sync,
         );
         self.record(
             "prune_success",
