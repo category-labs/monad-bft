@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures::{
     future::BoxFuture,
     stream::{SelectAll, StreamExt},
@@ -282,15 +282,16 @@ where
                 let connection = self.canonical_connections.get_mut(&connection_id).expect(
                     "invariant broken: node_connections connection_id not in canonical_connections",
                 );
+                let gossip_message_len = gossip_message.remaining();
                 let mut gossip_message: Vec<_> = gossip_message.into_inner().into_iter().collect();
-                let result = connection
-                    .writer
-                    .write_chunks(&mut gossip_message)
-                    .now_or_never()?;
+                let result = connection.writer.try_write_chunks(&mut gossip_message);
                 match result {
-                    Ok(num_chunks) if num_chunks == gossip_message.len() => {}
-                    Ok(_) => {
-                        todo!("wrote partial chunks, replace with try_write_chunks");
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::warn!(
+                            "dropping gossip_message size={}, backpressured",
+                            gossip_message_len
+                        );
                     }
                     Err(failure) => {
                         tracing::warn!("disconnecting, connection failure: {:?}", failure);

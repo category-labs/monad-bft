@@ -55,21 +55,14 @@ impl ConnectionWriter {
         ConnectionId(self.connection.stable_id() as u64)
     }
 
-    pub async fn write_chunk(&mut self, chunk: Bytes) -> Result<(), ConnectionFailure> {
+    /// Writes chunks atomically if there's available buffer space; does nothing if not
+    /// Ok(true) represents successful write
+    /// Ok(false) represents unsuccessful write due to backpressure
+    /// Err(_) represents unsuccessful write due to disconnect
+    pub fn try_write_chunks(&mut self, chunks: &mut [Bytes]) -> Result<bool, ConnectionFailure> {
         self.send_stream
-            .write_chunk(chunk)
-            .await
+            .try_write_chunks(chunks)
             .map_err(ConnectionFailure::WriteError)
-    }
-
-    pub async fn write_chunks(&mut self, chunks: &mut [Bytes]) -> Result<usize, ConnectionFailure> {
-        let written = self
-            .send_stream
-            .write_chunks(chunks)
-            .await
-            .map_err(ConnectionFailure::WriteError)?;
-
-        Ok(written.chunks)
     }
 
     pub fn write_datagram(&mut self, chunk: Bytes) -> Result<(), ConnectionFailure> {
