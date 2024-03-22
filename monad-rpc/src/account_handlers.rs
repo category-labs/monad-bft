@@ -39,7 +39,7 @@ pub async fn monad_eth_getBalance(
     };
 
     match triedb_env.get_account(p.account).await {
-        TriedbResult::Null => Ok(serde_json::Value::Null),
+        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(_, balance, _) => serialize_result(format!("0x{:x}", balance)),
         _ => Err(JsonRpcError::internal_error()),
     }
@@ -72,13 +72,13 @@ pub async fn monad_eth_getCode(
     };
 
     let code_hash = match triedb_env.get_account(p.account).await {
-        TriedbResult::Null => return Ok(serde_json::Value::Null),
+        TriedbResult::Null => return serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(_, _, code_hash) => code_hash,
         _ => return Err(JsonRpcError::internal_error()),
     };
 
     match triedb_env.get_code(code_hash).await {
-        TriedbResult::Null => Ok(serde_json::Value::Null),
+        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Code(code) => serialize_result(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error()),
     }
@@ -112,7 +112,7 @@ pub async fn monad_eth_getStorageAt(
     };
 
     match triedb_env.get_storage_at(p.account, p.position).await {
-        TriedbResult::Null => Ok(serde_json::Value::Null),
+        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Storage(storage) => serialize_result(hex::encode(&storage)),
         _ => Err(JsonRpcError::internal_error()),
     }
@@ -147,7 +147,7 @@ pub async fn monad_eth_getTransactionCount(
     };
 
     match triedb_env.get_account(p.account).await {
-        TriedbResult::Null => Ok(serde_json::Value::Null),
+        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(nonce, _, _) => serialize_result(format!("0x{:x}", nonce)),
         _ => Err(JsonRpcError::internal_error()),
     }
