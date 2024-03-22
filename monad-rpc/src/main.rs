@@ -306,6 +306,7 @@ async fn main() -> std::io::Result<()> {
         .num_threads(4)
         .build_global()
         .expect("thread pool with 4 threads");
+
     let resources = MonadRpcResources::new(
         ipc_sender.clone(),
         args.blockdb_path
@@ -313,8 +314,7 @@ async fn main() -> std::io::Result<()> {
             .map(|p| BlockDbEnv::new(&p))
             .flatten(),
         args.triedb_path.clone().as_deref().map(TriedbEnv::new),
-    )
-    .start();
+    );
 
     // main server app
     HttpServer::new(move || create_app(resources.clone()))
