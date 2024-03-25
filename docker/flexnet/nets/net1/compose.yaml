@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   build_monad_bft:
     build:
@@ -33,9 +31,6 @@ services:
 
   node0:
     image: image0:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./node0:/monad
     cap_add:
@@ -44,9 +39,6 @@ services:
 
   rpc0:
     image: rpc:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./node0:/monad
     expose:
@@ -55,9 +47,6 @@ services:
 
   rpc_blaster:
     image: monad-python:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./rpc_blaster:/monad
       - ./data:/data
@@ -65,9 +54,6 @@ services:
 
   node1:
     image: image0:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./node1:/monad
     cap_add:
@@ -76,18 +62,12 @@ services:
 
   ethtx1:
     image: ethtx:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./node1:/monad
     entrypoint: ["bash", "/monad/scripts/ethtx.sh"]
   
   node2:
     image: image0:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./node2:/monad
     cap_add:
@@ -96,9 +76,6 @@ services:
 
   node3:
     image: image0:latest
-    environment:
-      - HOST_UID=${HOST_UID}
-      - HOST_GID=${HOST_GID}
     volumes:
       - ./node3:/monad
     cap_add:
