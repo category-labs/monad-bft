@@ -31,8 +31,7 @@ if __name__ == "__main__":
     tx_block_map = {}
     for block_file in Path("node0/ledger").iterdir():
         with open(block_file, "rb") as f:
-            # skip the block hash
-            data = f.read()[32:]
+            data = f.read()
 
         block = rlp.decode(data, ShanghaiBlock).as_dict()
         ledger_txns.extend(["0x" + txn.hash.hex() for txn in block["transactions"]])
