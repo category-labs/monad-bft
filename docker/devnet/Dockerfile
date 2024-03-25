@@ -15,7 +15,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:buster-slim
 WORKDIR /usr/src/monad-bft
 
+RUN mkdir -p /monad/config
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
+COPY --from=builder /usr/src/monad-bft/docker/devnet/monad/config /monad/config
 
 ENV RUST_LOG=info
 CMD monad-node \
@@ -25,4 +27,5 @@ CMD monad-node \
     --genesis-config /monad/config/genesis.toml \
     --wal-path /monad/wal \
     --mempool-ipc-path /monad/mempool.sock \
-    --execution-ledger-path /monad/ledger
+    --execution-ledger-path /monad/ledger \
+    --blockdb-path /monad/blockdb
