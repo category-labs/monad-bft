@@ -1,0 +1,28 @@
+version: '3'
+
+services:
+  monad_node:
+    build:
+      context: ../..
+      dockerfile: docker/devnet/Dockerfile
+    volumes:
+      - ./monad:/monad
+    networks:
+      - monad_network
+
+  monad_rpc:
+    build:
+      context: ../..
+      dockerfile: docker/rpc/Dockerfile
+    depends_on:
+      - monad_node
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./monad:/monad
+    networks:
+      - monad_network
+
+networks:
+  monad_network:
+    driver: bridge
