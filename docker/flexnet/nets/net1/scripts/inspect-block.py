@@ -74,5 +74,8 @@ if __name__ == "__main__":
 
     if verification_success:
         print("Block inspection success")
+    else:
+        print("Block inspection failure")
+        exit(1)
 
         

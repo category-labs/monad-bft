@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -x
+set -ex
 # Define the function to show usage
 usage() {
     echo "Usage: $0 --output-dir <dir_path> --net-dir <net_path> --image-root <image_root> --monad-bft-root <monad_bft_root>"
@@ -42,7 +42,7 @@ while true; do
                 "") echo "$1 must have a value"; shift 1 ;;
                 *)  monad_bft_root="$2"; shift 2;;
             esac ;;
-        "") shift; break ;;
+        "") break ;;
         *) echo "Error parsing $1, check arguments before it"; usage; exit 1 ;;
     esac
 done
@@ -112,7 +112,7 @@ popd
 
 
 # verify ledger
-docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 scripts/verify-ledger.py -c 4 -l ledger -n 30"
+docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/verify-ledger.py -c 4 -l ledger -n 30"
 # inspect the blocks, verify content
 docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json --byzantine /monad/node1 --delay 4"
 

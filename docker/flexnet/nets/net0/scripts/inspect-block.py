@@ -40,12 +40,17 @@ if __name__ == "__main__":
     only_in_ledger = set(ledger_txns) - set(submitted_txns)
     only_in_submitted = set(submitted_txns) - set(ledger_txns)
 
+    verification_success = True
     if len(only_in_ledger) > 0:
         print("Only found in ledger: ", only_in_ledger)
+        verification_success = False
 
     if len(only_in_submitted) > 0:
         print("Submitted but not in ledger: ", only_in_submitted)
-        
-    if len(only_in_ledger) == 0 and len(only_in_submitted) == 0:
+        verification_success = False
+
+    if verification_success:
         print("Block inspection success")
-        
+    else:
+        print("Block inspection failure")
+        exit(1)
