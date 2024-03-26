@@ -19,7 +19,7 @@ RUN mkdir -p /monad/config
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
 COPY --from=builder /usr/src/monad-bft/docker/devnet/monad/config /monad/config
 
-ENV RUST_LOG=info
+# ENV RUST_LOG=info
 CMD monad-node \
     --secp-identity /monad/config/id-secp \
     --bls-identity /monad/config/id-bls \
