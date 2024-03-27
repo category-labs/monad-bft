@@ -25,4 +25,5 @@ CMD monad-node \
     --genesis-config /monad/config/genesis.toml \
     --wal-path /monad/wal \
     --mempool-ipc-path /monad/mempool.sock \
-    --execution-ledger-path /monad/ledger
+    --execution-ledger-path /monad/ledger \
+    --blockdb-path /monad/blockdb
