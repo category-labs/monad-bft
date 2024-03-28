@@ -12,10 +12,13 @@ use monad_consensus_types::{
     validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{
-    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
+    CertificateSignatureRecoverable,
 };
 use monad_executor::Executor;
-use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig};
+use monad_gossip::{
+    gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, seeder::SeederConfig,
+};
 use monad_multi_sig::MultiSig;
 use monad_quic::{SafeQuinnConfig, ServiceConfig};
 use monad_secp::SecpSignature;
@@ -79,7 +82,13 @@ enum RouterArgs {
 
 enum GossipArgs {
     Simple,
-    Gossipsub { fanout: usize },
+    Gossipsub {
+        fanout: usize,
+    },
+    Raptor {
+        timeout: Duration,
+        up_bandwidth_Mbps: u16,
+    },
 }
 
 pub enum ExecutionLedgerArgs {
@@ -140,10 +149,15 @@ async fn main() {
         val_set_update_interval: 2_000,
         epoch_start_delay: 50,
 
-        router: RouterArgs::Local {
-            external_latency_ms: 1000,
+        router: RouterArgs::MonadP2P {
+            max_rtt_ms: 200,
+            bandwidth_Mbps: 1_000,
+            gossip: GossipArgs::Raptor {
+                timeout: Duration::from_millis(150),
+                up_bandwidth_Mbps: 1_000,
+            },
         },
-        execution_ledger: ExecutionLedgerArgs::File,
+        execution_ledger: ExecutionLedgerArgs::Mock,
     };
 
     let (wg_tx, _) = tokio::sync::broadcast::channel::<()>(args.addresses.len());
@@ -298,6 +312,21 @@ where
                                         fanout: *fanout,
                                     })
                                 }
+                                GossipArgs::Raptor {
+                                    timeout,
+                                    up_bandwidth_Mbps,
+                                } => MonadP2PGossipConfig::Raptor(SeederConfig {
+                                    all_peers: all_peers.clone(),
+                                    key: Box::leak(Box::new(unsafe {
+                                        std::ptr::read::<<ST as CertificateSignature>::KeyPairType>(
+                                            &keypair
+                                                as *const <ST as CertificateSignature>::KeyPairType,
+                                        )
+                                    })),
+                                    timeout: *timeout,
+                                    up_bandwidth_Mbps: *up_bandwidth_Mbps,
+                                    chunker_poll_interval: Duration::from_millis(10),
+                                }),
                             },
                         },
                     },
@@ -341,7 +370,7 @@ async fn run<ST, SCT>(
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Unpin,
     <SCT as SignatureCollection>::SignatureType: Unpin,
 {
-    let mut executor = make_monad_executor(config.executor_config).await;
+    let mut executor = make_monad_executor(config.executor_config);
     let (mut state, init_commands) = make_monad_state(config.state_config);
 
     executor.exec(init_commands);

@@ -2,18 +2,22 @@ use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::NopStateRoot,
-    signature_collection::SignatureCollection, validator_data::ValidatorData,
+    signature_collection::SignatureCollection, txpool::MockTxPool, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_txpool::EthTxPool;
 use monad_eth_types::EthAddress;
 use monad_executor::{BoxExecutor, Executor};
 use monad_executor_glue::{
     Command, ExecutionLedgerCommand, MonadEvent, RouterCommand, StateRootHashCommand,
 };
-use monad_gossip::{gossipsub::UnsafeGossipsubConfig, mock::MockGossipConfig, Gossip};
+use monad_gossip::{
+    gossipsub::UnsafeGossipsubConfig,
+    mock::MockGossipConfig,
+    seeder::{Raptor, SeederConfig},
+    Gossip,
+};
 use monad_ipc::{generate_uds_path, IpcReceiver};
 use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
@@ -32,9 +36,10 @@ use monad_validator::{
     validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory},
 };
 
-pub enum MonadP2PGossipConfig<PT: PubKey> {
-    Simple(MockGossipConfig<PT>),
-    Gossipsub(UnsafeGossipsubConfig<PT>),
+pub enum MonadP2PGossipConfig<ST: CertificateSignatureRecoverable> {
+    Simple(MockGossipConfig<CertificateSignaturePubKey<ST>>),
+    Gossipsub(UnsafeGossipsubConfig<CertificateSignaturePubKey<ST>>),
+    Raptor(SeederConfig<'static, Raptor<'static, ST>>),
 }
 
 pub enum RouterConfig<ST, SCT>
@@ -48,7 +53,7 @@ where
     ),
     MonadP2P {
         config: ServiceConfig<SafeQuinnConfig<ST>>,
-        gossip_config: MonadP2PGossipConfig<CertificateSignaturePubKey<ST>>,
+        gossip_config: MonadP2PGossipConfig<ST>,
     },
 }
 
@@ -78,7 +83,7 @@ where
     pub nodeid: NodeId<SCT::NodeIdPubKey>,
 }
 
-pub async fn make_monad_executor<ST, SCT>(
+pub fn make_monad_executor<ST, SCT>(
     config: ExecutorConfig<ST, SCT>,
 ) -> ParentExecutor<
     BoxUpdater<
@@ -111,6 +116,9 @@ where
                     MonadP2PGossipConfig::Simple(mock_config) => Gossip::boxed(mock_config.build()),
                     MonadP2PGossipConfig::Gossipsub(gossipsub_config) => {
                         Gossip::boxed(gossipsub_config.build())
+                    }
+                    MonadP2PGossipConfig::Raptor(raptor_config) => {
+                        Gossip::boxed(raptor_config.build())
                     }
                 },
             )),
@@ -145,7 +153,7 @@ type MonadStateType<ST, SCT> = MonadState<
     SCT,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
-    EthTxPool,
+    MockTxPool,
     MockValidator,
     NopStateRoot,
     PeerAsyncStateVerify<SCT, <ValidatorSetFactory<CertificateSignaturePubKey<ST>> as ValidatorSetTypeFactory>::ValidatorSetType>>;
@@ -188,7 +196,7 @@ where
         version: MonadVersion::new("TESTGROUND"),
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
-        transaction_pool: EthTxPool::default(),
+        transaction_pool: MockTxPool::default(),
         block_validator: MockValidator {},
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
