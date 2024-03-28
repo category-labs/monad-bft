@@ -164,7 +164,7 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
                         meta,
                     ) {
                         Ok(chunker) => {
-                            tracing::info!("initialized chunker for id: {:?}", id);
+                            tracing::debug!("initialized chunker for id: {:?}", id);
                             self.insert_chunker(chunker);
                         }
                         Err(e) => {
@@ -288,10 +288,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
 
                 let chunker =
                     C::new_from_message(time, &self.config.all_peers, self.config.key, message);
-                tracing::info!(
-                    "initialized chunker on broadcast attempt: {:?}",
-                    chunker.meta()
-                );
+
                 // this is safe because chunkers are guaranteed to be unique, even for
                 // same AppMessage.
                 self.insert_chunker(chunker);
@@ -359,6 +356,8 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
             .map(|next_poll| time >= next_poll)
             .unwrap_or(false)
         {
+            let _chunker_span =
+                tracing::trace_span!("chunker_poll", events_len = self.events.len()).entered();
             while time
                 >= self
                     .chunker_timeouts
