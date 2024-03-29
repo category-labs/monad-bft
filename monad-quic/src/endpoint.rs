@@ -4,7 +4,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -20,6 +20,7 @@ use monad_gossip::{ConnectionManager, ConnectionManagerEvent, Gossip};
 use monad_types::{Deserializable, NodeId, Serializable};
 use quinn::Connecting;
 use quinn_proto::ClientConfig;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     connection::{Connection, ConnectionEvent, ConnectionId, ConnectionWriter},
@@ -28,11 +29,15 @@ use crate::{
 
 const ZERO_INSTANT: SystemTime = UNIX_EPOCH;
 
-pub(crate) struct SyncEndpoint<QC, G, M, OM>(Arc<Mutex<Endpoint<QC, G, M, OM>>>)
+pub(crate) struct SyncEndpoint<QC, G, M, OM>
 where
     G: Gossip,
     M: Message<NodeIdPubKey = G::NodeIdPubKey>,
-    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>;
+    QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
+{
+    writer: tokio::sync::mpsc::UnboundedSender<RouterCommand<G::NodeIdPubKey, OM>>,
+    endpoint: Arc<Mutex<Endpoint<QC, G, M, OM>>>,
+}
 
 impl<G, QC, M, OM> Clone for SyncEndpoint<QC, G, M, OM>
 where
@@ -41,7 +46,10 @@ where
     QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
 {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            writer: self.writer.clone(),
+            endpoint: self.endpoint.clone(),
+        }
     }
 }
 
@@ -52,7 +60,12 @@ where
     QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
 {
     pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
-        Self(Arc::new(Mutex::new(Endpoint::new(config, gossip))))
+        // TODO should this be a bounded channel?
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            writer: tx,
+            endpoint: Arc::new(Mutex::new(Endpoint::new(rx, config, gossip))),
+        }
     }
 }
 
@@ -65,7 +78,9 @@ where
     OM: Serializable<Bytes> + Send + Sync + 'static,
 {
     pub fn exec(&mut self, commands: Vec<RouterCommand<G::NodeIdPubKey, OM>>) {
-        self.0.lock().unwrap().exec(commands)
+        for command in commands {
+            let _send_result = self.writer.send(command);
+        }
     }
 }
 
@@ -91,6 +106,9 @@ where
     /// The gossip implementation
     gossip: ConnectionManager<G>,
 
+    /// Stream of pending commands
+    pending_commands: UnboundedReceiver<RouterCommand<G::NodeIdPubKey, OM>>,
+
     /// The main entrypoint into Quinn's API
     endpoint: quinn::Endpoint,
     /// Configuration generator used for Quinn initialization and connections
@@ -101,7 +119,6 @@ where
 
     /// Future that yields whenever the gossip implementation wants to be woken up
     gossip_timeout: Pin<Box<tokio::time::Sleep>>,
-    waker: Option<Waker>,
 
     connections: SelectAll<Connection<G::NodeIdPubKey>>,
 
@@ -127,7 +144,11 @@ where
     M: Message<NodeIdPubKey = G::NodeIdPubKey>,
     QC: QuinnConfig<NodeIdPubKey = G::NodeIdPubKey>,
 {
-    pub fn new(config: ServiceConfig<QC>, gossip: G) -> Self {
+    pub fn new(
+        pending_commands: tokio::sync::mpsc::UnboundedReceiver<RouterCommand<G::NodeIdPubKey, OM>>,
+        config: ServiceConfig<QC>,
+        gossip: G,
+    ) -> Self {
         let mut server_config = quinn::ServerConfig::with_crypto(config.quinn_config.server());
         server_config.transport_config(config.quinn_config.transport());
         let endpoint = quinn::Endpoint::server(server_config, config.server_address)
@@ -151,6 +172,7 @@ where
             known_addresses: config.known_addresses,
 
             gossip: ConnectionManager::new(gossip),
+            pending_commands,
 
             endpoint,
             quinn_config: config.quinn_config,
@@ -158,7 +180,6 @@ where
             accept,
 
             gossip_timeout: Box::pin(tokio::time::sleep(Duration::ZERO)),
-            waker: None,
 
             connections: SelectAll::new(),
             canonical_connections: Default::default(),
@@ -182,28 +203,6 @@ where
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
 {
-    fn exec(&mut self, commands: Vec<RouterCommand<G::NodeIdPubKey, OM>>) {
-        self.update_current_time();
-
-        for command in commands {
-            match command {
-                RouterCommand::Publish { target, message } => {
-                    let message = {
-                        let mut _ser_span = tracing::trace_span!("serialize_span").entered();
-                        message.serialize()
-                    };
-                    let mut _publish_span =
-                        tracing::debug_span!("publish_span", message_len = message.len()).entered();
-                    self.gossip.send(self.current_time, target, message);
-
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake();
-                    }
-                }
-            }
-        }
-    }
-
     fn connecting(&mut self, connection: Connection<G::NodeIdPubKey>) {
         self.connections.push(connection);
     }
@@ -357,16 +356,34 @@ where
     type Item = M::Event;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.0.lock().unwrap();
+        let mut this = self.endpoint.lock().unwrap();
         let mut _router_poll_span = tracing::trace_span!("router_poll_span").entered();
 
-        if this.waker.is_none() {
-            this.waker = Some(cx.waker().clone());
-        }
         this.update_current_time();
         let current_time = this.current_time;
 
         loop {
+            let mut commands = Vec::new();
+            let _count = this.pending_commands.poll_recv_many(cx, &mut commands, 10);
+            if !commands.is_empty() {
+                for command in commands {
+                    match command {
+                        RouterCommand::Publish { target, message } => {
+                            let message = {
+                                let mut _ser_span =
+                                    tracing::trace_span!("serialize_span").entered();
+                                message.serialize()
+                            };
+                            let mut _publish_span =
+                                tracing::debug_span!("publish_span", message_len = message.len())
+                                    .entered();
+                            this.gossip.send(current_time, target, message);
+                        }
+                    }
+                }
+                continue;
+            }
+
             if let Poll::Ready(connecting) = this.accept.poll_unpin(cx) {
                 let endpoint = this.endpoint.clone();
                 this.accept = {

@@ -12,6 +12,7 @@ use monad_executor_glue::{Message, RouterCommand};
 use monad_gossip::Gossip;
 use monad_types::{Deserializable, NodeId, Serializable};
 use tokio::sync::mpsc::error::TrySendError;
+use tracing::Instrument;
 
 use crate::{endpoint::SyncEndpoint, quinn_config::QuinnConfig};
 
@@ -80,6 +81,7 @@ where
                     }
                 }
             }
+            .in_current_span()
         });
         Self {
             me,
