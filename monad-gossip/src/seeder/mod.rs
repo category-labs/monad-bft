@@ -11,7 +11,9 @@ use monad_types::{NodeId, RouterTarget};
 use serde::{Deserialize, Serialize};
 
 use super::{Gossip, GossipEvent};
-use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
+use crate::{
+    connection_manager::MAX_DATAGRAM_SIZE, AppMessage, FragmentedGossipMessage, GossipMessage,
+};
 
 mod chunker;
 pub use chunker::Chunker;
@@ -216,11 +218,29 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
         self.update_tick(time);
         match to {
             RouterTarget::Broadcast => {
+                self.events
+                    .push_back(GossipEvent::Emit(self.me, message.clone()));
+
+                // TODO should we set this bound more empirically? This is arbitrary right now
+                if message.len() <= 2 * MAX_DATAGRAM_SIZE {
+                    let messages = self
+                        .config
+                        .all_peers
+                        .iter()
+                        .filter(|to| to != &&self.me)
+                        .map(|to| {
+                            GossipEvent::Send(
+                                *to,
+                                Self::prepare_message(MessageType::Direct, message.clone()),
+                            )
+                        });
+                    self.events.extend(messages);
+                    return;
+                }
+
                 if self.next_chunker_poll.is_none() {
                     self.next_chunker_poll = Some(self.current_tick);
                 }
-                self.events
-                    .push_back(GossipEvent::Emit(self.me, message.clone()));
 
                 let chunker =
                     C::new_from_message(time, &self.config.all_peers, self.config.key, message);
