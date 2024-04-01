@@ -28,6 +28,10 @@ use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry_otlp::WithExportConfig;
 use tracing::{event, instrument::WithSubscriber, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing_subscriber::{
+    fmt::{format::FmtSpan, Layer as FmtLayer},
+    EnvFilter, Registry,
+};
 
 use crate::executor::{
     make_monad_executor, make_monad_state, ExecutionLedgerConfig, ExecutorConfig, RouterConfig,
@@ -121,9 +125,6 @@ fn make_provider(
 
 #[tokio::main]
 async fn main() {
-    // tracing_subscriber::fmt::init();
-    env_logger::init();
-
     let args = Args::parse();
 
     let context = args.otel_endpoint.as_ref().map(|endpoint| {
@@ -186,7 +187,16 @@ async fn main() {
 
                         let tracer = provider.tracer("opentelemetry");
                         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-                        tracing_subscriber::Registry::default().with(telemetry)
+
+                        Registry::default()
+                            .with(EnvFilter::from_default_env())
+                            .with(
+                                FmtLayer::default()
+                                    .with_writer(std::io::stdout)
+                                    .with_span_events(FmtSpan::CLOSE)
+                                    .with_ansi(false),
+                            )
+                            .with(telemetry)
                     })
                     .boxed()
                 } else {

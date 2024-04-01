@@ -3503,7 +3503,6 @@ name = "monad-testground"
 version = "0.1.0"
 dependencies = [
  "clap 4.4.10",
- "env_logger",
  "futures-util",
  "monad-async-state-verify",
  "monad-consensus-state",
