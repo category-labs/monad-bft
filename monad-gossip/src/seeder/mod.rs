@@ -8,6 +8,8 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
 use monad_types::{NodeId, RouterTarget};
+use rand::{distributions::WeightedError, seq::SliceRandom, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use super::{Gossip, GossipEvent};
@@ -344,19 +346,36 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
             //      stake-weighted selection?
             // TODO can we eliminate disconnected peers from selection here? or is that too jank?
             let mut chunkers: Vec<_> = self.chunkers.values_mut().collect();
-            // TODO shuffle chunkers with deterministic RNG
-
             let mut chunk_bytes_generated: u64 = 0; // TODO should we include outbound meta bytes?
-            let mut chunker_idx = 0;
+
+            let mut rng = {
+                // TODO make this non-ephemeral
+                let mut time_u128 = time.as_nanos();
+                let mut seed = [0_u8; 32];
+
+                let mut idx = 0;
+                while time_u128 != 0 {
+                    seed[idx] = time_u128 as u8;
+                    time_u128 >>= 8;
+                    idx += 1;
+                }
+                ChaCha8Rng::from_seed(seed)
+            };
             while {
                 let up_bandwidth_Bps = self.config.up_bandwidth_Mbps as u64 * 125_000;
                 let up_bandwidth_Bpms = up_bandwidth_Bps / 1_000;
                 let exceeded_limit =
                     Duration::from_millis(chunk_bytes_generated / up_bandwidth_Bpms)
                         >= self.config.chunker_poll_interval;
-                !chunkers.is_empty() && !exceeded_limit
+                !exceeded_limit
             } {
-                let status = &mut chunkers[chunker_idx];
+                let mut enumerated_chunkers: Vec<_> = chunkers.iter_mut().enumerate().collect();
+                let result = enumerated_chunkers
+                    .choose_weighted_mut(&mut rng, |(_, status)| status.chunker.weight());
+                if let Err(WeightedError::NoItem | WeightedError::AllWeightsZero) = &result {
+                    break;
+                }
+                let (chunker_idx, status) = result.expect("choose_weighted shouldn't fail");
                 if let Some((to, chunk, data)) = status.chunker.generate_chunk() {
                     if let Entry::Vacant(e) = status.sent_metas.entry(to) {
                         let meta_info = MetaInfo {
@@ -381,13 +400,9 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                     );
                     chunk_bytes_generated += chunk_message.remaining() as u64;
                     self.events.push_back(GossipEvent::Send(to, chunk_message));
-                    chunker_idx = (chunker_idx + 1) % chunkers.len();
                 } else {
+                    let chunker_idx = *chunker_idx;
                     chunkers.swap_remove(chunker_idx);
-                    if chunkers.is_empty() {
-                        break;
-                    }
-                    chunker_idx %= chunkers.len();
                 }
             }
 

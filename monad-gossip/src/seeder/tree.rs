@@ -175,6 +175,15 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Tree<ST> {
         self.chunks.len() == self.meta.num_chunks.into()
     }
 
+    fn weight(&self) -> u64 {
+        self.meta.num_chunks as u64
+            * self
+                .chunks
+                .values()
+                .map(|chunk| chunk.children.len() as u64)
+                .sum::<u64>()
+    }
+
     /// Can be called in untrusted context
     fn process_chunk(
         &mut self,

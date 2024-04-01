@@ -161,6 +161,10 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         }
     }
 
+    fn weight(&self) -> u64 {
+        self.meta.raptor_meta.transfer_length() * self.non_seeders.len() as u64
+    }
+
     /// Can be called in untrusted context
     fn process_chunk(
         &mut self,
