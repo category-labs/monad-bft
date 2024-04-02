@@ -174,6 +174,9 @@ impl BlockDb {
                 &block_tag_value,
             )
             .expect("block_tag_dbi put failed");
+        block_tag_table_txn
+            .commit()
+            .expect("block_tag commit failed");
     }
 
     pub fn write_eth_and_bft_blocks(
