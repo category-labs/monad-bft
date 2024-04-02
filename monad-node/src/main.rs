@@ -245,7 +245,7 @@ async fn run(
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
         consensus_config: ConsensusConfig {
-            proposal_txn_limit: 5000,
+            proposal_txn_limit: 1000,
             proposal_gas_limit: 800_000_000,
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
