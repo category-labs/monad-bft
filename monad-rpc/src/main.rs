@@ -27,7 +27,7 @@ use triedb::TriedbEnv;
 use crate::{
     blockdb::BlockDbEnv,
     eth_txn_handlers::monad_eth_sendRawTransaction,
-    gas_handlers::{monad_eth_estimateGas, monad_eth_gasPrice},
+    gas_handlers::{monad_eth_estimateGas, monad_eth_gasPrice, monad_eth_maxPriorityFeePerGas},
     jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
     mempool_tx::MempoolTxIpcSender,
     websocket::Disconnect,
@@ -219,6 +219,13 @@ async fn rpc_select(
         "eth_gasPrice" => {
             if let Some(reader) = &app_state.blockdb_reader {
                 monad_eth_gasPrice(reader).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
+        }
+        "eth_maxPriorityFeePerGas" => {
+            if let Some(reader) = &app_state.blockdb_reader {
+                monad_eth_maxPriorityFeePerGas(reader).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }

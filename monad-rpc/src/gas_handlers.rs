@@ -1,4 +1,5 @@
 use log::{debug, trace};
+use monad_blockdb::BlockTagKey;
 use reth_primitives::Transaction;
 use serde::Deserialize;
 use serde_json::Value;
@@ -33,12 +34,44 @@ pub async fn monad_eth_estimateGas(params: Value) -> Result<Value, JsonRpcError>
     serialize_result(format!("0x{:x}", 2000000))
 }
 
+pub async fn suggested_priority_fee(blockdb_env: &BlockDbEnv) -> Result<u64, JsonRpcError> {
+    // TODO: hardcoded as 2 gwei for now, need to implement gas oracle
+    // Refer to <https://github.com/ethereum/pm/issues/328#issuecomment-853234014>
+    Ok(2000000000)
+}
+
 #[allow(non_snake_case)]
 pub async fn monad_eth_gasPrice(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_gasPrice");
 
-    // TODO: read block data and calculate EIP-1559 base fee + suggested priority fee
-    // Refer to <https://github.com/ethereum/pm/issues/328#issuecomment-853234014>
-    // Hardcoded as 1 gwei for now
-    serialize_result(format!("0x{:x}", 1000000000))
+    let block = match blockdb_env
+        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
+        .await
+    {
+        Some(block) => block,
+        None => {
+            debug!("unable to retrieve latest block");
+            return Err(JsonRpcError::internal_error());
+        }
+    };
+
+    // Obtain base fee from latest block header
+    let base_fee_per_gas = match block.block.base_fee_per_gas {
+        Some(base_fee) => base_fee,
+        None => 0,
+    };
+    // Obtain suggested priority fee
+    let priority_fee = suggested_priority_fee(blockdb_env).await.unwrap();
+
+    serialize_result(format!("0x{:x}", base_fee_per_gas + priority_fee))
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_maxPriorityFeePerGas(
+    blockdb_env: &BlockDbEnv,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_maxPriorityFeePerGas");
+
+    let priority_fee = suggested_priority_fee(blockdb_env).await.unwrap();
+    serialize_result(format!("0x{:x}", priority_fee))
 }
