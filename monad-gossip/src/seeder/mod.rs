@@ -14,7 +14,8 @@ use super::{Gossip, GossipEvent};
 use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
 
 mod chunker;
-use chunker::{Chunk, Chunker, Meta};
+pub use chunker::Chunker;
+use chunker::{Chunk, Meta};
 mod raptor;
 pub use raptor::Raptor;
 mod tree;

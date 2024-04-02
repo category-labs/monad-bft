@@ -3164,6 +3164,7 @@ dependencies = [
  "criterion",
  "fastrand",
  "monad-crypto",
+ "monad-secp",
  "monad-transformer",
  "monad-types",
  "monad-virtual-bench",

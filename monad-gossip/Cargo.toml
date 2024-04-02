@@ -28,10 +28,16 @@ tracing = { workspace = true }
 criterion = { workspace = true }
 fastrand = { workspace = true }
 test-case = { workspace = true }
+
+monad-secp = { path = "../monad-secp" }
 monad-virtual-bench = { path = "../monad-virtual-bench" }
 
 [[bench]]
 name = "rand_shuffle_bench"
+harness = false
+
+[[bench]]
+name = "raptor_bench"
 harness = false
 
 [[bench]]
