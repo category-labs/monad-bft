@@ -18,7 +18,10 @@ use monad_consensus_types::{
     state_root_hash::StateRootHash,
     validator_data::ValidatorData,
 };
-use monad_crypto::{certificate_signature::CertificateSignaturePubKey, hasher::Hash};
+use monad_crypto::{
+    certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
+    hasher::Hash,
+};
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
@@ -26,7 +29,7 @@ use monad_gossip::{mock::MockGossipConfig, Gossip};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
-use monad_secp::{KeyPair, SecpSignature};
+use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
@@ -340,12 +343,12 @@ async fn run(
 
 async fn build_router<M, OM, G: Gossip>(
     network_config: NodeNetworkConfig,
-    identity: &KeyPair,
+    identity: &<SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
     gossip: G,
 ) -> Service<SafeQuinnConfig<SignatureType>, G, M, OM>
 where
-    G: Gossip<NodeIdPubKey = monad_secp::PubKey> + Send + 'static,
+    G: Gossip<NodeIdPubKey = CertificateSignaturePubKey<SignatureType>> + Send + 'static,
     M: Message<NodeIdPubKey = G::NodeIdPubKey> + Deserializable<Bytes> + Send + Sync + 'static,
     <M as Deserializable<Bytes>>::ReadError: 'static,
     OM: Serializable<Bytes> + Send + Sync + 'static,
