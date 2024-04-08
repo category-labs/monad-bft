@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     time::Duration,
 };
 
@@ -66,8 +66,16 @@ pub struct Seeder<'k, C: Chunker<'k>> {
 
 struct ChunkerStatus<'k, C: Chunker<'k>> {
     chunker: C,
-    sent_metas: HashMap<NodeId<CertificateSignaturePubKey<C::SignatureType>>, MetaInfo<C::Meta>>,
+    sent_metas: HashMap<NodeId<CertificateSignaturePubKey<C::SignatureType>>, SentMeta<'k, C>>,
 }
+
+struct SentMeta<'k, C: Chunker<'k>> {
+    time: Duration,
+    meta: MetaInfo<C::Meta>,
+}
+
+// TODO don't hardcode this?
+const META_TIMEOUT: Duration = Duration::from_millis(10);
 
 impl<'k, C: Chunker<'k>> ChunkerStatus<'k, C> {
     fn new(chunker: C) -> Self {
@@ -77,10 +85,27 @@ impl<'k, C: Chunker<'k>> ChunkerStatus<'k, C> {
         }
     }
 
-    fn sent_seeding(&self, peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>) -> bool {
+    fn sent_seeding_recently(
+        &self,
+        time: &Duration,
+        timeout: &Duration,
+        peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>,
+    ) -> bool {
         self.sent_metas
             .get(peer)
-            .map(|meta| meta.seeding)
+            .map(|sent_meta| (*time - sent_meta.time) < *timeout && sent_meta.meta.seeding)
+            .unwrap_or(false)
+    }
+
+    fn sent_meta_recently(
+        &self,
+        time: &Duration,
+        timeout: &Duration,
+        peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>,
+    ) -> bool {
+        self.sent_metas
+            .get(peer)
+            .map(|sent_meta| (*time - sent_meta.time) < *timeout)
             .unwrap_or(false)
     }
 }
@@ -123,6 +148,7 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
 
     fn handle_protocol_message(
         &mut self,
+        time: Duration,
         from: NodeId<CertificateSignaturePubKey<C::SignatureType>>,
         header: ProtocolHeader<C::Meta, C::Chunk>,
         data: Bytes,
@@ -179,7 +205,9 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
                         }
                     }
                     // chunker may be complete if event was emitted
-                    if status.chunker.is_seeder() && !status.sent_seeding(&from) {
+                    if status.chunker.is_seeder()
+                        && !status.sent_seeding_recently(&time, &META_TIMEOUT, &from)
+                    {
                         let meta_info = MetaInfo {
                             meta: status.chunker.meta().clone(),
                             seeding: true,
@@ -193,7 +221,13 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
 
                         // this shouldn't usually be dropped, because there must already be an
                         // outstanding connection
-                        status.sent_metas.insert(from, meta_info);
+                        status.sent_metas.insert(
+                            from,
+                            SentMeta {
+                                time,
+                                meta: meta_info,
+                            },
+                        );
                     }
                 } else {
                     tracing::trace!("no chunker initialized for id: {:?}", id);
@@ -303,7 +337,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                 if self.next_chunker_poll.is_none() {
                     self.next_chunker_poll = Some(self.current_tick);
                 }
-                self.handle_protocol_message(from, header, data)
+                self.handle_protocol_message(time, from, header, data)
             }
         }
     }
@@ -377,12 +411,18 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                 }
                 let (chunker_idx, status) = result.expect("choose_weighted shouldn't fail");
                 if let Some((to, chunk, data)) = status.chunker.generate_chunk() {
-                    if let Entry::Vacant(e) = status.sent_metas.entry(to) {
+                    if !status.sent_meta_recently(&time, &META_TIMEOUT, &to) {
                         let meta_info = MetaInfo {
                             meta: status.chunker.meta().clone(),
                             seeding: status.chunker.is_seeder(),
                         };
-                        e.insert(meta_info.clone());
+                        status.sent_metas.insert(
+                            to,
+                            SentMeta {
+                                time,
+                                meta: meta_info.clone(),
+                            },
+                        );
                         let meta_message = Self::prepare_message(
                             MessageType::BroadcastProtocol(ProtocolHeader::Meta(meta_info)),
                             Bytes::default(),
