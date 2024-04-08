@@ -44,5 +44,7 @@ for region in regions:
         cwd = Path(args.topology_input_file).parents[0]
         ethtx_path = cwd / volume / "scripts" / "ethtx.sh"
         ethtx_path.parent.mkdir(parents=True, exist_ok=True)
+        if ethtx_path.exists():
+            continue
         with open(ethtx_path, "w+") as ethtx_file:
             ethtx_file.write(ethtx_text)

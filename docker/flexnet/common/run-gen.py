@@ -41,5 +41,8 @@ for region in regions:
         cwd = Path(args.topology_input_file).parents[0]
         run_path = cwd / volume / "scripts" / "run.sh"
         run_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(run_path, "w+") as ethtx_file:
-            ethtx_file.write(RUN_SH_TEXT)
+        # don't overwrite existing file
+        if run_path.exists():
+            continue
+        with open(run_path, "w+") as runsh_file:
+            runsh_file.write(RUN_SH_TEXT)

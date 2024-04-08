@@ -19,9 +19,11 @@ fi
 git submodule update --init common/blst
 
 rm -rf logs && mkdir -p logs
-nets/net2/scripts/net-run.sh --output-dir logs --net-dir nets/net2/ --flexnet-root . --monad-bft-root ../.. 
+nets/net0/scripts/net-run.sh --output-dir logs --net-dir nets/net0/ --flexnet-root . --monad-bft-root ../.. 
+nets/net1/scripts/net-run.sh --output-dir logs --net-dir nets/net1/ --flexnet-root . --monad-bft-root ../.. 
+nets/devnet-integration/scripts/net-run.sh test --output-dir logs --net-dir nets/devnet-integration/ --image-root images --monad-bft-root ../..
 
-# clean up the artifacts if the test succeeeds
+# remove artifacts if test succeeds
 rm -rf logs
 
 popd # docker/flexnet

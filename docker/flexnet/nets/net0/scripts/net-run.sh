@@ -3,7 +3,7 @@
 set -ex
 # Define the function to show usage
 usage() {
-    echo "Usage: $0 --output-dir <dir_path> --net-dir <net_path> --image-root <image_root> --monad-bft-root <monad_bft_root>"
+    echo "Usage: $0 --output-dir <dir_path> --net-dir <net_path> --flexnet-root <flexnet_root> --monad-bft-root <monad_bft_root>"
     exit 1
 }
 
@@ -13,6 +13,8 @@ output_dir=""
 net_dir=""
 image_root=""
 monad_bft_root=""
+flexnet_root=""
+
 
 if [ "$#" -eq 0 ]; then
     usage; exit 1
@@ -31,10 +33,10 @@ while true; do
                 "") echo "$1 must have a value"; shift 1 ;;
                 *)  net_dir="$2"; shift 2 ;;
             esac ;;
-        --image-root)
-            case "$2" in 
+        --flexnet-root)
+            case "$2" in
                 "") echo "$1 must have a value"; shift 1 ;;
-                *)  image_root="$2"; shift 2 ;;
+                *)  flexnet_root="$2"; shift 2 ;;
             esac ;;
         --monad-bft-root)
             case "$2" in
@@ -45,6 +47,9 @@ while true; do
         *) echo "Error parsing $1, check arguments before it"; usage; exit 1 ;;
     esac
 done
+
+image_root=$flexnet_root/images
+common_dir=$flexnet_root/common
 
 # Verify the arguments 
 if [ -z "$output_dir" ]; then
@@ -63,11 +68,21 @@ elif [ ! -d "$net_dir" ]; then
     exit 1
 fi
 
-if [ -z "$image_root" ]; then
-    echo "Error: --image-root is required."
+if [ -z "$flexnet_root" ]; then
+    echo "Error: --flexnet-root is required."
     usage
-elif [ ! -d "$image_root" ]; then
-    echo "Error: --image-root is not a directory."
+elif [ ! -d "$flexnet_root" ]; then
+    echo "Error: --flexnet-root is not a directory."
+    exit 1
+fi
+
+if [ ! -d "$common_dir" ]; then
+    echo "Error: cannot find 'common' under flexnet root"
+    exit 1
+fi
+
+if [ ! -d "$image_root" ]; then
+    echo "Error: cannot find 'images' under flexnet root"
     exit 1
 fi
 
@@ -87,6 +102,16 @@ mkdir $vol_root
 echo "Root of node volumes created at: $vol_root"
 
 cp -r $net_dir/* $vol_root
+# Generate scripts and configs for nodes
+topology_json_path="/monad/$(realpath -s --relative-to=$flexnet_root $vol_root)/topology.json"
+docker build $image_root/dev -t monad-python-dev
+# Config
+docker run --rm -v $flexnet_root:/monad monad-python-dev:latest bash -c "cd /monad/$(realpath -s --relative-to=$flexnet_root $vol_root) && python3 /monad/common/config-gen.py -c 4 -s ''"
+# tc.sh
+docker run --rm -v $flexnet_root:/monad monad-python-dev:latest python3 /monad/common/tc-gen.py $topology_json_path
+# run.sh
+docker run --rm -v $flexnet_root:/monad monad-python-dev:latest python3 /monad/common/run-gen.py $topology_json_path
+
 # Set environment variables
 export FLEXNET_IMAGE_ROOT=$(realpath "$image_root")
 export MONAD_BFT_ROOT=$(realpath "$monad_bft_root")
