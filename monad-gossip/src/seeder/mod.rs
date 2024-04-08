@@ -88,6 +88,7 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
         message_type: MessageType<C::Meta, C::Chunk>,
         data: Bytes,
     ) -> FragmentedGossipMessage {
+        let is_broadcast_message = matches!(message_type, MessageType::BroadcastProtocol(_));
         let mut inner_header_buf = BytesMut::new().writer();
         bincode::serialize_into(
             &mut inner_header_buf,
@@ -105,10 +106,17 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
             .expect("serializing outer header should succeed");
         let outer_header_buf: Bytes = outer_header_buf.into_inner().into();
 
-        std::iter::once(outer_header_buf)
+        let message: FragmentedGossipMessage = std::iter::once(outer_header_buf)
             .chain(std::iter::once(inner_header_buf))
             .chain(std::iter::once(data))
-            .collect()
+            .collect();
+
+        if is_broadcast_message {
+            // ensure that it fits inside a datagram
+            assert!(message.remaining() <= MAX_DATAGRAM_SIZE);
+        }
+
+        message
     }
 
     fn handle_protocol_message(
@@ -289,6 +297,7 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
         match header.message_type {
             MessageType::Direct => self.events.push_back(GossipEvent::Emit(from, data)),
             MessageType::BroadcastProtocol(header) => {
+                // TODO make sure that all BroadcastProtocol messages fit inside a datagram!
                 if self.next_chunker_poll.is_none() {
                     self.next_chunker_poll = Some(self.current_tick);
                 }
