@@ -144,9 +144,16 @@ where
                         round,
                     });
 
-                    if block.get_seq_num() % self.val_set_update_interval == SeqNum(0) {
+                    if block
+                        .get_seq_num()
+                        .is_epoch_end(self.val_set_update_interval)
+                    {
+                        let next_epoch = block
+                            .get_seq_num()
+                            .get_next_block_epoch(self.val_set_update_interval);
+                        assert_eq!(next_epoch, self.epoch + Epoch(1));
+                        self.epoch = next_epoch;
                         self.next_val_data = Some(self.genesis_validator_data.clone());
-                        self.epoch = self.epoch + Epoch(1);
                     }
 
                     wake = true;
@@ -298,13 +305,20 @@ where
                         round,
                     });
 
-                    if block.get_seq_num() % self.val_set_update_interval == SeqNum(0) {
+                    if block
+                        .get_seq_num()
+                        .is_epoch_end(self.val_set_update_interval)
+                    {
                         self.next_val_data = if self.epoch.0 % 2 == 0 {
                             Some(self.val_data_1.clone())
                         } else {
                             Some(self.val_data_2.clone())
                         };
-                        self.epoch = self.epoch + Epoch(1);
+
+                        let next_epoch =
+                            block.get_seq_num().to_epoch(self.val_set_update_interval) + Epoch(1);
+                        assert_eq!(next_epoch, self.epoch + Epoch(1));
+                        self.epoch = next_epoch;
                     }
 
                     wake = true;

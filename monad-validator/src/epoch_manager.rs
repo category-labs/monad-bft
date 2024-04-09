@@ -42,10 +42,10 @@ impl EpochManager {
 
     /// Schedule next epoch start if the committed block is the last one in the current epoch
     pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
-        if block_num % self.val_set_update_interval == SeqNum(0) {
-            let epoch = Epoch((block_num / self.val_set_update_interval).0 + 1);
+        if block_num.is_epoch_end(self.val_set_update_interval) {
+            let next_epoch = block_num.to_epoch(self.val_set_update_interval) + Epoch(1);
             let epoch_start_round = block_round + self.epoch_start_delay;
-            self.insert_epoch_start(epoch, epoch_start_round);
+            self.insert_epoch_start(next_epoch, epoch_start_round);
         }
     }
 

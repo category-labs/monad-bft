@@ -3898,6 +3898,7 @@ dependencies = [
  "monad-crypto",
  "monad-proto",
  "serde",
+ "test-case",
  "zerocopy 0.6.5",
 ]
 

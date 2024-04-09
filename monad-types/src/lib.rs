@@ -134,6 +134,32 @@ impl std::fmt::Debug for SeqNum {
     }
 }
 
+impl SeqNum {
+    /// Compute the epoch that the sequence number belong to. It does NOT mean
+    /// that the block is proposed in the epoch
+    ///
+    /// [0, val_set_update_interval] belongs to Epoch 1
+    /// [val_set_update_interval + 1, 2 * val_set_update_interval ] belongs to Epoch 2
+    /// ...
+    /// The first epoch is one block longer than all other ones
+    pub fn to_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
+        Epoch((self.0.saturating_sub(1) / val_set_update_interval.0) + 1)
+    }
+
+    pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
+        *self % val_set_update_interval == SeqNum(0)
+    }
+
+    /// Compute the epoch number of the next block/sequence number
+    ///
+    /// sn.get_next_block_epoch(interval) == sn.to_epoch(interval) + Epoch(1)
+    /// <->
+    /// sn.is_epoch_end(interval) == true
+    pub fn get_next_block_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
+        (*self + SeqNum(1)).to_epoch(val_set_update_interval)
+    }
+}
+
 /// NodeId is the validator's pubkey identity in the consensus protocol
 #[repr(transparent)]
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -283,5 +309,43 @@ pub struct EnumDiscriminant(pub i32);
 impl Hashable for EnumDiscriminant {
     fn hash(&self, state: &mut impl Hasher) {
         state.update(self.0.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case(SeqNum(1), Epoch(1), SeqNum(100); "sn_1_epoch_1")]
+    #[test_case(SeqNum(100), Epoch(1), SeqNum(100); "sn_100_epoch_1")]
+    #[test_case(SeqNum(101), Epoch(2), SeqNum(100); "sn_101_epoch_2")]
+
+    fn test_epoch_conversion(
+        seq_num: SeqNum,
+        expected_epoch: Epoch,
+        val_set_update_interval: SeqNum,
+    ) {
+        assert_eq!(seq_num.to_epoch(val_set_update_interval), expected_epoch);
+    }
+
+    #[test]
+    fn test_next_epoch() {
+        let interval = SeqNum(100);
+        let mut seq_num = SeqNum(1);
+
+        while seq_num < SeqNum(interval.0 * 3) {
+            // sn.get_next_block_epoch(interval) == sn.to_epoch(interval) + Epoch(1)
+            // <->
+            // sn.is_epoch_end(interval) == true
+            let is_next_epoch =
+                seq_num.get_next_block_epoch(interval) == seq_num.to_epoch(interval) + Epoch(1);
+            let is_epoch_end = seq_num.is_epoch_end(interval);
+
+            assert_eq!(is_next_epoch, is_epoch_end);
+
+            seq_num += SeqNum(1);
+        }
     }
 }

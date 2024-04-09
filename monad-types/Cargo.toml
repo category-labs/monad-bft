@@ -14,3 +14,6 @@ monad-proto = { path = "../monad-proto" }
 
 serde = { workspace = true, features = ["derive"] }
 zerocopy = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
