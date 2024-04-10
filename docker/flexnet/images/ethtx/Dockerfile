@@ -1,6 +1,6 @@
 # ethtx: a tool to send random eth transactions over UNIX sockets
 
-FROM debian:buster-slim
+FROM ubuntu:22.04
 WORKDIR /usr/src/monad-bft
 
 RUN apt update && apt install -y openssl
