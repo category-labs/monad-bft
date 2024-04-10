@@ -4,6 +4,9 @@ use std::{env, path::PathBuf};
 
 fn main() {
     use cmake::Config;
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=include");
+    println!("cargo:rerun-if-changed=monad-execution");
     let target = env::var("ETH_CALL_TARGET").unwrap_or("mock_eth_call".to_owned());
     let c_compiler = env::var("CMAKE_C_COMPILER").unwrap_or("gcc-13".to_owned());
     let cxx_compiler = env::var("CMAKE_CXX_COMPILER").unwrap_or("g++-13".to_owned());
