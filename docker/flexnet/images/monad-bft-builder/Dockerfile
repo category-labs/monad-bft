@@ -1,11 +1,34 @@
-FROM rust:1-buster AS builder
-WORKDIR /usr/src/cmake
-RUN apt update
-RUN apt install -y clang
+FROM ubuntu:22.04 AS builder
 
-RUN wget https://cmake.org/files/v3.20/cmake-3.20.0-linux-x86_64.sh 
-RUN bash cmake-3.20.0-linux-x86_64.sh --skip-license
-ENV PATH="/usr/src/cmake/bin:$PATH" 
+RUN apt update
+RUN apt install -y ca-certificates \
+    curl \
+    gnupg \
+    software-properties-common \
+    wget \
+    pkg-config \
+    libssl-dev \
+    clang
+
+RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
+RUN apt install -y libstdc++-13-dev
+RUN apt install -y gcc-13 g++-13
+
+######## BEGIN CMAKE
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
+  | gpg --dearmor - \
+  | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+RUN echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' \
+  | tee /etc/apt/sources.list.d/kitware.list >/dev/null
+RUN apt-get update
+RUN rm /usr/share/keyrings/kitware-archive-keyring.gpg
+RUN apt-get -y install kitware-archive-keyring
+RUN apt-get -y install cmake
+######## END CMAKE
+
+# install cargo
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
 
 RUN mkdir -p /output/bin
 RUN mkdir -p /output/lib
@@ -15,15 +38,15 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry     \
     --mount=type=cache,target=/usr/local/cargo/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target     \
-    cargo build --release --bin monad-node --bin monad-rpc --example ethtx
+    CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-node --bin monad-rpc --example ethtx
     
 RUN --mount=type=cache,target=/usr/src/monad-bft/target     \
     find target/release/ -maxdepth 1 -perm /a+x -type f -exec cp {} /output/bin \; && \
     find target/release/examples -maxdepth 1 -perm /a+x -type f -exec cp {} /output/bin \; && \
-    cp `find target/release | grep libtriedb` /output/lib
+    cp `find target/release | grep -E "(libmock_eth_call|libtriedb)"` /output/lib
 
 
-FROM debian:buster-slim AS exporter
+FROM ubuntu:22.04 AS exporter
 WORKDIR /output
 
 COPY --from=builder /output /output

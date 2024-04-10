@@ -1,5 +1,5 @@
 # RPC server
-FROM debian:buster-slim
+FROM ubuntu:22.04
 WORKDIR /usr/src/monad-bft
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
