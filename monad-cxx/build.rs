@@ -12,7 +12,7 @@ fn main() {
     let includes = [
         "include",
         "src",
-        "monad-execution/include",
+        "monad-execution/c++/monad",
         "monad-execution/third_party/intx/include",
         "monad-execution/third_party/evmone/evmc/include",
         "monad-execution/monad-core/c/include",

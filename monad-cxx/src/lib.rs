@@ -117,7 +117,8 @@ mod test {
             }),
             reth_primitives::Header::default(),
             hex!("95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5").into(),
-            Path::new("/home/rgarc/test.db"),
+            // FIXME: hard-coded path of on-disk db file
+            Path::new("/home/tzhi/test.db"),
             temp_blockdb_file.path(),
         );
         assert_eq!(
