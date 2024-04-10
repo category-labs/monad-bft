@@ -129,7 +129,7 @@ pub fn recover_nodes_msg_delays(
             .zip(logger_configs.clone())
             .enumerate()
             .map(|(seed, (state_builder, logger_config))| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::<ReplaySwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
@@ -199,7 +199,7 @@ pub fn recover_nodes_msg_delays(
             .zip(logger_configs)
             .enumerate()
             .map(|(seed, (state_builder, logger_config))| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::<ReplaySwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,

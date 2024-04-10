@@ -68,7 +68,7 @@ fn two_nodes_noser() {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::<NoSerSwarm>::new(
                     ID::new(NodeId::new(state_builder.key.pubkey())),
                     state_builder,
@@ -136,7 +136,7 @@ fn two_nodes_quic_latency() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let me = NodeId::new(state_builder.key.pubkey());
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::<QuicSwarm>::new(
                     ID::new(me),
                     state_builder,
@@ -255,7 +255,7 @@ fn two_nodes_quic_bw() {
             .enumerate()
             .map(|(seed, state_builder)| {
                 let me = NodeId::new(state_builder.key.pubkey());
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::new(
                     ID::new(me),
                     state_builder,

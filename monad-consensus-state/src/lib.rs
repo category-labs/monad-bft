@@ -215,20 +215,21 @@ where
         my_pubkey: SCT::NodeIdPubKey,
         config: ConsensusConfig,
         beneficiary: EthAddress,
+        root_qc: QuorumCertificate<SCT>,
 
         // TODO-2 deprecate
         keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
     ) -> Self {
-        let genesis_qc = QuorumCertificate::genesis_qc();
+        let qc_round = root_qc.get_round();
+        let consensus_round = qc_round + Round(1);
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_qc.clone()),
-            vote_state: VoteState::default(),
-            high_qc: genesis_qc,
+            pending_block_tree: BlockTree::new(root_qc.clone()),
+            vote_state: VoteState::new(consensus_round),
+            high_qc: root_qc,
             state_root_validator,
-            // high_qc round is 0, so pacemaker round should start at 1
-            pacemaker: Pacemaker::new(config.delta, Round(1), None),
-            safety: Safety::default(),
+            pacemaker: Pacemaker::new(config.delta, consensus_round, None),
+            safety: Safety::new(qc_round, qc_round),
             nodeid: NodeId::new(my_pubkey),
             config,
 
@@ -1177,6 +1178,7 @@ mod test {
             Bloom, ExecutionArtifacts, FullTransactionList, Gas, MissingNextStateRoot,
             NopStateRoot, StateRoot, StateRootValidator, INITIAL_DELAY_STATE_ROOT_HASH,
         },
+        quorum_certificate::QuorumCertificate,
         signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
         state_root_hash::StateRootHash,
         timeout::Timeout,
@@ -1486,6 +1488,7 @@ mod test {
                         state_sync_threshold: SeqNum(100),
                     },
                     EthAddress::default(),
+                    QuorumCertificate::genesis_qc(),
                     std::mem::replace(&mut dupkeys[i as usize], default_key),
                     std::mem::replace(&mut dupcertkeys[i as usize], default_cert_key),
                 );

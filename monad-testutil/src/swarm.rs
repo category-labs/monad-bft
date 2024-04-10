@@ -4,7 +4,7 @@ use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{block::BlockType, validator_data::ValidatorData};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
-use monad_state::{MonadStateBuilder, MonadVersion};
+use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
 use monad_types::{Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
@@ -69,7 +69,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             block_validator: block_validator(),
             state_root_validator: state_root_validator(),
             async_state_verify: async_state_verify(state_root_quorum_threshold),
-            validators: validator_data.clone(),
+            forkpoint: Forkpoint::genesis(validator_data.clone()),
 
             key,
             certkey,

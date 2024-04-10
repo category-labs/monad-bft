@@ -24,7 +24,9 @@ use monad_consensus_types::{
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
+    quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
+    state_root_hash::StateRootHash,
     txpool::TxPool,
     validation,
     validator_data::ValidatorData,
@@ -37,7 +39,7 @@ use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, Command, ConsensusEvent, MempoolEvent, Message,
     MetricsCommand, MetricsEvent, MonadEvent, ValidatorEvent,
 };
-use monad_types::{Epoch, NodeId, Round, SeqNum, TimeoutVariant};
+use monad_types::{NodeId, Round, SeqNum, TimeoutVariant};
 use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
@@ -105,6 +107,23 @@ impl MonadVersion {
             protocol_version,
             client_version_maj: CLIENT_MAJOR_VERSION,
             client_version_min: CLIENT_MINOR_VERSION,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Forkpoint<SCT: SignatureCollection> {
+    pub root_qc: QuorumCertificate<SCT>,
+    pub state_roots: Vec<(SeqNum, StateRootHash)>,
+    pub validator_set: ValidatorData<SCT>,
+}
+
+impl<SCT: SignatureCollection> Forkpoint<SCT> {
+    pub fn genesis(validator_set: ValidatorData<SCT>) -> Self {
+        Self {
+            root_qc: QuorumCertificate::genesis_qc(),
+            state_roots: Vec::new(),
+            validator_set,
         }
     }
 }
@@ -354,7 +373,8 @@ where
     pub block_validator: BVT,
     pub state_root_validator: SVT,
     pub async_state_verify: ASVT,
-    pub validators: ValidatorData<SCT>,
+    // pub validators: ValidatorData<SCT>, // deprecate this, replaced with forkpoint
+    pub forkpoint: Forkpoint<SCT>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
     pub val_set_update_interval: SeqNum,
@@ -394,12 +414,27 @@ where
     ) {
         let val_epoch_map = ValidatorsEpochMapping::new(self.validator_set_factory);
 
+        let mut state_root_validator = self.state_root_validator;
+        // initialize state_root_validator with forkpoint.state_roots and remove
+        // any outdated roots
+        for (seq_num, state_root_hash) in self.forkpoint.state_roots {
+            state_root_validator.add_state_root(seq_num, state_root_hash);
+        }
+        state_root_validator.remove_old_roots(self.forkpoint.root_qc.get_seq_num());
+
+        let current_epoch = self
+            .forkpoint
+            .root_qc
+            .get_seq_num()
+            .to_epoch(self.val_set_update_interval);
+
         let consensus_process = ConsensusState::new(
             self.block_validator,
-            self.state_root_validator,
+            state_root_validator,
             self.key.pubkey(),
             self.consensus_config,
             self.beneficiary,
+            self.forkpoint.root_qc,
             self.key,
             self.certkey,
         );
@@ -421,7 +456,7 @@ where
 
         let mut init_cmds = Vec::new();
         init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
-            ValidatorEvent::UpdateValidators((self.validators, Epoch(1))),
+            ValidatorEvent::UpdateValidators((self.forkpoint.validator_set, current_epoch)),
         )));
 
         init_cmds.extend(

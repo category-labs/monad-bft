@@ -166,7 +166,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_set.clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
@@ -257,7 +257,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_set.clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
@@ -403,7 +403,8 @@ mod test {
         );
 
         let genesis_validators: Vec<NodeId<NopPubKey>> = state_configs[0]
-            .validators
+            .forkpoint
+            .validator_set
             .0
             .clone()
             .iter()
@@ -428,7 +429,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_set.clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
@@ -570,7 +571,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let validators = state_builder.validators.clone();
+                    let validators = state_builder.forkpoint.validator_set.clone();
                     NodeBuilder::<ValidatorSwapSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,

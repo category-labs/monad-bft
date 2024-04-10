@@ -23,7 +23,7 @@ use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{
-    MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
+    Forkpoint, MonadMessage, MonadState, MonadStateBuilder, MonadVersion, VerifiedMonadMessage,
 };
 use monad_types::{NodeId, Round, SeqNum};
 use monad_updaters::{
@@ -200,12 +200,12 @@ where
         block_validator: MockValidator {},
         state_root_validator: NopStateRoot::default(),
         async_state_verify: PeerAsyncStateVerify::default(),
-        validators: config.validators,
         key: config.key,
         certkey: config.cert_key,
         val_set_update_interval: config.val_set_update_interval,
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
+        forkpoint: Forkpoint::genesis(config.validators),
         consensus_config: config.consensus_config,
     }
     .build()

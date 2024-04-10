@@ -176,7 +176,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
             .into_iter()
             .map(|state_builder| {
                 let me = NodeId::new(state_builder.key.pubkey());
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::new(
                     ID::new(me),
                     state_builder,
@@ -286,7 +286,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     {
         let state_builder = state_configs_duplicates.remove(f0);
-        let validators = state_builder.validators.clone();
+        let validators = state_builder.forkpoint.validator_set.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(node_ids[f0]),
             state_builder,
@@ -303,7 +303,7 @@ fn replay_one_honest(failure_idx: &[usize]) {
 
     {
         let state_builder = state_configs_duplicates.remove(f1 - 1);
-        let validators = state_builder.validators.clone();
+        let validators = state_builder.forkpoint.validator_set.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(node_ids[f1]),
             state_builder,

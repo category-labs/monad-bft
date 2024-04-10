@@ -33,7 +33,7 @@ use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::SecpSignature;
-use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
+use monad_state::{Forkpoint, MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
 use monad_types::{Deserializable, NodeId, Round, SeqNum, Serializable};
 use monad_updaters::{
     checkpoint::MockCheckpoint, ledger::BoundedLedger, loopback::LoopbackExecutor,
@@ -238,12 +238,12 @@ async fn run(
         block_validator: MockValidator,
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),
-        validators,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         val_set_update_interval,
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
+        forkpoint: Forkpoint::genesis(validators),
         consensus_config: ConsensusConfig {
             proposal_txn_limit: 1000,
             proposal_gas_limit: 800_000_000,

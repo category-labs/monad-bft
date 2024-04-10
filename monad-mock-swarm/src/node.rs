@@ -101,12 +101,12 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 async_state_verify: BoxedAsyncStateVerifyProcess::new(
                     self.state_builder.async_state_verify,
                 ),
-                validators: self.state_builder.validators,
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,
                 val_set_update_interval: self.state_builder.val_set_update_interval,
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
+                forkpoint: self.state_builder.forkpoint,
                 consensus_config: self.state_builder.consensus_config,
             },
             logger: Box::new(self.logger),

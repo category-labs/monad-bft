@@ -105,7 +105,7 @@ pub fn generate_log(
             .enumerate()
             .map(|(seed, state_builder)| {
                 let pubkey = state_builder.key.pubkey();
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 NodeBuilder::<LogSwarm>::new(
                     ID::new(NodeId::new(pubkey)),
                     state_builder,

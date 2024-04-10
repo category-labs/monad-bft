@@ -47,7 +47,7 @@ fn two_nodes_virtual() -> u128 {
             .into_iter()
             .enumerate()
             .map(|(seed, state_builder)| {
-                let validators = state_builder.validators.clone();
+                let validators = state_builder.forkpoint.validator_set.clone();
                 let me = NodeId::new(state_builder.key.pubkey());
                 NodeBuilder::new(
                     ID::new(me),

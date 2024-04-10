@@ -66,6 +66,13 @@ impl<SCT> VoteState<SCT>
 where
     SCT: SignatureCollection,
 {
+    pub fn new(round: Round) -> Self {
+        VoteState {
+            earliest_round: round,
+            ..Default::default()
+        }
+    }
+
     #[must_use]
     pub fn process_vote<VT>(
         &mut self,
