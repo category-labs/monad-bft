@@ -51,4 +51,5 @@ COPY --from=builder /usr/src/monad-bft/*.so /usr/local/lib
 ENV RUST_LOG=info
 CMD monad-rpc \
     --ipc-path /monad/mempool.sock \
-    --blockdb-path /monad/blockdb
+    --blockdb-path /monad/blockdb \
+    --execution-ledger-path /monad/ledger
