@@ -162,6 +162,7 @@ pub enum ConsensusAction {
 }
 
 /// Actions after state root validation
+#[derive(Debug)]
 pub enum StateRootAction {
     /// StateRoot validation is successful, proceed to next steps
     Proceed,
@@ -1599,6 +1600,12 @@ mod test {
             .find(|c| matches!(c, ConsensusCommand::LedgerCommit(_)))
     }
 
+    // genesis_qc start with "-1" sequence number and Round(0)
+    // hence round == seqnum + 1 if no round times out
+    fn seqnum_to_round_no_tc(seq_num: SeqNum) -> Round {
+        Round(seq_num.0 + 1)
+    }
+
     // 2f+1 votes for a VoteInfo leads to a QC locking -- ie, high_qc is set to that QC.
     #[traced_test]
     #[test]
@@ -2143,7 +2150,6 @@ mod test {
 
     /// Test the behaviour of consensus when execution is lagging. This is tested
     /// by handling a non-empty proposal which is missing the state root hash (lagging execution)
-    #[traced_test]
     #[test]
     fn test_lagging_execution() {
         let num_state = 4;
@@ -2341,10 +2347,7 @@ mod test {
 
         let p0 = env.next_proposal_empty();
         let (author, _, verified_message) = p0.destructure();
-        // p0 should have seqnum 1 and therefore only require state_root 0
-        // the state_root 0's hash should be Hash([0x00; 32])
-        node.consensus_state
-            .handle_state_root_update(SeqNum(0), StateRootHash(Hash([0x00; 32])));
+
         let _ = node.handle_proposal_message(author, verified_message);
 
         let p1 = env.next_proposal(
@@ -2359,9 +2362,11 @@ mod test {
             },
         );
         let (author, _, verified_message) = p1.destructure();
-        // p1 should have seqnum 2 and therefore only require state_root 1
+        // p1 has seq_num 1 and therefore requires state_root 0
+        // the state_root 0's hash should be Hash([0x99; 32])
         node.consensus_state
-            .handle_state_root_update(SeqNum(1), StateRootHash(Hash([0x99; 32])));
+            .handle_state_root_update(SeqNum(0), StateRootHash(Hash([0x99; 32])));
+
         let _ = node.handle_proposal_message(author, verified_message);
 
         // commit some blocks and confirm cleanup of state root hashes happened
@@ -2379,8 +2384,9 @@ mod test {
         );
 
         let (author, _, verified_message) = p2.destructure();
+        // p2 should have seqnum 2 and therefore only require state_root 1
         node.consensus_state
-            .handle_state_root_update(SeqNum(2), StateRootHash(Hash([0xbb; 32])));
+            .handle_state_root_update(SeqNum(1), StateRootHash(Hash([0xbb; 32])));
         let p2_cmds = node.handle_proposal_message(author, verified_message);
         assert!(find_commit_cmd(&p2_cmds).is_some());
 
@@ -2398,13 +2404,14 @@ mod test {
 
         let (author, _, verified_message) = p3.destructure();
         node.consensus_state
-            .handle_state_root_update(SeqNum(3), StateRootHash(Hash([0xcc; 32])));
+            .handle_state_root_update(SeqNum(2), StateRootHash(Hash([0xcc; 32])));
         let p3_cmds = node.handle_proposal_message(author, verified_message);
         assert!(find_commit_cmd(&p3_cmds).is_some());
 
         // Delay gap is 1 and we have received proposals with seq num 0, 1, 2, 3
-        // state_root_validator had updates for 0, 1, 2, 3
-        // Proposals with seq num 1 and 2 are committed, so expect 2 and 3 to remain
+        // state_root_validator had updates for 0, 1, 2
+        //
+        // Proposals with seq num 1 and 2 are committed, so expect 2 to remain
         // in the state_root_validator
         assert_eq!(
             2,
@@ -2415,11 +2422,6 @@ mod test {
             .state_root_validator
             .root_hashes
             .contains_key(&SeqNum(2)));
-        assert!(node
-            .consensus_state
-            .state_root_validator
-            .root_hashes
-            .contains_key(&SeqNum(3)));
     }
 
     #[test]
@@ -2832,7 +2834,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block);
 
         // handle update_block + 2 proposals to commit the update_block
         for _ in 0..(update_block_round.0 + 2) {
@@ -2908,7 +2910,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block);
 
         // commit blocks until update_block
         for _ in 0..(update_block_round.0 + 2) {
@@ -3023,7 +3025,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block);
 
         // commit blocks until update_block
         for _ in 0..(update_block_round.0 + 2) {
@@ -3129,7 +3131,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block);
 
         // commit blocks until update_block
         for _ in 0..(update_block_round.0 + 2) {
@@ -3226,7 +3228,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block_num = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block_num.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block_num);
 
         // handle blocks until update_block - 1
         for _ in 0..(update_block_round.0 - 1) {
@@ -3399,7 +3401,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block);
 
         let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
 
@@ -3488,7 +3490,7 @@ mod test {
         // Sequence number of the block which updates the validator set
         let update_block = env.epoch_manager.val_set_update_interval;
         // Round number of that block is the same as its sequence number (NO TCs in between)
-        let update_block_round = Round(update_block.0);
+        let update_block_round = seqnum_to_round_no_tc(update_block);
 
         let expected_epoch_start_round = update_block_round + env.epoch_manager.epoch_start_delay;
 

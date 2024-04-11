@@ -86,7 +86,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
             round: Round(0),
             parent_id: BlockId(GENESIS_QC_HASH),
             parent_round: Round(0),
-            seq_num: SeqNum(0),
+            seq_num: GENESIS_SEQ_NUM,
         };
 
         let sigs = SCT::new(Vec::new(), &ValidatorMapping::new(std::iter::empty()), &[])

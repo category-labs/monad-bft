@@ -262,7 +262,7 @@ impl StateRoot {
         // creates StateRoot with an initial root hash entry for the genesis block which
         // hash sequence number 0
         Self {
-            root_hashes: BTreeMap::from([(SeqNum(0), INITIAL_DELAY_STATE_ROOT_HASH)]),
+            root_hashes: BTreeMap::default(),
             delay,
         }
     }

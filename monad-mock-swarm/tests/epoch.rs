@@ -103,6 +103,7 @@ mod test {
         let mut epoch_start_rounds = Vec::new();
 
         for node in nodes {
+            println!("node id {}", node.id);
             let update_block = node
                 .executor
                 .ledger()
@@ -186,13 +187,15 @@ mod test {
         let update_block_num = val_set_update_interval;
 
         let mut term_before_update_block =
-            UntilTerminator::new().until_block((update_block_num.0 - 2) as usize);
+            UntilTerminator::new().until_block((update_block_num.0) as usize);
         while nodes.step_until(&mut term_before_update_block).is_some() {}
         // all nodes must still be in this epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
 
+        // block number start from 0, until block counts ledger length
+        // account for the difference with +1
         let mut term_on_schedule_epoch =
-            UntilTerminator::new().until_block(update_block_num.0 as usize);
+            UntilTerminator::new().until_block(update_block_num.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch
@@ -303,7 +306,7 @@ mod test {
         nodes.update_outbound_pipeline_for_all(blackout_pipeline);
 
         let mut term_on_schedule_epoch =
-            UntilTerminator::new().until_block(update_block_num.0 as usize);
+            UntilTerminator::new().until_block(update_block_num.0 as usize + 2);
         while nodes.step_until(&mut term_on_schedule_epoch).is_some() {}
 
         let nodes_vec = nodes.states().values().collect_vec();
@@ -365,13 +368,13 @@ mod test {
             .metric_maximum(
                 &vec![blackout_node_id],
                 fetch_metric!(blocksync_events.blocksync_request),
-                2,
+                4,
             )
             // initial TC + max timeouts during blackout
             .metric_maximum(
                 &node_ids,
                 fetch_metric!(consensus_events.local_timeout),
-                1 + 8,
+                1 + 10,
             );
 
         assert!(verifier_after_blackout.verify(&nodes));
@@ -448,7 +451,7 @@ mod test {
         let update_block_num = val_set_update_interval;
 
         let mut term_on_schedule_epoch_2 =
-            UntilTerminator::new().until_block(update_block_num.0 as usize);
+            UntilTerminator::new().until_block(update_block_num.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch_2).is_some() {}
 
         // all nodes must still be in epoch 1 but schedule epoch 2
@@ -470,7 +473,7 @@ mod test {
         let next_update_block_num = val_set_update_interval + val_set_update_interval;
 
         let mut term_on_schedule_epoch_3 =
-            UntilTerminator::new().until_block(next_update_block_num.0 as usize);
+            UntilTerminator::new().until_block(next_update_block_num.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch_3).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch

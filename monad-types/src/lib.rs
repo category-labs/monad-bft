@@ -13,6 +13,8 @@ use monad_crypto::{
 use serde::Deserialize;
 use zerocopy::AsBytes;
 
+pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(u64::MAX);
+
 /// Consensus round
 #[repr(transparent)]
 #[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
@@ -94,7 +96,7 @@ impl Add for SeqNum {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        SeqNum(self.0 + other.0)
+        SeqNum(self.0.overflowing_add(other.0).0)
     }
 }
 
@@ -102,7 +104,7 @@ impl Sub for SeqNum {
     type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        SeqNum(self.0 - rhs.0)
+        SeqNum(self.0.overflowing_sub(rhs.0).0)
     }
 }
 
@@ -138,16 +140,23 @@ impl SeqNum {
     /// Compute the epoch that the sequence number belong to. It does NOT mean
     /// that the block is proposed in the epoch
     ///
-    /// [0, val_set_update_interval] belongs to Epoch 1
-    /// [val_set_update_interval + 1, 2 * val_set_update_interval ] belongs to Epoch 2
-    /// ...
-    /// The first epoch is one block longer than all other ones
+    /// The genesis qc represents a committed genesis block. This function
+    /// should never be called on GENESIS_SEQ_NUM
+    ///
+    /// GENESIS_SEQ_NUM -> undefined
+    /// [0, val_set_update_interval] -> Epoch 1
+    /// [val_set_update_interval + 1, 2 * val_set_update_interval] -> Epoch 2
+    /// ... The first epoch is one block longer than all other ones
     pub fn to_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
+        assert_ne!(self, &GENESIS_SEQ_NUM);
         Epoch((self.0.saturating_sub(1) / val_set_update_interval.0) + 1)
     }
 
+    /// The first epoch starts with SeqNum 0 and end with 100. Every epoch
+    /// afterwards starts at SeqNum (X * interval) + 1 and end with (X *
+    /// interval + interval)
     pub fn is_epoch_end(&self, val_set_update_interval: SeqNum) -> bool {
-        *self % val_set_update_interval == SeqNum(0)
+        *self % val_set_update_interval == SeqNum(0) && *self != SeqNum(0)
     }
 
     /// Compute the epoch number of the next block/sequence number
@@ -318,6 +327,7 @@ mod test {
 
     use super::*;
 
+    #[test_case(SeqNum(0), Epoch(1), SeqNum(100); "sn_0_epoch_1")]
     #[test_case(SeqNum(1), Epoch(1), SeqNum(100); "sn_1_epoch_1")]
     #[test_case(SeqNum(100), Epoch(1), SeqNum(100); "sn_100_epoch_1")]
     #[test_case(SeqNum(101), Epoch(2), SeqNum(100); "sn_101_epoch_2")]
@@ -331,9 +341,15 @@ mod test {
     }
 
     #[test]
+    #[should_panic]
+    fn test_epoch_conversion_genesis() {
+        GENESIS_SEQ_NUM.to_epoch(SeqNum(100));
+    }
+
+    #[test]
     fn test_next_epoch() {
         let interval = SeqNum(100);
-        let mut seq_num = SeqNum(1);
+        let mut seq_num = SeqNum(0);
 
         while seq_num < SeqNum(interval.0 * 3) {
             // sn.get_next_block_epoch(interval) == sn.to_epoch(interval) + Epoch(1)
