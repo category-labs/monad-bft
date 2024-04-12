@@ -71,11 +71,6 @@ struct MonadEthGetTransactionByHashParams {
     tx_hash: EthHash,
 }
 
-#[derive(Serialize, Debug)]
-struct MonadEthGetTransactionByHashReturn {
-    tx_object: Option<TransactionObject>,
-}
-
 #[allow(non_snake_case)]
 pub async fn monad_eth_getTransactionByHash(
     blockdb_env: &BlockDbEnv,
@@ -93,7 +88,7 @@ pub async fn monad_eth_getTransactionByHash(
 
     let key = EthTxKey(B256::new(p.tx_hash.0));
     let Some(result) = blockdb_env.get_txn(key).await else {
-        return serialize_result(MonadEthGetTransactionByHashReturn { tx_object: None });
+        return serialize_result(None::<TransactionObject>);
     };
 
     let block_key = result.block_hash;
@@ -112,15 +107,13 @@ pub async fn monad_eth_getTransactionByHash(
     let to = transaction.transaction.to().unwrap();
     let from = transaction.recover_signer().unwrap();
 
-    let retval = MonadEthGetTransactionByHashReturn {
-        tx_object: Some(TransactionObject {
-            block_hash: B256::new(block_hash.0),
-            block_number: block.block.number,
-            transaction_index: result.transaction_index,
-            to: to.into(),
-            from: from.into(),
-        }),
-    };
+    let retval = Some(TransactionObject {
+        block_hash: B256::new(block_hash.0),
+        block_number: block.block.number,
+        transaction_index: result.transaction_index,
+        to: to.into(),
+        from: from.into(),
+    });
 
     serialize_result(retval)
 }
@@ -131,11 +124,6 @@ struct MonadEthGetTransactionByBlockHashAndIndexParams {
     block_hash: EthHash,
     #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
-}
-
-#[derive(Serialize, Debug)]
-struct MonadEthGetTransactionByBlockHashAndIndexReturn {
-    tx_object: Option<TransactionObject>,
 }
 
 #[allow(non_snake_case)]
@@ -155,28 +143,22 @@ pub async fn monad_eth_getTransactionByBlockHashAndIndex(
 
     let key = BlockTableKey(BlockHash::new(p.block_hash.0));
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(MonadEthGetTransactionByBlockHashAndIndexReturn {
-            tx_object: None,
-        });
+        return serialize_result(None::<TransactionObject>);
     };
 
     let Some(transaction) = value.block.body.get(p.index.0 as usize) else {
-        return serialize_result(MonadEthGetTransactionByBlockHashAndIndexReturn {
-            tx_object: None,
-        });
+        return serialize_result(None::<TransactionObject>);
     };
 
     let to = transaction.transaction.to().unwrap();
     let from = transaction.recover_signer().unwrap();
-    let retval = MonadEthGetTransactionByBlockHashAndIndexReturn {
-        tx_object: Some(TransactionObject {
-            block_hash: B256::new(p.block_hash.0),
-            block_number: value.block.number,
-            transaction_index: p.index.0,
-            to: to.into(),
-            from: from.into(),
-        }),
-    };
+    let retval = Some(TransactionObject {
+        block_hash: B256::new(p.block_hash.0),
+        block_number: value.block.number,
+        transaction_index: p.index.0,
+        to: to.into(),
+        from: from.into(),
+    });
 
     serialize_result(retval)
 }
@@ -187,11 +169,6 @@ struct MonadEthGetTransactionByBlockNumberAndIndexParams {
     block_tag: BlockTags,
     #[serde(deserialize_with = "deserialize_quantity")]
     index: Quantity,
-}
-
-#[derive(Serialize, Debug)]
-struct MonadEthGetTransactionByBlockNumberAndIndexReturn {
-    tx_object: Option<TransactionObject>,
 }
 
 #[allow(non_snake_case)]
@@ -211,28 +188,22 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
     };
 
     let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
-        return serialize_result(MonadEthGetTransactionByBlockNumberAndIndexReturn {
-            tx_object: None,
-        });
+        return serialize_result(None::<TransactionObject>);
     };
 
     let Some(transaction) = value.block.body.get(p.index.0 as usize) else {
-        return serialize_result(MonadEthGetTransactionByBlockNumberAndIndexReturn {
-            tx_object: None,
-        });
+        return serialize_result(None::<TransactionObject>);
     };
 
     let to = transaction.transaction.to().unwrap();
     let from = transaction.recover_signer().unwrap();
-    let retval = MonadEthGetTransactionByBlockNumberAndIndexReturn {
-        tx_object: Some(TransactionObject {
-            block_hash: B256::new(*value.block.header.hash_slow()),
-            block_number: value.block.number,
-            transaction_index: p.index.0,
-            to: to.into(),
-            from: from.into(),
-        }),
-    };
+    let retval = Some(TransactionObject {
+        block_hash: B256::new(*value.block.header.hash_slow()),
+        block_number: value.block.number,
+        transaction_index: p.index.0,
+        to: to.into(),
+        from: from.into(),
+    });
 
     serialize_result(retval)
 }
@@ -241,11 +212,6 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
 struct MonadEthGetBlockTransactionCountByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
     block_hash: EthHash,
-}
-
-#[derive(Serialize, Debug)]
-struct MonadEthGetBlockTransactionCountByHashReturn {
-    count: u64,
 }
 
 #[allow(non_snake_case)]
@@ -265,22 +231,17 @@ pub async fn monad_eth_getBlockTransactionCountByHash(
 
     let key = BlockTableKey(BlockHash::new(p.block_hash.0));
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(MonadEthGetBlockTransactionCountByHashReturn { count: 0 });
+        return serialize_result(format!("0x{:x}", 0));
     };
 
     let count = value.block.body.len() as u64;
-    serialize_result(MonadEthGetBlockTransactionCountByHashReturn { count })
+    serialize_result(format!("0x{:x}", count))
 }
 
 #[derive(Deserialize, Debug)]
 struct MonadEthGetBlockTransactionCountByNumberParams {
     #[serde(deserialize_with = "deserialize_block_tags")]
     block_tag: BlockTags,
-}
-
-#[derive(Serialize, Debug)]
-struct MonadEthGetBlockTransactionCountByNumberReturn {
-    count: u64,
 }
 
 #[allow(non_snake_case)]
@@ -299,9 +260,9 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
     };
 
     let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
-        return serialize_result(MonadEthGetBlockTransactionCountByNumberReturn { count: 0 });
+        return serialize_result(format!("0x{:x}", 0));
     };
 
     let count = value.block.body.len() as u64;
-    serialize_result(MonadEthGetBlockTransactionCountByNumberReturn { count })
+    serialize_result(format!("0x{:x}", count))
 }

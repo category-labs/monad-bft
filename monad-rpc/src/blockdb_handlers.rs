@@ -45,11 +45,6 @@ pub async fn monad_eth_chainId(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRp
     serialize_result(format!("0x{:x}", 1337))
 }
 
-#[derive(Serialize, Debug)]
-struct MonadEthGetBlockReturn {
-    block_object: Option<BlockObject>,
-}
-
 #[derive(Deserialize, Debug)]
 struct MonadEthGetBlockByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
@@ -58,7 +53,7 @@ struct MonadEthGetBlockByHashParams {
 }
 
 #[allow(non_snake_case)]
-fn parse_block_content(value: BlockValue) -> MonadEthGetBlockReturn {
+fn parse_block_content(value: BlockValue) -> Option<BlockObject> {
     //TODO: check value.return_full_txns...
     let block_object = BlockObject {
         block_hash: value.block.hash_slow(),
@@ -68,10 +63,7 @@ fn parse_block_content(value: BlockValue) -> MonadEthGetBlockReturn {
         gas_used: value.block.gas_used,
         transactions: value.block.body.iter().map(|t| t.hash()).collect(),
     };
-
-    MonadEthGetBlockReturn {
-        block_object: Some(block_object),
-    }
+    Some(block_object)
 }
 
 #[allow(non_snake_case)]
@@ -91,7 +83,7 @@ pub async fn monad_eth_getBlockByHash(
 
     let key = BlockTableKey(BlockHash::new(p.block_hash.0));
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(MonadEthGetBlockReturn { block_object: None });
+        return serialize_result(None::<BlockObject>);
     };
 
     let retval = parse_block_content(value);
@@ -121,7 +113,7 @@ pub async fn monad_eth_getBlockByNumber(
     };
 
     let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
-        return serialize_result(MonadEthGetBlockReturn { block_object: None });
+        return serialize_result(None::<BlockObject>);
     };
 
     let retval = parse_block_content(value);
