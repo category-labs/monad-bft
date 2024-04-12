@@ -8,11 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=include");
     println!("cargo:rerun-if-changed=monad-execution");
     let target = env::var("ETH_CALL_TARGET").unwrap_or("mock_eth_call".to_owned());
-    let c_compiler = env::var("CMAKE_C_COMPILER").unwrap_or("gcc-13".to_owned());
-    let cxx_compiler = env::var("CMAKE_CXX_COMPILER").unwrap_or("g++-13".to_owned());
     println!("cargo:warning=target {}", &target);
-    println!("cargo:warning=c_compiler {}", &c_compiler);
-    println!("cargo:warning=cxx_compiler {}", &cxx_compiler);
     let includes = [
         "include",
         "src",
@@ -39,13 +35,8 @@ fn main() {
     }
 
     let dst = Config::new(".")
-        .define("CMAKE_C_COMPILER", c_compiler)
-        .define("CMAKE_CXX_COMPILER", cxx_compiler)
         .define("CMAKE_BUILD_TARGET", &target)
         .always_configure(true)
-        .asmflag("-march=haswell")
-        .cflag("-march=haswell")
-        .cxxflag("-march=haswell")
         .build_target(&target)
         .very_verbose(true)
         .build();
