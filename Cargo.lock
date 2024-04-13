@@ -3701,6 +3701,7 @@ dependencies = [
  "monad-triedb",
  "rayon",
  "reth-primitives",
+ "reth-rpc-types",
  "serde",
  "serde_json",
  "test-case",
