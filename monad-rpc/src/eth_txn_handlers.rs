@@ -73,8 +73,8 @@ pub fn parse_tx_content(
         access_list,
         transaction_type: Some(U64::from(tx.tx_type() as u8)),
         block_hash: Some(value.block.hash_slow()),
-        block_number: Some(value.block.number).map(U256::from),
-        transaction_index: Some(tx_index).map(U256::from),
+        block_number: Some(U256::from(value.block.number)),
+        transaction_index: Some(U256::from(tx_index)),
 
         // only relevant for EIP-4844 transactions
         max_fee_per_blob_gas: None,
@@ -241,63 +241,4 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex(
     let retval = parse_tx_content(&block, transaction, p.index.0);
 
     serialize_result(retval)
-}
-
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockTransactionCountByHashParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
-    block_hash: EthHash,
-}
-
-#[allow(non_snake_case)]
-pub async fn monad_eth_getBlockTransactionCountByHash(
-    blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
-
-    let p: MonadEthGetBlockTransactionCountByHashParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let key = BlockTableKey(BlockHash::new(p.block_hash.0));
-    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    let count = value.block.body.len() as u64;
-    serialize_result(format!("0x{:x}", count))
-}
-
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockTransactionCountByNumberParams {
-    #[serde(deserialize_with = "deserialize_block_tags")]
-    block_tag: BlockTags,
-}
-
-#[allow(non_snake_case)]
-pub async fn monad_eth_getBlockTransactionCountByNumber(
-    blockdb_env: &BlockDbEnv,
-    params: Value,
-) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
-
-    let p: MonadEthGetBlockTransactionCountByNumberParams = match serde_json::from_value(params) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("invalid params {e}");
-            return Err(JsonRpcError::invalid_params());
-        }
-    };
-
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    let count = value.block.body.len() as u64;
-    serialize_result(format!("0x{:x}", count))
 }

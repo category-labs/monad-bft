@@ -11,13 +11,13 @@ use actix_web::{
     dev::{ServiceFactory, ServiceRequest, ServiceResponse},
     web, App, Error, HttpResponse, HttpServer,
 };
-use blockdb_handlers::{
+use block_handlers::{
     monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash, monad_eth_getBlockByNumber,
+    monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
 };
 use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
-    monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
     monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByBlockNumberAndIndex,
     monad_eth_getTransactionByHash,
 };
@@ -38,8 +38,8 @@ use crate::{
 };
 
 mod account_handlers;
+mod block_handlers;
 mod blockdb;
-mod blockdb_handlers;
 mod call;
 mod cli;
 mod eth_json_types;

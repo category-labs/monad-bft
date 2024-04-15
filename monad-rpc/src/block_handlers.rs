@@ -15,35 +15,6 @@ use crate::{
     jsonrpc::JsonRpcError,
 };
 
-#[allow(non_snake_case)]
-pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_blockNumber");
-
-    let Some(block) = blockdb_env
-        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
-        .await
-    else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    serialize_result(format!("0x{:x}", block.block.number))
-}
-
-// TODO: does chainId come from a config file?
-#[allow(non_snake_case)]
-pub async fn monad_eth_chainId(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
-    trace!("monad_eth_chainId");
-
-    serialize_result(format!("0x{:x}", 1337))
-}
-
-#[derive(Deserialize, Debug)]
-struct MonadEthGetBlockByHashParams {
-    #[serde(deserialize_with = "deserialize_fixed_data")]
-    block_hash: EthHash,
-    return_full_txns: bool,
-}
-
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
     // parse block header
     let header = Header {
@@ -120,6 +91,35 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
 }
 
 #[allow(non_snake_case)]
+pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_blockNumber");
+
+    let Some(block) = blockdb_env
+        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
+        .await
+    else {
+        return serialize_result(format!("0x{:x}", 0));
+    };
+
+    serialize_result(format!("0x{:x}", block.block.number))
+}
+
+// TODO: does chainId come from a config file?
+#[allow(non_snake_case)]
+pub async fn monad_eth_chainId(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_chainId");
+
+    serialize_result(format!("0x{:x}", 1337))
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockByHashParams {
+    #[serde(deserialize_with = "deserialize_fixed_data")]
+    block_hash: EthHash,
+    return_full_txns: bool,
+}
+
+#[allow(non_snake_case)]
 pub async fn monad_eth_getBlockByHash(
     blockdb_env: &BlockDbEnv,
     params: Value,
@@ -171,4 +171,63 @@ pub async fn monad_eth_getBlockByNumber(
 
     let retval = parse_block_content(&value, p.return_full_txns);
     serialize_result(retval)
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockTransactionCountByHashParams {
+    #[serde(deserialize_with = "deserialize_fixed_data")]
+    block_hash: EthHash,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockTransactionCountByHash(
+    blockdb_env: &BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockTransactionCountByHash: {params:?}");
+
+    let p: MonadEthGetBlockTransactionCountByHashParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let key = BlockTableKey(BlockHash::new(p.block_hash.0));
+    let Some(value) = blockdb_env.get_block_by_hash(key).await else {
+        return serialize_result(format!("0x{:x}", 0));
+    };
+
+    let count = value.block.body.len() as u64;
+    serialize_result(format!("0x{:x}", count))
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockTransactionCountByNumberParams {
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_tag: BlockTags,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockTransactionCountByNumber(
+    blockdb_env: &BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockTransactionCountByNumber: {params:?}");
+
+    let p: MonadEthGetBlockTransactionCountByNumberParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let Some(value) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+        return serialize_result(format!("0x{:x}", 0));
+    };
+
+    let count = value.block.body.len() as u64;
+    serialize_result(format!("0x{:x}", count))
 }
