@@ -2,7 +2,7 @@ use alloy_primitives::aliases::{B256, U128, U256, U64};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
 use reth_primitives::{BlockHash, TransactionSigned};
-use reth_rpc_types::{Parity, Signature, Transaction};
+use reth_rpc_types::{AccessListItem, Parity, Signature, Transaction};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -44,6 +44,19 @@ pub fn parse_tx_content(
         y_parity: Some(Parity(tx.signature().odd_y_parity)),
     };
 
+    // parse access list
+    let access_list = Some(
+        tx.access_list()
+            .unwrap()
+            .0
+            .iter()
+            .map(|item| AccessListItem {
+                address: item.address.0.into(),
+                storage_keys: item.storage_keys.iter().map(|key| key.0.into()).collect(),
+            })
+            .collect(),
+    );
+
     let retval = Transaction {
         hash: tx.hash(),
         nonce: U64::from(tx.nonce()),
@@ -57,7 +70,7 @@ pub fn parse_tx_content(
         gas: U256::from(tx.gas_limit()),
         input: tx.input().clone(),
         chain_id: tx.chain_id().map(U64::from),
-        access_list: None, // TODO: parse access list
+        access_list,
         transaction_type: Some(U64::from(tx.tx_type() as u8)),
         block_hash: Some(value.block.hash_slow()),
         block_number: Some(value.block.number).map(U256::from),
