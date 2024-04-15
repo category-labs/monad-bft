@@ -43,7 +43,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry     \
 RUN --mount=type=cache,target=/usr/src/monad-bft/target     \
     find target/release/ -maxdepth 1 -perm /a+x -type f -exec cp {} /output/bin \; && \
     find target/release/examples -maxdepth 1 -perm /a+x -type f -exec cp {} /output/bin \; && \
-    cp `find target/release | grep -E "(libmock_eth_call|libtriedb)"` /output/lib
+    cp `ls -lt $(find target/release | grep libmock_eth_call) | head -1 | awk '{print $9}'` /output/lib && \
+    cp `ls -lt $(find target/release | grep libtriedb) | head -1 | awk '{print $9}'` /output/lib
 
 
 FROM ubuntu:22.04 AS exporter
