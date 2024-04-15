@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     time::Duration,
 };
 
@@ -8,10 +8,14 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
 };
 use monad_types::{NodeId, RouterTarget};
+use rand::{distributions::WeightedError, seq::SliceRandom, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use super::{Gossip, GossipEvent};
-use crate::{AppMessage, FragmentedGossipMessage, GossipMessage};
+use crate::{
+    connection_manager::MAX_DATAGRAM_SIZE, AppMessage, FragmentedGossipMessage, GossipMessage,
+};
 
 mod chunker;
 pub use chunker::Chunker;
@@ -62,8 +66,16 @@ pub struct Seeder<'k, C: Chunker<'k>> {
 
 struct ChunkerStatus<'k, C: Chunker<'k>> {
     chunker: C,
-    sent_metas: HashMap<NodeId<CertificateSignaturePubKey<C::SignatureType>>, MetaInfo<C::Meta>>,
+    sent_metas: HashMap<NodeId<CertificateSignaturePubKey<C::SignatureType>>, SentMeta<'k, C>>,
 }
+
+struct SentMeta<'k, C: Chunker<'k>> {
+    time: Duration,
+    meta: MetaInfo<C::Meta>,
+}
+
+// TODO don't hardcode this?
+const META_TIMEOUT: Duration = Duration::from_millis(10);
 
 impl<'k, C: Chunker<'k>> ChunkerStatus<'k, C> {
     fn new(chunker: C) -> Self {
@@ -73,10 +85,27 @@ impl<'k, C: Chunker<'k>> ChunkerStatus<'k, C> {
         }
     }
 
-    fn sent_seeding(&self, peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>) -> bool {
+    fn sent_seeding_recently(
+        &self,
+        time: &Duration,
+        timeout: &Duration,
+        peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>,
+    ) -> bool {
         self.sent_metas
             .get(peer)
-            .map(|meta| meta.seeding)
+            .map(|sent_meta| (*time - sent_meta.time) < *timeout && sent_meta.meta.seeding)
+            .unwrap_or(false)
+    }
+
+    fn sent_meta_recently(
+        &self,
+        time: &Duration,
+        timeout: &Duration,
+        peer: &NodeId<CertificateSignaturePubKey<C::SignatureType>>,
+    ) -> bool {
+        self.sent_metas
+            .get(peer)
+            .map(|sent_meta| (*time - sent_meta.time) < *timeout)
             .unwrap_or(false)
     }
 }
@@ -86,6 +115,7 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
         message_type: MessageType<C::Meta, C::Chunk>,
         data: Bytes,
     ) -> FragmentedGossipMessage {
+        let is_broadcast_message = matches!(message_type, MessageType::BroadcastProtocol(_));
         let mut inner_header_buf = BytesMut::new().writer();
         bincode::serialize_into(
             &mut inner_header_buf,
@@ -103,14 +133,22 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
             .expect("serializing outer header should succeed");
         let outer_header_buf: Bytes = outer_header_buf.into_inner().into();
 
-        std::iter::once(outer_header_buf)
+        let message: FragmentedGossipMessage = std::iter::once(outer_header_buf)
             .chain(std::iter::once(inner_header_buf))
             .chain(std::iter::once(data))
-            .collect()
+            .collect();
+
+        if is_broadcast_message {
+            // ensure that it fits inside a datagram
+            assert!(message.remaining() <= MAX_DATAGRAM_SIZE);
+        }
+
+        message
     }
 
     fn handle_protocol_message(
         &mut self,
+        time: Duration,
         from: NodeId<CertificateSignaturePubKey<C::SignatureType>>,
         header: ProtocolHeader<C::Meta, C::Chunk>,
         data: Bytes,
@@ -126,7 +164,7 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
                         meta,
                     ) {
                         Ok(chunker) => {
-                            tracing::info!("initialized chunker for id: {:?}", id);
+                            tracing::debug!("initialized chunker for id: {:?}", id);
                             self.insert_chunker(chunker);
                         }
                         Err(e) => {
@@ -167,7 +205,9 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
                         }
                     }
                     // chunker may be complete if event was emitted
-                    if status.chunker.is_seeder() && !status.sent_seeding(&from) {
+                    if status.chunker.is_seeder()
+                        && !status.sent_seeding_recently(&time, &META_TIMEOUT, &from)
+                    {
                         let meta_info = MetaInfo {
                             meta: status.chunker.meta().clone(),
                             seeding: true,
@@ -181,7 +221,13 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
 
                         // this shouldn't usually be dropped, because there must already be an
                         // outstanding connection
-                        status.sent_metas.insert(from, meta_info);
+                        status.sent_metas.insert(
+                            from,
+                            SentMeta {
+                                time,
+                                meta: meta_info,
+                            },
+                        );
                     }
                 } else {
                     tracing::trace!("no chunker initialized for id: {:?}", id);
@@ -216,18 +262,33 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
         self.update_tick(time);
         match to {
             RouterTarget::Broadcast => {
-                if self.next_chunker_poll.is_none() {
-                    self.next_chunker_poll = Some(self.current_tick);
-                }
                 self.events
                     .push_back(GossipEvent::Emit(self.me, message.clone()));
 
+                // TODO should we set this bound more empirically? This is arbitrary right now
+                if message.len() <= 2 * MAX_DATAGRAM_SIZE {
+                    let messages = self
+                        .config
+                        .all_peers
+                        .iter()
+                        .filter(|to| to != &&self.me)
+                        .map(|to| {
+                            GossipEvent::Send(
+                                *to,
+                                Self::prepare_message(MessageType::Direct, message.clone()),
+                            )
+                        });
+                    self.events.extend(messages);
+                    return;
+                }
+
+                if self.next_chunker_poll.is_none() {
+                    self.next_chunker_poll = Some(self.current_tick);
+                }
+
                 let chunker =
                     C::new_from_message(time, &self.config.all_peers, self.config.key, message);
-                tracing::info!(
-                    "initialized chunker on broadcast attempt: {:?}",
-                    chunker.meta()
-                );
+
                 // this is safe because chunkers are guaranteed to be unique, even for
                 // same AppMessage.
                 self.insert_chunker(chunker);
@@ -269,10 +330,11 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
         match header.message_type {
             MessageType::Direct => self.events.push_back(GossipEvent::Emit(from, data)),
             MessageType::BroadcastProtocol(header) => {
+                // TODO make sure that all BroadcastProtocol messages fit inside a datagram!
                 if self.next_chunker_poll.is_none() {
                     self.next_chunker_poll = Some(self.current_tick);
                 }
-                self.handle_protocol_message(from, header, data)
+                self.handle_protocol_message(time, from, header, data)
             }
         }
     }
@@ -294,6 +356,8 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
             .map(|next_poll| time >= next_poll)
             .unwrap_or(false)
         {
+            let _chunker_span =
+                tracing::trace_span!("chunker_poll", events_len = self.events.len()).entered();
             while time
                 >= self
                     .chunker_timeouts
@@ -315,26 +379,49 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
             //      stake-weighted selection?
             // TODO can we eliminate disconnected peers from selection here? or is that too jank?
             let mut chunkers: Vec<_> = self.chunkers.values_mut().collect();
-            // TODO shuffle chunkers with deterministic RNG
-
             let mut chunk_bytes_generated: u64 = 0; // TODO should we include outbound meta bytes?
-            let mut chunker_idx = 0;
+
+            let mut rng = {
+                // TODO make this non-ephemeral
+                let mut time_u128 = time.as_nanos();
+                let mut seed = [0_u8; 32];
+
+                let mut idx = 0;
+                while time_u128 != 0 {
+                    seed[idx] = time_u128 as u8;
+                    time_u128 >>= 8;
+                    idx += 1;
+                }
+                ChaCha8Rng::from_seed(seed)
+            };
             while {
                 let up_bandwidth_Bps = self.config.up_bandwidth_Mbps as u64 * 125_000;
                 let up_bandwidth_Bpms = up_bandwidth_Bps / 1_000;
                 let exceeded_limit =
                     Duration::from_millis(chunk_bytes_generated / up_bandwidth_Bpms)
                         >= self.config.chunker_poll_interval;
-                !chunkers.is_empty() && !exceeded_limit
+                !exceeded_limit
             } {
-                let status = &mut chunkers[chunker_idx];
+                let mut enumerated_chunkers: Vec<_> = chunkers.iter_mut().enumerate().collect();
+                let result = enumerated_chunkers
+                    .choose_weighted_mut(&mut rng, |(_, status)| status.chunker.weight());
+                if let Err(WeightedError::NoItem | WeightedError::AllWeightsZero) = &result {
+                    break;
+                }
+                let (chunker_idx, status) = result.expect("choose_weighted shouldn't fail");
                 if let Some((to, chunk, data)) = status.chunker.generate_chunk() {
-                    if let Entry::Vacant(e) = status.sent_metas.entry(to) {
+                    if !status.sent_meta_recently(&time, &META_TIMEOUT, &to) {
                         let meta_info = MetaInfo {
                             meta: status.chunker.meta().clone(),
                             seeding: status.chunker.is_seeder(),
                         };
-                        e.insert(meta_info.clone());
+                        status.sent_metas.insert(
+                            to,
+                            SentMeta {
+                                time,
+                                meta: meta_info.clone(),
+                            },
+                        );
                         let meta_message = Self::prepare_message(
                             MessageType::BroadcastProtocol(ProtocolHeader::Meta(meta_info)),
                             Bytes::default(),
@@ -352,13 +439,9 @@ impl<'k, C: Chunker<'k>> Gossip for Seeder<'k, C> {
                     );
                     chunk_bytes_generated += chunk_message.remaining() as u64;
                     self.events.push_back(GossipEvent::Send(to, chunk_message));
-                    chunker_idx = (chunker_idx + 1) % chunkers.len();
                 } else {
+                    let chunker_idx = *chunker_idx;
                     chunkers.swap_remove(chunker_idx);
-                    if chunkers.is_empty() {
-                        break;
-                    }
-                    chunker_idx %= chunkers.len();
                 }
             }
 

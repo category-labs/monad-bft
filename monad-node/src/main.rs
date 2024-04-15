@@ -25,7 +25,10 @@ use monad_crypto::{
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
-use monad_gossip::{mock::MockGossipConfig, Gossip};
+use monad_gossip::{
+    seeder::{Raptor, SeederConfig},
+    Gossip,
+};
 use monad_ipc::IpcReceiver;
 use monad_ledger::MonadBlockFileLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
@@ -49,7 +52,7 @@ use rand_chacha::{
     ChaChaRng,
 };
 use tokio::signal;
-use tracing::{event, Level};
+use tracing::{event, Instrument, Level};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, Layer as FmtLayer},
@@ -142,14 +145,25 @@ async fn run(
         node_state.node_config.network.clone(),
         &node_state.secp256k1_identity,
         &node_state.node_config.bootstrap.peers,
-        MockGossipConfig {
+        SeederConfig::<Raptor<SignatureType>> {
             all_peers: node_state
                 .genesis_config
                 .validators
                 .iter()
                 .map(|peer| NodeId::new(peer.secp256k1_pubkey))
                 .collect(),
-            me: NodeId::new(node_state.secp256k1_identity.pubkey()),
+            key: {
+                // TODO make this less jank
+                //
+                // This is required right now because Service::new requires a 'static
+                // future for spawning the helper task.
+                let identity = Box::leak(Box::new(node_state.gossip_identity));
+                assert_eq!(identity.pubkey(), node_state.secp256k1_identity.pubkey());
+                identity
+            },
+            timeout: Duration::from_millis(300),
+            up_bandwidth_Mbps: node_state.node_config.network.max_mbps,
+            chunker_poll_interval: Duration::from_millis(10),
         }
         .build(),
     )
@@ -231,7 +245,7 @@ async fn run(
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
         consensus_config: ConsensusConfig {
-            proposal_txn_limit: 5000,
+            proposal_txn_limit: 1000,
             proposal_gas_limit: 800_000_000,
             propose_with_missing_blocks: false,
             delta: Duration::from_secs(1),
@@ -287,7 +301,7 @@ async fn run(
             _ = ctrlc.next() => {
                 break;
             }
-            event = executor.next() => {
+            event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
                     event!(Level::ERROR, "parent executor returned none!");
                     return Err(());
@@ -313,7 +327,11 @@ async fn run(
                     state.update(event.event)
                 };
 
-                executor.exec(commands);
+                if !commands.is_empty() {
+                    let _ledger_span = ledger_span.enter();
+                    let _exec_span = tracing::trace_span!("exec_span", num_commands = commands.len()).entered();
+                    executor.exec(commands);
+                }
 
                 let ledger_len = executor.ledger().get_num_commits();
 

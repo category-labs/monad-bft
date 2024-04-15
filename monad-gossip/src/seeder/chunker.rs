@@ -52,6 +52,8 @@ pub trait Chunker<'k>: Sized {
     // Payload has been reconstructed - process_chunk should not be called if this returns true
     fn is_seeder(&self) -> bool;
 
+    fn weight(&self) -> u64;
+
     /// Some(x) indicates that the chunker doesn't need to receive any more chunks, because it has
     /// successfully reconstructed payload. Chunker::is_complete MUST return true after this.
     fn process_chunk(

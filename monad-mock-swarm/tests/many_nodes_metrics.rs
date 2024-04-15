@@ -25,6 +25,7 @@ use tracing_core::LevelFilter;
 use tracing_subscriber::{filter::Targets, prelude::*, Registry};
 
 #[test]
+#[ignore = "monad-tracing-counter to deprecate soon"]
 fn many_nodes_metrics() {
     let fmt_layer = tracing_subscriber::fmt::layer();
     let counter_layer = CounterLayer::default();

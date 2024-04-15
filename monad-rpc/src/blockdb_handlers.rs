@@ -1,8 +1,9 @@
-use alloy_primitives::aliases::B256;
+use alloy_primitives::aliases::{U256, U64};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockTagKey, BlockValue};
 use reth_primitives::BlockHash;
-use serde::{Deserialize, Serialize};
+use reth_rpc_types::{Block, BlockTransactions, Header, Withdrawal};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
@@ -10,18 +11,9 @@ use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthHash,
     },
+    eth_txn_handlers::parse_tx_content,
     jsonrpc::JsonRpcError,
 };
-
-#[derive(Serialize, Debug)]
-struct BlockObject {
-    block_hash: B256,
-    block_number: u64,
-    size: u64,
-    gas_limit: u64,
-    gas_used: u64,
-    transactions: Vec<B256>, //FIXME: need an enum for either full txns or just hashes
-}
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
@@ -45,11 +37,6 @@ pub async fn monad_eth_chainId(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRp
     serialize_result(format!("0x{:x}", 1337))
 }
 
-#[derive(Serialize, Debug)]
-struct MonadEthGetBlockReturn {
-    block_object: Option<BlockObject>,
-}
-
 #[derive(Deserialize, Debug)]
 struct MonadEthGetBlockByHashParams {
     #[serde(deserialize_with = "deserialize_fixed_data")]
@@ -57,21 +44,79 @@ struct MonadEthGetBlockByHashParams {
     return_full_txns: bool,
 }
 
-#[allow(non_snake_case)]
-fn parse_block_content(value: BlockValue) -> MonadEthGetBlockReturn {
-    //TODO: check value.return_full_txns...
-    let block_object = BlockObject {
-        block_hash: value.block.hash_slow(),
-        block_number: value.block.number,
-        size: value.block.size() as u64,
-        gas_limit: value.block.gas_limit,
-        gas_used: value.block.gas_used,
-        transactions: value.block.body.iter().map(|t| t.hash()).collect(),
+fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
+    // parse block header
+    let header = Header {
+        hash: Some(value.block.hash_slow()),
+        parent_hash: value.block.header.parent_hash,
+        uncles_hash: value.block.header.ommers_hash,
+        miner: value.block.header.beneficiary,
+        state_root: value.block.header.state_root,
+        transactions_root: value.block.header.transactions_root,
+        receipts_root: value.block.header.receipts_root,
+        withdrawals_root: value.block.header.withdrawals_root,
+        number: Some(U256::from(value.block.header.number)),
+        gas_used: U256::from(value.block.header.gas_used),
+        gas_limit: U256::from(value.block.header.gas_limit),
+        extra_data: value.block.header.clone().extra_data,
+        logs_bloom: value.block.header.logs_bloom,
+        timestamp: U256::from(value.block.header.timestamp),
+        difficulty: value.block.header.difficulty,
+        mix_hash: Some(value.block.header.mix_hash),
+        nonce: Some(value.block.header.nonce.to_be_bytes().into()),
+        base_fee_per_gas: value.block.header.base_fee_per_gas.map(U256::from),
+        blob_gas_used: value.block.header.blob_gas_used.map(U64::from),
+        excess_blob_gas: value.block.header.excess_blob_gas.map(U64::from),
+        parent_beacon_block_root: value.block.header.parent_beacon_block_root,
     };
 
-    MonadEthGetBlockReturn {
-        block_object: Some(block_object),
-    }
+    // NOTE: depends on our staking logic
+    // parse validators withdrawals
+    let withdrawals = if value.block.header.withdrawals_root.is_some() {
+        value.block.clone().withdrawals.map(|withdrawals| {
+            withdrawals
+                .into_iter()
+                .map(|withdrawal| Withdrawal {
+                    index: withdrawal.index,
+                    address: withdrawal.address,
+                    validator_index: withdrawal.validator_index,
+                    amount: withdrawal.amount,
+                })
+                .collect()
+        })
+    } else {
+        None
+    };
+
+    // parse transactions
+    let transactions: BlockTransactions = match return_full_txns {
+        true => {
+            let transactions = value
+                .block
+                .body
+                .iter()
+                .enumerate()
+                .map(|(index, tx)| parse_tx_content(value, tx, index as u64).unwrap())
+                .collect();
+            BlockTransactions::Full(transactions)
+        }
+        false => {
+            let transactions = value.block.body.iter().map(|tx| tx.hash()).collect();
+            BlockTransactions::Hashes(transactions)
+        }
+    };
+
+    let retval = Block {
+        header,
+        transactions,
+        uncles: vec![],
+        total_difficulty: Some(value.block.header.difficulty),
+        withdrawals,
+        size: Some(U256::from(value.block.size())),
+        other: Default::default(),
+    };
+
+    Some(retval)
 }
 
 #[allow(non_snake_case)]
@@ -91,10 +136,10 @@ pub async fn monad_eth_getBlockByHash(
 
     let key = BlockTableKey(BlockHash::new(p.block_hash.0));
     let Some(value) = blockdb_env.get_block_by_hash(key).await else {
-        return serialize_result(MonadEthGetBlockReturn { block_object: None });
+        return serialize_result(None::<Block>);
     };
 
-    let retval = parse_block_content(value);
+    let retval = parse_block_content(&value, p.return_full_txns);
     serialize_result(retval)
 }
 
@@ -121,9 +166,9 @@ pub async fn monad_eth_getBlockByNumber(
     };
 
     let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
-        return serialize_result(MonadEthGetBlockReturn { block_object: None });
+        return serialize_result(None::<Block>);
     };
 
-    let retval = parse_block_content(value);
+    let retval = parse_block_content(&value, p.return_full_txns);
     serialize_result(retval)
 }

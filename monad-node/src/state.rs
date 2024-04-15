@@ -20,6 +20,7 @@ pub struct NodeState {
     pub genesis_config: GenesisConfig,
 
     pub secp256k1_identity: KeyPair,
+    pub gossip_identity: KeyPair,
     pub bls12_381_identity: BlsKeyPair,
 
     pub wal_path: PathBuf,
@@ -42,6 +43,13 @@ impl NodeState {
             &cli.secp_identity,
             hex::encode(secp_key.pubkey().bytes_compressed())
         );
+        // FIXME this is somewhat jank.. is there a better way?
+        let gossip_key = load_secp256k1_keypair(&cli.secp_identity)?;
+        info!(
+            "Loaded gossip key from {:?}, pubkey=0x{}",
+            &cli.secp_identity,
+            hex::encode(gossip_key.pubkey().bytes_compressed())
+        );
         let bls_key = load_bls12_381_keypair(&cli.bls_identity)?;
         info!(
             "Loaded bls12_381 key from {:?}, pubkey=0x{}",
@@ -60,6 +68,7 @@ impl NodeState {
             genesis_config,
 
             secp256k1_identity: secp_key,
+            gossip_identity: gossip_key,
             bls12_381_identity: bls_key,
 
             wal_path: cli.wal_path,

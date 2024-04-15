@@ -1,8 +1,12 @@
-FROM rust:1-buster AS builder
+FROM ubuntu:22.04 AS builder
 
 WORKDIR /usr/src/monad-bft
 RUN apt update
-RUN apt install -y clang
+RUN apt install -y clang curl make
+
+# install cargo
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
 
 # Builder
 COPY . .
@@ -12,7 +16,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     mv target/release/monad-node node
 
 # Runner
-FROM debian:buster-slim
+FROM ubuntu:22.04
 WORKDIR /usr/src/monad-bft
 
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node

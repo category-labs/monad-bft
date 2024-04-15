@@ -71,7 +71,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         let rng = ChaCha8Rng::from_seed(me.pubkey().bytes()[..32].try_into().unwrap());
 
         // TODO size this properly
-        let raptor_symbol_size = MAX_DATAGRAM_SIZE - 100;
+        let raptor_symbol_size = MAX_DATAGRAM_SIZE - 150;
 
         let encoder = Encoder::with_defaults(&message, raptor_symbol_size.try_into().unwrap());
         let meta = RaptorMeta::create(key, &message, time, encoder.get_config());
@@ -159,6 +159,10 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
             Role::Encoder { .. } => true,
             Role::Decoder { seeder, .. } => *seeder,
         }
+    }
+
+    fn weight(&self) -> u64 {
+        self.meta.raptor_meta.transfer_length() * self.non_seeders.len() as u64
     }
 
     /// Can be called in untrusted context
