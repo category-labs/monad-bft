@@ -4,6 +4,8 @@ use std::{
     ptr::{null, null_mut},
 };
 
+use log::debug;
+
 mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
@@ -22,18 +24,25 @@ impl Handle {
         let result = unsafe { bindings::triedb_open(path.as_c_str().as_ptr(), &mut db_ptr) };
 
         if result != 0 {
+            debug!("triedb try_new error result: {}", result);
             return None;
         }
 
         Some(Self { db_ptr })
     }
 
-    pub fn read(&self, key: &[u8], key_len_nibbles: u8) -> Option<Vec<u8>> {
+    pub fn read(&self, key: &[u8], key_len_nibbles: u8, block_id: u64) -> Option<Vec<u8>> {
         let mut value_ptr = null();
         assert!(key_len_nibbles < u8::MAX - 1); // make sure doesn't overflow
         assert!((key_len_nibbles as usize + 1) / 2 <= key.len());
         let result = unsafe {
-            bindings::triedb_read(self.db_ptr, key.as_ptr(), key_len_nibbles, &mut value_ptr)
+            bindings::triedb_read(
+                self.db_ptr,
+                key.as_ptr(),
+                key_len_nibbles,
+                &mut value_ptr,
+                block_id,
+            )
         };
         if result == -1 {
             return None;
@@ -75,14 +84,14 @@ mod test {
         let handle = Handle::try_new(Path::new("/dummy")).unwrap();
 
         // this key is hardcoded into mock triedb
-        let result = handle.read(&[1, 2, 3], 6);
+        let result = handle.read(&[1, 2, 3], 6, 0);
         assert_eq!(result, Some(vec![4, 5, 6]));
 
         // this key is hardcoded into mock triedb
-        let result = handle.read(&[7, 8, 9], 6);
+        let result = handle.read(&[7, 8, 9], 6, 0);
         assert_eq!(result, Some(vec![10, 11, 12]));
 
-        let result = handle.read(&[0], 2);
+        let result = handle.read(&[0], 2, 0);
         assert_eq!(result, None);
     }
 
@@ -92,6 +101,6 @@ mod test {
         let handle = Handle::try_new(Path::new("/dummy")).unwrap();
 
         // too many nibbles
-        let _ = handle.read(&[1, 2, 3], 7);
+        let _ = handle.read(&[1, 2, 3], 7, 0);
     }
 }

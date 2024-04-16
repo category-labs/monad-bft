@@ -37,7 +37,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
-    cp `find target/release | grep -E "(libmock_eth_call|libtriedb)"` .
+    cp `ls -lt $(find target/release | grep libmock_eth_call) | head -1 | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep libtriedb) | head -1 | awk '{print $9}'` .
 
 # Runner
 FROM ubuntu:22.04

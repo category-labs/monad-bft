@@ -2,6 +2,8 @@
 #include <limits>
 #include <optional>
 #include <vector>
+#include <iostream>
+#include <cassert>
 
 #include <monad/mpt/read_only_db.hpp>
 
@@ -46,9 +48,9 @@ int triedb_close(triedb *db)
     return 0;
 }
 
-int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value)
+int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
 {
-    auto result = db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key});
+    auto result = db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
         return -1;
     }

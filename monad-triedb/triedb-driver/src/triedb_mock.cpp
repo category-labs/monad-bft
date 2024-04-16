@@ -28,7 +28,7 @@ int triedb_close(triedb *db)
     return 0;
 }
 
-int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value)
+int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
 {
     std::vector<uint8_t> key_vec{key, key + (key_len_nibbles + 1) / 2};
     auto const it = db->db_.find(key_vec);
