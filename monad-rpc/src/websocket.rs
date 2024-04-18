@@ -18,13 +18,13 @@ pub struct Disconnect {}
 pub async fn handler(
     req: HttpRequest,
     stream: web::Payload,
-    app_state: web::Data<Addr<MonadRpcResources>>,
+    app_state: web::Data<MonadRpcResources>,
 ) -> Result<HttpResponse, actix_web::Error> {
     debug!("ws_handler {:?}", &req);
     ws::start(
         WebsocketSession {
             heartbeat: Instant::now(),
-            server: app_state.get_ref().clone(),
+            server: app_state.get_ref().clone().start(),
         },
         &req,
         stream,
@@ -95,7 +95,6 @@ impl StreamHandler<Result<WebsocketMessage, ProtocolError>> for WebsocketSession
 
 #[cfg(test)]
 mod tests {
-    use actix::Actor;
     use actix_http::{ws, ws::Frame};
     use bytes::Bytes;
     use futures_util::{SinkExt as _, StreamExt as _};
@@ -112,8 +111,7 @@ mod tests {
             blockdb_reader: None,
             triedb_reader: None,
             execution_ledger_path: ExecutionLedgerPath(None),
-        }
-        .start();
+        };
         (
             MonadRpcResourcesState { ipc_receiver },
             actix_test::start(move || create_app(resources.clone())),
