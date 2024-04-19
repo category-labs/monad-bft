@@ -7,7 +7,7 @@ pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 
 // FIXME reth types shouldn't be leaked
 /// A 20-byte Eth address
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialOrd, Ord, PartialEq, Eq)]
 pub struct EthAddress(pub Address);
 
 impl EthAddress {

@@ -22,6 +22,9 @@ pub trait TxPool {
 
     /// Handle transactions cascaded forward by other nodes
     fn handle_cascading_txns(&mut self) {}
+
+    /// Handle committed transactions
+    fn handle_committed_txns(&mut self, committed_txns: FullTransactionList);
 }
 
 impl<T: TxPool + ?Sized> TxPool for Box<T> {
@@ -36,6 +39,10 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         pending_txs: Vec<FullTransactionList>,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         (**self).create_proposal(tx_limit, gas_limit, pending_txs)
+    }
+
+    fn handle_committed_txns(&mut self, committed_txns: FullTransactionList) {
+        (**self).handle_committed_txns(committed_txns)
     }
 }
 
@@ -76,4 +83,6 @@ impl TxPool for MockTxPool {
             (FullTransactionList::new(buf.into()), None)
         }
     }
+
+    fn handle_committed_txns(&mut self, _: FullTransactionList) {}
 }

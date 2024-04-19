@@ -9,6 +9,7 @@ bench = false
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-types = { path = "../monad-eth-types" }
 
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }

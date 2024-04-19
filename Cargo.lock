@@ -3366,6 +3366,7 @@ dependencies = [
  "bytes",
  "monad-consensus-types",
  "monad-eth-tx",
+ "monad-eth-types",
  "tracing",
 ]
 

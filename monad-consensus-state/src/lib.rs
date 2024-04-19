@@ -306,6 +306,7 @@ where
             validator_set,
             node.metrics,
             node.version,
+            node.tx_pool,
         ));
 
         let Some(block) = Block::try_from_unverified(p.block, &self.block_validator) else {
@@ -451,6 +452,7 @@ where
                 validator_set,
                 node.metrics,
                 node.version,
+                node.tx_pool,
             ));
 
             cmds.extend(self.try_propose(node));
@@ -498,6 +500,7 @@ where
             validator_set,
             node.metrics,
             node.version,
+            node.tx_pool,
         );
         cmds.extend(process_certificate_cmds);
 
@@ -655,12 +658,16 @@ where
     /// block tree
     /// Update our highest seen qc (high_qc) if the incoming qc is of higher rank
     #[must_use]
-    pub fn process_qc(
+    pub fn process_qc<TT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
         metrics: &mut Metrics,
-    ) -> Vec<ConsensusCommand<ST, SCT>> {
+        tx_pool: &mut TT,
+    ) -> Vec<ConsensusCommand<ST, SCT>>
+    where
+        TT: TxPool,
+    {
         if Rank(qc.info) <= Rank(self.high_qc.info) {
             metrics.consensus_events.process_old_qc += 1;
             return Vec::new();
@@ -694,6 +701,8 @@ where
 
                 for block in blocks_to_commit.iter() {
                     epoch_manager.schedule_epoch_start(block.get_seq_num(), block.get_round());
+                    tx_pool.handle_committed_txns(block.payload.txns.clone());
+
                     if block.payload.txns == FullTransactionList::empty() {
                         metrics.consensus_events.commit_empty_block += 1;
                     }
@@ -711,19 +720,21 @@ where
     }
 
     #[must_use]
-    fn process_certificate_qc<VT>(
+    fn process_certificate_qc<VT, TT>(
         &mut self,
         qc: &QuorumCertificate<SCT>,
         epoch_manager: &mut EpochManager,
         validators: &VT,
         metrics: &mut Metrics,
         version: &str,
+        tx_pool: &mut TT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        TT: TxPool,
     {
         let mut cmds = Vec::new();
-        cmds.extend(self.process_qc(qc, epoch_manager, metrics));
+        cmds.extend(self.process_qc(qc, epoch_manager, metrics, tx_pool));
 
         cmds.extend(self.pacemaker.advance_round_qc(qc, metrics).map(|cmd| {
             ConsensusCommand::from_pacemaker_command(
@@ -1039,21 +1050,29 @@ where
     }
 
     #[must_use]
-    fn proposal_certificate_handling<VT>(
+    fn proposal_certificate_handling<VT, TT>(
         &mut self,
         p: &ProposalMessage<SCT>,
         epoch_manager: &mut EpochManager,
         validators: &VT,
         metrics: &mut Metrics,
         version: &str,
+        tx_pool: &mut TT,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
+        TT: TxPool,
     {
         let mut cmds = vec![];
 
-        let process_certificate_cmds =
-            self.process_certificate_qc(&p.block.0.qc, epoch_manager, validators, metrics, version);
+        let process_certificate_cmds = self.process_certificate_qc(
+            &p.block.0.qc,
+            epoch_manager,
+            validators,
+            metrics,
+            version,
+            tx_pool,
+        );
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
