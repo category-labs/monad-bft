@@ -139,12 +139,13 @@ docker compose down $node_services
 popd
 
 set +e
+# baseline commit 0d7167d2 (pre raptor): 336 blocks; 1665705 txns
 # verify ledger
-docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 1500 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 250 ))"
 ledger_status=$?
 
 # count transactions in the ledger
-docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 6000 * 60 * 5 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 1500 * 1000 ))"
 txn_count_status=$?
 
 if [[ $ledger_status -ne 0 || $txn_count_status -ne 0 ]]; then

@@ -19,7 +19,15 @@ fi
 git submodule update --init common/blst
 
 rm -rf logs && mkdir -p logs
+set +e
 nets/net2/scripts/net-run.sh --output-dir logs --net-dir nets/net2/ --flexnet-root . --monad-bft-root ../.. 
+net2_status=$?
+nets/net2-1/scripts/net-run.sh --output-dir logs --net-dir nets/net2-1/ --flexnet-root . --monad-bft-root ../.. 
+net2_1_status=$?
+
+if [[ $net2_status -ne 0 || $net2_1_status -ne 0 ]]; then
+    exit 1
+fi
 
 # clean up the artifacts if the test succeeeds
 rm -rf logs
