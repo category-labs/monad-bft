@@ -26,12 +26,13 @@ impl TxPool for EthTxPool {
         // TODO: we should enhance the pending block tree to hold tx hashses so that
         // we don't have to calculate it here on the critical path of proposal creation
         let mut pending_tx_hashes: Vec<EthTxHash> = Vec::new();
-        for x in pending_txs {
-            let y = EthFullTransactionList::rlp_decode(x.bytes().clone()).expect(
-                "transactions in blocks must have been verified and rlp decoded \
+        for full_tx_list in pending_txs {
+            let eth_full_tx_list = EthFullTransactionList::rlp_decode(full_tx_list.bytes().clone())
+                .expect(
+                    "transactions in blocks must have been verified and rlp decoded \
                 before being put in the pending blocktree",
-            );
-            pending_tx_hashes.extend(y.get_hashes());
+                );
+            pending_tx_hashes.extend(eth_full_tx_list.get_hashes());
         }
 
         let pending_blocktree_txs: HashSet<EthTxHash> = HashSet::from_iter(pending_tx_hashes);
@@ -39,7 +40,11 @@ impl TxPool for EthTxPool {
         let mut txs = Vec::new();
         let mut total_gas = 0;
 
-        for tx in self.0.values() {
+        let mut txs_to_propose: Vec<_> = self.0.values().collect();
+        // TODO: when sorting by gas fees is implemented, txs should be grouped by accounts
+        txs_to_propose.sort_by(|a, b| a.nonce().cmp(&b.nonce()));
+
+        for tx in txs_to_propose {
             if pending_blocktree_txs.contains(&tx.hash) {
                 continue;
             }
