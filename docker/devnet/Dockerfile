@@ -5,12 +5,13 @@ RUN apt update
 RUN apt install -y clang curl make
 
 # install cargo
+ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="${CARGO_ROOT}/bin:$PATH"
 
 # Builder
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     cargo build --release --bin monad-node && \
     mv target/release/monad-node node

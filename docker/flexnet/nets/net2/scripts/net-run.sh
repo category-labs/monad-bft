@@ -104,10 +104,11 @@ echo "Root of node volumes created at: $vol_root"
 cp -r $net_dir/* $vol_root
 
 # Generate scripts and configs for nodes
+vol_path_in_flexnet="/monad/$(realpath -s --relative-to=$flexnet_root $vol_root)"
 topology_json_path="/monad/$(realpath -s --relative-to=$flexnet_root $vol_root)/topology.json"
 docker build $image_root/dev -t monad-python-dev
 # Config
-docker run --rm -v $flexnet_root:/monad monad-python-dev:latest bash -c "cd /monad/$(realpath -s --relative-to=$flexnet_root $vol_root) && python3 /monad/common/config-gen.py -c 7 -s ''"
+docker run --rm -v $flexnet_root:/monad monad-python-dev:latest bash -c "cd $vol_path_in_flexnet && python3 /monad/common/config-gen.py -c 7 -s ''"
 # tc.sh
 docker run --rm -v $flexnet_root:/monad monad-python-dev:latest python3 /monad/common/tc-gen.py $topology_json_path
 # ethtx.sh
@@ -137,8 +138,18 @@ docker compose down $node_services
 # return to starting dir
 popd
 
-
+set +e
 # verify ledger
-docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 1000 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 1500 ))"
+ledger_status=$?
+
 # count transactions in the ledger
-docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/count-tx.py --min $(( 6000 * 60 * 5 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 6000 * 60 * 5 ))"
+txn_count_status=$?
+
+if [[ $ledger_status -ne 0 || $txn_count_status -ne 0 ]]; then
+    exit 1
+else
+    exit 0
+fi
+

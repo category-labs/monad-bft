@@ -131,6 +131,9 @@ elif [ "$mode" == "test" ]; then
     runner_services=$(docker compose config --services | grep runner)
     node_services=$(docker compose config --services | grep -v -E "(build|runner)")
 
+    # test mode only needs to expose ports internally
+    sed -i 's/ports:/expose:/g' compose.yaml
+
     docker compose build $build_services &&
     docker compose build $runner_services &&
     docker compose up --detach $node_services

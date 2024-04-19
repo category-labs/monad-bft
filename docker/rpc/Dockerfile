@@ -28,12 +28,13 @@ RUN apt-get -y install cmake
 ######## END CMAKE
 
 # install cargo
+ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="${CARGO_ROOT}/bin:$PATH"
 
 WORKDIR /usr/src/monad-bft
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
