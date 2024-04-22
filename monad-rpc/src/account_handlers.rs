@@ -173,13 +173,8 @@ struct MonadEthGetTransactionReceiptParams {
     tx_hash: EthHash,
 }
 
-#[derive(Serialize, Debug)]
-struct MonadEthGetTransactionReceiptReturn {
-    // TODO, the transaction object in the eth json spec has more fields than those
-    // specified for the transaction receipt in the Yellow Paper
-    tx_object: Option<YpTransactionReceipt>,
-}
-
+// TODO, the transaction object in the eth json spec has more fields than those
+// specified for the transaction receipt in the Yellow Paper
 #[allow(non_snake_case)]
 pub async fn monad_eth_getTransactionReceipt(
     blockdb_env: &BlockDbEnv,
@@ -198,24 +193,24 @@ pub async fn monad_eth_getTransactionReceipt(
 
     let key = EthTxKey(B256::new(p.tx_hash.0));
     let Some(txn_value) = blockdb_env.get_txn(key).await else {
-        return serialize_result(MonadEthGetTransactionReceiptReturn { tx_object: None });
+        return serialize_result(None::<YpTransactionReceipt>);
     };
     let txn_index = txn_value.transaction_index;
 
     let Some(block) = blockdb_env.get_block_by_hash(txn_value.block_hash).await else {
-        return serialize_result(MonadEthGetTransactionReceiptReturn { tx_object: None });
+        return serialize_result(None::<YpTransactionReceipt>);
     };
     let block_num = block.block.number;
 
     match triedb_env.get_receipt(txn_index, block_num).await {
         TriedbResult::Null => {
-            serialize_result(MonadEthGetTransactionReceiptReturn { tx_object: None })
+            serialize_result(None::<YpTransactionReceipt>)
         }
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
             match YpTransactionReceipt::decode(&mut rlp_buf) {
                 Ok(r) => {
-                    serialize_result(MonadEthGetTransactionReceiptReturn { tx_object: Some(r) })
+                    serialize_result(Some(r))
                 }
                 Err(e) => {
                     debug!("rlp decode error: {e}");

@@ -25,11 +25,13 @@ pub enum TriedbResult {
 }
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct YpTransactionReceipt {
-    pub txn_type: TransactionType,
+    #[serde(rename = "type")]
+    pub transaction_type: TransactionType,
     pub status: u64,
     pub cumulative_gas_used: u64,
-    pub bloom: Bloom,
+    pub logs_bloom: Bloom,
     pub logs: Vec<Log>,
 }
 
