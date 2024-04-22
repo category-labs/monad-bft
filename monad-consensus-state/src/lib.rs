@@ -698,6 +698,8 @@ where
                     if block.payload.txns == FullTransactionList::empty() {
                         metrics.consensus_events.commit_empty_block += 1;
                     }
+                    metrics.consensus_events.committed_bytes +=
+                        block.payload.txns.bytes().len() as u64;
                 }
 
                 cmds.extend(
