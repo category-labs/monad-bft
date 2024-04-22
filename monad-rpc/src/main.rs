@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use account_handlers::{
     monad_eth_accounts, monad_eth_coinbase, monad_eth_getBalance, monad_eth_getCode,
-    monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_getTransactionReceipt,
-    monad_eth_syncing,
+    monad_eth_getStorageAt, monad_eth_getTransactionCount, monad_eth_syncing,
 };
 use actix::prelude::*;
 use actix_http::body::BoxBody;
@@ -19,7 +18,7 @@ use clap::Parser;
 use cli::Cli;
 use eth_txn_handlers::{
     monad_eth_getTransactionByBlockHashAndIndex, monad_eth_getTransactionByBlockNumberAndIndex,
-    monad_eth_getTransactionByHash,
+    monad_eth_getTransactionByHash, monad_eth_getTransactionReceipt,
 };
 use futures::SinkExt;
 use log::{debug, info};

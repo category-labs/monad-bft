@@ -1,4 +1,5 @@
 use alloy_primitives::aliases::{B256, U128, U256, U64};
+use alloy_rlp::Decodable;
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
 use reth_primitives::{BlockHash, TransactionSigned};
@@ -14,6 +15,7 @@ use crate::{
         UnformattedData,
     },
     jsonrpc::JsonRpcError,
+    triedb::{TriedbEnv, TriedbResult, YpTransactionReceipt},
 };
 
 pub fn parse_tx_content(
@@ -123,6 +125,57 @@ pub async fn monad_eth_sendRawTransaction(
             debug!("eth txn decode failed {:?}", e);
             Err(JsonRpcError::txn_decode_error())
         }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetTransactionReceiptParams {
+    #[serde(deserialize_with = "deserialize_fixed_data")]
+    tx_hash: EthHash,
+}
+
+// TODO, the transaction object in the eth json spec has more fields than those
+// specified for the transaction receipt in the Yellow Paper
+#[allow(non_snake_case)]
+pub async fn monad_eth_getTransactionReceipt(
+    blockdb_env: &BlockDbEnv,
+    triedb_env: &TriedbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getTransactionReceipt: {params:?}");
+
+    let p: MonadEthGetTransactionReceiptParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let key = EthTxKey(B256::new(p.tx_hash.0));
+    let Some(txn_value) = blockdb_env.get_txn(key).await else {
+        return serialize_result(None::<YpTransactionReceipt>);
+    };
+    let txn_index = txn_value.transaction_index;
+
+    let Some(block) = blockdb_env.get_block_by_hash(txn_value.block_hash).await else {
+        return serialize_result(None::<YpTransactionReceipt>);
+    };
+    let block_num = block.block.number;
+
+    match triedb_env.get_receipt(txn_index, block_num).await {
+        TriedbResult::Null => serialize_result(None::<YpTransactionReceipt>),
+        TriedbResult::Receipt(rlp_receipt) => {
+            let mut rlp_buf = rlp_receipt.as_slice();
+            match YpTransactionReceipt::decode(&mut rlp_buf) {
+                Ok(r) => serialize_result(Some(r)),
+                Err(e) => {
+                    debug!("rlp decode error: {e}");
+                    Err(JsonRpcError::internal_error())
+                }
+            }
+        }
+        _ => Err(JsonRpcError::internal_error()),
     }
 }
 
