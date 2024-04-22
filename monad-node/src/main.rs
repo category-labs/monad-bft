@@ -248,7 +248,7 @@ async fn run(
             proposal_txn_limit: 1000,
             proposal_gas_limit: 800_000_000,
             propose_with_missing_blocks: false,
-            delta: Duration::from_secs(1),
+            delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
             max_blocksync_retries: 5,
             state_sync_threshold: SeqNum(state_sync_bound as u64),
         },
