@@ -155,7 +155,7 @@ async fn run(
                 assert_eq!(identity.pubkey(), node_state.secp256k1_identity.pubkey());
                 identity
             },
-            timeout: Duration::from_millis(300),
+            timeout: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
             up_bandwidth_Mbps: node_state.node_config.network.max_mbps,
             chunker_poll_interval: Duration::from_millis(10),
         }

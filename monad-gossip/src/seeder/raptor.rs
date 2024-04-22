@@ -44,6 +44,8 @@ enum Role<'k, ST: CertificateSignatureRecoverable> {
         repair_idx: Vec<u32>,
         // pregenerated chunks that have yet to be sent
         pending_chunks: Vec<(RaptorChunk<ST>, Bytes)>,
+        to_send: usize,
+        num_sent: usize,
     },
     Decoder {
         seeder: bool,
@@ -108,9 +110,11 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
             role: Role::Encoder {
                 key,
                 encoder,
+                to_send: source_packets.len() * 2, // send 2x max
                 source_packets,
                 repair_idx,
                 pending_chunks: Vec::new(),
+                num_sent: 0,
             },
             non_seeders: all_peers.iter().copied().filter(|id| id != &me).collect(),
         }
@@ -256,7 +260,12 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
                 encoder,
                 repair_idx,
                 pending_chunks,
+                to_send,
+                num_sent,
             } => {
+                if *num_sent > *to_send {
+                    return None;
+                }
                 let to_node = **self
                     .non_seeders
                     .iter()
@@ -285,6 +294,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
                     *pending_chunks = RaptorChunk::create(*key, self.meta.id(), packets);
                 };
                 let (chunk, data) = pending_chunks.pop().expect("must be existing chunks");
+                *num_sent += 1;
                 Some((to_node, chunk, data))
             }
             Role::Decoder { chunks, .. } => loop {
