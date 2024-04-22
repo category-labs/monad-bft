@@ -79,15 +79,14 @@ impl TriedbEnv {
         }
     }
 
-    pub async fn get_account(&self, addr: EthAddress) -> TriedbResult {
+    pub async fn get_account(&self, addr: EthAddress, block_num: u64) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
             let (triedb_key, key_len_nibbles) = TriedbEnv::create_addr_key(&addr);
 
-            // FIXME: get the block_id
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, 0);
+            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
             let Some(result) = result else {
                 let _ = send.send(TriedbResult::Null);
                 return;
@@ -124,15 +123,19 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_account")
     }
 
-    pub async fn get_storage_at(&self, addr: EthAddress, at: EthStorageKey) -> TriedbResult {
+    pub async fn get_storage_at(
+        &self,
+        addr: EthAddress,
+        at: EthStorageKey,
+        block_num: u64,
+    ) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
             let (triedb_key, key_len_nibbles) = TriedbEnv::create_storage_at_key(&addr, &at);
 
-            // FIXME: get the block_id
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, 0);
+            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
             let Some(result) = result else {
                 let _ = send.send(TriedbResult::Null);
                 return;
@@ -152,15 +155,14 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_storage_at")
     }
 
-    pub async fn get_code(&self, code_hash: [u8; 32]) -> TriedbResult {
+    pub async fn get_code(&self, code_hash: [u8; 32], block_num: u64) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
             let (triedb_key, key_len_nibbles) = TriedbEnv::create_code_key(&code_hash);
 
-            // FIXME: get the block_id
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, 0);
+            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
             let Some(result) = result else {
                 let _ = send.send(TriedbResult::Null);
                 return;
