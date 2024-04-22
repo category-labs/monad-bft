@@ -3713,9 +3713,12 @@ dependencies = [
 name = "monad-secp"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "hex",
  "monad-crypto",
  "monad-proto",
+ "monad-testutil",
+ "rand",
  "secp256k1 0.26.0",
  "tiny-keccak",
  "zeroize",

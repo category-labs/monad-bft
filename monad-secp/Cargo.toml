@@ -16,5 +16,14 @@ secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+monad-testutil = { path = "../monad-testutil" }
+
+criterion = { workspace = true }
 hex = { workspace = true }
+rand = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
+
+
+[[bench]]
+name = "secp"
+harness = false
