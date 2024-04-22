@@ -5,6 +5,7 @@ use monad_crypto::{
     hasher::{Hashable, Hasher},
 };
 use monad_types::*;
+use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
 use crate::ledger::CommitResult;
@@ -32,7 +33,7 @@ impl<PT: PubKey, VKT: CertificateKeyPair> IntoIterator for ValidatorMapping<PT, 
 }
 
 /// Vote for consensus proposals
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vote {
     /// contents of the vote over which the QC is eventually formed
     pub vote_info: VoteInfo,
@@ -56,7 +57,7 @@ impl Hashable for Vote {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct VoteInfo {
     /// id of the proposed block
     pub id: BlockId,

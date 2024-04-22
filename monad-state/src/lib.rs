@@ -26,7 +26,7 @@ use monad_consensus_types::{
     payload::StateRootValidator,
     quorum_certificate::QuorumCertificate,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    state_root_hash::StateRootHash,
+    state_root_hash::StateRootHashInfo,
     txpool::TxPool,
     validation,
     validator_data::ValidatorSetData,
@@ -44,6 +44,7 @@ use monad_validator::{
     epoch_manager::EpochManager, leader_election::LeaderElection,
     validator_set::ValidatorSetTypeFactory, validators_epoch_mapping::ValidatorsEpochMapping,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::blocksync::BlockSyncResponder;
 
@@ -111,10 +112,20 @@ impl MonadVersion {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+
 pub struct Forkpoint<SCT: SignatureCollection> {
+    #[serde(bound(
+        serialize = "SCT: SignatureCollection",
+        deserialize = "SCT: SignatureCollection",
+    ))]
     pub root_qc: QuorumCertificate<SCT>,
-    pub state_roots: Vec<(SeqNum, StateRootHash)>,
+    pub state_roots: Vec<StateRootHashInfo>,
+    #[serde(bound(
+        serialize = "SCT: SignatureCollection",
+        deserialize = "SCT: SignatureCollection",
+    ))]
     pub validator_set: ValidatorSetData<SCT>,
 }
 
@@ -373,7 +384,7 @@ where
     pub block_validator: BVT,
     pub state_root_validator: SVT,
     pub async_state_verify: ASVT,
-    // pub validators: ValidatorData<SCT>, // deprecate this, replaced with forkpoint
+    // pub validators: ValidatorSetData<SCT>, // deprecate this, replaced with forkpoint
     pub forkpoint: Forkpoint<SCT>,
     pub key: ST::KeyPairType,
     pub certkey: SignatureCollectionKeyPairType<SCT>,
@@ -417,7 +428,12 @@ where
         let mut state_root_validator = self.state_root_validator;
         // initialize state_root_validator with forkpoint.state_roots and remove
         // any outdated roots
-        for (seq_num, state_root_hash) in self.forkpoint.state_roots {
+        for StateRootHashInfo {
+            state_root_hash,
+            seq_num,
+            round: _,
+        } in self.forkpoint.state_roots
+        {
             state_root_validator.add_state_root(seq_num, state_root_hash);
         }
         state_root_validator.remove_old_roots(self.forkpoint.root_qc.get_seq_num());
@@ -553,5 +569,101 @@ where
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use monad_bls::BlsSignatureCollection;
+    use monad_consensus_types::{
+        ledger::CommitResult,
+        quorum_certificate::{QcInfo, QuorumCertificate},
+        signature_collection::SignatureCollection,
+        state_root_hash::{StateRootHash, StateRootHashInfo},
+        validator_data::ValidatorSetData,
+        voting::{Vote, VoteInfo},
+    };
+    use monad_crypto::{
+        certificate_signature::CertificateSignaturePubKey,
+        hasher::{Hash, Hasher, HasherType},
+    };
+    use monad_secp::SecpSignature;
+    use monad_testutil::validators::create_keys_w_validators;
+    use monad_types::{BlockId, NodeId, Round, SeqNum, Stake};
+    use monad_validator::validator_set::ValidatorSetFactory;
+
+    use super::*;
+
+    type SignatureType = SecpSignature;
+    type SignatureCollectionType =
+        BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
+
+    #[test]
+    fn test_forkpoint_serde() {
+        let (keys, cert_keys, _valset, valmap) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+
+        let qc_info = QcInfo {
+            vote: Vote {
+                vote_info: VoteInfo {
+                    id: BlockId(Hash([0x06_u8; 32])),
+                    round: Round(6),
+                    parent_id: BlockId(Hash([0x06_u8; 32])),
+                    parent_round: Round(10),
+                    seq_num: SeqNum(10),
+                },
+                ledger_commit_info: CommitResult::NoCommit,
+            },
+        };
+
+        let qc_info_hash = HasherType::hash_object(&qc_info.vote);
+
+        let mut sigs = Vec::new();
+
+        for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
+            let node_id = NodeId::new(key.pubkey());
+            let sig = cert_key.sign(qc_info_hash.as_ref());
+            sigs.push((node_id, sig));
+        }
+
+        let sigcol: BlsSignatureCollection<monad_secp::PubKey> =
+            SignatureCollectionType::new(sigs, &valmap, qc_info_hash.as_ref()).unwrap();
+
+        let qc = QuorumCertificate::new(qc_info, sigcol);
+
+        let mut state_roots = Vec::new();
+
+        for i in 0..10 {
+            state_roots.push(StateRootHashInfo {
+                state_root_hash: StateRootHash(Hash([i as u8; 32])),
+                seq_num: SeqNum(i),
+                round: Round(i + 1),
+            });
+        }
+
+        let mut stakes = Vec::new();
+
+        for (key, cert_key) in keys.iter().zip(cert_keys.iter()) {
+            stakes.push((key.pubkey(), Stake(7), cert_key.pubkey()));
+        }
+
+        let validator_data = ValidatorSetData::<SignatureCollectionType>::new(stakes);
+
+        let forkpoint: Forkpoint<BlsSignatureCollection<monad_secp::PubKey>> = Forkpoint {
+            root_qc: qc,
+            state_roots,
+            validator_set: validator_data,
+        };
+
+        let ser = toml::to_string_pretty(&forkpoint).unwrap();
+
+        println!("{}", ser);
+
+        let deser = toml::from_str(&ser).unwrap();
+
+        assert_eq!(forkpoint, deser);
     }
 }

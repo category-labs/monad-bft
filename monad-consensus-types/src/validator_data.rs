@@ -1,3 +1,4 @@
+use monad_crypto::certificate_signature::PubKey;
 use monad_proto::{
     error::ProtoError,
     proto::validator_data::{ProtoValidatorDataEntry, ProtoValidatorSetData},
@@ -6,19 +7,59 @@ use monad_types::{
     convert::{proto_to_pubkey, pubkey_to_proto},
     NodeId, Stake,
 };
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
 /// ValidatorSetData is used by updaters to send valdiator set updates
 /// to MonadState
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidatorSetData<SCT: SignatureCollection>(pub Vec<ValidatorData<SCT>>);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidatorSetData<SCT: SignatureCollection>(
+    #[serde(bound(
+        serialize = "SCT: SignatureCollection",
+        deserialize = "SCT: SignatureCollection",
+    ))]
+    pub Vec<ValidatorData<SCT>>,
+);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidatorData<SCT: SignatureCollection> {
+    #[serde(flatten)]
     pub node_id: NodeId<SCT::NodeIdPubKey>,
     pub stake: Stake,
+    #[serde(serialize_with = "serialize_cert_pubkey::<_, SCT>")]
+    #[serde(deserialize_with = "deserialize_cert_pubkey::<_, SCT>")]
     pub cert_pubkey: SignatureCollectionPubKeyType<SCT>,
+}
+
+fn serialize_cert_pubkey<S, SCT>(
+    cert_pubkey: &SignatureCollectionPubKeyType<SCT>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    SCT: SignatureCollection,
+    S: Serializer,
+{
+    let hex_str = "0x".to_string() + &hex::encode(cert_pubkey.bytes());
+    serializer.serialize_str(&hex_str)
+}
+
+fn deserialize_cert_pubkey<'de, D, SCT>(
+    deserializer: D,
+) -> Result<SignatureCollectionPubKeyType<SCT>, D::Error>
+where
+    SCT: SignatureCollection,
+    D: Deserializer<'de>,
+{
+    let buf = String::deserialize(deserializer)?;
+    let bytes = if let Some(("", hex_str)) = buf.split_once("0x") {
+        hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?
+    } else {
+        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    };
+
+    SignatureCollectionPubKeyType::<SCT>::from_bytes(&bytes)
+        .map_err(<D::Error as serde::de::Error>::custom)
 }
 
 impl<SCT: SignatureCollection> ValidatorSetData<SCT> {

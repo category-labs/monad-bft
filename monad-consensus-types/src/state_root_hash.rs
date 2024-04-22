@@ -2,10 +2,11 @@ use std::ops::Deref;
 
 use monad_crypto::hasher::{Hash, Hashable};
 use monad_types::{Round, SeqNum};
+use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
 /// Execution state root hash
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct StateRootHash(pub Hash);
 
 impl Deref for StateRootHash {
@@ -24,7 +25,7 @@ impl AsRef<[u8]> for StateRootHash {
 
 /// Votes on the state root hash after executing block `seq_num`. `round` is the
 /// consensus round where the block is proposed
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StateRootHashInfo {
     pub state_root_hash: StateRootHash,
     pub seq_num: SeqNum,

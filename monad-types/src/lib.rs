@@ -10,12 +10,12 @@ use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hash, Hashable, Hasher},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zerocopy::AsBytes;
 
 /// Consensus round
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
+#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes, Serialize, Deserialize)]
 pub struct Round(pub u64);
 
 impl AsRef<[u8]> for Round {
@@ -81,7 +81,7 @@ impl std::fmt::Debug for Epoch {
 /// the committed ledger has consecutive sequence numbers, with no holes in
 /// between.
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes)]
+#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, AsBytes, Serialize, Deserialize)]
 pub struct SeqNum(pub u64);
 
 impl AsRef<[u8]> for SeqNum {
@@ -162,8 +162,13 @@ impl SeqNum {
 
 /// NodeId is the validator's pubkey identity in the consensus protocol
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct NodeId<P: PubKey> {
+    #[serde(serialize_with = "serialize_pubkey::<_, P>")]
+    #[serde(deserialize_with = "deserialize_pubkey::<_, P>")]
+    #[serde(bound = "P:PubKey")]
+    #[serde(rename(serialize = "node_id", deserialize = "node_id"))]
+    // Outer struct always flatten this struct, thus renaming to node_id
     pubkey: P,
 }
 
@@ -195,9 +200,33 @@ impl<P: PubKey> Hashable for NodeId<P> {
     }
 }
 
+fn serialize_pubkey<S, P>(pubkey: &P, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    P: PubKey,
+{
+    let hex_str = "0x".to_string() + &hex::encode(pubkey.bytes());
+    serializer.serialize_str(&hex_str)
+}
+
+fn deserialize_pubkey<'de, D, P>(deserializer: D) -> Result<P, D::Error>
+where
+    D: Deserializer<'de>,
+    P: PubKey,
+{
+    let buf = <String as Deserialize>::deserialize(deserializer)?;
+    let bytes = if let Some(("", hex_str)) = buf.split_once("0x") {
+        hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?
+    } else {
+        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    };
+
+    P::from_bytes(&bytes).map_err(<D::Error as serde::de::Error>::custom)
+}
+
 /// BlockId uniquely identifies a block
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub Hash);
 
 impl std::fmt::Debug for BlockId {
@@ -219,7 +248,7 @@ impl Hashable for BlockId {
 /// Stake is the amount of tokens the validator deposited for validating
 /// privileges and earning transaction fees
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct Stake(pub i64);
 
 impl Add for Stake {

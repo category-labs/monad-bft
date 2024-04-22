@@ -1,11 +1,16 @@
 use std::{fmt::Debug, ops::Deref};
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::Digest;
 use zerocopy::AsBytes;
 
 /// A 32-byte/256-bit hash
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Hash(pub [u8; 32]);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+pub struct Hash(
+    #[serde(serialize_with = "serialize_hash")]
+    #[serde(deserialize_with = "deserialize_hash")]
+    pub [u8; 32],
+);
 
 impl Debug for Hash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -35,6 +40,34 @@ impl std::fmt::Display for Hash {
         }
         Ok(())
     }
+}
+
+fn serialize_hash<S>(hash: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let hex_str = "0x".to_string() + &hex::encode(hash);
+    serializer.serialize_str(&hex_str)
+}
+
+fn deserialize_hash<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let buf = String::deserialize(deserializer)?;
+    let bytes = if let Some(("", hex_str)) = buf.split_once("0x") {
+        hex::decode(hex_str.to_owned()).map_err(<D::Error as serde::de::Error>::custom)?
+    } else {
+        return Err(<D::Error as serde::de::Error>::custom("Missing hex prefix"));
+    };
+
+    bytes.try_into().map_err(|e: Vec<u8>| {
+        <D::Error as serde::de::Error>::custom(format!(
+            "Invalid hash len: {:?} data: {:?}",
+            e.len(),
+            e
+        ))
+    })
 }
 
 pub trait Hashable {
