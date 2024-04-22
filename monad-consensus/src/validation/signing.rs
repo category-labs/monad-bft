@@ -174,7 +174,7 @@ where
         let epoch = epoch_manager.get_epoch(self.obj.obj.get_round());
         let validator_set = val_epoch_map
             .get_val_set(&epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
 
         let author = verify_author(
             validator_set.get_members(),
@@ -442,7 +442,7 @@ impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
         let epoch = epoch_manager.get_epoch(self.obj.info.round);
         let valset = val_epoch_map
             .get_val_set(&epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
 
         if !valset.is_member(&self.obj.peer) {
             return Err(Error::InvalidAuthor);
@@ -482,10 +482,10 @@ where
         let tc_epoch = epoch_manager.get_epoch(tc.round);
         let validator_set = val_epoch_map
             .get_val_set(&tc_epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
         let validator_cert_pubkeys = val_epoch_map
             .get_cert_pubkeys(&tc_epoch)
-            .ok_or(Error::ValidatorDataUnavailable)?;
+            .ok_or(Error::ValidatorSetDataUnavailable)?;
         verify_tc(validator_set, validator_cert_pubkeys, tc)?;
     }
 
@@ -495,10 +495,10 @@ where
     let qc_epoch = epoch_manager.get_epoch(qc.get_round());
     let validator_set = val_epoch_map
         .get_val_set(&qc_epoch)
-        .ok_or(Error::ValidatorDataUnavailable)?;
+        .ok_or(Error::ValidatorSetDataUnavailable)?;
     let validator_cert_pubkeys = val_epoch_map
         .get_cert_pubkeys(&qc_epoch)
-        .ok_or(Error::ValidatorDataUnavailable)?;
+        .ok_or(Error::ValidatorSetDataUnavailable)?;
     verify_qc(validator_set, validator_cert_pubkeys, qc)?;
 
     Ok(())

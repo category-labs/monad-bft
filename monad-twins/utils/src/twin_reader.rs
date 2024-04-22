@@ -14,7 +14,7 @@ use monad_consensus_types::{
     payload::{StateRoot, StateRootValidator},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     txpool::TxPool,
-    validator_data::ValidatorData,
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::{
     certificate_signature::{
@@ -303,7 +303,7 @@ where
         _,
     >(&keys, &certkeys, ValidatorSetFactory::default());
 
-    let validator_data = ValidatorData::<S::SignatureCollectionType>::new(
+    let validator_data = ValidatorSetData::<S::SignatureCollectionType>::new(
         validator_mapping
             .map
             .iter()

@@ -16,7 +16,7 @@ use monad_consensus_types::{
     block_validator::MockValidator,
     payload::{NopStateRoot, StateRoot, StateRootValidator},
     state_root_hash::StateRootHash,
-    validator_data::ValidatorData,
+    validator_data::{ValidatorData, ValidatorSetData},
 };
 use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
@@ -169,17 +169,15 @@ async fn run(
     )
     .await;
 
-    let validators = ValidatorData(
+    let validators = ValidatorSetData(
         node_state
             .genesis_config
             .validators
             .into_iter()
-            .map(|peer| {
-                (
-                    NodeId::new(peer.secp256k1_pubkey),
-                    peer.stake,
-                    peer.bls12_381_pubkey,
-                )
+            .map(|peer| ValidatorData {
+                node_id: NodeId::new(peer.secp256k1_pubkey),
+                stake: peer.stake,
+                cert_pubkey: peer.bls12_381_pubkey,
             })
             .collect(),
     );

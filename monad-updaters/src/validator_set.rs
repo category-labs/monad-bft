@@ -6,7 +6,7 @@ use std::{
 
 use futures::Stream;
 use monad_consensus_types::{
-    signature_collection::SignatureCollection, validator_data::ValidatorData,
+    signature_collection::SignatureCollection, validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
 use monad_executor_glue::MonadEvent;
@@ -17,7 +17,7 @@ pub struct ValidatorSetUpdater<ST, SCT: SignatureCollection> {
     // exeuction updates every 'update_duration' blocks
     // Should be None between UpdateNextValSet event and receiving
     // delta for the next 'update_duration'.
-    validator_data: Option<ValidatorData<SCT>>,
+    validator_data: Option<ValidatorSetData<SCT>>,
     // TODO: call waker.wake() when exeuction sends (or already sent)
     // deltas every 'update_duration' blocks.
     _update_duration: SeqNum,
@@ -54,14 +54,14 @@ where
 
         let this = self.get_mut();
 
-        // if woken up, there should be a ValidatorData object
+        // if woken up, there should be a ValidatorSetData object
         assert!(this.validator_data.is_some());
 
         Poll::Ready(Some(MonadEvent::ValidatorEvent(
             monad_executor_glue::ValidatorEvent::UpdateValidators((
                 this.validator_data
                     .take()
-                    .expect("there should be a ValidatorData object"),
+                    .expect("there should be a ValidatorSetData object"),
                 Epoch(1),
             )),
         )))

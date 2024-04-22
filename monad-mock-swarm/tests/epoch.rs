@@ -408,7 +408,7 @@ mod test {
             .0
             .clone()
             .iter()
-            .map(|(node_id, _, _)| *node_id)
+            .map(|vdata| vdata.node_id)
             .collect();
         let (validators_epoch_2, validators_epoch_3) = genesis_validators.split_at(2);
         // validators for epoch 1 = genesis_validators

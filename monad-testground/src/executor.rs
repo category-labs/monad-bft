@@ -2,7 +2,8 @@ use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
 use monad_consensus_types::{
     block::Block, block_validator::MockValidator, payload::NopStateRoot,
-    signature_collection::SignatureCollection, txpool::MockTxPool, validator_data::ValidatorData,
+    signature_collection::SignatureCollection, txpool::MockTxPool,
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -67,7 +68,7 @@ where
     SCT: SignatureCollection,
 {
     Mock {
-        genesis_validator_data: ValidatorData<SCT>,
+        genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     },
 }
@@ -170,7 +171,7 @@ where
     pub val_set_update_interval: SeqNum,
     pub epoch_start_delay: Round,
 
-    pub validators: ValidatorData<SCT>,
+    pub validators: ValidatorSetData<SCT>,
     pub consensus_config: ConsensusConfig,
 }
 

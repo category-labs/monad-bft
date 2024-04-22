@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{block::BlockType, validator_data::ValidatorData};
+use monad_consensus_types::{block::BlockType, validator_data::ValidatorSetData};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder, MonadVersion};
@@ -45,7 +45,7 @@ pub fn make_state_configs<S: SwarmRelation>(
             validator_set_factory(),
         );
 
-    let validator_data = ValidatorData::new(
+    let validator_data = ValidatorSetData::new(
         validator_mapping
             .map
             .iter()

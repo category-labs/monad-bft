@@ -74,7 +74,7 @@ where
             (
                 self.validator_set_factory
                     .create(val_stakes)
-                    .expect("ValidatorData should not have duplicates or invalid entries"),
+                    .expect("ValidatorSetData should not have duplicates or invalid entries"),
                 val_cert_pubkeys,
             ),
         );

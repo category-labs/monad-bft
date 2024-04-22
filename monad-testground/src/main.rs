@@ -9,7 +9,7 @@ use futures_util::{FutureExt, StreamExt};
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    validator_data::ValidatorData,
+    validator_data::{ValidatorData, ValidatorSetData},
 };
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
@@ -236,24 +236,18 @@ where
     .take(addresses.len())
     .collect::<Vec<_>>();
 
-    let validators = ValidatorData(
+    let validators = ValidatorSetData(
         configs
             .iter()
-            .map(|(keypair, cert_keypair)| {
-                (
-                    NodeId::new(keypair.pubkey()),
-                    Stake(1),
-                    cert_keypair.pubkey(),
-                )
+            .map(|(keypair, cert_keypair)| ValidatorData {
+                node_id: NodeId::new(keypair.pubkey()),
+                stake: Stake(1),
+                cert_pubkey: cert_keypair.pubkey(),
             })
             .collect::<Vec<_>>(),
     );
 
-    let all_peers: Vec<NodeId<_>> = validators
-        .0
-        .iter()
-        .map(|(peer_id, _, _)| *peer_id)
-        .collect();
+    let all_peers: Vec<NodeId<_>> = validators.0.iter().map(|data| data.node_id).collect();
 
     let mut maybe_local_routers = match args.router {
         RouterArgs::Local {
@@ -306,11 +300,7 @@ where
                             gossip_config: match gossip {
                                 GossipArgs::Simple => {
                                     MonadP2PGossipConfig::Simple(MockGossipConfig {
-                                        all_peers: validators
-                                            .0
-                                            .iter()
-                                            .map(|(node_id, _, _)| *node_id)
-                                            .collect(),
+                                        all_peers: validators.0.iter().map(|v| v.node_id).collect(),
                                         me,
                                     })
                                 }

@@ -10,7 +10,7 @@ use monad_consensus_types::{
     block::BlockType,
     signature_collection::SignatureCollection,
     state_root_hash::{StateRootHash, StateRootHashInfo},
-    validator_data::ValidatorData,
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::{certificate_signature::CertificateSignatureRecoverable, hasher::Hash};
 use monad_executor::Executor;
@@ -41,7 +41,7 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 }
 
 /// An updater that immediately creates a StateRootHash update and
-/// the ValidatorData for the next epoch when it receives a
+/// the ValidatorSetData for the next epoch when it receives a
 /// ledger commit command.
 /// Goal is to mimic the behaviour of execution receiving a commit
 /// and generating the state root hash and updating the staking contract,
@@ -51,8 +51,8 @@ pub struct MockStateRootHashNop<B, ST, SCT: SignatureCollection> {
 
     // validator set updates
     epoch: Epoch,
-    genesis_validator_data: ValidatorData<SCT>,
-    next_val_data: Option<ValidatorData<SCT>>,
+    genesis_validator_data: ValidatorSetData<SCT>,
+    next_val_data: Option<ValidatorSetData<SCT>>,
     val_set_update_interval: SeqNum,
     calc_state_root: fn(SeqNum) -> StateRootHash,
 
@@ -70,7 +70,7 @@ impl<B, ST, SCT: SignatureCollection> MockStateRootHashNop<B, ST, SCT> {
     }
 
     pub fn new(
-        genesis_validator_data: ValidatorData<SCT>,
+        genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     ) -> Self {
         Self {
@@ -215,9 +215,9 @@ pub struct MockStateRootHashSwap<B, ST, SCT: SignatureCollection> {
 
     // validator set updates
     epoch: Epoch,
-    val_data_1: ValidatorData<SCT>,
-    val_data_2: ValidatorData<SCT>,
-    next_val_data: Option<ValidatorData<SCT>>,
+    val_data_1: ValidatorSetData<SCT>,
+    val_data_2: ValidatorSetData<SCT>,
+    next_val_data: Option<ValidatorSetData<SCT>>,
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
@@ -226,7 +226,7 @@ pub struct MockStateRootHashSwap<B, ST, SCT: SignatureCollection> {
 
 impl<B, ST, SCT: SignatureCollection> MockStateRootHashSwap<B, ST, SCT> {
     pub fn new(
-        genesis_validator_data: ValidatorData<SCT>,
+        genesis_validator_data: ValidatorSetData<SCT>,
         val_set_update_interval: SeqNum,
     ) -> Self {
         let num_validators = genesis_validator_data.0.len();
@@ -234,21 +234,21 @@ impl<B, ST, SCT: SignatureCollection> MockStateRootHashSwap<B, ST, SCT> {
         let mut val_data_2 = val_data_1.clone();
 
         for validator in val_data_1.iter_mut().take(num_validators / 2) {
-            validator.1 = Stake(0);
+            validator.stake = Stake(0);
         }
         for validator in val_data_2
             .iter_mut()
             .take(num_validators)
             .skip(num_validators / 2)
         {
-            validator.1 = Stake(0);
+            validator.stake = Stake(0);
         }
 
         Self {
             state_root_update: None,
             epoch: Epoch(1),
-            val_data_1: ValidatorData(val_data_1),
-            val_data_2: ValidatorData(val_data_2),
+            val_data_1: ValidatorSetData(val_data_1),
+            val_data_2: ValidatorSetData(val_data_2),
             next_val_data: None,
             val_set_update_interval,
             waker: None,

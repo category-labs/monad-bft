@@ -29,7 +29,7 @@ use monad_consensus_types::{
     state_root_hash::StateRootHash,
     txpool::TxPool,
     validation,
-    validator_data::ValidatorData,
+    validator_data::ValidatorSetData,
 };
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -80,7 +80,7 @@ pub(crate) fn handle_validation_error(e: validation::Error, metrics: &mut Metric
         validation::Error::InvalidSeqNum => {
             metrics.validation_errors.invalid_seq_num += 1;
         }
-        validation::Error::ValidatorDataUnavailable => {
+        validation::Error::ValidatorSetDataUnavailable => {
             // This error occurs when the node knows when the next epoch starts, but
             // didn't get enough execution deltas to build the next validator set.
             // TODO: This should trigger statesync
@@ -115,11 +115,11 @@ impl MonadVersion {
 pub struct Forkpoint<SCT: SignatureCollection> {
     pub root_qc: QuorumCertificate<SCT>,
     pub state_roots: Vec<(SeqNum, StateRootHash)>,
-    pub validator_set: ValidatorData<SCT>,
+    pub validator_set: ValidatorSetData<SCT>,
 }
 
 impl<SCT: SignatureCollection> Forkpoint<SCT> {
-    pub fn genesis(validator_set: ValidatorData<SCT>) -> Self {
+    pub fn genesis(validator_set: ValidatorSetData<SCT>) -> Self {
         Self {
             root_qc: QuorumCertificate::genesis_qc(),
             state_roots: Vec::new(),
