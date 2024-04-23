@@ -5,7 +5,8 @@
 #include <iostream>
 #include <cassert>
 
-#include <monad/mpt/read_only_db.hpp>
+#include <monad/mpt/db.hpp>
+#include <monad/mpt/ondisk_db_config.hpp>
 
 #include "triedb.h"
 
@@ -18,7 +19,7 @@ struct triedb
     {
     }
 
-    monad::mpt::ReadOnlyDb db_;
+    monad::mpt::Db db_;
 };
 
 int triedb_open(char const *dbdirpath, triedb **db)
@@ -50,6 +51,9 @@ int triedb_close(triedb *db)
 
 int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
 {
+    if (!db->db_.is_latest()) {
+        db->db_.load_latest();
+    }
     auto result = db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
         return -1;
