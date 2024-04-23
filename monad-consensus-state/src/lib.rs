@@ -284,7 +284,7 @@ where
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool,
     {
-        tracing::info_span!("handle_proposal_span", ?author);
+        let _handle_proposal_span = tracing::info_span!("handle_proposal_span", ?author).entered();
         debug!("Proposal Message: {:?}", p);
         node.metrics.consensus_events.handle_proposal += 1;
         let mut cmds = Vec::new();
@@ -887,7 +887,8 @@ where
 
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
             ConsensusAction::Propose(h, pending_blocktree_txs) => {
-                tracing::info_span!("create_proposal_span", ?round);
+                let _create_proposal_span =
+                    tracing::info_span!("create_proposal_span", ?round).entered();
                 metrics.consensus_events.creating_proposal += 1;
                 debug!("Creating Proposal: node_id={:?} round={:?} high_qc={:?}, seq_num={:?}, last_round_tc={:?}", 
                                 node_id, round, high_qc, proposed_seq_num, last_round_tc);
