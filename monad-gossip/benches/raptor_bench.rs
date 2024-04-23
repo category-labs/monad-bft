@@ -12,6 +12,7 @@ use monad_crypto::{
 use monad_gossip::seeder::{Chunker, Raptor};
 use monad_secp::SecpSignature;
 use monad_types::NodeId;
+use raptorq::Encoder;
 
 #[allow(clippy::useless_vec)]
 pub fn criterion_benchmark(c: &mut Criterion) {
@@ -20,6 +21,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("seeder");
     group.throughput(Throughput::Bytes(message_size as u64));
+    group.bench_function("Encoding", |b| {
+        b.iter(|| {
+            let raptor_symbol_size = 1200;
+            let _ = Encoder::with_defaults(&message, raptor_symbol_size.try_into().unwrap());
+        });
+    });
     group.bench_function("NopSignature", |b| {
         raptor_bench::<NopSignature>(b, message.clone())
     });
