@@ -3176,6 +3176,9 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-types",
@@ -3275,6 +3278,8 @@ dependencies = [
 name = "monad-consensus-types"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
  "bytes",
  "monad-crypto",
  "monad-eth-types",
@@ -3377,10 +3382,14 @@ dependencies = [
 name = "monad-eth-txpool"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
+ "criterion",
  "monad-consensus-types",
  "monad-eth-tx",
+ "rand",
+ "reth-primitives",
  "tracing",
 ]
 
@@ -3588,6 +3597,7 @@ dependencies = [
  "log",
  "monad-async-state-verify",
  "monad-blockdb",
+ "monad-blocktree",
  "monad-bls",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -3784,6 +3794,7 @@ dependencies = [
  "clap 4.4.10",
  "futures-util",
  "monad-async-state-verify",
+ "monad-blocktree",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
@@ -3816,6 +3827,7 @@ name = "monad-testutil"
 version = "0.1.0"
 dependencies = [
  "monad-async-state-verify",
+ "monad-blocktree",
  "monad-consensus",
  "monad-consensus-state",
  "monad-consensus-types",
@@ -3896,6 +3908,7 @@ version = "0.1.0"
 dependencies = [
  "itertools 0.10.5",
  "monad-async-state-verify",
+ "monad-blocktree",
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",

@@ -25,7 +25,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    txpool::TxPool,
+    txpool::{HashPolicy, TxPool},
     validation,
     validator_data::ValidatorData,
 };
@@ -362,6 +362,7 @@ where
     pub beneficiary: EthAddress,
 
     pub consensus_config: ConsensusConfig,
+    pub hash_policy: HashPolicy<SCT>,
 }
 
 impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -402,6 +403,7 @@ where
             self.beneficiary,
             self.key,
             self.certkey,
+            self.hash_policy,
         );
 
         let mut monad_state = MonadState {

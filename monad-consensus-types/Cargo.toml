@@ -16,6 +16,8 @@ monad-eth-types = { path = "../monad-eth-types" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 
+alloy-rlp = { workspace = true }
+alloy-primitives = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }

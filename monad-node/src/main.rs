@@ -271,6 +271,7 @@ async fn run(
             max_blocksync_retries: 5,
             state_sync_threshold: SeqNum(state_sync_bound as u64),
         },
+        hash_policy: monad_eth_txpool::transaction_hash_policy,
     };
 
     // parse test mode commands

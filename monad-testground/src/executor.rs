@@ -202,6 +202,7 @@ where
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
         consensus_config: config.consensus_config,
+        hash_policy: |_| Ok::<_, _>(Default::default()),
     }
     .build()
 }

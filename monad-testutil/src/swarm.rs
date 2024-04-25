@@ -86,6 +86,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 max_blocksync_retries,
                 state_sync_threshold,
             },
+            hash_policy: |_| Ok::<_, _>(Default::default()),
         })
         .collect()
 }

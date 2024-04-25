@@ -15,6 +15,7 @@ monad-async-state-verify = { path = "../monad-async-state-verify" }
 monad-consensus-state = { path = "../monad-consensus-state" }
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-blockdb = { path = "../monad-blockdb" }
+monad-blocktree = { path = "../monad-blocktree" }
 monad-bls = { path = "../monad-bls" }
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }

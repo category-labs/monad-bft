@@ -108,6 +108,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
                 consensus_config: self.state_builder.consensus_config,
+                hash_policy: self.state_builder.hash_policy,
             },
             logger: Box::new(self.logger),
             replay_events: self.replay_events,

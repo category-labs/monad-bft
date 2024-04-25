@@ -22,7 +22,7 @@ use monad_consensus_types::{
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHash,
     timeout::TimeoutCertificate,
-    txpool::TxPool,
+    txpool::{HashPolicy, HashPolicyOutput, TxPool},
 };
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -154,7 +154,7 @@ where
 /// Possible actions a leader node can take when entering a new round
 pub enum ConsensusAction {
     /// Create a proposal with this state-root-hash and txn hash list
-    Propose(StateRootHash, Vec<FullTransactionList>),
+    Propose(StateRootHash, HashPolicyOutput),
     /// Create an empty block proposal
     ProposeEmpty,
     /// Do nothing which will lead to the round timing out
@@ -220,10 +220,11 @@ where
         // TODO-2 deprecate
         keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
+        hash_policy: HashPolicy<SCT>,
     ) -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_qc.clone()),
+            pending_block_tree: BlockTree::new(genesis_qc.clone(), hash_policy),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             state_root_validator,
@@ -625,7 +626,7 @@ where
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
     pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
-        self.pending_block_tree.tree().get(bid)
+        self.pending_block_tree.get(bid)
     }
 
     /// if a blocksync request timesout, try again with a different validator
@@ -942,15 +943,16 @@ where
         };
 
         // Always propose when there's a path to root
-        if let Some(pending_blocktree_txs) =
-            self.pending_block_tree.get_txs_on_path_to_root(parent_bid)
+        if let Some(pending_blocktree_tx_hashes) = self
+            .pending_block_tree
+            .get_tx_hashes_on_path_to_root(parent_bid)
         {
-            return ConsensusAction::Propose(h, pending_blocktree_txs);
+            return ConsensusAction::Propose(h, pending_blocktree_tx_hashes);
         }
 
         // Still propose but with the chance of proposing duplicate txs
         if self.config.propose_with_missing_blocks {
-            return ConsensusAction::Propose(h, vec![]);
+            return ConsensusAction::Propose(h, Default::default());
         };
 
         ConsensusAction::Abstain
@@ -1493,6 +1495,7 @@ mod test {
                     EthAddress::default(),
                     std::mem::replace(&mut dupkeys[i as usize], default_key),
                     std::mem::replace(&mut dupcertkeys[i as usize], default_cert_key),
+                    |_| Ok::<_, _>(Default::default()),
                 );
 
                 NodeContext {

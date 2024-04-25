@@ -9,10 +9,14 @@ edition = "2021"
 bench = false
 
 [dependencies]
+alloy-rlp = { workspace = true }
+alloy-primitives = { workspace = true }
+
 monad-consensus-types = { path = "../monad-consensus-types" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 
+bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

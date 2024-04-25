@@ -134,6 +134,7 @@ where
                 beneficiary: self.state_config.beneficiary,
 
                 consensus_config: self.state_config.consensus_config,
+                hash_policy: self.state_config.hash_policy,
             },
             partition: self.partition.clone(),
             default_partition: self.default_partition.clone(),
@@ -354,6 +355,7 @@ where
                 max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
             },
+            hash_policy: |_| Ok::<_, _>(Default::default()),
         })
         .collect();
 

@@ -1,6 +1,13 @@
+use std::collections::HashSet;
+
+use alloy_primitives::TxHash;
 use bytes::Bytes;
 
 use crate::payload::FullTransactionList;
+
+/// This describes a method of obtaining transaction hashes from an RLP encoded block
+pub type HashPolicyOutput = HashSet<TxHash>;
+pub type HashPolicy<SCT> = fn(&Block<SCT>) -> Result<HashPolicyOutput, alloy_rlp::Error>;
 
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
@@ -17,7 +24,7 @@ pub trait TxPool {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_txs: Vec<FullTransactionList>,
+        pending_tx_hashes: HashPolicyOutput,
     ) -> (FullTransactionList, Option<FullTransactionList>);
 
     /// Handle transactions cascaded forward by other nodes
@@ -33,14 +40,16 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_txs: Vec<FullTransactionList>,
+        pending_tx_hashes: HashPolicyOutput,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
-        (**self).create_proposal(tx_limit, gas_limit, pending_txs)
+        (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
     }
 }
 
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+use crate::block::Block;
 
 const MOCK_DEFAULT_SEED: u64 = 1;
 const TXN_SIZE: usize = 32;
@@ -65,7 +74,7 @@ impl TxPool for MockTxPool {
         &mut self,
         tx_limit: usize,
         _gas_limit: u64,
-        _pending_txs: Vec<FullTransactionList>,
+        _pending_txs: HashPolicyOutput,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         if tx_limit == 0 {
             (FullTransactionList::empty(), None)
