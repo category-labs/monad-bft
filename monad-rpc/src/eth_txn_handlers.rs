@@ -15,7 +15,7 @@ use crate::{
         UnformattedData,
     },
     jsonrpc::JsonRpcError,
-    triedb::{TriedbEnv, TriedbResult, YpTransactionReceipt},
+    triedb::{decode_tx_type, ReceiptDetails, TriedbEnv, TriedbResult, YpTransactionReceipt},
 };
 
 pub fn parse_tx_content(
@@ -167,10 +167,26 @@ pub async fn monad_eth_getTransactionReceipt(
         TriedbResult::Null => serialize_result(None::<YpTransactionReceipt>),
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
-            match YpTransactionReceipt::decode(&mut rlp_buf) {
-                Ok(r) => serialize_result(Some(r)),
+
+            // decode transaction type from buffer
+            let tx_type = match decode_tx_type(&mut rlp_buf) {
+                Ok(tx_type) => tx_type,
                 Err(e) => {
-                    debug!("rlp decode error: {e}");
+                    debug!("tx type decode error: {e}");
+                    return Err(JsonRpcError::internal_error());
+                }
+            };
+
+            match ReceiptDetails::decode(&mut rlp_buf) {
+                Ok(r) => {
+                    let tx_receipt = YpTransactionReceipt {
+                        transaction_type: tx_type,
+                        details: r,
+                    };
+                    serialize_result(Some(tx_receipt))
+                }
+                Err(e) => {
+                    debug!("receipt decode error: {e}");
                     Err(JsonRpcError::internal_error())
                 }
             }

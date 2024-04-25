@@ -4,6 +4,7 @@ use alloy_primitives::{keccak256, Address, Bloom};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use log::debug;
 use monad_triedb::Handle;
+use reth_primitives::{U64, U8};
 use serde::{Deserialize, Serialize};
 
 use crate::eth_json_types::{EthAddress, EthStorageKey};
@@ -24,13 +25,19 @@ pub enum TriedbResult {
     Receipt(Vec<u8>),
 }
 
-#[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YpTransactionReceipt {
     #[serde(rename = "type")]
-    pub transaction_type: TransactionType,
-    pub status: u64,
-    pub cumulative_gas_used: u64,
+    pub transaction_type: U8,
+    #[serde(flatten)]
+    pub details: ReceiptDetails,
+}
+
+#[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptDetails {
+    pub status: U64,
+    pub cumulative_gas_used: U64,
     pub logs_bloom: Bloom,
     pub logs: Vec<Log>,
 }
@@ -42,35 +49,21 @@ pub struct Log {
     pub data: Vec<u8>,
 }
 
-#[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub enum TransactionType {
-    Legacy = 0x0,
-    Eip2930 = 0x1,
-    Eip1559 = 0x2,
-}
-
-impl Encodable for TransactionType {
-    fn encode(&self, out: &mut dyn bytes::BufMut) {
-        match self {
-            Self::Legacy => (),
-            Self::Eip2930 | Self::Eip1559 => {
-                let value = *self as u8;
-                u8::encode(&value, out);
-            }
+pub fn decode_tx_type(rlp_buf: &mut &[u8]) -> Result<U8, alloy_rlp::Error> {
+    match rlp_buf.first() {
+        None => Err(alloy_rlp::Error::InputTooShort),
+        Some(&x) if x < 0xc0 => {
+            // first byte represents transaction type
+            let tx_type = match x {
+                1 => 1, // EIP2930
+                2 => 2, // EIP1559
+                // TODO: add support for EIP4844
+                _ => return Err(alloy_rlp::Error::Custom("InvalidTxnType")),
+            };
+            *rlp_buf = &rlp_buf[1..]; // advance the buffer
+            Ok(U8::from(tx_type))
         }
-    }
-}
-
-impl Decodable for TransactionType {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        match buf.first() {
-            None => Err(alloy_rlp::Error::InputTooShort),
-            Some(x) if *x >= 0xc0 => Ok(Self::Legacy),
-            Some(x) if *x == Self::Eip2930 as u8 => Ok(Self::Eip2930),
-            Some(x) if *x == Self::Eip1559 as u8 => Ok(Self::Eip1559),
-            Some(_) => Err(alloy_rlp::Error::Custom("InvalidTxnType")),
-        }
+        Some(_) => Ok(U8::from(0)), // legacy transactions do not have first byte as transaction type
     }
 }
 
