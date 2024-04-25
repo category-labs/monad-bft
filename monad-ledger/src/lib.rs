@@ -261,7 +261,7 @@ fn generate_header<SCT: SignatureCollection>(
         timestamp: 0,
         mix_hash: randao_reveal_hasher.hash().0.into(),
         nonce: 0,
-        base_fee_per_gas: None,
+        base_fee_per_gas: Some(0),
         blob_gas_used: None,
         excess_blob_gas: None,
         parent_beacon_block_root: None,

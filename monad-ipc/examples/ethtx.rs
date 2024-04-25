@@ -9,7 +9,8 @@ use futures::{Sink, SinkExt};
 use itertools::Itertools;
 use rand::RngCore;
 use reth_primitives::{
-    sign_message, Address, Transaction, TransactionKind, TransactionSigned, TxLegacy, B256,
+    revm_primitives::FixedBytes, sign_message, Address, Transaction, TransactionKind,
+    TransactionSigned, TxLegacy,
 };
 use serde_json::json;
 use tokio::{net::UnixStream, time};
@@ -227,18 +228,18 @@ fn make_tx(input_len: usize) -> TransactionSigned {
     let mut input = vec![0; input_len];
     rand::thread_rng().fill_bytes(&mut input);
     let transaction = Transaction::Legacy(TxLegacy {
-        chain_id: Some(1337),
+        chain_id: Some(1),
         nonce: 0,
         gas_price: 1,
-        gas_limit: 6400,
+        gas_limit: 100_000,
         to: TransactionKind::Call(Address::random()),
-        value: 0.into(),
+        value: 1.into(),
         input: input.into(),
     });
 
     let hash = transaction.signature_hash();
 
-    let sender_secret_key = B256::random();
+    let sender_secret_key = FixedBytes::repeat_byte(1);
     let signature = sign_message(sender_secret_key, hash).expect("signature should always succeed");
 
     TransactionSigned {
