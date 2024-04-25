@@ -105,13 +105,21 @@ impl BlockDb {
 
         for (i, eth_tx) in block.body.iter().enumerate() {
             let key = EthTxKey(eth_tx.recalculate_hash());
-            let value = EthTxValue {
-                block_hash: block_table_key.clone(),
-                transaction_index: i as u64,
-            };
-            self.txn_hash_dbi
-                .put(&mut txn_hash_table_txn, &key, &value)
-                .expect("txn_hash_dbi put failed");
+            let existing_entry = self
+                .txn_hash_dbi
+                .get(&txn_hash_table_txn, &key)
+                .expect("failed to read from txn db");
+
+            // check that transaction hash does not exist before inserting
+            if existing_entry.is_none() {
+                let value = EthTxValue {
+                    block_hash: block_table_key.clone(),
+                    transaction_index: i as u64,
+                };
+                self.txn_hash_dbi
+                    .put(&mut txn_hash_table_txn, &key, &value)
+                    .expect("txn_hash_dbi put failed");
+            }
         }
         txn_hash_table_txn.commit().expect("txn_hash commit failed");
     }
