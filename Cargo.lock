@@ -3362,10 +3362,14 @@ dependencies = [
 name = "monad-eth-txpool"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
+ "criterion",
  "monad-consensus-types",
  "monad-eth-tx",
+ "rand",
+ "reth-primitives",
  "tracing",
 ]
 
