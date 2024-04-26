@@ -36,7 +36,7 @@ where
 }
 
 // https://ethereum.org/developers/docs/apis/json-rpc#hex-encoding
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Quantity(pub u64);
 
 impl FromStr for Quantity {
@@ -81,7 +81,7 @@ where
         .map_err(|e| serde::de::Error::custom(format!("FixedData parse failed: {e:?}")))
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockTags {
     Number(Quantity),
     Default(BlockTagKey),

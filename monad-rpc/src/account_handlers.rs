@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    blockdb::BlockDbEnv,
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthAddress,
         EthStorageKey,
@@ -24,7 +23,6 @@ struct MonadEthGetBalanceParams {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getBalance(
-    blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -38,11 +36,7 @@ pub async fn monad_eth_getBalance(
         }
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    match triedb_env.get_account(p.account, value.block.number).await {
+    match triedb_env.get_account(p.account, p.block_number).await {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(_, balance, _) => serialize_result(format!("0x{:x}", balance)),
         _ => Err(JsonRpcError::internal_error()),
@@ -59,7 +53,6 @@ struct MonadEthGetCodeParams {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getCode(
-    blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -73,17 +66,16 @@ pub async fn monad_eth_getCode(
         }
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    let code_hash = match triedb_env.get_account(p.account, value.block.number).await {
+    let code_hash = match triedb_env
+        .get_account(p.account, p.block_number.clone())
+        .await
+    {
         TriedbResult::Null => return serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(_, _, code_hash) => code_hash,
         _ => return Err(JsonRpcError::internal_error()),
     };
 
-    match triedb_env.get_code(code_hash, value.block.number).await {
+    match triedb_env.get_code(code_hash, p.block_number).await {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Code(code) => serialize_result(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error()),
@@ -102,7 +94,6 @@ struct MonadEthGetStorageAtParams {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getStorageAt(
-    blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -116,12 +107,8 @@ pub async fn monad_eth_getStorageAt(
         }
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
     match triedb_env
-        .get_storage_at(p.account, p.position, value.block.number)
+        .get_storage_at(p.account, p.position, p.block_number)
         .await
     {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
@@ -140,7 +127,6 @@ struct MonadEthGetTransactionCountParams {
 
 #[allow(non_snake_case)]
 pub async fn monad_eth_getTransactionCount(
-    blockdb_env: &BlockDbEnv,
     triedb_env: &TriedbEnv,
     params: Value,
 ) -> Result<Value, JsonRpcError> {
@@ -154,11 +140,7 @@ pub async fn monad_eth_getTransactionCount(
         }
     };
 
-    let Some(value) = blockdb_env.get_block_by_tag(p.block_number).await else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    match triedb_env.get_account(p.account, value.block.number).await {
+    match triedb_env.get_account(p.account, p.block_number).await {
         TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
         TriedbResult::Account(nonce, _, _) => serialize_result(format!("0x{:x}", nonce)),
         _ => Err(JsonRpcError::internal_error()),

@@ -39,7 +39,7 @@ pub struct BlockValue {
     pub block: Block,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockTagKey {
     Latest,
     Finalized,

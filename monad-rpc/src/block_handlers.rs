@@ -1,6 +1,6 @@
 use alloy_primitives::aliases::{U256, U64};
 use log::{debug, trace};
-use monad_blockdb::{BlockTableKey, BlockTagKey, BlockValue};
+use monad_blockdb::{BlockTableKey, BlockValue};
 use reth_primitives::BlockHash;
 use reth_rpc_types::{Block, BlockTransactions, Header, Withdrawal};
 use serde::Deserialize;
@@ -13,6 +13,7 @@ use crate::{
     },
     eth_txn_handlers::parse_tx_content,
     jsonrpc::JsonRpcError,
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
@@ -91,25 +92,21 @@ fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Blo
 }
 
 #[allow(non_snake_case)]
-pub async fn monad_eth_blockNumber(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_blockNumber(triedb_env: &TriedbEnv) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_blockNumber");
 
-    let Some(block) = blockdb_env
-        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
-        .await
-    else {
-        return serialize_result(format!("0x{:x}", 0));
-    };
-
-    serialize_result(format!("0x{:x}", block.block.number))
+    match triedb_env.get_latest_block().await {
+        TriedbResult::BlockNum(num) => serialize_result(format!("0x{:x}", num)),
+        _ => Err(JsonRpcError::internal_error()),
+    }
 }
 
 // TODO: does chainId come from a config file?
 #[allow(non_snake_case)]
-pub async fn monad_eth_chainId(blockdb_env: &BlockDbEnv) -> Result<Value, JsonRpcError> {
+pub async fn monad_eth_chainId() -> Result<Value, JsonRpcError> {
     trace!("monad_eth_chainId");
 
-    serialize_result(format!("0x{:x}", 1337))
+    serialize_result(format!("0x{:x}", 1))
 }
 
 #[derive(Deserialize, Debug)]

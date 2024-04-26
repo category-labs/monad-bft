@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 use alloy_primitives::{keccak256, Address, Bloom};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use log::debug;
+use monad_blockdb::BlockTagKey;
 use monad_triedb::Handle;
 use reth_primitives::{U64, U8};
 use serde::{Deserialize, Serialize};
 
-use crate::eth_json_types::{EthAddress, EthStorageKey};
+use crate::eth_json_types::{BlockTags, EthAddress, EthStorageKey};
 
 #[derive(Clone)]
 pub struct TriedbEnv {
@@ -86,12 +87,21 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_latest_block")
     }
 
-    pub async fn get_account(&self, addr: EthAddress, block_num: u64) -> TriedbResult {
+    pub async fn get_account(&self, addr: EthAddress, block_tag: BlockTags) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
             let (triedb_key, key_len_nibbles) = TriedbEnv::create_addr_key(&addr);
+
+            // parse block tag
+            let block_num = match block_tag {
+                BlockTags::Number(q) => q.0,
+                BlockTags::Default(t) => match t {
+                    BlockTagKey::Latest => TriedbEnv::latest_block(&db),
+                    BlockTagKey::Finalized => TriedbEnv::latest_block(&db),
+                },
+            };
 
             let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
             let Some(result) = result else {
@@ -134,13 +144,22 @@ impl TriedbEnv {
         &self,
         addr: EthAddress,
         at: EthStorageKey,
-        block_num: u64,
+        block_tag: BlockTags,
     ) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
             let (triedb_key, key_len_nibbles) = TriedbEnv::create_storage_at_key(&addr, &at);
+
+            // parse block tag
+            let block_num = match block_tag {
+                BlockTags::Number(q) => q.0,
+                BlockTags::Default(t) => match t {
+                    BlockTagKey::Latest => TriedbEnv::latest_block(&db),
+                    BlockTagKey::Finalized => TriedbEnv::latest_block(&db),
+                },
+            };
 
             let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
             let Some(result) = result else {
@@ -162,12 +181,21 @@ impl TriedbEnv {
         recv.await.expect("rayon panic get_storage_at")
     }
 
-    pub async fn get_code(&self, code_hash: [u8; 32], block_num: u64) -> TriedbResult {
+    pub async fn get_code(&self, code_hash: [u8; 32], block_tag: BlockTags) -> TriedbResult {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
             let (triedb_key, key_len_nibbles) = TriedbEnv::create_code_key(&code_hash);
+
+            // parse block tag
+            let block_num = match block_tag {
+                BlockTags::Number(q) => q.0,
+                BlockTags::Default(t) => match t {
+                    BlockTagKey::Latest => TriedbEnv::latest_block(&db),
+                    BlockTagKey::Finalized => TriedbEnv::latest_block(&db),
+                },
+            };
 
             let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
             let Some(result) = result else {

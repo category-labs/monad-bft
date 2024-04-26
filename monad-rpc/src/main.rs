@@ -179,63 +179,41 @@ async fn rpc_select(
             }
         }
         "eth_getBalance" => {
-            let Some(reader) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            monad_eth_getBalance(reader, triedb_env, params).await
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_getBalance(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
         }
         "eth_getCode" => {
-            let Some(reader) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            monad_eth_getCode(reader, triedb_env, params).await
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_getCode(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
         }
         "eth_getStorageAt" => {
-            let Some(reader) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            monad_eth_getStorageAt(reader, triedb_env, params).await
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_getStorageAt(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
         }
         "eth_getTransactionCount" => {
-            let Some(reader) = &app_state.blockdb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            let Some(triedb_env) = &app_state.triedb_reader else {
-                return Err(JsonRpcError::method_not_supported());
-            };
-
-            monad_eth_getTransactionCount(reader, triedb_env, params).await
+            if let Some(reader) = &app_state.triedb_reader {
+                monad_eth_getTransactionCount(reader, params).await
+            } else {
+                Err(JsonRpcError::method_not_supported())
+            }
         }
         "eth_blockNumber" => {
-            if let Some(reader) = &app_state.blockdb_reader {
+            if let Some(reader) = &app_state.triedb_reader {
                 monad_eth_blockNumber(reader).await
             } else {
                 Err(JsonRpcError::method_not_supported())
             }
         }
-        "eth_chainId" => {
-            if let Some(reader) = &app_state.blockdb_reader {
-                monad_eth_chainId(reader).await
-            } else {
-                Err(JsonRpcError::method_not_supported())
-            }
-        }
+        "eth_chainId" => monad_eth_chainId().await,
         "eth_syncing" => {
             if let Some(reader) = &app_state.triedb_reader {
                 monad_eth_syncing(reader).await
