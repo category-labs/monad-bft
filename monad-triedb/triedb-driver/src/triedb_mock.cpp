@@ -6,8 +6,10 @@
 
 struct triedb
 {
-    std::map<std::vector<uint8_t>, std::vector<uint8_t>> db_{
-        {{1, 2, 3}, {4, 5, 6}}, {{7, 8, 9}, {10, 11, 12}}};
+    std::map<std::vector<uint8_t>, std::vector<uint8_t>> db_;
+    uint64_t latest_block_id_;
+
+    triedb() : db_{ {{1, 2, 3}, {4, 5, 6}}, {{7, 8, 9}, {10, 11, 12}} }, latest_block_id_{ 20 } {}
 };
 
 extern "C"
@@ -46,5 +48,10 @@ int triedb_finalize(bytes value)
 {
     delete value;
     return 0;
+}
+
+uint64_t triedb_latest_block(triedb *db)
+{
+    return db->latest_block_id_;
 }
 } // end extern "C"

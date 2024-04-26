@@ -64,6 +64,10 @@ impl Handle {
 
         Some(value)
     }
+
+    pub fn latest_block(&self) -> u64 {
+        unsafe { bindings::triedb_latest_block(self.db_ptr) }
+    }
 }
 
 impl Drop for Handle {
@@ -102,5 +106,14 @@ mod test {
 
         // too many nibbles
         let _ = handle.read(&[1, 2, 3], 7, 0);
+    }
+
+    #[test]
+    fn read_latest_block() {
+        let handle = Handle::try_new(Path::new("/dummy")).unwrap();
+
+        // this value is hardcoded into mock triedb
+        let result = handle.latest_block();
+        assert_eq!(result, 20);
     }
 }

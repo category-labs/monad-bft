@@ -23,6 +23,7 @@ pub enum TriedbResult {
     Storage([u8; 32]),
     Code(Vec<u8>),
     Receipt(Vec<u8>),
+    BlockNum(u64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +73,17 @@ impl TriedbEnv {
         Self {
             triedb_path: triedb_path.to_path_buf(),
         }
+    }
+
+    pub async fn get_latest_block(&self) -> TriedbResult {
+        let triedb_path = self.triedb_path.clone();
+        let (send, recv) = tokio::sync::oneshot::channel();
+        rayon::spawn(move || {
+            let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
+            let result = TriedbEnv::latest_block(&db);
+            let _ = send.send(TriedbResult::BlockNum(result));
+        });
+        recv.await.expect("rayon panic get_latest_block")
     }
 
     pub async fn get_account(&self, addr: EthAddress, block_num: u64) -> TriedbResult {
@@ -192,6 +204,10 @@ impl TriedbEnv {
 
     fn read(handle: &Handle, key: &[u8], key_len_nibbles: u8, block_id: u64) -> Option<Vec<u8>> {
         handle.read(key, key_len_nibbles, block_id)
+    }
+
+    fn latest_block(handle: &Handle) -> u64 {
+        handle.latest_block()
     }
 
     fn create_addr_key(addr: &EthAddress) -> (Vec<u8>, u8) {

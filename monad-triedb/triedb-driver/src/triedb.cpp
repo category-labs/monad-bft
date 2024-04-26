@@ -75,3 +75,19 @@ int triedb_finalize(bytes value)
     delete value;
     return 0;
 }
+
+uint64_t triedb_latest_block(triedb *db)
+{
+    if (!db->db_.is_latest()) {
+        db->db_.load_latest();
+    }
+
+    std::optional<uint64_t> latest_block_id = db->db_.get_latest_block_id();
+
+    if (latest_block_id.has_value()) {
+        return latest_block_id.value();
+    } else {
+        // no block has been produced
+        return 0;
+    }
+}
