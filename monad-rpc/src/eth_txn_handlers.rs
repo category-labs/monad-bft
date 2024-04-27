@@ -6,6 +6,7 @@ use reth_primitives::{BlockHash, TransactionSigned};
 use reth_rpc_types::{AccessListItem, Parity, Signature, Transaction};
 use serde::Deserialize;
 use serde_json::Value;
+use std::cmp::min;
 
 use crate::{
     blockdb::BlockDbEnv,
@@ -15,7 +16,7 @@ use crate::{
         UnformattedData,
     },
     jsonrpc::JsonRpcError,
-    triedb::{decode_tx_type, ReceiptDetails, TriedbEnv, TriedbResult, YpTransactionReceipt},
+    triedb::{decode_tx_type, ReceiptDetails, TransactionReceipt, TriedbEnv, TriedbResult},
 };
 
 pub fn parse_tx_content(
@@ -134,8 +135,6 @@ struct MonadEthGetTransactionReceiptParams {
     tx_hash: EthHash,
 }
 
-// TODO, the transaction object in the eth json spec has more fields than those
-// specified for the transaction receipt in the Yellow Paper
 #[allow(non_snake_case)]
 pub async fn monad_eth_getTransactionReceipt(
     blockdb_env: &BlockDbEnv,
@@ -154,17 +153,17 @@ pub async fn monad_eth_getTransactionReceipt(
 
     let key = EthTxKey(B256::new(p.tx_hash.0));
     let Some(txn_value) = blockdb_env.get_txn(key).await else {
-        return serialize_result(None::<YpTransactionReceipt>);
+        return serialize_result(None::<TransactionReceipt>);
     };
     let txn_index = txn_value.transaction_index;
 
     let Some(block) = blockdb_env.get_block_by_hash(txn_value.block_hash).await else {
-        return serialize_result(None::<YpTransactionReceipt>);
+        return serialize_result(None::<TransactionReceipt>);
     };
     let block_num = block.block.number;
 
     match triedb_env.get_receipt(txn_index, block_num).await {
-        TriedbResult::Null => serialize_result(None::<YpTransactionReceipt>),
+        TriedbResult::Null => serialize_result(None::<TransactionReceipt>),
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
 
@@ -179,9 +178,37 @@ pub async fn monad_eth_getTransactionReceipt(
 
             match ReceiptDetails::decode(&mut rlp_buf) {
                 Ok(r) => {
-                    let tx_receipt = YpTransactionReceipt {
+                    let Some(tx) = block.block.body.get(txn_index as usize) else {
+                        return serialize_result(None::<TransactionReceipt>);
+                    };
+                    let transaction = tx
+                        .clone()
+                        .into_ecrecovered_unchecked()
+                        .expect("transaction sender should exist");
+                    let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default() as u128;
+                    // effective gas price is calculated according to eth json rpc specification
+                    let effective_gas_price = base_fee_per_gas
+                        + min(
+                            tx.max_fee_per_gas() - base_fee_per_gas,
+                            tx.max_priority_fee_per_gas().unwrap(),
+                        );
+                    let tx_receipt = TransactionReceipt {
                         transaction_type: tx_type,
+                        transaction_hash: Some(tx.hash()),
+                        transaction_index: U64::from(txn_index),
+                        block_hash: Some(block.block.hash_slow()),
+                        block_number: Some(U256::from(block_num)),
+                        from: transaction.signer(),
+                        to: tx.to(),
+                        // TODO: read from triedb to determine whether a contract is deployed
+                        contract_address: None,
+                        // TODO: gas_used = cumulative_gas_used[txn_index] - cumulative_gas_used[txn_index-1]
+                        gas_used: U128::from(21000),
+                        effective_gas_price: U128::from(effective_gas_price),
                         details: r,
+                        // TODO: EIP4844 fields
+                        blob_gas_used: None,
+                        blob_gas_price: None,
                     };
                     serialize_result(Some(tx_receipt))
                 }
