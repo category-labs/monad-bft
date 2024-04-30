@@ -70,13 +70,13 @@ pub async fn monad_eth_getCode(
         .get_account(p.account, p.block_number.clone())
         .await
     {
-        TriedbResult::Null => return serialize_result(format!("0x{:x}", 0)),
+        TriedbResult::Null => return serialize_result(format!("0x")),
         TriedbResult::Account(_, _, code_hash) => code_hash,
         _ => return Err(JsonRpcError::internal_error()),
     };
 
     match triedb_env.get_code(code_hash, p.block_number).await {
-        TriedbResult::Null => serialize_result(format!("0x{:x}", 0)),
+        TriedbResult::Null => serialize_result(format!("0x")),
         TriedbResult::Code(code) => serialize_result(hex::encode(&code)),
         _ => Err(JsonRpcError::internal_error()),
     }

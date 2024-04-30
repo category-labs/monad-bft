@@ -9,6 +9,7 @@ pub const JSONRPC_VERSION: &str = "2.0";
 pub struct Request {
     pub jsonrpc: String,
     pub method: String,
+    #[serde(default)]
     pub params: Value,
     pub id: Value,
 }

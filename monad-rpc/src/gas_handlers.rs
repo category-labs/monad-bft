@@ -1,12 +1,15 @@
 use log::{debug, trace};
 use monad_blockdb::BlockTagKey;
 use reth_primitives::Transaction;
+use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
     blockdb::BlockDbEnv,
-    eth_json_types::{deserialize_block_tags, serialize_result, BlockTags},
+    eth_json_types::{
+        deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
+    },
     jsonrpc::JsonRpcError,
 };
 
@@ -74,4 +77,37 @@ pub async fn monad_eth_maxPriorityFeePerGas(
 
     let priority_fee = suggested_priority_fee(blockdb_env).await.unwrap();
     serialize_result(format!("0x{:x}", priority_fee))
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthHistoryParams {
+    #[serde(deserialize_with = "deserialize_quantity")]
+    block_count: Quantity,
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    newest_block: BlockTags,
+    reward_percentiles: Vec<f64>,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_feeHistory(
+    blockdb_env: &BlockDbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_feeHistory");
+
+    let p: MonadEthHistoryParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let block_count: u64 = p.block_count.0;
+    if block_count == 0 {
+        return serialize_result(FeeHistory::default());
+    }
+
+    // TODO: retrieve fee parameters from historical blocks
+    serialize_result(FeeHistory::default())
 }

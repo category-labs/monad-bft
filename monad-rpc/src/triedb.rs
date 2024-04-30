@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use alloy_primitives::{keccak256, Address, Bloom};
+use alloy_primitives::{keccak256, Address, Bloom, Bytes};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use log::debug;
 use monad_blockdb::BlockTagKey;
@@ -63,8 +63,8 @@ pub struct ReceiptDetails {
 #[derive(Debug, Clone, RlpDecodable, RlpEncodable, Serialize, Deserialize)]
 pub struct Log {
     pub address: Address,
-    pub topics: Vec<u32>,
-    pub data: Vec<u8>,
+    pub topics: Vec<B256>,
+    pub data: Bytes,
 }
 
 pub fn decode_tx_type(rlp_buf: &mut &[u8]) -> Result<U8, alloy_rlp::Error> {
