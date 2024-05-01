@@ -21,22 +21,8 @@ impl TxPool for EthTxPool {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_txs: Vec<FullTransactionList>,
+        pending_blocktree_txs: HashSet<EthTxHash>,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
-        // TODO: we should enhance the pending block tree to hold tx hashses so that
-        // we don't have to calculate it here on the critical path of proposal creation
-        let mut pending_tx_hashes: Vec<EthTxHash> = Vec::new();
-        for full_tx_list in pending_txs {
-            let eth_full_tx_list = EthFullTransactionList::rlp_decode(full_tx_list.bytes().clone())
-                .expect(
-                    "transactions in blocks must have been verified and rlp decoded \
-                before being put in the pending blocktree",
-                );
-            pending_tx_hashes.extend(eth_full_tx_list.get_hashes());
-        }
-
-        let pending_blocktree_txs: HashSet<EthTxHash> = HashSet::from_iter(pending_tx_hashes);
-
         let mut txs = Vec::new();
         let mut total_gas = 0;
 

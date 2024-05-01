@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use bytes::Bytes;
 
 use crate::payload::FullTransactionList;
@@ -17,7 +19,7 @@ pub trait TxPool {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_txs: Vec<FullTransactionList>,
+        pending_tx_hashes: HashSet<EthTxHash>,
     ) -> (FullTransactionList, Option<FullTransactionList>);
 
     /// Handle transactions cascaded forward by other nodes
@@ -33,12 +35,13 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_txs: Vec<FullTransactionList>,
+        pending_tx_hashes: HashSet<EthTxHash>,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
-        (**self).create_proposal(tx_limit, gas_limit, pending_txs)
+        (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
     }
 }
 
+use monad_eth_tx::EthTxHash;
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 
@@ -65,7 +68,7 @@ impl TxPool for MockTxPool {
         &mut self,
         tx_limit: usize,
         _gas_limit: u64,
-        _pending_txs: Vec<FullTransactionList>,
+        _pending_tx_hashes: HashSet<EthTxHash>,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         if tx_limit == 0 {
             (FullTransactionList::empty(), None)

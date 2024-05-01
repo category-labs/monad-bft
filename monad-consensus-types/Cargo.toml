@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 monad-crypto = { path = "../monad-crypto" }
 monad-eth-types = { path = "../monad-eth-types" }
+monad-eth-tx = { path = "../monad-eth-tx" }
 monad-proto = { path = "../monad-proto" }
 monad-types = { path = "../monad-types" }
 

@@ -3176,12 +3176,15 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-tx",
  "monad-eth-types",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
+ "reth-primitives",
  "tracing",
 ]
 
@@ -3253,18 +3256,21 @@ dependencies = [
 name = "monad-consensus-state"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "bytes",
  "itertools 0.10.5",
  "monad-blocktree",
  "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-tx",
  "monad-eth-types",
  "monad-multi-sig",
  "monad-testutil",
  "monad-tracing-counter",
  "monad-types",
  "monad-validator",
+ "reth-primitives",
  "test-case",
  "tracing",
  "tracing-subscriber",
@@ -3277,6 +3283,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "monad-crypto",
+ "monad-eth-tx",
  "monad-eth-types",
  "monad-proto",
  "monad-types",

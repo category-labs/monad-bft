@@ -1,11 +1,15 @@
-use std::{collections::HashMap, fmt, result::Result as StdResult};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    result::Result as StdResult,
+};
 
 use monad_consensus_types::{
     block::{Block, BlockType},
-    payload::FullTransactionList,
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
+use monad_eth_tx::{EthFullTransactionList, EthTxHash};
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Round, SeqNum};
 use tracing::trace;
@@ -16,12 +20,14 @@ type Result<T> = StdResult<T, BlockTreeError>;
 #[non_exhaustive]
 pub enum BlockTreeError {
     BlockNotExist(BlockId),
+    RlpDecode((BlockId, alloy_rlp::Error)),
 }
 
 impl fmt::Display for BlockTreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BlockNotExist(bid) => write!(f, "Block not exist: {:?}", bid),
+            Self::RlpDecode(bid) => write!(f, "RLP decode: {:?}", bid),
         }
     }
 }
@@ -39,13 +45,15 @@ struct Root {
     block_id: BlockId,
 }
 
+type Tree<SCT> = HashMap<BlockId, (Block<SCT>, HashSet<EthTxHash>)>;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockTree<SCT: SignatureCollection> {
     /// The round and block_id of last committed block
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: HashMap<BlockId, Block<SCT>>,
+    tree: Tree<SCT>,
 }
 
 impl<SCT: SignatureCollection> BlockTree<SCT> {
@@ -89,7 +97,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
             return commit;
         }
 
-        let new_root_block = self
+        let (new_root_block, _) = self
             .tree
             .remove(new_root)
             .expect("new root must exist in blocktree");
@@ -103,7 +111,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
             if parent_id == self.root.block_id {
                 break;
             }
-            block_to_commit = self
+            (block_to_commit, _) = self
                 .tree
                 .remove(&parent_id)
                 .expect("path to root must exist");
@@ -112,7 +120,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         // garbage collect old blocks
         // remove any blocks less than or equal to round `n`
         self.tree
-            .retain(|_, b| b.get_parent_round() >= new_root_block.get_round());
+            .retain(|_, (b, _)| b.get_parent_round() >= new_root_block.get_round());
         // new root should be set to QC of the block that's the new root
         self.root = Root {
             round: new_root_block.get_round(),
@@ -134,7 +142,12 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
             return Ok(());
         }
 
-        self.tree.insert(b.get_id(), b);
+        let hashes = HashSet::from_iter(
+            EthFullTransactionList::rlp_decode(b.payload.txns.bytes().clone())
+                .map_err(|e| BlockTreeError::RlpDecode((b.get_id(), e)))?
+                .get_hashes(),
+        );
+        self.tree.insert(b.get_id(), (b, hashes));
         inc_count!(blocktree.add.success);
         Ok(())
     }
@@ -151,7 +164,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
         let mut maybe_unknown_block_qc = qc;
         let mut maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
-        while let Some(known_block) = self.tree.get(&maybe_unknown_bid) {
+        while let Some((known_block, _)) = self.tree.get(&maybe_unknown_bid) {
             maybe_unknown_block_qc = &known_block.qc;
             maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
             // If the unknown block's round == self.root, that means we've already committed it
@@ -168,7 +181,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         }
         let mut visit = *b;
 
-        while let Some(btb) = self.tree.get(&visit) {
+        while let Some((btb, _)) = self.tree.get(&visit) {
             if btb.get_parent_id() == self.root.block_id {
                 return true;
             }
@@ -178,21 +191,21 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
     }
 
     /// Fetches transactions on the path in [`b`, root)
-    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<FullTransactionList>> {
-        let mut txs = Vec::default();
+    pub fn get_tx_hashes_on_path_to_root(&self, b: &BlockId) -> Option<HashSet<EthTxHash>> {
+        let mut tx_hashes = HashSet::default();
 
         if b == &self.root.block_id {
-            return Some(txs);
+            return Some(tx_hashes);
         }
 
         let mut visit = *b;
 
-        while let Some(btb) = self.tree.get(&visit) {
+        while let Some((btb, hashes)) = self.tree.get(&visit) {
             if btb.get_parent_id() == self.root.block_id {
-                return Some(txs);
+                return Some(tx_hashes);
             }
 
-            txs.push(btb.payload.txns.clone());
+            tx_hashes.extend(hashes);
 
             visit = btb.get_parent_id();
         }
@@ -201,7 +214,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
     /// Remove all blocks which are older than the given sequence number
     pub fn remove_old_blocks(&mut self, seq_num: SeqNum) {
-        self.tree.retain(|_, b| b.get_seq_num() >= seq_num);
+        self.tree.retain(|_, (b, _)| b.get_seq_num() >= seq_num);
     }
 
     /// A block is valid to insert if it does not already exist in the block
@@ -210,7 +223,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.round
     }
 
-    pub fn tree(&self) -> &HashMap<BlockId, Block<SCT>> {
+    pub fn tree(&self) -> &Tree<SCT> {
         &self.tree
     }
 
@@ -239,9 +252,14 @@ mod test {
         hasher::Hash,
         NopSignature,
     };
+    use monad_eth_tx::{EthFullTransactionList, EthTransaction};
     use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{BlockId, NodeId, Round, SeqNum};
+    use reth_primitives::{
+        alloy_primitives::FixedBytes, sign_message, Address, Transaction, TransactionSigned,
+        TxLegacy,
+    };
 
     use super::BlockTree;
 
@@ -581,7 +599,7 @@ mod test {
         assert!(blocktree.add(b2.clone()).is_ok());
         assert_eq!(blocktree.tree.len(), 2);
         assert_eq!(
-            blocktree.tree.get(&b2.get_id()).unwrap().get_parent_id(),
+            blocktree.tree.get(&b2.get_id()).unwrap().0.get_parent_id(),
             b1.get_id()
         );
         assert!(!blocktree.has_path_to_root(&b2.get_id()));
@@ -591,13 +609,37 @@ mod test {
         assert!(blocktree.has_path_to_root(&b1.get_id()));
         assert!(blocktree.has_path_to_root(&b2.get_id()));
         assert_eq!(
-            blocktree.tree.get(&b2.get_id()).unwrap().get_parent_id(),
+            blocktree.tree.get(&b2.get_id()).unwrap().0.get_parent_id(),
             b1.get_id()
         );
         assert_eq!(
-            blocktree.tree.get(&b1.get_id()).unwrap().get_parent_id(),
+            blocktree.tree.get(&b1.get_id()).unwrap().0.get_parent_id(),
             gid
         );
+    }
+
+    fn make_txn(nonce: u64) -> FullTransactionList {
+        let tx = Transaction::Legacy(TxLegacy {
+            chain_id: None,
+            nonce,
+            gas_price: Default::default(),
+            gas_limit: Default::default(),
+            to: Default::default(),
+            value: Default::default(),
+            input: Default::default(),
+        });
+        FullTransactionList::new(
+            EthFullTransactionList(vec![EthTransaction::from_signed_transaction(
+                TransactionSigned {
+                    hash: tx.signature_hash(),
+                    signature: sign_message(FixedBytes::repeat_byte(1), tx.signature_hash())
+                        .expect("signature should always succeed"),
+                    transaction: Default::default(),
+                },
+                Address(FixedBytes::repeat_byte(1)),
+            )])
+            .rlp_encode(),
+        )
     }
 
     #[test]
@@ -606,7 +648,7 @@ mod test {
             node_id(),
             Round(1),
             &Payload {
-                txns: FullTransactionList::empty(),
+                txns: make_txn(1),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
@@ -627,7 +669,7 @@ mod test {
             node_id(),
             Round(2),
             &Payload {
-                txns: FullTransactionList::new(vec![1].into()),
+                txns: make_txn(2),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
@@ -648,7 +690,7 @@ mod test {
             node_id(),
             Round(2),
             &Payload {
-                txns: FullTransactionList::new(vec![2].into()),
+                txns: make_txn(3),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
@@ -677,7 +719,7 @@ mod test {
             node_id(),
             Round(3),
             &Payload {
-                txns: FullTransactionList::new(vec![3].into()),
+                txns: make_txn(4),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
@@ -701,8 +743,12 @@ mod test {
         //  |
         //  b3
         let mut blocktree = BlockTree::new(QC::genesis_qc());
-        assert!(blocktree.add(g.clone()).is_ok());
-        assert!(blocktree.add(b1.clone()).is_ok());
+        let x = blocktree.add(g.clone());
+        dbg!(&x);
+        assert!(x.is_ok());
+        let z = blocktree.add(b1.clone());
+        dbg!(&z);
+        assert!(z.is_ok());
         assert!(blocktree.add(b2.clone()).is_ok());
         assert!(blocktree.add(b3).is_ok());
 
@@ -729,7 +775,7 @@ mod test {
             node_id(),
             Round(1),
             &Payload {
-                txns: FullTransactionList::empty(),
+                txns: make_txn(1),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),
@@ -750,7 +796,7 @@ mod test {
             node_id(),
             Round(2),
             &Payload {
-                txns: FullTransactionList::new(vec![1].into()),
+                txns: make_txn(2),
                 header: ExecutionArtifacts::zero(),
                 seq_num: SeqNum(0),
                 beneficiary: EthAddress::default(),

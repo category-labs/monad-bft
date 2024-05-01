@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{collections::HashSet, marker::PhantomData, time::Duration};
 
 use monad_blocktree::blocktree::BlockTree;
 use monad_consensus::{
@@ -27,6 +27,7 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_eth_tx::EthTxHash;
 use monad_eth_types::EthAddress;
 use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
@@ -154,7 +155,7 @@ where
 /// Possible actions a leader node can take when entering a new round
 pub enum ConsensusAction {
     /// Create a proposal with this state-root-hash and txn hash list
-    Propose(StateRootHash, Vec<FullTransactionList>),
+    Propose(StateRootHash, HashSet<EthTxHash>),
     /// Create an empty block proposal
     ProposeEmpty,
     /// Do nothing which will lead to the round timing out
@@ -625,7 +626,10 @@ where
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
     pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
-        self.pending_block_tree.tree().get(bid)
+        self.pending_block_tree
+            .tree()
+            .get(bid)
+            .map(|(block, _)| block)
     }
 
     /// if a blocksync request timesout, try again with a different validator
@@ -887,7 +891,7 @@ where
             };
 
         match self.proposal_policy(&parent_bid, proposed_seq_num) {
-            ConsensusAction::Propose(h, pending_blocktree_txs) => {
+            ConsensusAction::Propose(h, pending_blocktree_tx_hashes) => {
                 let _create_proposal_span =
                     tracing::info_span!("create_proposal_span", ?round).entered();
                 metrics.consensus_events.creating_proposal += 1;
@@ -897,7 +901,7 @@ where
                 let (prop_txns, leftover_txns) = txpool.create_proposal(
                     self.config.proposal_txn_limit,
                     self.config.proposal_gas_limit,
-                    pending_blocktree_txs,
+                    pending_blocktree_tx_hashes,
                 );
                 let mut cmds = proposer_builder(prop_txns, h, last_round_tc);
                 if let (Some(txns), Some(target)) = (leftover_txns, self.cascade_target(validators))
@@ -942,15 +946,16 @@ where
         };
 
         // Always propose when there's a path to root
-        if let Some(pending_blocktree_txs) =
-            self.pending_block_tree.get_txs_on_path_to_root(parent_bid)
+        if let Some(pending_blocktree_txs) = self
+            .pending_block_tree
+            .get_tx_hashes_on_path_to_root(parent_bid)
         {
             return ConsensusAction::Propose(h, pending_blocktree_txs);
         }
 
         // Still propose but with the chance of proposing duplicate txs
         if self.config.propose_with_missing_blocks {
-            return ConsensusAction::Propose(h, vec![]);
+            return ConsensusAction::Propose(h, HashSet::default());
         };
 
         ConsensusAction::Abstain
@@ -1164,6 +1169,7 @@ where
 mod test {
     use std::{marker::PhantomData, ops::Deref, time::Duration};
 
+    use alloy_primitives::{Address, FixedBytes};
     use itertools::Itertools;
     use monad_consensus::{
         messages::{
@@ -1195,6 +1201,7 @@ mod test {
         hasher::Hash,
         NopPubKey, NopSignature,
     };
+    use monad_eth_tx::{EthFullTransactionList, EthTransaction};
     use monad_eth_types::EthAddress;
     use monad_multi_sig::MultiSig;
     use monad_testutil::{
@@ -1210,6 +1217,7 @@ mod test {
         validator_set::{ValidatorSetFactory, ValidatorSetType, ValidatorSetTypeFactory},
         validators_epoch_mapping::ValidatorsEpochMapping,
     };
+    use reth_primitives::{sign_message, Transaction, TransactionSigned, TxLegacy};
     use test_case::test_case;
     use tracing_test::traced_test;
 
@@ -1403,7 +1411,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                FullTransactionList::new(vec![5].into()),
+                make_txn(5),
                 ExecutionArtifacts::zero(),
             )
         }
@@ -2166,15 +2174,9 @@ mod test {
         );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
-        env.next_proposal(
-            FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts::zero(),
-        );
+        env.next_proposal(make_txn(1), ExecutionArtifacts::zero());
 
-        let p1 = env.next_proposal(
-            FullTransactionList::new(vec![0xaa].into()),
-            ExecutionArtifacts::zero(),
-        );
+        let p1 = env.next_proposal(make_txn(2), ExecutionArtifacts::zero());
 
         let (author, _, verified_message) = p1.destructure();
         let cmds: Vec<ConsensusCommand<NopSignature, MultiSig<NopSignature>>> =
@@ -2238,7 +2240,7 @@ mod test {
         // Block 11 carries the state root hash from executing block 6 the state
         // root hash is missing. The certificates are processed - consensus enters new round and commit blocks, but it doesn't vote
         let p = env.next_proposal(
-            FullTransactionList::new(vec![0xaa].into()),
+            make_txn(1),
             ExecutionArtifacts {
                 state_root: StateRootHash(Hash([0x06_u8; 32])),
                 ..ExecutionArtifacts::zero()
@@ -2355,7 +2357,7 @@ mod test {
         let _ = node.handle_proposal_message(author, verified_message);
 
         let p1 = env.next_proposal(
-            FullTransactionList::new(vec![0xaa].into()),
+            make_txn(1),
             ExecutionArtifacts {
                 parent_hash: Default::default(),
                 state_root: StateRootHash(Hash([0x99; 32])),
@@ -2428,6 +2430,30 @@ mod test {
             .contains_key(&SeqNum(2)));
     }
 
+    fn make_txn(nonce: u64) -> FullTransactionList {
+        let tx = Transaction::Legacy(TxLegacy {
+            chain_id: None,
+            nonce,
+            gas_price: Default::default(),
+            gas_limit: Default::default(),
+            to: Default::default(),
+            value: Default::default(),
+            input: Default::default(),
+        });
+        FullTransactionList::new(
+            EthFullTransactionList(vec![EthTransaction::from_signed_transaction(
+                TransactionSigned {
+                    hash: tx.signature_hash(),
+                    signature: sign_message(FixedBytes::repeat_byte(1), tx.signature_hash())
+                        .expect("signature should always succeed"),
+                    transaction: Default::default(),
+                },
+                Address(FixedBytes::repeat_byte(1)),
+            )])
+            .rlp_encode(),
+        )
+    }
+
     #[test]
     fn test_fetch_uncommitted_block() {
         let num_state = 4;
@@ -2459,10 +2485,7 @@ mod test {
         assert_eq!(full_block.get_id(), bid_correct);
 
         // you can also receive a branch, which would cause pending block tree retrieval to also be valid
-        let bp1 = env.branch_proposal(
-            FullTransactionList::new(vec![13, 32].into()),
-            ExecutionArtifacts::zero(),
-        );
+        let bp1 = env.branch_proposal(make_txn(1), ExecutionArtifacts::zero());
 
         let (author, _, verified_message) = bp1.destructure();
         let block_1 = verified_message.block.clone();

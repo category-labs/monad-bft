@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::File,
     io::{Read, Write},
     os::fd::FromRawFd,
@@ -99,7 +100,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 controller.pool.create_proposal(
                     proposal_txn_limit,
                     controller.gas_limit,
-                    vec![controller.transactions.clone()],
+                    HashSet::default(),
                 );
                 control.write_all(b"disable\n").unwrap();
                 control_ack.read_exact(&mut buf).unwrap();
