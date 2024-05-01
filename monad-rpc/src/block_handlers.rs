@@ -11,9 +11,9 @@ use crate::{
     eth_json_types::{
         deserialize_block_tags, deserialize_fixed_data, serialize_result, BlockTags, EthHash,
     },
-    eth_txn_handlers::parse_tx_content,
+    eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::JsonRpcError,
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{TransactionReceipt, TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
@@ -227,4 +227,56 @@ pub async fn monad_eth_getBlockTransactionCountByNumber(
 
     let count = value.block.body.len() as u64;
     serialize_result(format!("0x{:x}", count))
+}
+
+#[derive(Deserialize, Debug)]
+struct MonadEthGetBlockReceiptsParams {
+    #[serde(deserialize_with = "deserialize_block_tags")]
+    block_tag: BlockTags,
+}
+
+#[allow(non_snake_case)]
+pub async fn monad_eth_getBlockReceipts(
+    blockdb_env: &BlockDbEnv,
+    triedb_env: &TriedbEnv,
+    params: Value,
+) -> Result<Value, JsonRpcError> {
+    trace!("monad_eth_getBlockReceipts: {params:?}");
+
+    let p: MonadEthGetBlockReceiptsParams = match serde_json::from_value(params) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("invalid params {e}");
+            return Err(JsonRpcError::invalid_params());
+        }
+    };
+
+    let Some(block) = blockdb_env.get_block_by_tag(p.block_tag).await else {
+        return serialize_result(None::<Vec<TransactionReceipt>>);
+    };
+    let block_num = block.block.number;
+
+    let mut block_receipts: Vec<TransactionReceipt> = vec![];
+    for txn_index in 0..block.block.body.len() {
+        match triedb_env.get_receipt(txn_index as u64, block_num).await {
+            TriedbResult::Null => continue,
+            TriedbResult::Receipt(rlp_receipt) => {
+                let mut rlp_buf = rlp_receipt.as_slice();
+
+                let Some(receipt) =
+                    parse_tx_receipt(&block, &mut rlp_buf, block_num, txn_index as u64)
+                else {
+                    return Err(JsonRpcError::internal_error());
+                };
+                block_receipts.push(receipt);
+            }
+            _ => return Err(JsonRpcError::internal_error()),
+        }
+    }
+
+    if block_receipts.is_empty() {
+        serialize_result(None::<Vec<TransactionReceipt>>)
+    } else {
+        serialize_result(Some(block_receipts))
+    }
 }

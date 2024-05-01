@@ -12,7 +12,8 @@ use actix_web::{
 };
 use block_handlers::{
     monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash, monad_eth_getBlockByNumber,
-    monad_eth_getBlockTransactionCountByHash, monad_eth_getBlockTransactionCountByNumber,
+    monad_eth_getBlockReceipts, monad_eth_getBlockTransactionCountByHash,
+    monad_eth_getBlockTransactionCountByNumber,
 };
 use clap::Parser;
 use cli::Cli;
@@ -270,6 +271,17 @@ async fn rpc_select(
             };
 
             monad_eth_getTransactionReceipt(blockdb_reader, triedb_reader, params).await
+        }
+        "eth_getBlockReceipts" => {
+            let Some(triedb_reader) = &app_state.triedb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(blockdb_reader) = &app_state.blockdb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            monad_eth_getBlockReceipts(blockdb_reader, triedb_reader, params).await
         }
         "eth_sendTransaction" => Err(JsonRpcError::method_not_supported()),
         "eth_signTransaction" => Err(JsonRpcError::method_not_supported()),

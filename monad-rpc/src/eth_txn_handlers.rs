@@ -89,6 +89,62 @@ pub fn parse_tx_content(
     Some(retval)
 }
 
+pub fn parse_tx_receipt(
+    block: &BlockValue,
+    rlp_receipt: &mut &[u8],
+    block_num: u64,
+    tx_index: u64,
+) -> Option<TransactionReceipt> {
+    // decode transaction type from buffer
+    let tx_type = match decode_tx_type(rlp_receipt) {
+        Ok(tx_type) => tx_type,
+        Err(e) => {
+            debug!("tx type decode error: {e}");
+            return None::<TransactionReceipt>;
+        }
+    };
+
+    match ReceiptDetails::decode(rlp_receipt) {
+        Ok(r) => {
+            let tx = block.block.body.get(tx_index as usize)?;
+            let transaction = tx
+                .clone()
+                .into_ecrecovered_unchecked()
+                .expect("transaction sender should exist");
+            let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default() as u128;
+            // effective gas price is calculated according to eth json rpc specification
+            let effective_gas_price = base_fee_per_gas
+                + min(
+                    tx.max_fee_per_gas() - base_fee_per_gas,
+                    tx.max_priority_fee_per_gas().unwrap(),
+                );
+            let tx_receipt = TransactionReceipt {
+                transaction_type: tx_type,
+                transaction_hash: Some(tx.hash()),
+                transaction_index: U64::from(tx_index),
+                block_hash: Some(block.block.hash_slow()),
+                block_number: Some(U256::from(block_num)),
+                from: transaction.signer(),
+                to: tx.to(),
+                // TODO: read from triedb to determine whether a contract is deployed
+                contract_address: None,
+                // TODO: gas_used = cumulative_gas_used[txn_index] - cumulative_gas_used[txn_index-1]
+                gas_used: U128::from(21000),
+                effective_gas_price: U128::from(effective_gas_price),
+                details: r,
+                // TODO: EIP4844 fields
+                blob_gas_used: None,
+                blob_gas_price: None,
+            };
+            Some(tx_receipt)
+        }
+        Err(e) => {
+            debug!("receipt decode error: {e}");
+            None::<TransactionReceipt>
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 struct MonadEthSendRawTransactionParams {
     #[serde(deserialize_with = "deserialize_unformatted_data")]
@@ -168,56 +224,10 @@ pub async fn monad_eth_getTransactionReceipt(
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
 
-            // decode transaction type from buffer
-            let tx_type = match decode_tx_type(&mut rlp_buf) {
-                Ok(tx_type) => tx_type,
-                Err(e) => {
-                    debug!("tx type decode error: {e}");
-                    return Err(JsonRpcError::internal_error());
-                }
+            let Some(receipt) = parse_tx_receipt(&block, &mut rlp_buf, block_num, txn_index) else {
+                return Err(JsonRpcError::internal_error());
             };
-
-            match ReceiptDetails::decode(&mut rlp_buf) {
-                Ok(r) => {
-                    let Some(tx) = block.block.body.get(txn_index as usize) else {
-                        return serialize_result(None::<TransactionReceipt>);
-                    };
-                    let transaction = tx
-                        .clone()
-                        .into_ecrecovered_unchecked()
-                        .expect("transaction sender should exist");
-                    let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default() as u128;
-                    // effective gas price is calculated according to eth json rpc specification
-                    let effective_gas_price = base_fee_per_gas
-                        + min(
-                            tx.max_fee_per_gas() - base_fee_per_gas,
-                            tx.max_priority_fee_per_gas().unwrap(),
-                        );
-                    let tx_receipt = TransactionReceipt {
-                        transaction_type: tx_type,
-                        transaction_hash: Some(tx.hash()),
-                        transaction_index: U64::from(txn_index),
-                        block_hash: Some(block.block.hash_slow()),
-                        block_number: Some(U256::from(block_num)),
-                        from: transaction.signer(),
-                        to: tx.to(),
-                        // TODO: read from triedb to determine whether a contract is deployed
-                        contract_address: None,
-                        // TODO: gas_used = cumulative_gas_used[txn_index] - cumulative_gas_used[txn_index-1]
-                        gas_used: U128::from(21000),
-                        effective_gas_price: U128::from(effective_gas_price),
-                        details: r,
-                        // TODO: EIP4844 fields
-                        blob_gas_used: None,
-                        blob_gas_price: None,
-                    };
-                    serialize_result(Some(tx_receipt))
-                }
-                Err(e) => {
-                    debug!("receipt decode error: {e}");
-                    Err(JsonRpcError::internal_error())
-                }
-            }
+            serialize_result(Some(receipt))
         }
         _ => Err(JsonRpcError::internal_error()),
     }
