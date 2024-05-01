@@ -140,7 +140,11 @@ impl<'k, C: Chunker<'k>> Seeder<'k, C> {
 
         if is_broadcast_message {
             // ensure that it fits inside a datagram
-            assert!(message.remaining() <= MAX_DATAGRAM_SIZE);
+            assert!(
+                message.remaining() <= MAX_DATAGRAM_SIZE,
+                "message.remaining() = {}",
+                message.remaining()
+            );
         }
 
         message

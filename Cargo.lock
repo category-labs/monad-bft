@@ -3415,6 +3415,7 @@ dependencies = [
  "criterion",
  "fastrand",
  "monad-crypto",
+ "monad-merkle",
  "monad-secp",
  "monad-transformer",
  "monad-types",
@@ -3489,6 +3490,14 @@ dependencies = [
  "reth-primitives",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "monad-merkle"
+version = "0.1.0"
+dependencies = [
+ "monad-crypto",
+ "serde",
 ]
 
 [[package]]

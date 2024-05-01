@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     error::Error,
     time::Duration,
 };
@@ -12,6 +12,7 @@ use monad_crypto::{
     },
     hasher::{Hash, Hasher, HasherType},
 };
+use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
 use monad_types::NodeId;
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -39,12 +40,19 @@ enum Role<'k, ST: CertificateSignatureRecoverable> {
         key: &'k ST::KeyPairType,
         encoder: Encoder,
         source_packets: Vec<EncodingPacket>,
-        repair_idx: Vec<u32>, // index of last generated symbol id, for given chunk idx
+        // index of last generated symbol id, for given chunk idx
+        repair_idx: Vec<u32>,
+        // pregenerated chunks that have yet to be sent
+        pending_chunks: Vec<(RaptorChunk<ST>, Bytes)>,
     },
     Decoder {
         seeder: bool,
         decoder: Decoder,
         chunks: BTreeMap<raptorq::PayloadId, ChunkData<ST>>,
+
+        // cached signatures for fast-path verification of merkle root
+        // TODO cap size of this
+        signature_cache: HashMap<ST, (MerkleHash, CertificateSignaturePubKey<ST>)>,
     },
 }
 
@@ -53,6 +61,8 @@ struct ChunkData<ST: CertificateSignatureRecoverable> {
     data: Bytes,
     to_forward: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
 }
+
+const MERKLE_PACKET_BATCH: u16 = 8;
 
 impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
     type SignatureType = ST;
@@ -70,10 +80,14 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         // FIXME set this RNG non-jankly
         let rng = ChaCha8Rng::from_seed(me.pubkey().bytes()[..32].try_into().unwrap());
 
-        // TODO size this properly
-        let raptor_symbol_size = MAX_DATAGRAM_SIZE - 150;
+        // TODO size this properly without magic numbers - right now it's set overconservatively
+        let raptor_symbol_size: u16 = MAX_DATAGRAM_SIZE as u16
+            // buffer for header (signature + other metadata)
+            - 150
+            // merkle proof
+            - std::mem::size_of::<MerkleHash>() as u16 * MERKLE_PACKET_BATCH.ilog2() as u16;
 
-        let encoder = Encoder::with_defaults(&message, raptor_symbol_size.try_into().unwrap());
+        let encoder = Encoder::with_defaults(&message, raptor_symbol_size);
         let meta = RaptorMeta::create(key, &message, time, encoder.get_config());
 
         let mut source_packets = Vec::new();
@@ -96,6 +110,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
                 encoder,
                 source_packets,
                 repair_idx,
+                pending_chunks: Vec::new(),
             },
             non_seeders: all_peers.iter().copied().filter(|id| id != &me).collect(),
         }
@@ -131,6 +146,7 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
                 seeder: false,
                 decoder,
                 chunks: Default::default(),
+                signature_cache: Default::default(),
             },
             non_seeders: all_peers
                 .iter()
@@ -173,24 +189,35 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
         data: Bytes,
     ) -> Result<Option<AppMessage>, Box<dyn Error>> {
         assert!(!self.is_seeder());
-        // TODO validate that fields in `chunk` are valid
-        let chunk_hash = Self::Chunk::compute_hash(&self.meta.id(), &data);
-        let signer = chunk
-            .signature
-            .recover_pubkey(chunk_hash.as_slice())
-            .map_err(|_| "failed to recover pubkey")?;
-        if self.creator.pubkey() != signer {
-            return Err("chunk wasn't signed by publisher!".into());
-        }
-
         let Role::Decoder {
             ref mut decoder,
             ref mut seeder,
             ref mut chunks,
+            ref mut signature_cache,
         } = self.role
         else {
             unreachable!("invariant broken, not seeder");
         };
+
+        // TODO validate that fields in `chunk` are valid
+        let merkle_root = chunk
+            .compute_merkle_root(&data)
+            .ok_or("invalid merkle proof")?;
+
+        if let Some((cached_root, author)) = signature_cache.get(&chunk.signature) {
+            if cached_root != &merkle_root || author != &self.creator.pubkey() {
+                return Err("chunk wasn't signed by publisher!".into());
+            }
+        } else {
+            let signer = chunk
+                .signature
+                .recover_pubkey(&merkle_root)
+                .map_err(|_| "failed to recover pubkey")?;
+            if self.creator.pubkey() != signer {
+                return Err("chunk wasn't signed by publisher!".into());
+            }
+            signature_cache.insert(chunk.signature, (merkle_root, signer));
+        }
 
         let encoding_packet = EncodingPacket::deserialize(data.as_ref());
 
@@ -228,24 +255,36 @@ impl<'k, ST: CertificateSignatureRecoverable> Chunker<'k> for Raptor<'k, ST> {
                 source_packets,
                 encoder,
                 repair_idx,
+                pending_chunks,
             } => {
                 let to_node = **self
                     .non_seeders
                     .iter()
                     .collect::<Vec<_>>()
                     .choose(&mut self.rng)?;
-                let packet = source_packets.pop().unwrap_or_else(|| {
-                    let idx = self.rng.gen_range(0..encoder.get_block_encoders().len());
-                    let encoder = &encoder.get_block_encoders()[idx];
-                    let repair_idx = &mut repair_idx[idx];
-                    let mut repair_packet = encoder.repair_packets(*repair_idx, 1);
-                    *repair_idx += 1;
-                    repair_packet
-                        .pop()
-                        .expect("failed to generate repair packet")
-                });
-                let data: Bytes = packet.serialize().into();
-                let chunk = RaptorChunk::create(*key, self.meta.id(), &data);
+                if pending_chunks.is_empty() {
+                    // generate merkle batch
+                    let packets = {
+                        let mut packets = Vec::new();
+                        while packets.len() < MERKLE_PACKET_BATCH.into() {
+                            let packet = source_packets.pop().unwrap_or_else(|| {
+                                let idx = self.rng.gen_range(0..encoder.get_block_encoders().len());
+                                let encoder = &encoder.get_block_encoders()[idx];
+                                let repair_idx = &mut repair_idx[idx];
+                                let mut repair_packet = encoder.repair_packets(*repair_idx, 1);
+                                *repair_idx += 1;
+                                repair_packet
+                                    .pop()
+                                    .expect("failed to generate repair packet")
+                            });
+                            let data: Bytes = packet.serialize().into();
+                            packets.push(data);
+                        }
+                        packets
+                    };
+                    *pending_chunks = RaptorChunk::create(*key, self.meta.id(), packets);
+                };
+                let (chunk, data) = pending_chunks.pop().expect("must be existing chunks");
                 Some((to_node, chunk, data))
             }
             Role::Decoder { chunks, .. } => loop {
@@ -345,26 +384,58 @@ impl<ST: CertificateSignatureRecoverable> RaptorMeta<ST> {
 pub struct RaptorChunk<ST: CertificateSignatureRecoverable> {
     payload_id: RaptorPayloadId,
 
+    merkle_proof: MerkleProof,
+
     #[serde(with = "signature_serde")]
     #[serde(bound = "")]
     signature: ST,
 }
 
 impl<ST: CertificateSignatureRecoverable> RaptorChunk<ST> {
-    fn compute_hash(payload_id: &RaptorPayloadId, chunk: &Bytes) -> Hash {
+    /// Compute merkle root of chunk given merkle proof and payload
+    fn compute_merkle_root(&self, chunk: &Bytes) -> Option<MerkleHash> {
+        let leaf = Self::compute_payload_hash(&self.payload_id, chunk);
+        self.merkle_proof.compute_root(&leaf)
+    }
+
+    fn compute_payload_hash(payload_id: &RaptorPayloadId, chunk: &Bytes) -> Hash {
         let mut hasher = HasherType::new();
         hasher.update(payload_id.0);
         hasher.update(chunk);
         hasher.hash()
     }
 
-    pub fn create(key: &ST::KeyPairType, payload_id: RaptorPayloadId, chunk: &Bytes) -> Self {
-        let hash = Self::compute_hash(&payload_id, chunk);
-        let signature = ST::sign(hash.as_slice(), key);
-        Self {
-            payload_id,
-            signature,
-        }
+    pub fn create(
+        key: &ST::KeyPairType,
+        payload_id: RaptorPayloadId,
+        chunks: Vec<Bytes>,
+    ) -> Vec<(Self, Bytes)> {
+        assert!(!chunks.is_empty());
+
+        let leaves = chunks
+            .iter()
+            .map(|chunk| Self::compute_payload_hash(&payload_id, chunk))
+            .collect::<Vec<_>>();
+
+        let merkle_tree = MerkleTree::new(&leaves);
+
+        // TODO add prefix so this is safe and signature can't be re-used?
+        let root_signature = ST::sign(merkle_tree.root(), key);
+
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(idx, chunk)| {
+                let merkle_proof =
+                    merkle_tree.proof(idx.try_into().expect("number of chunks should fit in u8"));
+                let raptor_chunk = Self {
+                    payload_id,
+                    merkle_proof,
+                    signature: root_signature,
+                };
+                (raptor_chunk, chunk)
+            })
+            .collect()
     }
 }
 
