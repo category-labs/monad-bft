@@ -5,6 +5,7 @@ use std::{ops::Deref, path::Path, pin::pin};
 use alloy_primitives::{bytes::BytesMut, private::alloy_rlp::Encodable, Bytes};
 use autocxx::{block, moveit::moveit};
 use futures::pin_mut;
+use tracing::debug;
 
 autocxx::include_cpp! {
     #include "eth_call.hpp"
@@ -62,7 +63,9 @@ pub fn eth_call(
     }
 
     let status_code = result.deref().get_status_code().0 as i32;
+    debug!("status_code {:?}", status_code);
     let output_data = result.deref().get_output_data().as_slice().to_vec();
+    debug!("output_data {:?}", output_data);
 
     if status_code != EVMC_SUCCESS {
         Err(status_code)

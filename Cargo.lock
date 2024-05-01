@@ -3317,6 +3317,7 @@ dependencies = [
  "futures",
  "hex",
  "hex-literal",
+ "log",
  "monad-eth-tx",
  "reth-primitives",
  "tempfile",

@@ -16,6 +16,7 @@ futures = { workspace = true }
 hex = { workspace = true }
 hex-literal = { workspace = true }
 reth-primitives = { workspace = true }
+tracing = { workspace = true }
 
 monad-eth-tx = { path = "../monad-eth-tx" }
 
