@@ -86,7 +86,7 @@ monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_encoded_transaction,
     std::vector<uint8_t> const &rlp_encoded_block_header,
     std::vector<uint8_t> const &rlp_encoded_sender, uint64_t const block_number,
-    std::string const &triedb_path, std::string const &block_db_path)
+    std::string const &triedb_path, [[maybe_unused]] std::string const &block_db_path)
 {
     byte_string_view encoded_transaction(
         rlp_encoded_transaction.begin(), rlp_encoded_transaction.end());
@@ -111,6 +111,8 @@ monad_evmc_result eth_call(
     auto const sender = sender_result.value();
 
     BlockHashBuffer buffer{};
+    // FIXME: temporarily commented out because the block_db in execution_apis is different than chain.rlp
+    /*
     uint64_t start_block_number = block_number < 256 ? 1 : block_number - 255;
     BlockDb block_db{block_db_path.c_str()};
 
@@ -121,6 +123,7 @@ monad_evmc_result eth_call(
         buffer.set(start_block_number - 1, block.header.parent_hash);
         ++start_block_number;
     }
+    */
 
     // TODO: construct triedb_path properly
     auto evmc_result = eth_call_helper(

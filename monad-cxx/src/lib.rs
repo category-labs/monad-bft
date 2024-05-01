@@ -126,4 +126,36 @@ mod test {
             "5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953"
         )
     }
+
+    // This is corresponding to 
+    // https://github.com/ethereum/execution-apis/blob/main/tests/eth_call/call-callenv.io
+    #[ignore]
+    #[test]
+    fn test_execution_apis_call_env() {
+        // FIXME: Create a completely dummy block db
+        let dummy_block_db_file = tempfile::TempDir::with_prefix("blockdb").unwrap();
+        let result = eth_call(
+            reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
+                chain_id: Some(1337),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 100000,
+                to: reth_primitives::TransactionKind::Call(
+                    hex!("9344b07175800259691961298ca11c824e65032d").into(),
+                ),
+                value: Default::default(),
+                input: Default::default(),
+            }),
+            reth_primitives::Header::default(),
+            hex!("0000000000000000000000000000000000000000").into(),
+            // FIXME: hard-coded path of on-disk execution apis db file
+            Path::new("/home/tzhi/test_execution_apis.db"),
+            dummy_block_db_file.path(),
+        );
+
+        assert_eq!(
+            hex::encode(result.unwrap()),
+            "0000000000000000000000000000000000000000000000000000000000000014000000000000000000000000000000000000000000000000000c72dd9d5e883e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
 }
