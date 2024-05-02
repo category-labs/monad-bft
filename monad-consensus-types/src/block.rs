@@ -50,7 +50,7 @@ pub struct Block<SCT: SignatureCollection> {
     /// protocol agnostic data for the blockchain
     pub payload: Payload,
 
-    /// Certificate of votes for this block
+    /// Certificate of votes for the parent block
     pub qc: QuorumCertificate<SCT>,
 
     /// Unique hash used to identify the block
