@@ -7,7 +7,11 @@ fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=include");
     println!("cargo:rerun-if-changed=monad-execution");
+    println!("cargo:rerun-if-env-changed=ETH_CALL_TARGET");
     let target = env::var("ETH_CALL_TARGET").unwrap_or("mock_eth_call".to_owned());
+    if target != "mock_eth_call" {
+        println!("cargo:rustc-cfg=triedb")
+    }
     println!("cargo:warning=target {}", &target);
     let includes = [
         "include",

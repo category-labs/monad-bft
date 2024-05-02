@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use alloy_primitives::{Address, U256, U64, U8};
+use alloy_primitives::{Address, Uint, U256, U64, U8};
 use log::debug;
 use monad_blockdb::BlockTagKey;
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ pub async fn monad_eth_call(
 
     // FIXME: add support for other types of transactions
     let txn = reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-        chain_id: Some(1337),
+        chain_id: Some(1),
         nonce: params
             .transaction
             .nonce
@@ -89,7 +89,7 @@ pub async fn monad_eth_call(
         gas_limit: params
             .transaction
             .gas
-            .unwrap_or_default()
+            .unwrap_or(Uint::from(i64::MAX))
             .try_into()
             .map_err(|_| JsonRpcError::invalid_params())?,
         to: reth_primitives::TransactionKind::Call(params.transaction.to.unwrap_or_default()),
@@ -97,11 +97,13 @@ pub async fn monad_eth_call(
         input: params.transaction.input.data.unwrap_or_default(),
     });
     let sender = params.transaction.from.unwrap_or_default();
+    let block_number = block_header.block.header.number;
 
     match monad_cxx::eth_call(
         txn,
         block_header.block.header,
         sender,
+        block_number,
         triedb_path,
         execution_ledger_path,
     ) {

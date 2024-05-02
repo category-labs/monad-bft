@@ -14,11 +14,7 @@ struct monad_evmc_result
     std::vector<uint8_t> get_output_data() const;
 };
 
-using block_num_t = uint64_t;
-
 monad_evmc_result eth_call(
-    std::vector<uint8_t> const &rlp_encoded_transaction,
-    std::vector<uint8_t> const &rlp_encoded_block_header,
-    std::vector<uint8_t> const &rlp_encoded_sender,
-    block_num_t const block_number, std::string const &triedb_path,
-    std::string const &block_db_path);
+    std::vector<uint8_t> const &rlp_txn, std::vector<uint8_t> const &rlp_header,
+    std::vector<uint8_t> const &rlp_sender, uint64_t block_number,
+    std::string const &triedb_path, std::string const &blockdb_path);
