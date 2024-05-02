@@ -43,6 +43,7 @@ fn make_mock_gossip<PT: PubKey>(all_peers: &[NodeId<PT>], me: &NodeId<PT>) -> Mo
     MockGossipConfig {
         all_peers: all_peers.to_vec(),
         me: *me,
+        message_delay: Duration::ZERO,
     }
     .build()
 }

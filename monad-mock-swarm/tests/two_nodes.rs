@@ -149,6 +149,7 @@ fn two_nodes_quic_latency() {
                         MockGossipConfig {
                             all_peers: all_peers.iter().copied().collect(),
                             me,
+                            message_delay: Duration::ZERO,
                         }
                         .build(),
                         delta,
@@ -268,6 +269,7 @@ fn two_nodes_quic_bw() {
                         MockGossipConfig {
                             all_peers: all_peers.iter().copied().collect(),
                             me,
+                            message_delay: Duration::ZERO,
                         }
                         .build(),
                         delta,

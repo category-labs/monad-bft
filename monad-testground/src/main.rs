@@ -311,6 +311,7 @@ where
                                             .map(|(node_id, _, _)| *node_id)
                                             .collect(),
                                         me,
+                                        message_delay: Duration::ZERO,
                                     })
                                 }
                                 GossipArgs::Gossipsub { fanout } => {

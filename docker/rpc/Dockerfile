@@ -35,6 +35,7 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 WORKDIR /usr/src/monad-bft
 COPY . .
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
+    --mount=type=cache,target=${CARGO_ROOT}/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \

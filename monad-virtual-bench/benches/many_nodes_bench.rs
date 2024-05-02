@@ -155,6 +155,7 @@ fn many_nodes_nop_timeout() -> u128 {
                         MockGossipConfig {
                             all_peers: all_peers.iter().cloned().collect(),
                             me,
+                            message_delay: Duration::ZERO,
                         }
                         .build(),
                         Duration::from_millis(100),
@@ -230,6 +231,7 @@ fn many_nodes_bls_timeout() -> u128 {
                         MockGossipConfig {
                             all_peers: all_peers.iter().cloned().collect(),
                             me,
+                            message_delay: Duration::ZERO,
                         }
                         .build(),
                         Duration::from_millis(200),

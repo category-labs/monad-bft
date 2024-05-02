@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::BinaryHeap, time::Duration};
 
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, RouterTarget};
@@ -9,15 +9,55 @@ use crate::{AppMessage, GossipMessage};
 pub struct MockGossipConfig<PT: PubKey> {
     pub all_peers: Vec<NodeId<PT>>,
     pub me: NodeId<PT>,
+    pub message_delay: Duration,
 }
 
 impl<PT: PubKey> MockGossipConfig<PT> {
     pub fn build(self) -> MockGossip<PT> {
+        assert!(
+            self.all_peers.len() == 1 || self.message_delay.is_zero(),
+            "Message delay only enabled for single node"
+        );
+
         MockGossip {
             config: self,
 
-            events: VecDeque::default(),
+            events: BinaryHeap::default(),
             current_tick: Duration::ZERO,
+        }
+    }
+}
+
+struct TimedGossipEvent<PT: PubKey> {
+    deliver: Duration,
+    event: GossipEvent<PT>,
+}
+
+impl<PT: PubKey> PartialOrd for TimedGossipEvent<PT> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(other.deliver.cmp(&self.deliver))
+    }
+}
+
+impl<PT: PubKey> Ord for TimedGossipEvent<PT> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.deliver.cmp(&self.deliver)
+    }
+}
+
+impl<PT: PubKey> PartialEq for TimedGossipEvent<PT> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deliver.eq(&other.deliver)
+    }
+}
+
+impl<PT: PubKey> Eq for TimedGossipEvent<PT> {}
+
+impl<PT: PubKey> GossipEvent<PT> {
+    fn into_timed(self, time: Duration) -> TimedGossipEvent<PT> {
+        TimedGossipEvent {
+            deliver: time,
+            event: self,
         }
     }
 }
@@ -25,7 +65,7 @@ impl<PT: PubKey> MockGossipConfig<PT> {
 pub struct MockGossip<PT: PubKey> {
     config: MockGossipConfig<PT>,
 
-    events: VecDeque<GossipEvent<PT>>,
+    events: BinaryHeap<TimedGossipEvent<PT>>,
     current_tick: Duration,
 }
 
@@ -38,23 +78,28 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
             RouterTarget::Broadcast => {
                 for to in &self.config.all_peers {
                     if to == &self.config.me {
-                        self.events
-                            .push_back(GossipEvent::Emit(self.config.me, message.clone()))
+                        self.events.push(
+                            GossipEvent::Emit(self.config.me, message.clone())
+                                .into_timed(time + self.config.message_delay),
+                        )
                     } else {
-                        self.events.push_back(GossipEvent::Send(
-                            *to,
-                            std::iter::once(message.clone()).collect(),
-                        ))
+                        self.events.push(
+                            GossipEvent::Send(*to, std::iter::once(message.clone()).collect())
+                                .into_timed(time),
+                        )
                     }
                 }
             }
             RouterTarget::PointToPoint(to) => {
                 if to == self.config.me {
-                    self.events
-                        .push_back(GossipEvent::Emit(self.config.me, message))
+                    self.events.push(
+                        GossipEvent::Emit(self.config.me, message)
+                            .into_timed(time + self.config.message_delay),
+                    )
                 } else {
-                    self.events
-                        .push_back(GossipEvent::Send(to, std::iter::once(message).collect()))
+                    self.events.push(
+                        GossipEvent::Send(to, std::iter::once(message).collect()).into_timed(time),
+                    )
                 }
             }
         }
@@ -68,12 +113,12 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
     ) {
         self.current_tick = time;
         self.events
-            .push_back(GossipEvent::Emit(from, gossip_message));
+            .push(GossipEvent::Emit(from, gossip_message).into_timed(time));
     }
 
     fn peek_tick(&self) -> Option<Duration> {
         if !self.events.is_empty() {
-            Some(self.current_tick)
+            Some(self.events.peek().unwrap().deliver)
         } else {
             None
         }
@@ -81,7 +126,12 @@ impl<PT: PubKey> Gossip for MockGossip<PT> {
 
     fn poll(&mut self, time: Duration) -> Option<GossipEvent<Self::NodeIdPubKey>> {
         assert!(time >= self.current_tick);
-        self.events.pop_front()
+        if let Some(event) = self.events.peek() {
+            if event.deliver <= time {
+                return self.events.pop().map(|te| te.event);
+            }
+        }
+        None
     }
 }
 
@@ -108,6 +158,7 @@ mod tests {
                 MockGossipConfig {
                     all_peers: all_peers.to_vec(),
                     me: *me,
+                    message_delay: Duration::ZERO,
                 }
                 .build()
             },

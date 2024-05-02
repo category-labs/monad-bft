@@ -26,6 +26,7 @@ use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
 use monad_gossip::{
+    mock::MockGossipConfig,
     seeder::{Raptor, SeederConfig},
     Gossip,
 };
@@ -137,14 +138,7 @@ async fn run(
     maybe_coordinator_provider: Option<TracerProvider>,
     node_state: NodeState,
 ) -> Result<(), ()> {
-    let router = build_router::<
-        MonadMessage<SignatureType, SignatureCollectionType>,
-        VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
-        _,
-    >(
-        node_state.node_config.network.clone(),
-        &node_state.secp256k1_identity,
-        &node_state.node_config.bootstrap.peers,
+    let gossip = if node_state.genesis_config.validators.len() > 1 {
         SeederConfig::<Raptor<SignatureType>> {
             all_peers: node_state
                 .genesis_config
@@ -165,7 +159,32 @@ async fn run(
             up_bandwidth_Mbps: node_state.node_config.network.max_mbps,
             chunker_poll_interval: Duration::from_millis(10),
         }
-        .build(),
+        .build()
+        .boxed()
+    } else {
+        MockGossipConfig {
+            all_peers: node_state
+                .genesis_config
+                .validators
+                .iter()
+                .map(|peer| NodeId::new(peer.secp256k1_pubkey))
+                .collect(),
+            me: NodeId::new(node_state.secp256k1_identity.pubkey()),
+            message_delay: Duration::from_millis(node_state.node_config.network.max_rtt_ms / 2),
+        }
+        .build()
+        .boxed()
+    };
+
+    let router = build_router::<
+        MonadMessage<SignatureType, SignatureCollectionType>,
+        VerifiedMonadMessage<SignatureType, SignatureCollectionType>,
+        _,
+    >(
+        node_state.node_config.network.clone(),
+        &node_state.secp256k1_identity,
+        &node_state.node_config.bootstrap.peers,
+        gossip,
     )
     .await;
 

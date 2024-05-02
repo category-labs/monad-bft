@@ -248,6 +248,7 @@ mod tests {
                     let gossip = MockGossipConfig {
                         all_peers: all_peers.clone(),
                         me,
+                        message_delay: Duration::ZERO,
                     }
                     .build();
                     let connection_manager = ConnectionManager::new(gossip);

@@ -137,6 +137,7 @@ fn many_nodes_quic_latency() {
                         MockGossipConfig {
                             all_peers: all_peers.iter().copied().collect(),
                             me,
+                            message_delay: Duration::ZERO,
                         }
                         .build(),
                         delta * 2,
@@ -234,6 +235,7 @@ fn many_nodes_quic_bw() {
                         MockGossipConfig {
                             all_peers: all_peers.iter().copied().collect(),
                             me,
+                            message_delay: Duration::ZERO,
                         }
                         .build(),
                         delta,
@@ -265,7 +267,7 @@ fn many_nodes_quic_bw() {
     swarm_ledger_verification(&swarm, min_ledger_len);
 
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(105), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(106), Duration::from_secs(1));
 
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier
