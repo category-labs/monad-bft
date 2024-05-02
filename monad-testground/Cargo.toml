@@ -16,7 +16,6 @@ monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-ipc = { path = "../monad-ipc" }
 monad-gossip = { path = "../monad-gossip" }
-monad-ledger = { path = "../monad-ledger" }
 monad-mock-swarm = { path = "../monad-mock-swarm" }
 monad-multi-sig = { path = "../monad-multi-sig" }
 monad-quic = { path = "../monad-quic" }

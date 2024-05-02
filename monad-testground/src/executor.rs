@@ -19,7 +19,6 @@ use monad_gossip::{
     Gossip,
 };
 use monad_ipc::{generate_uds_path, IpcReceiver};
-use monad_ledger::MonadFileLedger;
 use monad_mock_swarm::mock::MockExecutionLedger;
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_state::{
@@ -59,7 +58,6 @@ where
 
 pub enum ExecutionLedgerConfig {
     Mock,
-    File,
 }
 
 pub enum StateRootHashConfig<SCT>
@@ -128,9 +126,6 @@ where
         ledger: MockLedger::default(),
         execution_ledger: match config.execution_ledger_config {
             ExecutionLedgerConfig::Mock => Executor::boxed(MockExecutionLedger::default()),
-            ExecutionLedgerConfig::File => Executor::boxed(MonadFileLedger::new(
-                format!("{:?}-ledger", config.nodeid).into(),
-            )),
         },
         checkpoint: MockCheckpoint::default(),
         state_root_hash: match config.state_root_hash_config {

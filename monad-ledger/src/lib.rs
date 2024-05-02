@@ -23,67 +23,7 @@ use monad_types::SeqNum;
 use prost::Message;
 use reth_primitives::{Block, BlockBody, Header};
 
-/// A ledger for committed Ethereum blocks
-/// Blocks are RLP encoded and written to a file which is read by Execution client
-pub struct MonadFileLedger<SCT> {
-    file: File,
-
-    phantom: PhantomData<SCT>,
-}
-
-impl<SCT> Default for MonadFileLedger<SCT>
-where
-    SCT: SignatureCollection + Clone,
-{
-    fn default() -> Self {
-        Self::new(
-            tempfile::tempdir()
-                .unwrap()
-                .into_path()
-                .join("monad_file_ledger"),
-        )
-    }
-}
-
-impl<SCT> MonadFileLedger<SCT>
-where
-    SCT: SignatureCollection + Clone,
-{
-    pub fn new(file_path: PathBuf) -> Self {
-        Self {
-            file: File::create(file_path).unwrap(),
-
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<SCT> Executor for MonadFileLedger<SCT>
-where
-    SCT: SignatureCollection + Clone,
-{
-    type Command = ExecutionLedgerCommand<SCT>;
-
-    fn replay(&mut self, mut commands: Vec<Self::Command>) {
-        commands.retain(|cmd| match cmd {
-            // we match on all commands to be explicit
-            ExecutionLedgerCommand::LedgerCommit(..) => true,
-        });
-        self.exec(commands)
-    }
-
-    fn exec(&mut self, commands: Vec<Self::Command>) {
-        for command in commands {
-            match command {
-                ExecutionLedgerCommand::LedgerCommit(full_blocks) => {
-                    for full_block in full_blocks {
-                        self.file.write_all(&encode_full_block(full_block)).unwrap();
-                    }
-                }
-            }
-        }
-    }
-}
+type BlockHash = FixedBytes<32>;
 
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to their own individual file, named by the block
@@ -91,6 +31,7 @@ where
 pub struct MonadBlockFileLedger<SCT> {
     dir_path: PathBuf,
     blockdb: BlockDb,
+    last_committed_block_hash: BlockHash,
     phantom: PhantomData<SCT>,
 }
 
@@ -107,6 +48,9 @@ where
         Self {
             dir_path,
             blockdb,
+            // FIXME: deal with genesis and execution delay gap later
+            last_committed_block_hash: FixedBytes([0_u8; 32]),
+
             phantom: PhantomData,
         }
     }
@@ -119,6 +63,20 @@ where
         f.write_all(buf).unwrap();
 
         Ok(())
+    }
+
+    fn create_eth_block(&mut self, block: &MonadBlock<SCT>) -> Block {
+        // use the full transactions to create the eth block body
+        let block_body = generate_block_body(&block.payload.txns);
+
+        // the payload inside the monad block will be used to generate the eth header
+        let header = generate_header(self.last_committed_block_hash, block, &block_body);
+
+        let mut header_bytes = Vec::default();
+        header.encode(&mut header_bytes);
+
+        self.last_committed_block_hash = header.hash_slow();
+        block_body.create_block(header)
     }
 }
 
@@ -140,7 +98,10 @@ where
         for command in commands {
             match command {
                 ExecutionLedgerCommand::LedgerCommit(full_blocks) => {
-                    let eth_blocks: Vec<Block> = full_blocks.iter().map(create_eth_block).collect();
+                    let eth_blocks: Vec<Block> = full_blocks
+                        .iter()
+                        .map(|b| self.create_eth_block(b))
+                        .collect();
                     let encoded_blocks: Vec<(SeqNum, Vec<u8>)> =
                         std::iter::zip(eth_blocks.iter(), full_blocks.iter())
                             .map(|(eth, monad)| (monad.get_seq_num(), encode_eth_block(eth)))
@@ -168,40 +129,6 @@ where
     }
 }
 
-/// Create an RLP encoded Ethereum block from a Monad consensus block
-fn encode_full_block<SCT: SignatureCollection>(block: MonadBlock<SCT>) -> Vec<u8> {
-    // let (monad_block, monad_full_txs) = block.split();
-
-    // use the full transactions to create the eth block body
-    let block_body = generate_block_body(&block.payload.txns);
-
-    // the payload inside the monad block will be used to generate the eth header
-    let header = generate_header(&block, &block_body);
-
-    let mut header_bytes = Vec::default();
-    header.encode(&mut header_bytes);
-
-    let block = block_body.create_block(header);
-
-    let mut buf = vec![];
-    block.encode(&mut buf);
-
-    buf
-}
-
-fn create_eth_block<SCT: SignatureCollection>(block: &MonadBlock<SCT>) -> Block {
-    // use the full transactions to create the eth block body
-    let block_body = generate_block_body(&block.payload.txns);
-
-    // the payload inside the monad block will be used to generate the eth header
-    let header = generate_header(block, &block_body);
-
-    let mut header_bytes = Vec::default();
-    header.encode(&mut header_bytes);
-
-    block_body.create_block(header)
-}
-
 fn encode_eth_block(block: &Block) -> Vec<u8> {
     let mut buf = Vec::default();
     block.encode(&mut buf);
@@ -227,11 +154,12 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
 // TODO-2: Review integration with execution team
 /// Use data from the MonadBlock to generate an Ethereum Header
 fn generate_header<SCT: SignatureCollection>(
+    parent_hash: BlockHash,
     monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
 ) -> Header {
     let ExecutionArtifacts {
-        parent_hash,
+        parent_hash: _,
         state_root,
         transactions_root,
         receipts_root,
@@ -244,7 +172,7 @@ fn generate_header<SCT: SignatureCollection>(
     randao_reveal_hasher.update(monad_block.payload.randao_reveal.0.clone());
 
     Header {
-        parent_hash: FixedBytes(*parent_hash.deref()),
+        parent_hash, //TODO: Consider the execution delay gap FixedBytes(*parent_hash.deref()),
         ommers_hash: block_body.calculate_ommers_root(),
         beneficiary: monad_block.payload.beneficiary.0,
         state_root: FixedBytes(*state_root.deref()),

@@ -22,7 +22,6 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 prost = { workspace = true }
 reth-primitives = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",

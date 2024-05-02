@@ -97,7 +97,6 @@ enum GossipArgs {
 
 pub enum ExecutionLedgerArgs {
     Mock,
-    File,
 }
 
 fn make_provider(
@@ -342,7 +341,6 @@ where
                     },
                     execution_ledger_config: match args.execution_ledger {
                         ExecutionLedgerArgs::Mock => ExecutionLedgerConfig::Mock,
-                        ExecutionLedgerArgs::File => ExecutionLedgerConfig::File,
                     },
                     state_root_hash_config: StateRootHashConfig::Mock {
                         genesis_validator_data: validators.clone(),
