@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use log::debug;
 use monad_blockdb::BlockTagKey;
+use reth_primitives::U256;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -70,6 +71,13 @@ impl<const N: usize> FromStr for FixedData<N> {
     }
 }
 
+impl From<U256> for FixedData<32> {
+    fn from(u: U256) -> Self {
+        let bytes: [u8; 32] = u.to_be_bytes();
+        FixedData(bytes)
+    }
+}
+
 pub fn deserialize_fixed_data<'de, D, const N: usize>(
     deserializer: D,
 ) -> Result<FixedData<N>, D::Error>
@@ -121,6 +129,7 @@ pub fn serialize_result<T: Serialize>(value: T) -> Result<Value, JsonRpcError> {
 #[cfg(test)]
 mod tests {
     use monad_blockdb::BlockTagKey;
+    use reth_primitives::U256;
     use serde::Deserialize;
     use serde_json::json;
 
@@ -262,5 +271,11 @@ mod tests {
 
         let x: OneFixedHash = serde_json::from_value(hash).unwrap();
         assert_eq!(x.a.0.len(), 32);
+
+        let u = U256::from(1024);
+        let fixed_data = FixedData::from(u);
+        let mut expected_bytes = [0u8; 32];
+        expected_bytes[30] = 0x04;
+        assert_eq!(fixed_data.0, expected_bytes);
     }
 }
