@@ -15,11 +15,8 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::{Block, UnverifiedBlock},
-    metrics::Metrics,
-    signature_collection::SignatureCollection,
-    state_root_hash::StateRootHashInfo,
-    validator_data::ValidatorData,
+    block::Block, metrics::Metrics, signature_collection::SignatureCollection,
+    state_root_hash::StateRootHashInfo, validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -197,7 +194,7 @@ pub struct FetchedBlock<SCT: SignatureCollection> {
     /// FetchedBlock results should only be used to send block data to nodes
     /// over the network so we should unverify it before sending to consensus
     /// to prevent it from being used for anything else
-    pub unverified_block: Option<UnverifiedBlock<SCT>>,
+    pub unverified_block: Option<Block<SCT>>,
 }
 
 /// BlockSync related events

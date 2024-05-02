@@ -51,9 +51,7 @@ impl BlockSyncResponder {
             vec![BlockSyncCommand::BlockSyncResponse {
                 requester,
                 block_id: s.block_id,
-                response: Validated::new(BlockSyncResponseMessage::BlockFound(
-                    block.clone().into(),
-                )),
+                response: Validated::new(BlockSyncResponseMessage::BlockFound(block.clone())),
             }]
         } else {
             // else ask ledger
@@ -176,7 +174,7 @@ where
                     MonadEvent::BlockSyncEvent(BlockSyncEvent::FetchedBlock(FetchedBlock {
                         requester,
                         block_id,
-                        unverified_block: block.map(|b| b.into()),
+                        unverified_block: block,
                     }))
                 }),
             ))],

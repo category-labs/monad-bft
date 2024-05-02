@@ -268,10 +268,8 @@ where
         if let Some(pending_req) = self.requests.remove(&bid) {
             let _enter = pending_req.span.enter();
             match msg {
-                BlockSyncResponseMessage::BlockFound(unverified_full_block) => {
-                    if let Some(block) =
-                        Block::try_from_unverified(unverified_full_block, block_validator)
-                    {
+                BlockSyncResponseMessage::BlockFound(block) => {
+                    if block_validator.validate(&block.payload.txns) {
                         return BlockSyncResult::Success(block);
                     }
                 }
@@ -354,7 +352,7 @@ mod test {
 
     use itertools::Itertools;
     use monad_consensus_types::{
-        block::{Block, BlockType, UnverifiedBlock},
+        block::{Block, BlockType},
         block_validator::MockValidator,
         ledger::CommitResult,
         metrics::Metrics,
@@ -643,18 +641,15 @@ mod test {
 
         let msg_no_block_1 = BlockSyncResponseMessage::<SC>::NotAvailable(block_1.get_id());
 
-        let msg_with_block_1 =
-            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block_1.clone()));
+        let msg_with_block_1 = BlockSyncResponseMessage::<SC>::BlockFound(block_1.clone());
 
         let msg_no_block_2 = BlockSyncResponseMessage::<SC>::NotAvailable(block_2.get_id());
 
-        let msg_with_block_2 =
-            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block_2.clone()));
+        let msg_with_block_2 = BlockSyncResponseMessage::<SC>::BlockFound(block_2.clone());
 
         let msg_no_block_3 = BlockSyncResponseMessage::<SC>::NotAvailable(block_3.get_id());
 
-        let msg_with_block_3 =
-            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block_3.clone()));
+        let msg_with_block_3 = BlockSyncResponseMessage::<SC>::BlockFound(block_3.clone());
 
         // arbitrary response should be rejected
         let BlockSyncResult::<ST, SC>::UnexpectedResponse = manager.handle_response(
@@ -994,8 +989,7 @@ mod test {
 
         // if somehow we sync up on the block, timeout should be ignored
 
-        let msg_with_block =
-            BlockSyncResponseMessage::<SC>::BlockFound(UnverifiedBlock(block.clone()));
+        let msg_with_block = BlockSyncResponseMessage::<SC>::BlockFound(block.clone());
 
         let BlockSyncResult::<ST, SC>::Success(b) = manager.handle_response(
             &peer,

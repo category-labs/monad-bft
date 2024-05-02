@@ -10,7 +10,6 @@ use monad_consensus::{
     validation::signing::{Unvalidated, Unverified},
 };
 use monad_consensus_types::{
-    block::UnverifiedBlock,
     ledger::CommitResult,
     payload::{ExecutionArtifacts, FullTransactionList},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -92,7 +91,7 @@ fn bench_proposal(c: &mut Criterion) {
     );
 
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: UnverifiedBlock(blk),
+        block: blk,
         last_round_tc: None,
     });
     let conmsg = ConsensusMessage {

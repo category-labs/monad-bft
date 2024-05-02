@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use bytes::Bytes;
 use monad_consensus_types::{
-    block::{BlockType, UnverifiedBlock},
+    block::{Block, BlockType},
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
     state_root_hash::StateRootHashInfo,
     timeout::{Timeout, TimeoutCertificate},
@@ -85,7 +85,7 @@ impl<SCT: SignatureCollection> Hashable for TimeoutMessage<SCT> {
 /// Consensus protocol proposal message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalMessage<SCT: SignatureCollection> {
-    pub block: UnverifiedBlock<SCT>,
+    pub block: Block<SCT>,
     pub last_round_tc: Option<TimeoutCertificate<SCT>>,
 }
 
@@ -114,14 +114,14 @@ impl Hashable for RequestBlockSyncMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockSyncResponseMessage<SCT: SignatureCollection> {
-    BlockFound(UnverifiedBlock<SCT>),
+    BlockFound(Block<SCT>),
     NotAvailable(BlockId),
 }
 
 impl<T: SignatureCollection> BlockSyncResponseMessage<T> {
     pub fn get_block_id(&self) -> BlockId {
         match self {
-            BlockSyncResponseMessage::BlockFound(b) => b.0.get_id(),
+            BlockSyncResponseMessage::BlockFound(b) => b.get_id(),
             BlockSyncResponseMessage::NotAvailable(bid) => *bid,
         }
     }

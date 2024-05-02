@@ -5,7 +5,7 @@ use monad_consensus::{
     validation::signing::Verified,
 };
 use monad_consensus_types::{
-    block::{Block, BlockType, UnverifiedBlock},
+    block::{Block, BlockType},
     ledger::CommitResult,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -122,7 +122,7 @@ where
         self.qc = self.get_next_qc(certkeys, &block, validator_cert_pubkeys);
 
         let proposal = ProposalMessage {
-            block: UnverifiedBlock(block),
+            block,
             last_round_tc: self.last_tc.clone(),
         };
         self.last_tc = None;

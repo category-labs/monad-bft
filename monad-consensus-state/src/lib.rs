@@ -11,7 +11,7 @@ use monad_consensus::{
     vote_state::VoteState,
 };
 use monad_consensus_types::{
-    block::{Block, BlockType, UnverifiedBlock},
+    block::{Block, BlockType},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::{
@@ -289,7 +289,7 @@ where
         node.metrics.consensus_events.handle_proposal += 1;
         let mut cmds = Vec::new();
 
-        let epoch = node.epoch_manager.get_epoch(p.block.0.round);
+        let epoch = node.epoch_manager.get_epoch(p.block.round);
         let validator_set = node
             .val_epoch_map
             .get_val_set(&epoch)
@@ -309,11 +309,12 @@ where
             node.version,
         ));
 
-        let Some(block) = Block::try_from_unverified(p.block, &self.block_validator) else {
+        if !self.block_validator.validate(&p.block.payload.txns) {
             warn!("Transaction validation failed");
             node.metrics.consensus_events.failed_txn_validation += 1;
             return cmds;
-        };
+        }
+        let block = p.block;
 
         // author, leader, round checks
         let round = self.pacemaker.get_current_round();
@@ -870,7 +871,7 @@ where
                 );
 
                 let p = ProposalMessage {
-                    block: UnverifiedBlock(b),
+                    block: b,
                     last_round_tc,
                 };
                 let msg = ConsensusMessage {
@@ -998,17 +999,17 @@ where
         p: &ProposalMessage<SCT>,
         metrics: &mut Metrics,
     ) -> StateRootAction {
-        if p.block.0.payload.txns == FullTransactionList::empty()
-            && p.block.0.payload.header.state_root == INITIAL_DELAY_STATE_ROOT_HASH
+        if p.block.payload.txns == FullTransactionList::empty()
+            && p.block.payload.header.state_root == INITIAL_DELAY_STATE_ROOT_HASH
         {
             debug!("Received empty block: block={:?}", p.block);
             metrics.consensus_events.rx_empty_block += 1;
             return StateRootAction::Proceed;
         }
-        match self.state_root_validator.validate(
-            p.block.0.payload.seq_num,
-            p.block.0.payload.header.state_root,
-        ) {
+        match self
+            .state_root_validator
+            .validate(p.block.payload.seq_num, p.block.payload.header.state_root)
+        {
             // TODO-1 execution lagging too far behind should be a trigger for
             // something to try and catch up faster. For now, just wait
             StateRootResult::OutOfRange => {
@@ -1057,7 +1058,7 @@ where
         let mut cmds = vec![];
 
         let process_certificate_cmds =
-            self.process_certificate_qc(&p.block.0.qc, epoch_manager, validators, metrics, version);
+            self.process_certificate_qc(&p.block.qc, epoch_manager, validators, metrics, version);
         cmds.extend(process_certificate_cmds);
 
         if let Some(last_round_tc) = p.last_round_tc.as_ref() {
@@ -1173,7 +1174,7 @@ mod test {
         validation::signing::Verified,
     };
     use monad_consensus_types::{
-        block::{Block, BlockType, UnverifiedBlock},
+        block::{Block, BlockType},
         block_validator::MockValidator,
         ledger::CommitResult,
         metrics::Metrics,
@@ -1940,8 +1941,8 @@ mod test {
 
         // round 3 proposal, has qc(1)
         let p3 = env.next_proposal_empty();
-        assert_eq!(p3.block.0.qc.get_round(), Round(1));
-        assert_eq!(p3.block.0.round, Round(3));
+        assert_eq!(p3.block.qc.get_round(), Round(1));
+        assert_eq!(p3.block.round, Round(3));
         let (author, _, verified_message) = p3.destructure();
         let p3_cmds =
             consensus_state.handle_proposal_message(author, verified_message, &mut node_state);
@@ -2018,7 +2019,7 @@ mod test {
                     _ => None,
                 }
                 .unwrap();
-                assert!(sync_bid == block_1.0.get_id());
+                assert!(sync_bid == block_1.get_id());
                 routing_target = target;
             }
         }
@@ -2091,7 +2092,7 @@ mod test {
             panic!("request sync is not found")
         };
 
-        let mal_sync = BlockSyncResponseMessage::NotAvailable(block_2.0.get_id());
+        let mal_sync = BlockSyncResponseMessage::NotAvailable(block_2.get_id());
         // BlockSyncMessage on blocks that were not requested should be ignored.
         let cmds3 = n3.handle_block_sync(author_2, mal_sync);
 
@@ -2318,9 +2319,9 @@ mod test {
             // after 2f + 1 votes, we expect that an empty proposal is created
             if i == 2 {
                 let p = extract_proposal_broadcast(cmds);
-                assert_eq!(p.block.0.payload.txns, FullTransactionList::empty());
+                assert_eq!(p.block.payload.txns, FullTransactionList::empty());
                 assert_eq!(
-                    p.block.0.payload.header.state_root,
+                    p.block.payload.header.state_root,
                     StateRootHash(Hash([0; 32]))
                 );
                 assert_eq!(
@@ -2443,7 +2444,7 @@ mod test {
         let cp1 = env.next_proposal_empty();
         let (author, _, verified_message) = cp1.destructure();
         let block_1 = verified_message.block.clone();
-        let bid_correct = block_1.0.get_id();
+        let bid_correct = block_1.get_id();
         // requesting a block that's doesn't exists should yield None
         assert_eq!(
             node.consensus_state.fetch_uncommitted_block(&bid_correct),
@@ -2465,7 +2466,7 @@ mod test {
 
         let (author, _, verified_message) = bp1.destructure();
         let block_1 = verified_message.block.clone();
-        let bid_branch = block_1.0.get_id();
+        let bid_branch = block_1.get_id();
         assert_eq!(
             node.consensus_state.fetch_uncommitted_block(&bid_branch),
             None
@@ -2484,7 +2485,7 @@ mod test {
             let cp = env.next_proposal_empty();
             let (author, _, verified_message) = cp.destructure();
             let block = verified_message.block.clone();
-            let bid = block.0.get_id();
+            let bid = block.get_id();
             // requesting a block that's doesn't exists should yield None
             assert_eq!(node.consensus_state.fetch_uncommitted_block(&bid), None);
             // assuming a proposal comes in, should allow it to be fetched as it is within pending block tree
@@ -2554,7 +2555,7 @@ mod test {
                     let cmds = node.handle_proposal_message(author, verified_message.clone());
 
                     if j == 1 {
-                        proposal_10_blockid = verified_message.block.0.get_id();
+                        proposal_10_blockid = verified_message.block.get_id();
                         let v = extract_vote_msgs(cmds);
                         assert_eq!(v.len(), 1);
                         votes.push((node.consensus_state.get_nodeid(), v[0]));
@@ -2636,7 +2637,7 @@ mod test {
         let cmds = node0.handle_timeout_message(author, timeout_msg);
         let req = extract_blocksync_requests(cmds);
         assert_eq!(req.len(), 1);
-        assert_eq!(req[0], blocks[2].0.get_id());
+        assert_eq!(req[0], blocks[2].get_id());
     }
 
     #[test]
@@ -2663,7 +2664,7 @@ mod test {
         let cmds = node.handle_proposal_message(author, verified_message);
         let req = extract_blocksync_requests(cmds);
         assert_eq!(req.len(), 1);
-        assert_eq!(req[0], blocks[3].0.get_id());
+        assert_eq!(req[0], blocks[3].get_id());
     }
 
     // Expected behaviour when leader N+2 receives the votes for N+1 before receiving the proposal
@@ -2757,7 +2758,7 @@ mod test {
             Round(missing_round + 1)
         );
         let p = extract_proposal_broadcast(cmds);
-        assert_eq!(Round(missing_round + 1), p.block.0.get_round());
+        assert_eq!(Round(missing_round + 1), p.block.get_round());
     }
 
     /// This test asserts that proposal not from the round leader is not added
@@ -2786,7 +2787,7 @@ mod test {
         let verified_p1 = env.next_proposal_empty();
         let (_, _, p1) = verified_p1.destructure();
 
-        let _ = node.handle_proposal_message(p1.block.0.author, p1);
+        let _ = node.handle_proposal_message(p1.block.author, p1);
         assert_eq!(node.consensus_state.blocktree().size(), 1);
 
         let verified_p2 = env.next_proposal_empty();
@@ -2799,19 +2800,19 @@ mod test {
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         assert!(invalid_author != NodeId::new(node.consensus_state.get_keypair().pubkey()));
-        assert!(invalid_author != p2.block.0.author);
+        assert!(invalid_author != p2.block.author);
         let invalid_b2 = Block::new(
             invalid_author,
-            p2.block.0.round,
-            &p2.block.0.payload,
-            &p2.block.0.qc,
+            p2.block.round,
+            &p2.block.payload,
+            &p2.block.qc,
         );
         let invalid_p2 = ProposalMessage {
-            block: UnverifiedBlock(invalid_b2),
+            block: invalid_b2,
             last_round_tc: None,
         };
 
-        let _ = node.handle_proposal_message(invalid_p2.block.0.author, invalid_p2);
+        let _ = node.handle_proposal_message(invalid_p2.block.author, invalid_p2);
 
         // p2 is not added because author is not the round leader
         assert_eq!(node.consensus_state.blocktree().size(), 1);
@@ -3538,7 +3539,7 @@ mod test {
         // round 1 proposal
         let p1 = env.next_proposal_empty();
         let (author_1, _, verified_message_1) = p1.destructure();
-        let block_1_id = verified_message_1.block.0.get_id();
+        let block_1_id = verified_message_1.block.get_id();
 
         // round 2 proposal
         let p2 = env.next_proposal_empty();

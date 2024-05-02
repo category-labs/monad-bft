@@ -133,7 +133,7 @@ where
         let capture = match &message {
             VerifiedMonadMessage::Consensus(consensus_msg) => {
                 match &consensus_msg.deref().deref().message {
-                    ProtocolMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.0.round),
+                    ProtocolMessage::Proposal(p) => TwinsCapture::Process(pid, p.block.round),
                     ProtocolMessage::Vote(v) => TwinsCapture::Process(pid, v.vote.vote_info.round),
                     // timeout naturally spread because liveness
                     ProtocolMessage::Timeout(_) => TwinsCapture::Spread(pid),

@@ -506,7 +506,7 @@ impl StatExtractor {
                     let msg = unverified_message.get_obj_unsafe();
                     match &msg.message {
                         ProtocolMessage::Proposal(p) => {
-                            let r = p.block.0.get_round();
+                            let r = p.block.get_round();
                             stat.block_time.insert(r.0, event.timestamp);
                         }
                         _ => continue,

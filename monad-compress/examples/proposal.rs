@@ -58,9 +58,9 @@ fn main() {
         .destructure()
         .2;
 
-    let epoch = epoch_manager.get_epoch(proposal.block.0.round);
+    let epoch = epoch_manager.get_epoch(proposal.block.round);
     let proposer_leader = election.get_leader(
-        proposal.block.0.round,
+        proposal.block.round,
         epoch,
         val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
     );

@@ -8,7 +8,7 @@ use monad_proto::{
 };
 
 use crate::{
-    block::{Block, UnverifiedBlock},
+    block::Block,
     payload::{
         Bloom, ExecutionArtifacts, FullTransactionList, Gas, Payload, RandaoReveal,
         TransactionHashList,
@@ -69,29 +69,6 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 .qc
                 .ok_or(Self::Error::MissingRequiredField(
                     "Block<AggregateSignatures>.qc".to_owned(),
-                ))?
-                .try_into()?,
-        ))
-    }
-}
-
-impl<SCT: SignatureCollection> From<&UnverifiedBlock<SCT>> for ProtoUnverifiedBlock {
-    fn from(value: &UnverifiedBlock<SCT>) -> Self {
-        Self {
-            block: Some((&value.0).into()),
-        }
-    }
-}
-
-impl<SCT: SignatureCollection> TryFrom<ProtoUnverifiedBlock> for UnverifiedBlock<SCT> {
-    type Error = ProtoError;
-
-    fn try_from(value: ProtoUnverifiedBlock) -> Result<Self, Self::Error> {
-        Ok(Self(
-            value
-                .block
-                .ok_or(Self::Error::MissingRequiredField(
-                    "UnverifiedBlock<AggregateSignatures>.block".to_owned(),
                 ))?
                 .try_into()?,
         ))

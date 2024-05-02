@@ -6,7 +6,7 @@ use monad_consensus::{
     validation::signing::Unvalidated,
 };
 use monad_consensus_types::{
-    block::{Block, UnverifiedBlock},
+    block::Block,
     ledger::CommitResult,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -39,7 +39,7 @@ fn setup_block(
     block_round: Round,
     qc_round: Round,
     signers: &[PubKeyType],
-) -> UnverifiedBlock<MockSignatures<SignatureType>> {
+) -> Block<MockSignatures<SignatureType>> {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
@@ -58,7 +58,7 @@ fn setup_block(
         MockSignatures::with_pubkeys(signers),
     );
 
-    let b = Block::<MockSignatures<SignatureType>>::new(
+    Block::<MockSignatures<SignatureType>>::new(
         author,
         block_round,
         &Payload {
@@ -69,8 +69,7 @@ fn setup_block(
             randao_reveal: RandaoReveal::default(),
         },
         &qc,
-    );
-    UnverifiedBlock(b)
+    )
 }
 
 #[test]

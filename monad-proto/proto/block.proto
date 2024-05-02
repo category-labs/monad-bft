@@ -33,7 +33,3 @@ message ProtoBlock {
   ProtoPayload payload = 3;
   monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 4;
 }
-
-message ProtoUnverifiedBlock {
-  ProtoBlock block = 1;
-}

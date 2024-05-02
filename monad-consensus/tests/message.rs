@@ -1,6 +1,6 @@
 use monad_consensus::messages::message::{ProposalMessage, TimeoutMessage, VoteMessage};
 use monad_consensus_types::{
-    block::{Block, UnverifiedBlock},
+    block::Block,
     ledger::CommitResult,
     payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
     quorum_certificate::{QcInfo, QuorumCertificate},
@@ -225,7 +225,7 @@ fn proposal_msg_hash() {
     );
 
     let proposal: ProposalMessage<MockSignatures<SignatureType>> = ProposalMessage {
-        block: UnverifiedBlock(block.clone()),
+        block: block.clone(),
         last_round_tc: None,
     };
 

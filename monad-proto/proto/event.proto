@@ -36,7 +36,7 @@ message ProtoScheduleTimeout {
 message ProtoFetchedBlock {
   monad_proto.basic.ProtoNodeId requester = 1;
   monad_proto.basic.ProtoBlockId block_id = 2;
-  optional monad_proto.block.ProtoUnverifiedBlock unverified_block = 3;
+  optional monad_proto.block.ProtoBlock unverified_block = 3;
 }
 
 message ProtoUpdateValidatorsEvent {

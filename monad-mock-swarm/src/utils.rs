@@ -14,7 +14,7 @@ pub mod test_tool {
         validation::signing::Validated,
     };
     use monad_consensus_types::{
-        block::{Block, UnverifiedBlock},
+        block::Block,
         ledger::CommitResult,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
@@ -90,7 +90,7 @@ pub mod test_tool {
 
     pub fn fake_proposal_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let internal_msg = ProposalMessage {
-            block: UnverifiedBlock(fake_block(round)),
+            block: fake_block(round),
             last_round_tc: None,
         };
         ConsensusMessage {

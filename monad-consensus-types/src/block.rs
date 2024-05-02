@@ -1,5 +1,3 @@
-use std::fmt::Debug;
-
 use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
@@ -8,7 +6,7 @@ use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    block_validator::BlockValidator, payload::Payload, quorum_certificate::QuorumCertificate,
+    payload::Payload, quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 
@@ -110,17 +108,6 @@ impl<SCT: SignatureCollection> Block<SCT> {
             },
         }
     }
-
-    /// Try to create a Block from an UnverifiedBlock, verifying
-    /// with the TransactionValidator
-    pub fn try_from_unverified(
-        unverified: UnverifiedBlock<SCT>,
-        validator: &impl BlockValidator,
-    ) -> Option<Self> {
-        validator
-            .validate(&unverified.0.payload.txns)
-            .then_some(unverified.0)
-    }
 }
 
 impl<SCT: SignatureCollection> BlockType for Block<SCT> {
@@ -148,28 +135,5 @@ impl<SCT: SignatureCollection> BlockType for Block<SCT> {
 
     fn get_seq_num(&self) -> SeqNum {
         self.payload.seq_num
-    }
-}
-
-/// A block alongside the list of RLP encoded full transactions
-/// The transactions have not been verified
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnverifiedBlock<SCT: SignatureCollection>(pub Block<SCT>);
-
-impl<SCT: SignatureCollection> UnverifiedBlock<SCT> {
-    pub fn new(block: Block<SCT>) -> Self {
-        Self(block)
-    }
-}
-
-impl<SCT: SignatureCollection> From<Block<SCT>> for UnverifiedBlock<SCT> {
-    fn from(value: Block<SCT>) -> Self {
-        Self(value)
-    }
-}
-
-impl<SCT: SignatureCollection> Hashable for UnverifiedBlock<SCT> {
-    fn hash(&self, state: &mut impl Hasher) {
-        self.0.hash(state);
     }
 }
