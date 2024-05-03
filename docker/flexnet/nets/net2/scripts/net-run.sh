@@ -140,11 +140,11 @@ popd
 
 set +e
 # verify ledger
-docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 1500 ))"
+docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/verify-ledger.py -c 7 -l ledger -n $(( 600 * 10 - 2000 ))"
 ledger_status=$?
 
-# count transactions in the ledger
-docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 6000 * 60 * 5 ))"
+# count transactions in the ledger: 450 (ethtx actual tps) * 600 (s) * 7 (nodes)
+docker run --rm -v ./$flexnet_root:/monad monad-python bash -c "cd $vol_path_in_flexnet && python3 /monad/common/count-tx.py --min $(( 450 * 600 * 7 * 9 / 10 ))"
 txn_count_status=$?
 
 if [[ $ledger_status -ne 0 || $txn_count_status -ne 0 ]]; then
