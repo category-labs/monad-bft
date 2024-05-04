@@ -82,6 +82,11 @@ std::vector<uint8_t> monad_evmc_result::get_output_data() const
     return output_data;
 }
 
+std::string monad_evmc_result::get_message() const
+{
+    return message;
+}
+
 monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_txn, std::vector<uint8_t> const &rlp_header,
     std::vector<uint8_t> const &rlp_sender, uint64_t const block_number,
@@ -133,8 +138,8 @@ monad_evmc_result eth_call(
         eth_call_helper(txn, block_header, block_number, sender, buffer, paths);
     monad_evmc_result ret;
     if (MONAD_UNLIKELY(result.has_error())) {
-        LOG_ERROR("failed with {}", result.error().message().c_str());
         ret.status_code = INT_MAX;
+        ret.message = result.error().message().c_str();
     }
     else {
         ret.status_code = result.assume_value().status_code;

@@ -28,7 +28,7 @@ pub fn eth_call(
     block_number: u64,
     triedb_path: &Path,
     blockdb_path: &Path,
-) -> Result<Vec<u8>, i32> {
+) -> Result<Vec<u8>, String> {
     // TODO: move the buffer copying into C++ for the reserve/push idiom
     let rlp_encoded_tx: Bytes = {
         let mut buf = BytesMut::new();
@@ -70,9 +70,10 @@ pub fn eth_call(
 
     let status_code = result.deref().get_status_code().0 as i32;
     let output_data = result.deref().get_output_data().as_slice().to_vec();
+    let message = result.deref().get_message().to_string();
 
     if status_code != EVMC_SUCCESS {
-        Err(status_code)
+        Err(message)
     } else {
         Ok(output_data)
     }

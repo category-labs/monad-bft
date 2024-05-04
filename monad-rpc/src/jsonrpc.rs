@@ -155,6 +155,14 @@ impl JsonRpcError {
         }
     }
 
+    pub fn eth_call_error(message: String) -> Self {
+        Self {
+            code: -32000,
+            message,
+            data: None,
+        }
+    }
+
     pub fn method_not_supported() -> Self {
         Self {
             code: -32001,

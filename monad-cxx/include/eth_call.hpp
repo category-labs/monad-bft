@@ -9,9 +9,11 @@ struct monad_evmc_result
 {
     int status_code;
     std::vector<uint8_t> output_data;
+    std::string message;
 
     int get_status_code() const;
     std::vector<uint8_t> get_output_data() const;
+    std::string get_message() const;
 };
 
 monad_evmc_result eth_call(

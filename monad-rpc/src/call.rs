@@ -107,13 +107,8 @@ pub async fn monad_eth_call(
         triedb_path,
         execution_ledger_path,
     ) {
-        // TODO: make this match RPC spec
-        Ok(output_data) => Ok(json!({
-            "output_data": hex::encode(&output_data)
-        })),
-        Err(status_code) => Ok(json!({
-            "status_code": status_code as i64,
-        })),
+        Ok(output_data) => Ok(json!(hex::encode(&output_data))),
+        Err(error_message) => Err(JsonRpcError::eth_call_error(error_message)),
     }
 }
 

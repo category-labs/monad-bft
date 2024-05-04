@@ -14,6 +14,11 @@ std::vector<uint8_t> monad_evmc_result::get_output_data() const
     return output_data;
 }
 
+std::string monad_evmc_result::get_message() const
+{
+    return message;
+}
+
 monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_encoded_transaction,
     std::vector<uint8_t> const &rlp_encoded_block_header,
@@ -27,5 +32,6 @@ monad_evmc_result eth_call(
         0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef};
     return monad_evmc_result{
         .status_code = 0,
-        .output_data = std::vector<uint8_t>{data.begin(), data.end()}};
+        .output_data = std::vector<uint8_t>{data.begin(), data.end()},
+        .message = "test message"};
 }
