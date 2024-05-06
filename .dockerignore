@@ -8,7 +8,9 @@
 /docker/flexnet/logs
 /docker/flexnet/save_logs
 
-**/.git
+# unfortunately some submodules require .git folder to exist...
+/.git
+
 **/target
 
 **/*.data
