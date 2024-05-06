@@ -1,6 +1,6 @@
 name: Benchmark Regression Check
 
-on: 
+on:
   pull_request:
     branches: [master]
 

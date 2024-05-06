@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        uses: docker/login-action@v3.1.0
         with:
           registry: peach10.monad.spacetime.org
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
@@ -29,7 +29,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@v5.5.1
         with:
           images: |
             peach10.monad.spacetime.org/${{ env.IMAGE_NAME }}
@@ -38,7 +38,7 @@ jobs:
             type=sha,prefix=
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        uses: docker/build-push-action@v5.3.0
         with:
           context: .
           push: true
@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to the Peach10 Container registry
-        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        uses: docker/login-action@v3.1.0
         with:
           registry: peach10.monad.spacetime.org
           username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
@@ -66,7 +66,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@v5.5.1
         with:
           images: |
             peach10.monad.spacetime.org/monad-crypto/blockwatch
@@ -75,7 +75,7 @@ jobs:
             type=sha,prefix=
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        uses: docker/build-push-action@v5.3.0
         with:
           context: .
           push: true
