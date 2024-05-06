@@ -1,4 +1,22 @@
 services:
+  build_monad_execution:
+    image: monad-execution-builder:latest
+    build:
+      context: ${MONAD_BFT_ROOT}/monad-cxx/monad-execution
+      dockerfile: docker/release.Dockerfile
+      args:
+        GIT_COMMIT_HASH: ${GIT_COMMIT_HASH:-$(git rev-parse HEAD)}
+
+  build_triedb:
+    image: monad-execution-builder:latest
+    command: monad_mpt --storage /monad/triedb/test.db --create
+    depends_on:
+      - build_monad_execution
+    volumes:
+      - ./node:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+
   build_monad_bft:
     build:
       context: ${MONAD_BFT_ROOT}
@@ -11,10 +29,23 @@ services:
       dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
     image: monad-python:latest
 
+  monad_execution:
+    image: monad-execution-builder:latest
+    command: test_run_loop --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json --log_level ERROR
+    depends_on:
+      - build_monad_execution
+      - build_triedb
+    volumes:
+      - ./node:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
+
   monad_node:
     build:
       context: ${MONAD_BFT_ROOT}
       dockerfile: ${DEVNET_DIR}/Dockerfile
+    depends_on:
+      - monad_execution
     environment:
       - RUST_LOG=
     volumes:
@@ -28,6 +59,8 @@ services:
       - monad_node
     volumes:
       - ./node:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     ports:
       - "8080:8080"
 

@@ -3,8 +3,11 @@
 
 .github
 
-/docker/devnet/monad
-/docker/devnet/wal
+/docker/devnet/monad/ledger
+/docker/devnet/monad/blockdb
+/docker/devnet/monad/triedb
+/docker/devnet/monad/wal
+/docker/devnet/monad/mempool.sock
 /docker/flexnet/logs
 /docker/flexnet/save_logs
 

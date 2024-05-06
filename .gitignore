@@ -1,4 +1,6 @@
 /target
+/docker/flexnet/logs
 /docker/devnet/monad/blockdb
 /docker/devnet/monad/ledger
 /docker/devnet/monad/wal
+/docker/devnet/monad/triedb

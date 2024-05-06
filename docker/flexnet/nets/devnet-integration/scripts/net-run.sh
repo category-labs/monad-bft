@@ -109,6 +109,9 @@ mkdir -p $vol_root/node
 cp -r $net_dir/* $vol_root
 cp -r $devnet_dir/monad/config $vol_root/node
 
+# create fresh triedb file
+mkdir -p $vol_root/node/triedb
+truncate -s 4GB $vol_root/node/triedb/test.db
 
 # Set environment variables
 export FLEXNET_IMAGE_ROOT=$(realpath "$image_root")
@@ -121,7 +124,7 @@ export RPC_DIR=$(realpath "$rpc_dir")
 
 if [ "$mode" == "run" ]; then
     cd $vol_root
-    docker compose up monad_node monad_rpc
+    docker compose up build_monad_execution build_triedb monad_execution monad_node monad_rpc
 
     exit 0
 elif [ "$mode" == "test" ]; then

@@ -16,7 +16,7 @@ if ! pgrep -x -u $USER "dockerd" > /dev/null; then
     systemctl --user start docker
 fi
 
-git submodule update --init common/blst
+git submodule update --init --recursive
 
 rm -rf logs && mkdir -p logs
 nets/net0/scripts/net-run.sh --output-dir logs --net-dir nets/net0/ --flexnet-root . --monad-bft-root ../.. 

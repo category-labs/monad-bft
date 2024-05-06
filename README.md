@@ -8,8 +8,17 @@ This repository contains implementation for the Monad consensus client and JsonR
 
 ## Getting Started
 
-To run a Monad consensus client, follow instructions [here](monad-node/README.md).
+### Using Docker
 
+The most straightforward way to start a consensus client + an execution client + a JsonRpc server. Run the following:
+1. `cd docker/flexnet`
+2. `mkdir -p logs`
+3. `nets/devnet-integration/scripts/net-run.sh --output-dir logs --net-dir nets/devnet-integration/ --image-root images --monad-bft-root ../.. run`
+
+### Using Cargo
+
+To run a Monad consensus client, follow instructions [here](monad-node/README.md).
+ 
 To run a JsonRpc server, follow instructions [here](monad-rpc/README.md).
 
 ## Architecture
