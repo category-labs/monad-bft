@@ -95,6 +95,12 @@ pub enum BlockTags {
     Default(BlockTagKey),
 }
 
+impl Default for BlockTags {
+    fn default() -> Self {
+        BlockTags::Default(BlockTagKey::Latest)
+    }
+}
+
 impl FromStr for BlockTags {
     type Err = DecodeHexError;
 

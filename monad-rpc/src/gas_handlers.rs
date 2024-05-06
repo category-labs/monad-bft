@@ -1,12 +1,12 @@
 use log::{debug, trace};
 use monad_blockdb::BlockTagKey;
-use reth_primitives::Transaction;
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
     blockdb::BlockDbEnv,
+    call::CallRequest,
     eth_json_types::{
         deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
     },
@@ -15,9 +15,9 @@ use crate::{
 
 #[derive(Deserialize, Debug)]
 struct MonadEthEstimateGasParams {
-    tx: Transaction,
-    #[serde(deserialize_with = "deserialize_block_tags")]
-    block: BlockTags, // TODO: this should be made optional
+    tx: CallRequest,
+    #[serde(default, deserialize_with = "deserialize_block_tags")]
+    block: BlockTags,
 }
 
 #[allow(non_snake_case)]
