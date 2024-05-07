@@ -11,6 +11,7 @@ members = [
     "monad-consensus-types",
     "monad-crypto",
     "monad-cxx",
+    "monad-dataplane",
     "monad-debugger",
     "monad-eth-types",
     "monad-eth-tx",
@@ -102,6 +103,7 @@ hex-literal = "0.4"
 inventory = "0.3"
 itertools = "0.10"
 async-graphql = "7.0"
+libc = "0.2.153"
 log = "0.4"
 lz4 = "1.24"
 multihash = "0.17"
@@ -131,6 +133,7 @@ rayon = "1.7"
 rcgen = "0.11"
 reqwest = { version = "0.11", features = ["json"] }
 ring = "0.17"
+rtrb = "0.3"
 rustls = "0.21"
 scrypt = { version = "0.11", default-features = false }
 secp256k1 = "0.26"
@@ -139,6 +142,7 @@ serde_cbor = "0.11"
 serde_json = "1.0"
 sha2 = "0.10"
 simple-xml-builder = "1.1"
+socket2 = "0.5.6"
 tempfile = "3.5"
 test-case = "3.0"
 thiserror = "1.0"
