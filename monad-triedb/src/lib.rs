@@ -14,6 +14,8 @@ pub struct Handle {
     db_ptr: *mut bindings::triedb,
 }
 
+unsafe impl Send for Handle {}
+
 impl Handle {
     pub fn try_new(dbdir_path: &Path) -> Option<Self> {
         let path = CString::new(dbdir_path.to_str().expect("invalid path"))
