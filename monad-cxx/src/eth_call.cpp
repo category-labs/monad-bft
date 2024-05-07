@@ -129,10 +129,16 @@ monad_evmc_result eth_call(
         buffer.set(i - 1, block.header.parent_hash);
     }
 
-    MONAD_ASSERT(std::filesystem::is_directory(triedb_path));
     std::vector<std::filesystem::path> paths;
-    for (auto const &file : std::filesystem::directory_iterator(triedb_path)) {
-        paths.emplace_back(file.path());
+    if (std::filesystem::is_block_file(triedb_path)) {
+        paths.emplace_back(triedb_path);
+    }
+    else {
+        MONAD_ASSERT(std::filesystem::is_directory(triedb_path));
+        for (auto const &file :
+             std::filesystem::directory_iterator(triedb_path)) {
+            paths.emplace_back(file.path());
+        }
     }
     auto const result =
         eth_call_helper(txn, block_header, block_number, sender, buffer, paths);

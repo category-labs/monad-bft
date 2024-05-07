@@ -1,9 +1,9 @@
+#include <cassert>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <vector>
-#include <iostream>
-#include <cassert>
 
 #include <monad/mpt/db.hpp>
 #include <monad/mpt/ondisk_db_config.hpp>
@@ -28,15 +28,19 @@ int triedb_open(char const *dbdirpath, triedb **db)
         return -1;
     }
 
-    std::error_code ec;
     std::vector<std::filesystem::path> paths;
-    for (auto const &file :
-         std::filesystem::directory_iterator(dbdirpath, ec)) {
-        paths.emplace_back(file.path());
+    if (std::filesystem::is_block_file(dbdirpath)) {
+        paths.emplace_back(dbdirpath);
     }
-
-    if (ec) {
-        return -2;
+    else {
+        std::error_code ec;
+        for (auto const &file :
+             std::filesystem::directory_iterator(dbdirpath, ec)) {
+            paths.emplace_back(file.path());
+        }
+        if (ec) {
+            return -2;
+        }
     }
 
     *db = new triedb{std::move(paths)};
@@ -49,12 +53,15 @@ int triedb_close(triedb *db)
     return 0;
 }
 
-int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
+int triedb_read(
+    triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
+    uint64_t block_id)
 {
     if (!db->db_.is_latest()) {
         db->db_.load_latest();
     }
-    auto result = db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
+    auto result =
+        db->db_.get(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
     if (!result.has_value()) {
         return -1;
     }
@@ -86,7 +93,8 @@ uint64_t triedb_latest_block(triedb *db)
 
     if (latest_block_id.has_value()) {
         return latest_block_id.value();
-    } else {
+    }
+    else {
         // no block has been produced
         return 0;
     }
