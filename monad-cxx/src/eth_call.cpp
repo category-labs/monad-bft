@@ -119,7 +119,7 @@ monad_evmc_result eth_call(
 
     BlockHashBuffer buffer{};
     for (size_t i = block_number < 256 ? 1 : block_number - 255;
-         i < block_number;
+         i <= block_number;
          ++i) {
         auto const path =
             std::filesystem::path{blockdb_path} / std::to_string(i);
