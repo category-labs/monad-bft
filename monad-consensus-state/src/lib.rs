@@ -1,6 +1,6 @@
 use std::{collections::HashSet, marker::PhantomData, time::Duration};
 
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, HashPolicy};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -48,10 +48,11 @@ pub mod command;
 pub mod wrapper;
 
 /// core consensus algorithm
-pub struct ConsensusState<ST, SCT, BV, SVT>
+pub struct ConsensusState<ST, SCT, BV, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy
 {
     /// This nodes public NodeId; what other nodes see in the validator set
     nodeid: NodeId<SCT::NodeIdPubKey>,
@@ -59,7 +60,7 @@ where
     config: ConsensusConfig,
     /// Prospective blocks are stored here while they wait to be
     /// committed
-    pending_block_tree: BlockTree<SCT>,
+    pending_block_tree: BlockTree<SCT, HP>,
     /// State machine to track collected votes for proposals
     vote_state: VoteState<SCT>,
     /// The highest QC (QC height determined by Round) known to this node
@@ -110,10 +111,11 @@ pub struct ConsensusConfig {
     pub state_sync_threshold: SeqNum,
 }
 
-impl<ST, SCT, BVT, SVT> PartialEq for ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> PartialEq for ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
@@ -126,17 +128,19 @@ where
             && self.block_sync_requester.eq(&other.block_sync_requester)
     }
 }
-impl<ST, SCT, BVT, SVT> Eq for ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> Eq for ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
 }
 
-impl<ST, SCT, BVT, SVT> std::fmt::Debug for ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> std::fmt::Debug for ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
@@ -194,12 +198,13 @@ where
     pub _phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT, BVT, SVT> ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    HP: HashPolicy,
 {
     /// Create the core consensus state
     ///
@@ -221,10 +226,11 @@ where
         // TODO-2 deprecate
         keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
+        hash_policy: HP,
     ) -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_qc.clone()),
+            pending_block_tree: BlockTree::new(genesis_qc.clone(), hash_policy),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             state_root_validator,
@@ -1144,7 +1150,7 @@ where
         self.beneficiary
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, HP> {
         &self.pending_block_tree
     }
 
@@ -1382,6 +1388,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
+                /* TODO(rene): undo just used to test */ //FullTransactionList::empty(),
                 FullTransactionList::empty(),
                 ExecutionArtifacts::zero(),
             )

@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use monad_blocktree::blocktree::HashPolicy;
 
 use monad_consensus::{
     messages::{
@@ -27,20 +28,21 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy
 {
-    consensus: &'a mut ConsensusState<ST, SCT, BVT, SVT>,
+    consensus: &'a mut ConsensusState<ST, SCT, BVT, SVT, HP>,
     node_state: NodeState<'a, ST, SCT, VTF, LT, TT>,
 
     _phantom: PhantomData<ASVT>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
+    ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -49,9 +51,10 @@ where
     TT: TxPool,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    HP: HashPolicy
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,

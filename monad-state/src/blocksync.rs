@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use monad_blocktree::blocktree::HashPolicy;
 use monad_consensus::{
     messages::message::{BlockSyncResponseMessage, RequestBlockSyncMessage},
     validation::signing::Validated,
@@ -63,34 +64,36 @@ impl BlockSyncResponder {
     }
 }
 
-pub(super) struct BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
     block_sync_responder: &'a BlockSyncResponder,
 
     /// BlockSyncResponder queries consensus first when receiving
     /// BlockSyncRequest
-    consensus: &'a ConsensusState<ST, SCT, BVT, SVT>,
+    consensus: &'a ConsensusState<ST, SCT, BVT, SVT, HP>,
 
     metrics: &'a mut Metrics,
 
     _phantom: PhantomData<(ST, SCT, VTF, LT, TT, ASVT)>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
+    BlockSyncChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    HP: HashPolicy,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>,
     ) -> Self {
         Self {
             block_sync_responder: &monad_state.block_sync_responder,

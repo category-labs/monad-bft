@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use monad_blocktree::blocktree::HashPolicy;
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
     block::Block, signature_collection::SignatureCollection, voting::ValidatorMapping,
@@ -14,28 +15,30 @@ use monad_validator::{
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct EpochChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct EpochChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
     val_epoch_map: &'a mut ValidatorsEpochMapping<VTF, SCT>,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, ASVT, HP)>,
 }
 
 pub(super) struct EpochCommand {}
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    EpochChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
+    EpochChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,

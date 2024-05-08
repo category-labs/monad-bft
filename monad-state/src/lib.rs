@@ -7,7 +7,7 @@ use consensus::ConsensusChildState;
 use epoch::EpochChildState;
 use mempool::MempoolChildState;
 use monad_async_state_verify::AsyncStateVerifyProcess;
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, HashPolicy};
 use monad_consensus::{
     messages::{
         consensus_message::ConsensusMessage,
@@ -109,14 +109,15 @@ impl MonadVersion {
     }
 }
 
-pub struct MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy,
 {
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<ST, SCT, BVT, SVT>,
+    consensus: ConsensusState<ST, SCT, BVT, SVT, HP>,
     /// Handle responses to block sync requests from other nodes
     block_sync_responder: BlockSyncResponder,
 
@@ -140,7 +141,7 @@ where
     _pd: PhantomData<ST>,
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -152,8 +153,9 @@ where
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
+    HP: HashPolicy,
 {
-    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BVT, SVT> {
+    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BVT, SVT, HP> {
         &self.consensus
     }
 
@@ -165,7 +167,7 @@ where
         self.consensus.get_pubkey()
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, HP> {
         self.consensus.blocktree()
     }
 
@@ -402,6 +404,7 @@ where
             self.beneficiary,
             self.key,
             self.certkey,
+            |x| -> i32 { x },
         );
 
         let mut monad_state = MonadState {
@@ -436,7 +439,7 @@ where
     }
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
@@ -449,6 +452,7 @@ where
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
+    HP: HashPolicy,
 {
     pub fn update(
         &mut self,

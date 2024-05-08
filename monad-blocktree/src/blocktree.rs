@@ -46,18 +46,41 @@ struct Root {
 }
 
 type Tree<SCT> = HashMap<BlockId, (Block<SCT>, HashSet<EthTxHash>)>;
+pub trait HashPolicy: Fn(i32) -> i32 {}
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct BlockTree<SCT: SignatureCollection> {
+impl<T> HashPolicy for T where T: Fn(i32) -> i32 {}
+
+pub struct BlockTree<SCT: SignatureCollection, HP: HashPolicy> {
     /// The round and block_id of last committed block
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
     tree: Tree<SCT>,
+    hash_policy: HP,
 }
 
-impl<SCT: SignatureCollection> BlockTree<SCT> {
-    pub fn new(root: QuorumCertificate<SCT>) -> Self {
+impl<SCT: SignatureCollection, HP: HashPolicy> PartialEq<Self> for BlockTree<SCT, HP> {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.tree == other.tree
+    }
+}
+
+impl<SCT: SignatureCollection, HP: Fn(i32) -> i32> Eq for BlockTree<SCT, HP> {}
+
+impl<SCT: SignatureCollection, HP: Fn(i32) -> i32> fmt::Debug for BlockTree<SCT, HP>
+where
+    SCT: SignatureCollection,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BlockTree")
+            .field("root", &self.root)
+            .field("tree", &self.tree)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<SCT: SignatureCollection, HP: Fn(i32) -> i32> BlockTree<SCT, HP> {
+    pub fn new(root: QuorumCertificate<SCT>, hash_policy: HP) -> Self {
         Self {
             root: Root {
                 round: root.info.get_round(),
@@ -65,6 +88,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
                 block_id: root.get_block_id(),
             },
             tree: HashMap::new(),
+            hash_policy,
         }
     }
 
