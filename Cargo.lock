@@ -3176,8 +3176,10 @@ dependencies = [
 name = "monad-blocktree"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-tx",
  "monad-eth-types",
  "monad-testutil",
  "monad-tracing-counter",

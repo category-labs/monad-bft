@@ -10,9 +10,11 @@ bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
+monad-eth-tx = { path = "../monad-eth-tx" }
 monad-tracing-counter = { path = "../monad-tracing-counter" }
 monad-types = { path = "../monad-types" }
 
+bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
