@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use monad_blocktree::blocktree::HashPolicy;
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
     block::Block, signature_collection::SignatureCollection, voting::ValidatorMapping,
@@ -34,8 +35,8 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+    pub(super) fn new<HP: HashPolicy<SCT>>(
+        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>,
     ) -> Self {
         Self {
             val_epoch_map: &mut monad_state.val_epoch_map,

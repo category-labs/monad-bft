@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use monad_async_state_verify::{AsyncStateVerifyCommand, AsyncStateVerifyProcess};
+use monad_blocktree::blocktree::HashPolicy;
 use monad_consensus::{messages::message::PeerStateRootMessage, validation::signing::Validated};
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
@@ -57,8 +58,8 @@ where
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+    pub(super) fn new<HP: HashPolicy<SCT>>(
+        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT, HP>,
     ) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,

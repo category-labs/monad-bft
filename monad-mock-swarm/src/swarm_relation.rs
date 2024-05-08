@@ -2,6 +2,7 @@ use bytes::Bytes;
 use monad_async_state_verify::{
     AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
 };
+use monad_blocktree::blocktree::HashPolicy;
 use monad_consensus_types::{
     block::Block,
     block_validator::{BlockValidator, MockValidator},
@@ -37,6 +38,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::BlockValidator,
     <S as SwarmRelation>::StateRootValidator,
     <S as SwarmRelation>::AsyncStateRootVerify,
+    <S as SwarmRelation>::HashPolicy,
 >;
 pub trait SwarmRelation
 where
@@ -99,6 +101,8 @@ where
         > + Send
         + Sync
         + Unpin;
+
+    type HashPolicy: HashPolicy<Self::SignatureCollectionType> + Send + Sync + Unpin;
 }
 
 pub struct DebugSwarmRelation;
@@ -158,6 +162,8 @@ impl SwarmRelation for DebugSwarmRelation {
             > + Send
             + Sync,
     >;
+
+    type HashPolicy = Box<dyn HashPolicy<Self::SignatureCollectionType> + Send + Sync>;
 }
 
 // default swarm relation impl
@@ -198,6 +204,8 @@ impl SwarmRelation for NoSerSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;
+
+    type HashPolicy = ();
 }
 
 pub struct BytesSwarm;
@@ -236,6 +244,8 @@ impl SwarmRelation for BytesSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;
+
+    type HashPolicy = ();
 }
 
 pub struct MonadMessageNoSerSwarm;
@@ -273,4 +283,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::SignatureType,
         Self::SignatureCollectionType,
     >;
+
+    type HashPolicy = ();
 }

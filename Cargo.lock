@@ -3515,6 +3515,7 @@ dependencies = [
  "futures",
  "itertools 0.10.5",
  "monad-async-state-verify",
+ "monad-blocktree",
  "monad-bls",
  "monad-consensus",
  "monad-consensus-state",

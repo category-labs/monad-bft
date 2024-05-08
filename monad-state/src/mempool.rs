@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use monad_blocktree::blocktree::HashPolicy;
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
     block::Block, signature_collection::SignatureCollection, txpool::TxPool,
@@ -12,24 +13,25 @@ use monad_validator::validator_set::ValidatorSetTypeFactory;
 
 use crate::{MonadState, VerifiedMonadMessage};
 
-pub(super) struct MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT> {
+pub(super) struct MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT, HP> {
     txpool: &'a mut TT,
 
-    _phantom: PhantomData<(ST, SCT, VT, LT, BVT, SVT, ASVT)>,
+    _phantom: PhantomData<(ST, SCT, VT, LT, BVT, SVT, ASVT, HP)>,
 }
 
 pub(super) struct MempoolCommand {}
 
-impl<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT>
-    MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT, HP>
+    MempoolChildState<'a, ST, SCT, VT, LT, TT, BVT, SVT, ASVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VT: ValidatorSetTypeFactory<NodeIdPubKey = SCT::NodeIdPubKey>,
     TT: TxPool,
+    HP: HashPolicy<SCT>,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VT, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, VT, LT, TT, BVT, SVT, ASVT, HP>,
     ) -> Self {
         Self {
             txpool: &mut monad_state.txpool,

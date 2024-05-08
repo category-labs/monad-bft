@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, time::Duration};
 
-use monad_blocktree::blocktree::BlockTree;
+use monad_blocktree::blocktree::{BlockTree, HashPolicy};
 use monad_consensus::{
     messages::{
         consensus_message::{ConsensusMessage, ProtocolMessage},
@@ -47,10 +47,11 @@ pub mod command;
 pub mod wrapper;
 
 /// core consensus algorithm
-pub struct ConsensusState<ST, SCT, BV, SVT>
+pub struct ConsensusState<ST, SCT, BV, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy<SCT>,
 {
     /// This nodes public NodeId; what other nodes see in the validator set
     nodeid: NodeId<SCT::NodeIdPubKey>,
@@ -58,7 +59,7 @@ where
     config: ConsensusConfig,
     /// Prospective blocks are stored here while they wait to be
     /// committed
-    pending_block_tree: BlockTree<SCT>,
+    pending_block_tree: BlockTree<SCT, HP>,
     /// State machine to track collected votes for proposals
     vote_state: VoteState<SCT>,
     /// The highest QC (QC height determined by Round) known to this node
@@ -109,10 +110,11 @@ pub struct ConsensusConfig {
     pub state_sync_threshold: SeqNum,
 }
 
-impl<ST, SCT, BVT, SVT> PartialEq for ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> PartialEq for ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy<SCT>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.pending_block_tree.eq(&other.pending_block_tree)
@@ -125,17 +127,19 @@ where
             && self.block_sync_requester.eq(&other.block_sync_requester)
     }
 }
-impl<ST, SCT, BVT, SVT> Eq for ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> Eq for ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy<SCT>,
 {
 }
 
-impl<ST, SCT, BVT, SVT> std::fmt::Debug for ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> std::fmt::Debug for ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    HP: HashPolicy<SCT>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsensusState")
@@ -193,12 +197,13 @@ where
     pub _phantom: PhantomData<ST>,
 }
 
-impl<ST, SCT, BVT, SVT> ConsensusState<ST, SCT, BVT, SVT>
+impl<ST, SCT, BVT, SVT, HP> ConsensusState<ST, SCT, BVT, SVT, HP>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     BVT: BlockValidator,
     SVT: StateRootValidator,
+    HP: HashPolicy<SCT>,
 {
     /// Create the core consensus state
     ///
@@ -220,10 +225,11 @@ where
         // TODO-2 deprecate
         keypair: ST::KeyPairType,
         cert_keypair: SignatureCollectionKeyPairType<SCT>,
+        hash_policy: HP,
     ) -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
         ConsensusState {
-            pending_block_tree: BlockTree::new(genesis_qc.clone()),
+            pending_block_tree: BlockTree::new(genesis_qc.clone(), hash_policy),
             vote_state: VoteState::default(),
             high_qc: genesis_qc,
             state_root_validator,
@@ -625,7 +631,10 @@ where
     /// a blocksync request could be for a block that is not yet committed so we
     /// try and fetch it from the blocktree
     pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
-        self.pending_block_tree.tree().get(bid)
+        self.pending_block_tree
+            .tree()
+            .get(bid)
+            .map(|(block, _)| block)
     }
 
     /// if a blocksync request timesout, try again with a different validator
@@ -1139,7 +1148,7 @@ where
         self.beneficiary
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, HP> {
         &self.pending_block_tree
     }
 
@@ -1219,7 +1228,7 @@ mod test {
     type SignatureCollectionType = MultiSig<SignatureType>;
     type StateRootValidatorType = NopStateRoot;
 
-    struct NodeContext<'a, ST, SCT, VTF, SVT, LT, TT>
+    struct NodeContext<'a, ST, SCT, VTF, SVT, LT, TT, HP>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1227,6 +1236,7 @@ mod test {
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool,
+        HP: HashPolicy<SCT>,
     {
         epoch_manager: EpochManager,
         val_epoch_map: ValidatorsEpochMapping<VTF, SCT>,
@@ -1235,12 +1245,12 @@ mod test {
         metrics: Metrics,
         version: &'a str,
 
-        consensus_state: ConsensusState<ST, SCT, MockValidator, SVT>,
+        consensus_state: ConsensusState<ST, SCT, MockValidator, SVT, HP>,
 
         phantom: PhantomData<ST>,
     }
 
-    impl<'a, ST, SCT, VTF, SVT, LT, TT> NodeContext<'a, ST, SCT, VTF, SVT, LT, TT>
+    impl<'a, ST, SCT, VTF, SVT, LT, TT, HP> NodeContext<'a, ST, SCT, VTF, SVT, LT, TT, HP>
     where
         VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         ST: CertificateSignatureRecoverable,
@@ -1248,11 +1258,12 @@ mod test {
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
         TT: TxPool,
+        HP: HashPolicy<SCT>,
     {
         fn get_state(
             &'a mut self,
         ) -> (
-            &mut ConsensusState<ST, SCT, MockValidator, SVT>,
+            &mut ConsensusState<ST, SCT, MockValidator, SVT, HP>,
             NodeState<'a, ST, SCT, VTF, LT, TT>,
         ) {
             (
@@ -1440,6 +1451,7 @@ mod test {
         SVT: StateRootValidator,
         LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Clone,
         TT: TxPool + Clone,
+        HP: HashPolicy<SCT>,
     >(
         num_states: u32,
         valset_factory: VTF,
@@ -1448,7 +1460,7 @@ mod test {
         state_root: impl Fn() -> SVT,
     ) -> (
         EnvContext<ST, SCT, VTF, LT>,
-        Vec<NodeContext<'static, ST, SCT, VTF, SVT, LT, TT>>,
+        Vec<NodeContext<'static, ST, SCT, VTF, SVT, LT, TT, HP>>,
     ) {
         let (keys, cert_keys, valset, _valmap) =
             create_keys_w_validators::<ST, SCT, _>(num_states, ValidatorSetFactory::default());
@@ -1461,7 +1473,7 @@ mod test {
         let mut dupkeys = create_keys::<ST>(num_states);
         let mut dupcertkeys = create_certificate_keys::<SCT>(num_states);
 
-        let ctxs: Vec<NodeContext<_, _, _, _, _, _>> = (0..num_states)
+        let ctxs: Vec<NodeContext<_, _, _, _, _, _, _>> = (0..num_states)
             .map(|i| {
                 let mut val_epoch_map = ValidatorsEpochMapping::new(valset_factory.clone());
                 val_epoch_map.insert(
@@ -1478,7 +1490,7 @@ mod test {
                         &mut [127; 32],
                     )
                     .unwrap();
-                let cs = ConsensusState::<ST, SCT, _, SVT>::new(
+                let cs = ConsensusState::<ST, SCT, _, SVT, HP>::new(
                     MockValidator,
                     state_root(),
                     keys[i as usize].pubkey(),
@@ -1665,7 +1677,7 @@ mod test {
     fn timeout_stops_voting() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -1695,7 +1707,7 @@ mod test {
     fn enter_proposalmsg_round() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -1736,7 +1748,7 @@ mod test {
     fn duplicate_proposals() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -1777,7 +1789,7 @@ mod test {
     fn out_of_order_proposals(perms: Vec<usize>) {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -1854,7 +1866,7 @@ mod test {
     fn test_commit_rule_consecutive() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -1896,7 +1908,7 @@ mod test {
     fn test_commit_rule_non_consecutive() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -1959,7 +1971,7 @@ mod test {
     fn test_malicious_proposal_and_block_recovery() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -2134,13 +2146,14 @@ mod test {
     #[test]
     fn test_receive_empty_block() {
         let num_state = 4;
-        let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _>(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
-        );
+        let (mut env, mut ctx) =
+            setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _, HP>(
+                num_state,
+                ValidatorSetFactory::default(),
+                SimpleRoundRobin::default(),
+                MockTxPool::default(),
+                || StateRoot::new(SeqNum(1)),
+            );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
         let p1 = env.next_proposal_empty();
@@ -2157,13 +2170,14 @@ mod test {
     #[test]
     fn test_lagging_execution() {
         let num_state = 4;
-        let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _>(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
-        );
+        let (mut env, mut ctx) =
+            setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _, _>(
+                num_state,
+                ValidatorSetFactory::default(),
+                SimpleRoundRobin::default(),
+                MockTxPool::default(),
+                || StateRoot::new(SeqNum(1)),
+            );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
         env.next_proposal(
@@ -2207,13 +2221,14 @@ mod test {
     #[test]
     fn test_missing_state_root() {
         let num_state = 4;
-        let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _>(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            MockTxPool::default(),
-            || StateRoot::new(SeqNum(5)),
-        );
+        let (mut env, mut ctx) =
+            setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _, _>(
+                num_state,
+                ValidatorSetFactory::default(),
+                SimpleRoundRobin::default(),
+                MockTxPool::default(),
+                || StateRoot::new(SeqNum(5)),
+            );
         let (consensus_state, mut node_state) = ctx[0].get_state();
 
         // prepare 10 blocks
@@ -2338,13 +2353,14 @@ mod test {
     #[test]
     fn test_state_root_updates() {
         let num_state = 4;
-        let (mut env, mut ctx) = setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _>(
-            num_state,
-            ValidatorSetFactory::default(),
-            SimpleRoundRobin::default(),
-            MockTxPool::default(),
-            || StateRoot::new(SeqNum(1)),
-        );
+        let (mut env, mut ctx) =
+            setup::<SignatureType, SignatureCollectionType, _, StateRoot, _, _, _>(
+                num_state,
+                ValidatorSetFactory::default(),
+                SimpleRoundRobin::default(),
+                MockTxPool::default(),
+                || StateRoot::new(SeqNum(1)),
+            );
         let node = &mut ctx[0];
 
         // delay gap in setup is 1
@@ -2432,7 +2448,7 @@ mod test {
     fn test_fetch_uncommitted_block() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -2511,7 +2527,7 @@ mod test {
     #[test_case(123; "123 participants")]
     fn test_observing_qc_through_votes(num_state: usize) {
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state as u32,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -2595,7 +2611,7 @@ mod test {
     fn test_observe_qc_through_tmo() {
         let num_state = 5;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state as u32,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -2644,7 +2660,7 @@ mod test {
     fn test_observe_qc_through_proposal() {
         let num_state = 5;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state as u32,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
@@ -2673,7 +2689,7 @@ mod test {
     fn test_votes_with_missing_parent_block() {
         let num_state = 4;
         let (mut env, mut ctx) =
-            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _>(
+            setup::<SignatureType, SignatureCollectionType, _, StateRootValidatorType, _, _, _>(
                 num_state as u32,
                 ValidatorSetFactory::default(),
                 SimpleRoundRobin::default(),
