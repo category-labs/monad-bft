@@ -2,17 +2,12 @@
 FROM ubuntu:22.04 AS base
 
 RUN apt update
-RUN apt install -y ca-certificates \
-    curl \
-    gnupg \
-    software-properties-common \
-    wget \
-    pkg-config \
-    libssl-dev \
-    clang
+RUN apt upgrade -y
+RUN apt install -y ca-certificates curl pkg-config gnupg software-properties-common wget
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
 RUN add-apt-repository -y ppa:mhier/libboost-latest
+RUN apt update
 RUN apt install -y libstdc++-13-dev
 RUN apt install -y gcc-13 g++-13
 
@@ -55,6 +50,8 @@ RUN apt-get -y install kitware-archive-keyring
 RUN apt-get -y install cmake
 ######## END CMAKE
 
+RUN apt install -y clang libssl-dev
+
 RUN apt-get install -y \
   libboost-fiber1.83-dev \
   libboost-graph1.83-dev \
@@ -74,7 +71,7 @@ ARG ETH_CALL_TARGET=monad_shared
 ARG TRIEDB_TARGET=triedb_driver
 
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
-    --mount=type=cache,target=${CARGO_ROOT}/git          \
+    --mount=type=cache,target=${CARGO_ROOT}/git         \
     --mount=type=cache,target=/usr/src/monad-bft/target \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
