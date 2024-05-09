@@ -103,7 +103,8 @@ impl EventFd {
         }
     }
 
-    // u64 can be written into eventfd to pass to the receiver
+    // u64 can be written into eventfd to increment a kernel-tracked counter.
+    // the counter resets when the epoll event is handled (via read of the fd)
     pub fn trigger_event(&self, n: u64) -> std::io::Result<()> {
         let data = &n as *const u64;
         let s = unsafe { libc::write(self.fd, data as *const libc::c_void, mem::size_of::<u64>()) };
@@ -117,7 +118,7 @@ impl EventFd {
         Ok(())
     }
 
-    // returns the u64 from the writer and an isize for the return value of the read syscall
+    // returns the u64 counter and an isize for the return value of the read syscall
     pub fn handle_event(&self) -> (u64, isize) {
         let mut n: u64 = 0;
         let data = &mut n as *mut u64;

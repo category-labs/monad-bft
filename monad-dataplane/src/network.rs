@@ -21,11 +21,15 @@ const CMSG_LEN: usize = 88;
 // message length is limited by the max limit of the underlying protocol
 const MAX_IOVEC_LEN: usize = MAX_UDP_PKT - MAX_IPV4_HDR - MAX_UDP_HDR;
 
-const NUM_IOVECS: usize = 1;
+const NUM_IOVECS: usize = 1024;
 
 // 64 is linux kernel limit on max number of segments
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!((MAX_IOVEC_LEN / MONAD_GSO_SIZE) <= 64);
+
+// num msgs in sendmmsg is limited to 1024 in the kernel
+#[allow(clippy::assertions_on_constants)]
+const _: () = assert!(NUM_TX_MSGHDR <= 1024);
 
 #[derive(Copy, Clone)]
 #[repr(align(8))]
@@ -279,6 +283,8 @@ impl<'a> NetworkSocket<'a> {
     // data buffer cannot be larger than max udp size
     // each msg_hdr is to one dest addr
     // TODO use more descriptive enum for return value rather than Option
+    // TODO: should be able to split data greater than MAX_IOVEC_LEN into multiple messages,
+    // as long as there are max 1024 messages
     pub fn broadcast_buffer(&mut self, to: Vec<SocketAddr>, data: Bytes) -> Option<()> {
         if to.is_empty() {
             return None;
@@ -307,6 +313,33 @@ impl<'a> NetworkSocket<'a> {
         }
 
         self.sendmmsg(to.len() as u32)
+    }
+
+    pub fn unicast_buffer(&mut self, msg: Vec<(SocketAddr, Bytes)>) -> Option<()> {
+        if msg.is_empty() {
+            return None;
+        }
+
+        assert!(msg.len() < NUM_TX_MSGHDR);
+
+        for (i, (to, payload)) in msg.iter().enumerate() {
+            self.send_ctrl.name[i].write((*to).into());
+
+            self.send_ctrl.iovecs[i].iov_base = (*payload).as_ptr() as *const _ as *mut _;
+            self.send_ctrl.iovecs[i].iov_len = payload.len();
+            self.send_ctrl.msgs[i].msg_hdr.msg_iov = &mut self.send_ctrl.iovecs[i];
+            self.send_ctrl.msgs[i].msg_hdr.msg_iovlen = 1;
+
+            self.send_ctrl.msgs[i].msg_hdr.msg_control = std::ptr::null_mut();
+            self.send_ctrl.msgs[i].msg_hdr.msg_controllen = 0;
+
+            self.send_ctrl.msgs[i].msg_hdr.msg_name =
+                self.send_ctrl.name[i].as_ptr() as *const _ as *mut _;
+            self.send_ctrl.msgs[i].msg_hdr.msg_namelen =
+                unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+        }
+
+        self.sendmmsg(0)
     }
 
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {

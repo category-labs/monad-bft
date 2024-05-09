@@ -1,4 +1,4 @@
-use std::{os::fd::AsRawFd, pin::Pin, sync::Arc, task::Poll, thread};
+use std::{net::SocketAddr, os::fd::AsRawFd, pin::Pin, sync::Arc, task::Poll, thread};
 
 use bytes::Bytes;
 use futures::Stream;
@@ -17,9 +17,22 @@ const RX_EVENT: EpollToken = EpollToken(0);
 const TX_EVENT: EpollToken = EpollToken(1);
 const TIMER: EpollToken = EpollToken(2);
 
+/// Send the same payload to multiple destinations
 #[derive(Clone)]
 pub struct BroadcastMsg {
-    pub targets: Vec<std::net::SocketAddr>,
+    pub targets: Vec<SocketAddr>,
+    pub payload: Bytes,
+}
+
+/// Send a list of unicast payloads
+#[derive(Clone)]
+pub struct UnicastMsg {
+    pub msgs: Vec<(SocketAddr, Bytes)>,
+}
+
+#[derive(Clone)]
+pub struct RecvMsg {
+    pub src_addr: SocketAddr,
     pub payload: Bytes,
 }
 
@@ -32,17 +45,18 @@ pub struct Dataplane {
     /// Ingress refers to the direction of Network traffic (incoming network traffic)
     /// Ingress sender/receiver channel is used to deliver the ingress network traffic to the
     /// application
-    ingress_receiver: WakeableConsumer<Bytes>,
+    ingress_receiver: WakeableConsumer<RecvMsg>,
 
     /// Egress refers to the direction of Network traffic (outgoing network traffic)
     /// Egress sender/receiver channel is used to deliver data from the Application to this struct
     /// which will then send it out to the network
-    egress_sender: rtrb::Producer<BroadcastMsg>,
+    egress_bcast_sender: rtrb::Producer<BroadcastMsg>,
+    egress_ucast_sender: rtrb::Producer<UnicastMsg>,
 }
 
 impl Dataplane {
     pub fn new(local_addr: &str) -> Self {
-        let (ing_send, ing_recv) = RingBuffer::<Bytes>::new(1024);
+        let (ing_send, ing_recv) = RingBuffer::<RecvMsg>::new(1024);
         let n = Notifier::new();
         let ing_producer = WakeableProducer {
             producer: ing_send,
@@ -53,7 +67,8 @@ impl Dataplane {
             notify: n,
         };
 
-        let (egr_send, egr_recv) = RingBuffer::<BroadcastMsg>::new(1024);
+        let (egr_bcast_send, egr_bcast_recv) = RingBuffer::<BroadcastMsg>::new(1024);
+        let (egr_ucast_send, egr_ucast_recv) = RingBuffer::<UnicastMsg>::new(1024);
 
         let efd = EventFd::new().unwrap();
         let tfd = TimerFd::new().unwrap();
@@ -63,7 +78,8 @@ impl Dataplane {
             tfd,
             epoll: EpollFd::<NUM_EPOLL_EVENTS>::new().unwrap(),
             ingress_sender: ing_producer,
-            egress_receiver: egr_recv,
+            egress_bcast_receiver: egr_bcast_recv,
+            egress_ucast_receiver: egr_ucast_recv,
             socket: NetworkSocket::new(local_addr),
         }
         .start();
@@ -72,15 +88,29 @@ impl Dataplane {
             efd,
             tfd,
             ingress_receiver: ing_consumer,
-            egress_sender: egr_send,
+            egress_bcast_sender: egr_bcast_send,
+            egress_ucast_sender: egr_ucast_send,
         }
     }
 
     pub fn broadcast(&mut self, msg: BroadcastMsg) {
-        match self.egress_sender.push(msg) {
+        match self.egress_bcast_sender.push(msg) {
             Err(e) => {
-                debug!("egress channel sender error {e}");
-                panic!("egress sender queue is full, consider resizing");
+                debug!("bcast egress channel sender error {e}");
+                panic!("bcast egress sender queue is full, consider resizing");
+            }
+            Ok(()) => {
+                debug!("sending into channel");
+                self.efd.trigger_event(1).unwrap();
+            }
+        }
+    }
+
+    pub fn unicast(&mut self, msg: UnicastMsg) {
+        match self.egress_ucast_sender.push(msg) {
+            Err(e) => {
+                debug!("ucast egress channel sender error {e}");
+                panic!("ucast egress sender queue is full, consider resizing");
             }
             Ok(()) => {
                 debug!("sending into channel");
@@ -91,7 +121,7 @@ impl Dataplane {
 }
 
 impl Stream for Dataplane {
-    type Item = Bytes;
+    type Item = RecvMsg;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -106,8 +136,9 @@ struct DataplaneEventLoop {
     efd: EventFd,
     tfd: TimerFd,
 
-    ingress_sender: WakeableProducer<Bytes>,
-    egress_receiver: rtrb::Consumer<BroadcastMsg>,
+    ingress_sender: WakeableProducer<RecvMsg>,
+    egress_bcast_receiver: rtrb::Consumer<BroadcastMsg>,
+    egress_ucast_receiver: rtrb::Consumer<UnicastMsg>,
 
     socket: NetworkSocket<'static>,
 }
@@ -182,21 +213,33 @@ impl DataplaneEventLoop {
             let len = result.len;
             total_recv_bytes += len;
             let src_sock_addr = result.src_addr;
-            let stride = result.stride;
 
-            debug!("recv {} bytes from {}", len, src_sock_addr);
-            // debug!("{:?}", self.socket.recv_ctrl.buf_refs[i][..len]);
+            let stride: usize = if result.stride == 0 {
+                len
+            } else {
+                result.stride.into()
+            };
 
-            //TODO: account for the stride
-            let b = Bytes::copy_from_slice(&self.socket.recv_ctrl.buf_refs[i][..len]);
-            match self.ingress_sender.producer.push(b) {
-                Err(e) => {
-                    debug!("send failed on ingress sender {e}");
-                    panic!("consider resizing queue for ingress");
+            for j in (0..len).step_by(stride) {
+                let mut n = j + stride;
+                if n > len {
+                    n = len;
                 }
-                Ok(()) => {
-                    debug!("sent bytes on ingress sender");
-                    self.ingress_sender.notify.0.wake();
+
+                let b = Bytes::copy_from_slice(&self.socket.recv_ctrl.buf_refs[i][j..n]);
+                let rx = RecvMsg {
+                    src_addr: src_sock_addr,
+                    payload: b,
+                };
+                match self.ingress_sender.producer.push(rx) {
+                    Err(e) => {
+                        debug!("send failed on ingress sender {e}");
+                        panic!("consider resizing queue for ingress");
+                    }
+                    Ok(()) => {
+                        debug!("sent bytes on ingress sender");
+                        self.ingress_sender.notify.0.wake();
+                    }
                 }
             }
         }
@@ -205,7 +248,7 @@ impl DataplaneEventLoop {
     }
 
     fn handle_tx(&mut self) {
-        let (_n, s) = self.efd.handle_event();
+        let (n, s) = self.efd.handle_event();
         if s == -1 {
             let r = std::io::Error::last_os_error();
             if r.kind() == std::io::ErrorKind::WouldBlock {
@@ -215,8 +258,13 @@ impl DataplaneEventLoop {
             }
         }
 
+        self.handle_broadcast();
+        self.handle_unicast();
+    }
+
+    fn handle_broadcast(&mut self) {
         loop {
-            let (to, payload) = match self.egress_receiver.pop() {
+            let (to, payload) = match self.egress_bcast_receiver.pop() {
                 Err(PopError::Empty) => {
                     break;
                 }
@@ -224,6 +272,20 @@ impl DataplaneEventLoop {
             };
 
             self.socket.broadcast_buffer(to, payload);
+            // TODO: need pacing. SO_TXTIME
+        }
+    }
+
+    fn handle_unicast(&mut self) {
+        loop {
+            let msgs = match self.egress_ucast_receiver.pop() {
+                Err(PopError::Empty) => {
+                    break;
+                }
+                Ok(m) => m.msgs,
+            };
+
+            self.socket.unicast_buffer(msgs);
             // TODO: need pacing. SO_TXTIME
         }
     }

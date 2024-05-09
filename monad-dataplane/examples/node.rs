@@ -1,9 +1,9 @@
 use std::{net::SocketAddr, ops::DerefMut, pin::Pin, task::Poll, time::Instant};
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::{executor, Stream};
 use futures_util::{FutureExt, StreamExt};
-use monad_dataplane::event_loop::{BroadcastMsg, Dataplane};
+use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, RecvMsg};
 use rand::Rng;
 
 const NODE_ONE_ADDR: &str = "127.0.0.1:60000";
@@ -29,12 +29,12 @@ fn main() {
 
         loop {
             let recv = executor::block_on_stream(&mut rx).next();
-            let Some(payload) = recv else {
+            let Some(rx_msg) = recv else {
                 panic!();
             };
 
             rx_cnt += 1;
-            rx_bytes += payload.len();
+            rx_bytes += rx_msg.payload.len();
 
             if rx_cnt >= num_pkts {
                 let end = Instant::now();
@@ -85,7 +85,7 @@ impl Node {
 }
 
 impl Stream for Node {
-    type Item = Bytes;
+    type Item = RecvMsg;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
