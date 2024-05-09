@@ -16,4 +16,10 @@ Spin up `monad-node` and `monad_rpc` services. `monad_rpc` server can be accesse
 
 **Mode 2: Test**
 
-Runs an integration test to sanity check the devnet setup.
+Runs an integration test to sanity check the devnet setup. 
+
+The RPC calls involved are
+- eth_sendRawTransaction
+- eth_getTransactionReceipt
+- eth_getTransactionCount
+- eth_getBalance

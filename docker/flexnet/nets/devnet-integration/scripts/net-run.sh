@@ -129,24 +129,31 @@ if [ "$mode" == "run" ]; then
     exit 0
 elif [ "$mode" == "test" ]; then
     pushd $vol_root
+    
+    mkdir -p data
 
     build_services=$(docker compose config --services | grep build)
-    runner_services=$(docker compose config --services | grep runner)
     node_services=$(docker compose config --services | grep -v -E "(build|runner)")
 
     # test mode only needs to expose ports internally
     sed -i 's/ports:/expose:/g' compose.yaml
 
     docker compose build $build_services &&
-    docker compose build $runner_services &&
     docker compose up --detach $node_services
     sleep 10
     docker compose down $node_services
 
     popd # $vol_root
-
-    # inspect the blocks, verify content
+    # inspect consensus block ledger, verify transactions submitted are in the block
     docker run --rm -v ./$vol_root:/monad monad-python bash -c "python3 /monad/scripts/inspect-block.py --data /monad/data/txns.json"
+
+    # e2e_tester errors are redirected to the file. Assert that it's empty
+    e2e_tester_err=$vol_root/e2e_tester/logs/e2e-tester.err
+    if [ -s $e2e_tester_err ]; then
+        cat $e2e_tester_err
+        exit 1
+    fi
+
     exit 0
 else
     echo "Unsupported mode $mode"

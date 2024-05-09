@@ -69,15 +69,18 @@ ENV PATH="${CARGO_ROOT}/bin:$PATH"
 
 WORKDIR /usr/src/monad-bft
 COPY . .
+    
+ARG ETH_CALL_TARGET=monad_shared 
+ARG TRIEDB_TARGET=triedb_driver
+
 RUN --mount=type=cache,target=${CARGO_ROOT}/registry    \
     --mount=type=cache,target=${CARGO_ROOT}/git          \
     --mount=type=cache,target=/usr/src/monad-bft/target \
-    ETH_CALL_TARGET=monad_shared TRIEDB_TARGET=triedb_driver \
     ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
     CC=gcc-13 CXX=g++-13 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
-    cp `ls -lt $(find target/release | grep libmonad_shared) | head -1 | awk '{print $9}'` . && \
-    cp `ls -lt $(find target/release | grep libtriedb_driver) | head -1 | awk '{print $9}'` .
+    cp `ls -lt $(find target/release | grep lib${ETH_CALL_TARGET}.so) | head -1 | awk '{print $9}'` . && \
+    cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` .
 
 # Runner
 FROM base as runner
