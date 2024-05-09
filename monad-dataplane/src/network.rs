@@ -15,12 +15,15 @@ const MONAD_GSO_SIZE: usize = 1490;
 
 const BUF_SIZE: usize = MAX_UDP_PKT;
 const NUM_RX_MSGHDR: usize = 128;
-const NUM_TX_MSGHDR: usize = 128;
+const NUM_TX_MSGHDR: usize = 1024;
 const CMSG_LEN: usize = 88;
 
 // message length is limited by the max limit of the underlying protocol
-const MAX_IOVEC_LEN: usize = MAX_UDP_PKT - MAX_IPV4_HDR - MAX_UDP_HDR;
+//FIXME: This is expected size MAX_UDP_PKT - MAX_IPV4_HDR - MAX_UDP_HDR, but the actual measured
+//number where the packet isn't being fragmented is 65493. investigate
+const MAX_IOVEC_LEN: usize = 65493;
 
+const LINUX_SENDMMSG_VLEN_MAX: usize = 1024;
 const NUM_IOVECS: usize = 1024;
 
 // 64 is linux kernel limit on max number of segments
@@ -29,7 +32,7 @@ const _: () = assert!((MAX_IOVEC_LEN / MONAD_GSO_SIZE) <= 64);
 
 // num msgs in sendmmsg is limited to 1024 in the kernel
 #[allow(clippy::assertions_on_constants)]
-const _: () = assert!(NUM_TX_MSGHDR <= 1024);
+const _: () = assert!(NUM_TX_MSGHDR <= LINUX_SENDMMSG_VLEN_MAX);
 
 #[derive(Copy, Clone)]
 #[repr(align(8))]
@@ -278,41 +281,49 @@ impl<'a> NetworkSocket<'a> {
         }
     }
 
-    // send the same message to multiple destinations
-    // one continguous data buffer
-    // data buffer cannot be larger than max udp size
-    // each msg_hdr is to one dest addr
+    // send the same message in one continguous data buffer to multiple destinations
+    //
     // TODO use more descriptive enum for return value rather than Option
-    // TODO: should be able to split data greater than MAX_IOVEC_LEN into multiple messages,
-    // as long as there are max 1024 messages
     pub fn broadcast_buffer(&mut self, to: Vec<SocketAddr>, data: Bytes) -> Option<()> {
         if to.is_empty() {
             return None;
         }
 
-        assert!(to.len() < NUM_TX_MSGHDR);
+        let num_chunks = (data.len() / MAX_IOVEC_LEN) + 1;
+        assert!(num_chunks * to.len() <= NUM_TX_MSGHDR);
 
-        let n = data.len();
-        assert!(n <= MAX_IOVEC_LEN);
+        for (i, k) in (0..data.len()).step_by(MAX_IOVEC_LEN).enumerate() {
+            let mut n = k + MAX_IOVEC_LEN;
+            if n > data.len() {
+                n = data.len();
+            }
 
-        self.send_ctrl.iovecs[0].iov_base = data.as_ptr() as *const _ as *mut _;
-        self.send_ctrl.iovecs[0].iov_len = n;
-
-        for (i, dst) in to.iter().enumerate() {
-            self.send_ctrl.name[i].write((*dst).into());
-            self.send_ctrl.msgs[i].msg_hdr.msg_iov = self.send_ctrl.iovecs.as_mut_ptr();
-            self.send_ctrl.msgs[i].msg_hdr.msg_iovlen = 1;
-
-            self.send_ctrl.msgs[i].msg_hdr.msg_control = std::ptr::null_mut();
-            self.send_ctrl.msgs[i].msg_hdr.msg_controllen = 0;
-
-            self.send_ctrl.msgs[i].msg_hdr.msg_name =
-                self.send_ctrl.name[i].as_ptr() as *const _ as *mut _;
-            self.send_ctrl.msgs[i].msg_hdr.msg_namelen =
-                unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+            self.send_ctrl.iovecs[i].iov_base = data[k..n].as_ptr() as *const _ as *mut _;
+            self.send_ctrl.iovecs[i].iov_len = n - k;
         }
 
-        self.sendmmsg(to.len() as u32)
+        let mut sendmmsg_len: u32 = 0;
+        for (dst, i) in to.iter().zip((0..).step_by(num_chunks)) {
+            for j in 0..num_chunks {
+                sendmmsg_len += 1;
+                let k = i + j;
+                assert!(k < NUM_TX_MSGHDR);
+
+                self.send_ctrl.name[k].write((*dst).into());
+                self.send_ctrl.msgs[k].msg_hdr.msg_iov = &mut self.send_ctrl.iovecs[j];
+                self.send_ctrl.msgs[k].msg_hdr.msg_iovlen = 1;
+
+                self.send_ctrl.msgs[k].msg_hdr.msg_control = std::ptr::null_mut();
+                self.send_ctrl.msgs[k].msg_hdr.msg_controllen = 0;
+
+                self.send_ctrl.msgs[k].msg_hdr.msg_name =
+                    self.send_ctrl.name[k].as_ptr() as *const _ as *mut _;
+                self.send_ctrl.msgs[k].msg_hdr.msg_namelen =
+                    unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+            }
+        }
+
+        self.sendmmsg(sendmmsg_len)
     }
 
     pub fn unicast_buffer(&mut self, msg: Vec<(SocketAddr, Bytes)>) -> Option<()> {
@@ -343,6 +354,8 @@ impl<'a> NetworkSocket<'a> {
     }
 
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {
+        assert!(num_msgs as usize <= LINUX_SENDMMSG_VLEN_MAX);
+
         let r = unsafe {
             libc::sendmmsg(
                 self.socket.as_raw_fd(),

@@ -14,8 +14,8 @@ fn main() {
     let mut tx = Node::new(NODE_ONE_ADDR, NODE_TWO_ADDR);
     let mut rx = Node::new(NODE_TWO_ADDR, NODE_ONE_ADDR);
 
-    let num_pkts = 1000;
-    let pkt_size = 1460;
+    let num_pkts = 10;
+    let pkt_size = 96342;
 
     println!(
         "sending {} pkts, {} bytes \n",
@@ -36,7 +36,7 @@ fn main() {
             rx_cnt += 1;
             rx_bytes += rx_msg.payload.len();
 
-            if rx_cnt >= num_pkts {
+            if rx_bytes >= num_pkts * pkt_size {
                 let end = Instant::now();
                 println!("END: {:?}", end);
                 println!("\nRXer: cnt={}, bytes={}", rx_cnt, rx_bytes);
