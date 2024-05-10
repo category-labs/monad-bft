@@ -5,7 +5,7 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use log::debug;
 use monad_blockdb::BlockTagKey;
 use monad_triedb::Handle;
-use reth_primitives::{B256, U128, U256, U64, U8};
+use reth_primitives::{B256, U64, U8};
 use serde::{Deserialize, Serialize};
 
 use crate::eth_json_types::{BlockTags, EthAddress, EthStorageKey};
@@ -27,41 +27,17 @@ pub enum TriedbResult {
     BlockNum(u64),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransactionReceipt {
-    #[serde(rename = "type")]
-    pub transaction_type: U8,
-    pub transaction_hash: Option<B256>,
-    pub transaction_index: U64,
-    pub block_hash: Option<B256>,
-    pub block_number: Option<U256>,
-    pub from: Address,
-    pub to: Option<Address>,
-    // contract address created, or None if not a deployment
-    pub contract_address: Option<Address>,
-    pub effective_gas_price: U128,
-    pub gas_used: U128,
-    #[serde(flatten)]
-    pub details: ReceiptDetails,
-    // TODO: EIP4844 fields
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blob_gas_used: Option<U128>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blob_gas_price: Option<U128>,
-}
-
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReceiptDetails {
     pub status: U64,
     pub cumulative_gas_used: U64,
     pub logs_bloom: Bloom,
-    pub logs: Vec<Log>,
+    pub logs: Vec<ReceiptLog>,
 }
 
 #[derive(Debug, Clone, RlpDecodable, RlpEncodable, Serialize, Deserialize)]
-pub struct Log {
+pub struct ReceiptLog {
     pub address: Address,
     pub topics: Vec<B256>,
     pub data: Bytes,

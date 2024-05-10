@@ -2,7 +2,7 @@ use alloy_primitives::aliases::{U256, U64};
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue};
 use reth_primitives::BlockHash;
-use reth_rpc_types::{Block, BlockTransactions, Header, Withdrawal};
+use reth_rpc_types::{Block, BlockTransactions, Header, TransactionReceipt, Withdrawal};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -13,7 +13,7 @@ use crate::{
     },
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::JsonRpcError,
-    triedb::{TransactionReceipt, TriedbEnv, TriedbResult},
+    triedb::{TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {

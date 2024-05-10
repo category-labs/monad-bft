@@ -5,7 +5,7 @@ use alloy_rlp::Decodable;
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
 use reth_primitives::{BlockHash, TransactionSigned};
-use reth_rpc_types::{AccessListItem, Parity, Signature, Transaction};
+use reth_rpc_types::{AccessListItem, Log, Parity, Signature, Transaction, TransactionReceipt};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -17,7 +17,7 @@ use crate::{
         UnformattedData,
     },
     jsonrpc::JsonRpcError,
-    triedb::{decode_tx_type, ReceiptDetails, TransactionReceipt, TriedbEnv, TriedbResult},
+    triedb::{decode_tx_type, ReceiptDetails, TriedbEnv, TriedbResult},
 };
 
 pub fn parse_tx_content(
@@ -118,23 +118,46 @@ pub fn parse_tx_receipt(
                     tx.max_fee_per_gas() - base_fee_per_gas,
                     tx.max_priority_fee_per_gas().unwrap(),
                 );
+            let block_hash = Some(block.block.hash_slow());
+            let block_number = Some(U256::from(block_num));
+            let logs = r
+                .logs
+                .into_iter()
+                .enumerate()
+                .map(|(log_index, log_item)| Log {
+                    address: log_item.address,
+                    topics: log_item.topics,
+                    data: log_item.data,
+                    block_hash,
+                    block_number,
+                    transaction_hash: Some(tx.hash()),
+                    transaction_index: Some(U256::from(tx_index)),
+                    log_index: Some(U256::from(log_index)),
+                    removed: Default::default(),
+                })
+                .collect();
             let tx_receipt = TransactionReceipt {
                 transaction_type: tx_type,
                 transaction_hash: Some(tx.hash()),
                 transaction_index: U64::from(tx_index),
-                block_hash: Some(block.block.hash_slow()),
-                block_number: Some(U256::from(block_num)),
+                block_hash,
+                block_number,
                 from: transaction.signer(),
                 to: tx.to(),
                 // TODO: read from triedb to determine whether a contract is deployed
                 contract_address: None,
                 // TODO: gas_used = cumulative_gas_used[txn_index] - cumulative_gas_used[txn_index-1]
-                gas_used: U128::from(21000),
+                gas_used: Some(U256::from(21000)),
                 effective_gas_price: U128::from(effective_gas_price),
-                details: r,
+                cumulative_gas_used: U256::from(r.cumulative_gas_used),
+                status_code: Some(r.status),
+                logs,
+                logs_bloom: r.logs_bloom,
+                state_root: None,
                 // TODO: EIP4844 fields
                 blob_gas_used: None,
                 blob_gas_price: None,
+                ..Default::default()
             };
             Some(tx_receipt)
         }
