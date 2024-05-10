@@ -20,9 +20,11 @@ tracing = { workspace = true }
 monad-multi-sig = { path = "../monad-multi-sig" }
 
 alloy-primitives = { workspace = true }
-criterion = { workspace = true }
+criterion = { workspace = true, features = ["html_reports"] }
 reth-primitives = { workspace = true }
 rand = { workspace = true }
+monad-types = { path = "../monad-types" }
+monad-crypto = { path = "../monad-crypto" }
 
 [[bench]]
 name = "proposal_bench"

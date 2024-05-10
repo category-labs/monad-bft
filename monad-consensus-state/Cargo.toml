@@ -22,10 +22,21 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-txpool = { path = "../monad-eth-txpool" }
+monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-testutil = { path = "../monad-testutil" }
 monad-multi-sig = { path = "../monad-multi-sig" }
+criterion = { workspace = true, features = ["html_reports"] }
 
 itertools = { workspace = true }
 test-case = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
+
+rand = { workspace = true }
+reth-primitives = { workspace = true }
+
+[[bench]]
+name = "state_machine"
+harness = false
