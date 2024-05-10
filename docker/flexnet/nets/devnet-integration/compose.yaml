@@ -1,17 +1,7 @@
 services:
-  build_monad_execution:
-    image: monad-execution-builder:latest
-    build:
-      context: ${MONAD_BFT_ROOT}/monad-cxx/monad-execution
-      dockerfile: docker/release.Dockerfile
-      args:
-        GIT_COMMIT_HASH: ${GIT_COMMIT_HASH:-$(git rev-parse HEAD)}
-
   build_triedb:
     image: monad-execution-builder:latest
     command: monad_mpt --storage /monad/triedb/test.db --create
-    depends_on:
-      - build_monad_execution
     volumes:
       - ./node:/monad
     security_opt:
@@ -25,9 +15,8 @@ services:
 
   monad_execution:
     image: monad-execution-builder:latest
-    command: test_run_loop --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json --log_level ERROR
+    command: monad --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json --log_level ERROR
     depends_on:
-      - build_monad_execution
       - build_triedb
     volumes:
       - ./node:/monad

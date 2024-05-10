@@ -13,6 +13,7 @@
 #include <monad/execution/validate_transaction.hpp>
 #include <monad/state2/block_state.hpp>
 #include <monad/state3/state.hpp>
+#include <monad/types/incarnation.hpp>
 
 #include <boost/outcome/try.hpp>
 
@@ -47,7 +48,8 @@ namespace
         ro.set_block_number(block_number);
         ro.load_latest();
         BlockState block_state{ro};
-        State state{block_state};
+        Incarnation incarnation{0, 0};
+        State state{block_state, incarnation};
 
         // nonce validation hack
         auto const acct = ro.read_account(sender);
