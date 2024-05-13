@@ -108,6 +108,13 @@ impl TriedbEnv {
                 return;
             };
 
+            // account incarnation decode (currently not needed)
+            let Ok(_) = u64::decode(&mut buf) else {
+                debug!("rlp incarnation decode failed: {:?}", buf);
+                let _ = send.send(TriedbResult::EncodingError);
+                return;
+            };
+
             let Ok(nonce) = u128::decode(&mut buf) else {
                 debug!("rlp nonce decode failed: {:?}", buf);
                 let _ = send.send(TriedbResult::EncodingError);

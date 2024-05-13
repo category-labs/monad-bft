@@ -48,7 +48,7 @@ namespace
         ro.set_block_number(block_number);
         ro.load_latest();
         BlockState block_state{ro};
-        Incarnation incarnation{0, 0};
+        Incarnation incarnation{block_number, Incarnation::LAST_TX};
         State state{block_state, incarnation};
 
         // nonce validation hack
