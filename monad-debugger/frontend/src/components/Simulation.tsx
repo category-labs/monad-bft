@@ -38,8 +38,11 @@ const Sim: Component = () => {
     const [showEventLog, setShowEventLog] = createSignal(true);
     const toggleEventLog = () => setShowEventLog(!showEventLog())
 
-    const [showQueryEditor, setShowQueryEditor] = createSignal(true);
-    const toggleQueryEditor = () => setShowQueryEditor(!showQueryEditor())
+    const [showQueryEditor, setShowQueryEditor] = createSignal(false);
+    const toggleQueryEditor = () => setShowQueryEditor(!showQueryEditor());
+
+    const [showNodeView, setShowNodeView] = createSignal(false);
+    const toggleNodeView = () => setShowNodeView(!showNodeView());
 
     return (
         <>
@@ -50,13 +53,16 @@ const Sim: Component = () => {
                 <div>
                     <button class="border" onClick={toggleQueryEditor}>Toggle Query Editor</button>
                     <button class="border" onClick={toggleEventLog}>Toggle Event Log</button>
+                    <button class="border" onClick={toggleNodeView}>Toggle Node View</button>
                 </div>
             </div>
             <div class="grow flex flex-row min-h-0">
                 <Show when={showQueryEditor()}>
                     <QueryEditor simulation={simulationSignal()} />
                 </Show>
-                <Graph simulation={simulationSignal()} />
+                <Show when={showNodeView()}>
+                    <Graph simulation={simulationSignal()} />
+                </Show>
                 <Show when={showEventLog()}>
                     <EventLog simulation={simulationSignal()} />
                 </Show>

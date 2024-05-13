@@ -3423,6 +3423,7 @@ dependencies = [
  "getrandom",
  "hex",
  "monad-async-state-verify",
+ "monad-consensus",
  "monad-consensus-types",
  "monad-crypto",
  "monad-executor-glue",

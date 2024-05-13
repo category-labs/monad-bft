@@ -4,6 +4,24 @@ query EventLog {
     id
     event {
       __typename
+      ... on GraphQLAsyncStateVerifyEvent {
+        debug
+      }
+      ... on GraphQLBlockSyncEvent {
+        debug
+      }
+      ... on GraphQLConsensusEvent {
+        debug
+      }
+      ... on GraphQLMetricsEvent {
+        debug
+      }
+      ... on GraphQLMempoolEvent {
+        debug
+      }
+      ... on GraphQLValidatorEvent {
+        debug
+      }
     }
   }
 }
