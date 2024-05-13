@@ -48,6 +48,13 @@ impl TxPool for EthTxPool {
                 continue;
             }
 
+            // Validate account nonces are increasing
+            //  - If the sender account exists in the deltas -> the transaction nonce =
+            //    latest nonce + 1
+            //  - If the sender account is not in the deltas, it means that the account
+            //    doesn't have a recent transaction in the pending blocktree.
+            //    Fetch the latest nonce from the DB and validate the transaction nonce
+
             if txs.len() == tx_limit || (total_gas + tx.gas_limit()) > gas_limit {
                 break;
             }

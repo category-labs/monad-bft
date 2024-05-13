@@ -12,6 +12,7 @@ pub struct EthereumValidator {
 
 impl EthereumValidator {
     pub fn new(max_txs: usize, block_gas_limit: u64) -> Self {
+        // TODO: Make a DB for account nonces
         Self {
             max_txs,
             block_gas_limit,
@@ -20,6 +21,7 @@ impl EthereumValidator {
 }
 
 impl BlockValidator for EthereumValidator {
+    // Add arg: Nonce deltas from blocktree
     fn validate(&self, full_txs: &FullTransactionList) -> bool {
         let Ok(eth_txns) = EthFullTransactionList::rlp_decode(full_txs.bytes().clone()) else {
             return false;
@@ -35,6 +37,28 @@ impl BlockValidator for EthereumValidator {
             return false;
         }
 
+        // Validate nonces
+        // If a block is in the blocktree, then it has been validated already
+        // Get the latest nonce of each account from the deltas
+        // For each transaction in the block:
+        //  - If the sender account exists in the deltas -> the transaction nonce = 
+        //    latest nonce + 1
+        //  - If the sender account is not in the deltas, it means that the account
+        //    doesn't have a recent transaction in the pending blocktree.
+        //    Fetch the latest nonce from the DB and validate the transaction nonce
+
+        // Block is valid. Create deltas of account nonces to store in blocktree
+
         true
+    }
+
+    // Used to update the DB with the nonces of the latest committed block
+    // Args:
+    //  - Commited block
+    fn update_account_nonces(&mut self) {
+        // For each transaction in the committed block:
+        //  - Get latest nonce of sender from DB
+        //  - Assert that the nonce = latest nonce + 1 (sanity check)
+        //  - Update latest nonce in DB to nonce
     }
 }
