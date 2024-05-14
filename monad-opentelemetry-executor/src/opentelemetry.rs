@@ -42,7 +42,7 @@ pub struct OpenTelemetryExecutor<ST, SCT> {
     phantom: PhantomData<(ST, SCT)>,
 }
 
-const COUNTERS: [&str; 48] = [
+const COUNTERS: [&str; 47] = [
     "invalid_author",
     "not_well_formed_sig",
     "invalid_signature",
@@ -69,7 +69,6 @@ const COUNTERS: [&str; 48] = [
     "process_old_qc",
     "process_qc",
     "creating_proposal",
-    "abstain_proposal",
     "creating_empty_block_proposal",
     "rx_empty_block",
     "rx_execution_lagging",
@@ -304,11 +303,6 @@ where
             "creating_proposal",
             metrics.consensus_events.creating_proposal
                 - cached_metrics.consensus_events.creating_proposal,
-        );
-        self.record(
-            "abstain_proposal",
-            metrics.consensus_events.abstain_proposal
-                - cached_metrics.consensus_events.abstain_proposal,
         );
         self.record(
             "creating_empty_block_proposal",

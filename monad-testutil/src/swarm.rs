@@ -81,7 +81,6 @@ pub fn make_state_configs<S: SwarmRelation>(
             consensus_config: ConsensusConfig {
                 proposal_txn_limit,
                 proposal_gas_limit: 30_000_000,
-                propose_with_missing_blocks: false,
                 delta,
                 max_blocksync_retries,
                 state_sync_threshold,

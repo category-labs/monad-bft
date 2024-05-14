@@ -30,7 +30,6 @@ pub struct ConsensusEvents {
     pub process_old_qc: u64,
     pub process_qc: u64,
     pub creating_proposal: u64,
-    pub abstain_proposal: u64,
     pub creating_empty_block_proposal: u64,
     pub rx_empty_block: u64,
     pub rx_execution_lagging: u64,

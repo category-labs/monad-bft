@@ -160,12 +160,6 @@ impl<S: SwarmRelation> MockSwarmVerifier<S> {
             )
             // initial TC. If the node is in the happy path, it should never create a TC otherwise
             .metric_exact(node_ids, fetch_metric!(consensus_events.created_tc), 1)
-            // should always create a proposal
-            .metric_exact(
-                node_ids,
-                fetch_metric!(consensus_events.abstain_proposal),
-                0,
-            )
             .metric_exact(
                 node_ids,
                 fetch_metric!(consensus_events.creating_empty_block_proposal),

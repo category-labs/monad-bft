@@ -91,11 +91,6 @@ pub struct ConsensusConfig {
     pub proposal_txn_limit: usize,
     /// Maximum cumulative gas allowed for all transactions in a proposal
     pub proposal_gas_limit: u64,
-    /// If the current leader has the highest qc but is missing some blocks in the
-    /// pending blocktree (ie, there isn't a path to the root of the tree from the
-    /// highest qc), this bool controls whether we still try to propose a block with
-    /// transactions instead of proposing an empty block
-    pub propose_with_missing_blocks: bool,
     /// Duration used by consensus to determine timeout lengths
     /// delta should be approximately equal to the upper bound of message
     /// delivery during a broadcast
@@ -157,8 +152,6 @@ pub enum ConsensusAction {
     Propose(StateRootHash, HashPolicyOutput),
     /// Create an empty block proposal
     ProposeEmpty,
-    /// Do nothing which will lead to the round timing out
-    Abstain,
 }
 
 /// Actions after state root validation
@@ -910,11 +903,6 @@ where
                 }
                 cmds
             }
-            ConsensusAction::Abstain => {
-                metrics.consensus_events.abstain_proposal += 1;
-                // TODO-2: This could potentially be an empty block
-                vec![]
-            }
             ConsensusAction::ProposeEmpty => {
                 tracing::info_span!("create_proposal_empty_span", ?round);
                 // Don't have the necessary state root hash ready so propose
@@ -942,20 +930,13 @@ where
             return ConsensusAction::ProposeEmpty;
         };
 
-        // Always propose when there's a path to root
-        if let Some(pending_blocktree_tx_hashes) = self
+        // Propose when there's a path to root
+        let pending_blocktree_tx_hashes = self
             .pending_block_tree
             .get_tx_hashes_on_path_to_root(parent_bid)
-        {
-            return ConsensusAction::Propose(h, pending_blocktree_tx_hashes);
-        }
+            .expect("there should be a path to root");
 
-        // Still propose but with the chance of proposing duplicate txs
-        if self.config.propose_with_missing_blocks {
-            return ConsensusAction::Propose(h, Default::default());
-        };
-
-        ConsensusAction::Abstain
+        ConsensusAction::Propose(h, pending_blocktree_tx_hashes)
     }
 
     #[must_use]
@@ -1487,7 +1468,6 @@ mod test {
                     ConsensusConfig {
                         proposal_txn_limit: 5000,
                         proposal_gas_limit: 8_000_000,
-                        propose_with_missing_blocks: false,
                         delta: Duration::from_secs(1),
                         max_blocksync_retries: 5,
                         state_sync_threshold: SeqNum(100),

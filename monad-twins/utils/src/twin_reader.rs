@@ -350,7 +350,6 @@ where
             consensus_config: ConsensusConfig {
                 proposal_txn_limit: 10,
                 proposal_gas_limit: 30_000_000,
-                propose_with_missing_blocks: false,
                 delta: Duration::from_millis(delta_ms),
                 max_blocksync_retries: 5,
                 state_sync_threshold: SeqNum(100),
