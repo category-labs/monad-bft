@@ -28,10 +28,12 @@ if __name__ == "__main__":
 
     print(f"Total txns in ledger: {len(ledger_txns)}")
 
+    verification_success = True
     submitted_txns = []
     for txn in txns_json:
         if not txn["submitted"]:
             print(f"ERROR: txns {txn["hash"]} not submitted")
+            verification_success = False
             continue
         submitted_txns.append(txn["hash"])
         
@@ -40,7 +42,6 @@ if __name__ == "__main__":
     only_in_ledger = set(ledger_txns) - set(submitted_txns)
     only_in_submitted = set(submitted_txns) - set(ledger_txns)
 
-    verification_success = True
     if len(only_in_ledger) > 0:
         print("Only found in ledger: ", only_in_ledger)
         verification_success = False

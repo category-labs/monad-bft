@@ -17,13 +17,7 @@ services:
     security_opt:
       - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
 
-  build_monad_bft:
-    build:
-      context: ${MONAD_BFT_ROOT}
-      dockerfile: ${FLEXNET_IMAGE_ROOT}/monad-bft-builder/Dockerfile
-    image: monad-bft-builder:latest
-
-  runner_python:
+  build_python:
     build:
       context: ${FLEXNET_IMAGE_ROOT}/python
       dockerfile: ${FLEXNET_IMAGE_ROOT}/python/Dockerfile
@@ -64,11 +58,13 @@ services:
     ports:
       - "8080:8080"
 
-  rpc_blaster:
+  e2e_tester:
     image: monad-python:latest
     volumes:
-      - ./rpc_blaster:/monad
+      - ./e2e_tester:/monad
       - ./data:/data
+    depends_on:
+      - monad_rpc
     entrypoint: ["bash", "/monad/scripts/run.sh"]
 
 networks:
