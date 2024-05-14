@@ -6,7 +6,7 @@ use monad_consensus_types::{
     block::Block,
     payload::FullTransactionList,
     signature_collection::SignatureCollection,
-    txpool::{HashPolicyOutput, TxPool},
+    txpool::{HashPolicyOutput, NonceDeltas, TxPool},
 };
 use monad_eth_tx::{EthFullTransactionList, EthTransaction, EthTxHash};
 
@@ -19,6 +19,15 @@ pub fn transaction_hash_policy<SCT: SignatureCollection>(
     Ok(HashSet::from_iter(
         EthFullTransactionList::rlp_decode(block.payload.txns.bytes().clone())?.get_hashes(),
     ))
+}
+
+pub fn account_nonce_policy<SCT: SignatureCollection>(
+    block: &Block<SCT>,
+) -> Result<NonceDeltas, alloy_rlp::Error> {
+    Ok(
+        EthFullTransactionList::rlp_decode(block.payload.txns.bytes().clone())?
+            .get_account_nonces(),
+    )
 }
 
 impl TxPool for EthTxPool {
@@ -35,6 +44,7 @@ impl TxPool for EthTxPool {
         tx_limit: usize,
         gas_limit: u64,
         pending_blocktree_txs: HashPolicyOutput,
+        mut account_nonce_deltas: NonceDeltas,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         let mut txs = Vec::new();
         let mut total_gas = 0;
@@ -45,7 +55,13 @@ impl TxPool for EthTxPool {
 
         for tx in txs_to_propose {
             if pending_blocktree_txs.contains(&tx.hash) {
+                // transaction already proposed in this branch
                 continue;
+            }
+
+            if txs.len() == tx_limit || (total_gas + tx.gas_limit()) > gas_limit {
+                // reached max transactions/gas limit for block
+                break;
             }
 
             // Validate account nonces are increasing
@@ -54,9 +70,22 @@ impl TxPool for EthTxPool {
             //  - If the sender account is not in the deltas, it means that the account
             //    doesn't have a recent transaction in the pending blocktree.
             //    Fetch the latest nonce from the DB and validate the transaction nonce
+            let sender = tx.signer();
+            let expected_nonce = if let Some(nonce_in_blocktree) = account_nonce_deltas.get(&sender)
+            {
+                nonce_in_blocktree + 1
+            } else {
+                // TODO: Fetch from LMDB first. If it doesn't exist in DB, then default to 0
+                0
+            };
 
-            if txs.len() == tx_limit || (total_gas + tx.gas_limit()) > gas_limit {
-                break;
+            if tx.nonce() == expected_nonce {
+                // Valid nonce to propose.
+                // Add to the deltas incase there are more transactions to add from this account.
+                account_nonce_deltas.insert(sender, expected_nonce);
+            } else {
+                // Nonce not sequential. Ignore transaction.
+                continue;
             }
             total_gas += tx.gas_limit();
             txs.push(tx.clone());

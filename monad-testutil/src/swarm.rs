@@ -87,6 +87,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 state_sync_threshold,
             },
             hash_policy: |_| Ok::<_, _>(Default::default()),
+            nonce_policy: |_| Ok::<_, _>(Default::default()),
         })
         .collect()
 }

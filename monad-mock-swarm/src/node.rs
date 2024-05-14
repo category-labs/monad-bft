@@ -109,6 +109,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 beneficiary: self.state_builder.beneficiary,
                 consensus_config: self.state_builder.consensus_config,
                 hash_policy: self.state_builder.hash_policy,
+                nonce_policy: self.state_builder.nonce_policy,
             },
             logger: Box::new(self.logger),
             replay_events: self.replay_events,

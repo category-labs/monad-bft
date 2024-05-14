@@ -203,6 +203,7 @@ where
         beneficiary: EthAddress::default(),
         consensus_config: config.consensus_config,
         hash_policy: |_| Ok::<_, _>(Default::default()),
+        nonce_policy: |_| Ok::<_, _>(Default::default()),
     }
     .build()
 }

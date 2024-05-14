@@ -82,6 +82,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                     proposal_txn_limit,
                     controller.gas_limit,
                     Default::default(),
+                    Default::default(),
                 );
             },
             BatchSize::SmallInput,

@@ -25,7 +25,7 @@ use monad_consensus_types::{
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    txpool::{HashPolicy, TxPool},
+    txpool::{HashPolicy, NoncePolicy, TxPool},
     validation,
     validator_data::ValidatorData,
 };
@@ -363,6 +363,7 @@ where
 
     pub consensus_config: ConsensusConfig,
     pub hash_policy: HashPolicy<SCT>,
+    pub nonce_policy: NoncePolicy<SCT>,
 }
 
 impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
@@ -404,6 +405,7 @@ where
             self.key,
             self.certkey,
             self.hash_policy,
+            self.nonce_policy,
         );
 
         let mut monad_state = MonadState {

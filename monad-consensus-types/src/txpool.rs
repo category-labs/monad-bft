@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
-use alloy_primitives::TxHash;
+use alloy_primitives::{Address, TxHash};
 use bytes::Bytes;
 
 use crate::payload::FullTransactionList;
@@ -8,6 +8,9 @@ use crate::payload::FullTransactionList;
 /// This describes a method of obtaining transaction hashes from an RLP encoded block
 pub type HashPolicyOutput = HashSet<TxHash>;
 pub type HashPolicy<SCT> = fn(&Block<SCT>) -> Result<HashPolicyOutput, alloy_rlp::Error>;
+
+pub type NonceDeltas = BTreeMap<Address, u64>;
+pub type NoncePolicy<SCT> = fn(&Block<SCT>) -> Result<NonceDeltas, alloy_rlp::Error>;
 
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
@@ -25,6 +28,7 @@ pub trait TxPool {
         tx_limit: usize,
         gas_limit: u64,
         pending_tx_hashes: HashPolicyOutput,
+        account_nonce_deltas: NonceDeltas,
     ) -> (FullTransactionList, Option<FullTransactionList>);
 
     /// Handle transactions cascaded forward by other nodes
@@ -41,8 +45,9 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         tx_limit: usize,
         gas_limit: u64,
         pending_tx_hashes: HashPolicyOutput,
+        account_nonce_deltas: NonceDeltas,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
-        (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
+        (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes, account_nonce_deltas)
     }
 }
 
@@ -75,6 +80,7 @@ impl TxPool for MockTxPool {
         tx_limit: usize,
         _gas_limit: u64,
         _pending_txs: HashPolicyOutput,
+        _account_nonce_deltas: NonceDeltas,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         if tx_limit == 0 {
             (FullTransactionList::empty(), None)

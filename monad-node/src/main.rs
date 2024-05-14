@@ -272,6 +272,7 @@ async fn run(
             state_sync_threshold: SeqNum(state_sync_bound as u64),
         },
         hash_policy: monad_eth_txpool::transaction_hash_policy,
+        nonce_policy: monad_eth_txpool::account_nonce_policy,
     };
 
     // parse test mode commands

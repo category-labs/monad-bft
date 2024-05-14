@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use alloy_primitives::TxHash;
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use reth_primitives::TransactionSignedEcRecovered;
+use reth_primitives::{Address, TransactionSignedEcRecovered};
 
 // FIXME reth types shouldn't be leaked
 pub type EthTxHash = TxHash;
@@ -48,5 +50,10 @@ impl EthFullTransactionList {
     /// Get a list of tx hashes of all the transactions in this list
     pub fn get_hashes(self) -> Vec<EthTxHash> {
         self.0.iter().map(|x| x.hash()).collect()
+    }
+
+    /// Get a map of the latest account nonces in this transactions list
+    pub fn get_account_nonces(self) -> BTreeMap<Address, u64> {
+        BTreeMap::from_iter(self.0.iter().map(|tx| (tx.signer(), tx.nonce())))
     }
 }

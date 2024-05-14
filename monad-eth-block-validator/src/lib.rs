@@ -22,6 +22,10 @@ impl EthereumValidator {
 
 impl BlockValidator for EthereumValidator {
     // Add arg: Nonce deltas from blocktree
+    /// A Block is valid iff:
+    /// - Number of txns is less thn or equal to max txs
+    /// - Total gas is less than or equal to block gas limit
+    /// - The transaction nonces per account is strictly sequential
     fn validate(&self, full_txs: &FullTransactionList) -> bool {
         let Ok(eth_txns) = EthFullTransactionList::rlp_decode(full_txs.bytes().clone()) else {
             return false;
@@ -46,6 +50,14 @@ impl BlockValidator for EthereumValidator {
         //  - If the sender account is not in the deltas, it means that the account
         //    doesn't have a recent transaction in the pending blocktree.
         //    Fetch the latest nonce from the DB and validate the transaction nonce
+
+        // Also validate that nonces for transactions from the same account are strictly
+        // increasing in the block. i.e. nonces are sorted within the block
+        // OR: nonces are non-decreasing in the block
+
+        // When an account is not there in the account deltas but is present in the DB,
+        // add it to the deltas incase there are multiple transactions from the account
+        // in the same block
 
         // Block is valid. Create deltas of account nonces to store in blocktree
 
