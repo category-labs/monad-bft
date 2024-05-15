@@ -123,10 +123,17 @@ export RPC_DIR=$(realpath "$rpc_dir")
 export MONAD_EXECUTION_ROOT="${MONAD_BFT_ROOT}/monad-cxx/monad-execution"
 
 # build monad execution (needs buildkit so unable to build in docker compose)
+set +e
+docker buildx inspect insecure
+insecure_builder_no_exist=$?
+set -e
+if [ $insecure_builder_no_exist -ne 0 ]; then
+    docker buildx create --buildkitd-flags '--allow-insecure-entitlement security.insecure' --name insecure
+fi
 docker build --builder insecure --allow security.insecure \
     -f $MONAD_EXECUTION_ROOT/docker/release.Dockerfile \
     --load -t monad-execution-builder:latest $MONAD_EXECUTION_ROOT \
-    --build-arg GIT_COMMIT_HASH=$(git rev-parse HEAD)
+    --build-arg GIT_COMMIT_HASH=$(git -C $MONAD_EXECUTION_ROOT rev-parse HEAD)
 
 if [ "$mode" == "run" ]; then
     cd $vol_root
