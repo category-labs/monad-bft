@@ -1,6 +1,6 @@
 # monad-rpc
 
-The prerequisite to starting the RPC server is to first [start a Monad consensus client](monad-node/README.md) and connect the RPC server to it.
+The prerequisite to starting the RPC server is to first [start a Monad consensus client](/monad-node/README.md) and connect the RPC server to it.
 
 Run the following in the repo root directory:
 1. `export RUST_LOG=info`

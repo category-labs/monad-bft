@@ -8,6 +8,10 @@ This repository contains implementation for the Monad consensus client and JsonR
 
 ## Getting Started
 
+```sh
+git submodule update --init --recursive
+```
+
 ### Using Docker
 
 The most straightforward way to start a consensus client + an execution client + a JsonRpc server. Run the following:
