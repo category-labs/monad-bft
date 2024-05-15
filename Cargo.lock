@@ -3514,6 +3514,7 @@ dependencies = [
  "reth-primitives",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

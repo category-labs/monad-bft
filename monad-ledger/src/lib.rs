@@ -158,6 +158,11 @@ fn generate_header<SCT: SignatureCollection>(
     monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
 ) -> Header {
+    let _generate_header_span = tracing::info_span!(
+        "generate_header_span",
+        payload_size = monad_block.payload.txns.bytes().len()
+    )
+    .entered();
     let ExecutionArtifacts {
         parent_hash: _,
         state_root,
@@ -171,6 +176,15 @@ fn generate_header<SCT: SignatureCollection>(
 
     randao_reveal_hasher.update(monad_block.payload.randao_reveal.0.clone());
 
+    // FIXME: decoding involves signature recovery, which is expensive. We
+    // should only do it once in our hot path. Before voting on the block, we
+    // need to decode the transaction payload for nonce and reserve balance
+    // checking. When that's implemented, we should calculate and store the gas
+    // limit to avoid re-decode and computing it here
+    let eth_txn_list = EthFullTransactionList::rlp_decode(monad_block.payload.txns.bytes().clone())
+        .expect("Transaction list must be valid");
+    let gas_limit: u64 = eth_txn_list.0.iter().map(|tx| tx.gas_limit()).sum();
+
     Header {
         parent_hash, //TODO: Consider the execution delay gap FixedBytes(*parent_hash.deref()),
         ommers_hash: block_body.calculate_ommers_root(),
@@ -182,8 +196,7 @@ fn generate_header<SCT: SignatureCollection>(
         logs_bloom: Bloom(FixedBytes(logs_bloom.0)),
         difficulty: U256::ZERO,
         number: monad_block.payload.seq_num.0,
-        // TODO-1: need to get the actual sum gas limit from the list of transactions being used
-        gas_limit: 15_000_000,
+        gas_limit: gas_limit.max(5000),
         gas_used: gas_used.0,
         // TODO-1: Add to BFT proposal
         timestamp: 0,

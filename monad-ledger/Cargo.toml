@@ -22,11 +22,8 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 prost = { workspace = true }
 reth-primitives = { workspace = true }
-tokio = { workspace = true, features = [
-    "macros",
-    "net",
-    "rt",
-]}
+tokio = { workspace = true, features = ["macros", "net", "rt"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
