@@ -449,7 +449,7 @@ where
                     .expect("partition target doesn't exists when reading test case")
                     .partition
                     .insert(round, transformed_partition.clone());
-                assert!(round_nodes.get(&node).is_none());
+                assert!(!round_nodes.contains(&node));
                 round_nodes.insert(node);
             }
         }
@@ -474,7 +474,7 @@ where
                 .get_mut(&node)
                 .expect("partition target doesn't exists when reading test case")
                 .default_partition = transformed_partition.clone();
-            assert!(round_nodes.get(&node).is_none());
+            assert!(!round_nodes.contains(&node));
             round_nodes.insert(node);
         }
     }

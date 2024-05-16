@@ -378,7 +378,7 @@ async fn run(
     Ok(())
 }
 
-async fn build_router<M, OM, G: Gossip>(
+async fn build_router<M, OM, G>(
     network_config: NodeNetworkConfig,
     identity: &<SignatureType as CertificateSignature>::KeyPairType,
     peers: &[NodeBootstrapPeerConfig],
