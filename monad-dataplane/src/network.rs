@@ -350,7 +350,11 @@ impl<'a> NetworkSocket<'a> {
                 unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
         }
 
-        self.sendmmsg(0)
+        self.sendmmsg(
+            msg.len()
+                .try_into()
+                .expect("msg len shouldn't exceed u32 capacity"),
+        )
     }
 
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {
