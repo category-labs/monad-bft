@@ -36,6 +36,83 @@ pub struct CallRequest {
     pub transaction_type: Option<U8>,
 }
 
+/// Optimistically create a typed Ethereum transaction from a CallRequest based on provided fields.
+/// TODO: add support for other transaction types.
+impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
+    type Error = JsonRpcError;
+    fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
+        match call_request {
+            CallRequest {
+                gas_price: Some(gas_price),
+                ..
+            } => {
+                // Legacy
+                Ok(reth_primitives::transaction::Transaction::Legacy(
+                    reth_primitives::TxLegacy {
+                        chain_id: Some(1),
+                        nonce: call_request
+                            .nonce
+                            .unwrap_or_default()
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        gas_price: gas_price
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        gas_limit: call_request
+                            .gas
+                            .unwrap_or(Uint::from(i64::MAX))
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        to: reth_primitives::TransactionKind::Call(
+                            call_request.to.unwrap_or_default(),
+                        ),
+                        value: reth_primitives::TxValue::from(
+                            call_request.value.unwrap_or_default(),
+                        ),
+                        input: call_request.input.data.unwrap_or_default(),
+                    },
+                ))
+            }
+            CallRequest { .. } => {
+                // EIP-1559
+                Ok(reth_primitives::transaction::Transaction::Eip1559(
+                    reth_primitives::TxEip1559 {
+                        chain_id: 1,
+                        nonce: call_request
+                            .nonce
+                            .unwrap_or_default()
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        max_fee_per_gas: call_request
+                            .max_fee_per_gas
+                            .unwrap_or_default()
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        max_priority_fee_per_gas: call_request
+                            .max_priority_fee_per_gas
+                            .unwrap_or_default()
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        gas_limit: call_request
+                            .gas
+                            .unwrap_or(Uint::from(i64::MAX))
+                            .try_into()
+                            .map_err(|_| JsonRpcError::invalid_params())?,
+                        access_list: reth_primitives::AccessList::default(),
+                        to: reth_primitives::TransactionKind::Call(
+                            call_request.to.unwrap_or_default(),
+                        ),
+                        value: reth_primitives::TxValue::from(
+                            call_request.value.unwrap_or_default(),
+                        ),
+                        input: call_request.input.data.unwrap_or_default(),
+                    },
+                ))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CallInput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,39 +141,15 @@ pub async fn monad_eth_call(
     };
 
     let Some(block_header) = blockdb_env
-        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest))
+        .get_block_by_tag(BlockTags::Default(BlockTagKey::Latest)) // why is this hardcoded?
         .await
     else {
         debug!("blockdb did not have latest block header");
         return Err(JsonRpcError::internal_error());
     };
 
-    // FIXME: add support for other types of transactions
-    let txn = reth_primitives::transaction::Transaction::Legacy(reth_primitives::TxLegacy {
-        chain_id: Some(1),
-        nonce: params
-            .transaction
-            .nonce
-            .unwrap_or_default()
-            .try_into()
-            .map_err(|_| JsonRpcError::invalid_params())?,
-        gas_price: params
-            .transaction
-            .gas_price
-            .unwrap_or_default()
-            .try_into()
-            .map_err(|_| JsonRpcError::invalid_params())?,
-        gas_limit: params
-            .transaction
-            .gas
-            .unwrap_or(Uint::from(i64::MAX))
-            .try_into()
-            .map_err(|_| JsonRpcError::invalid_params())?,
-        to: reth_primitives::TransactionKind::Call(params.transaction.to.unwrap_or_default()),
-        value: reth_primitives::TxValue::from(params.transaction.value.unwrap_or_default()),
-        input: params.transaction.input.data.unwrap_or_default(),
-    });
     let sender = params.transaction.from.unwrap_or_default();
+    let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
     let block_number = block_header.block.header.number;
 
     match monad_cxx::eth_call(
@@ -107,14 +160,17 @@ pub async fn monad_eth_call(
         triedb_path,
         execution_ledger_path,
     ) {
-        Ok(output_data) => Ok(json!(hex::encode(&output_data))),
-        Err(error_message) => Err(JsonRpcError::eth_call_error(error_message)),
+        monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
+            Ok(json!(hex::encode(&output_data)))
+        }
+        monad_cxx::CallResult::Failure(error_message) => {
+            Err(JsonRpcError::eth_call_error(error_message))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // use actix_test::*;
     use actix_web::test;
     use serde_json::json;
 
@@ -123,7 +179,7 @@ mod tests {
     #[allow(non_snake_case)]
     #[actix_web::test]
     async fn test_monad_eth_call_sha256_precompile() {
-        let (app, monad) = init_server().await;
+        let (app, _monad) = init_server().await;
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "eth_call",
@@ -149,7 +205,7 @@ mod tests {
     #[allow(non_snake_case)]
     #[actix_web::test]
     async fn test_monad_eth_call() {
-        let (app, monad) = init_server().await;
+        let (app, _monad) = init_server().await;
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "eth_call",

@@ -19,6 +19,11 @@ std::string monad_evmc_result::get_message() const
     return message;
 }
 
+int64_t monad_evmc_result::get_gas_used() const
+{
+    return gas_used;
+}
+
 monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_encoded_transaction,
     std::vector<uint8_t> const &rlp_encoded_block_header,
@@ -33,5 +38,6 @@ monad_evmc_result eth_call(
     return monad_evmc_result{
         .status_code = 0,
         .output_data = std::vector<uint8_t>{data.begin(), data.end()},
-        .message = "test message"};
+        .message = "test message",
+        .gas_used = 21000};
 }

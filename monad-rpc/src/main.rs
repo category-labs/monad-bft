@@ -239,7 +239,28 @@ async fn rpc_select(
                 Err(JsonRpcError::method_not_supported())
             }
         }
-        "eth_estimateGas" => monad_eth_estimateGas(params).await,
+        "eth_estimateGas" => {
+            let Some(reader) = &app_state.blockdb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(triedb_env) = &app_state.triedb_reader else {
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            let Some(execution_ledger_path) = &app_state.execution_ledger_path.0 else {
+                debug!("execution ledger path was not set");
+                return Err(JsonRpcError::method_not_supported());
+            };
+
+            monad_eth_estimateGas(
+                reader,
+                &triedb_env.path(),
+                execution_ledger_path.as_path(),
+                params,
+            )
+            .await
+        }
         "eth_gasPrice" => {
             if let Some(reader) = &app_state.blockdb_reader {
                 monad_eth_gasPrice(reader).await
