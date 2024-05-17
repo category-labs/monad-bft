@@ -12,6 +12,15 @@ pub struct MerkleProof {
 }
 
 impl MerkleProof {
+    pub fn new_from_leaf_idx(siblings: Vec<MerkleHash>, leaf_idx: u8) -> Option<Self> {
+        let num_leaves = 2_u16.checked_pow(siblings.len() as u32)?;
+        let tree_len = 2 * num_leaves - 1;
+        let tree_leaf_start_idx = tree_len - num_leaves;
+        Some(Self {
+            tree_leaf_idx: tree_leaf_start_idx + u16::from(leaf_idx),
+            siblings,
+        })
+    }
     pub fn compute_root(&self, leaf: &Hash) -> Option<MerkleHash> {
         let mut merkle_hash = hash_to_merkle(leaf);
         let mut current_idx = Some(self.tree_leaf_idx as usize);
@@ -31,6 +40,11 @@ impl MerkleProof {
 
         Some(merkle_hash)
     }
+
+    /// Returns siblings from top to bottom
+    pub fn siblings(&self) -> &[MerkleHash] {
+        &self.siblings
+    }
 }
 
 pub struct MerkleTree {
@@ -39,8 +53,8 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
-    pub fn new(leaves: &[Hash]) -> Self {
-        let num_leaves = leaves.len().next_power_of_two();
+    pub fn new_with_depth(leaves: &[Hash], depth: u8) -> Self {
+        let num_leaves = 2_usize.pow(depth.checked_sub(1).unwrap().into());
         let tree_len = 2 * num_leaves - 1;
         assert!(tree_len <= u16::MAX.into()); // make sure all tree idx fit in u16
 
@@ -66,6 +80,13 @@ impl MerkleTree {
                 .expect("asserted tree_len already"),
             tree,
         }
+    }
+
+    pub fn new(leaves: &[Hash]) -> Self {
+        let depth: u8 = (leaves.len().next_power_of_two().ilog2() + 1)
+            .try_into()
+            .expect("too many leaves");
+        Self::new_with_depth(leaves, depth)
     }
 
     pub fn root(&self) -> &MerkleHash {

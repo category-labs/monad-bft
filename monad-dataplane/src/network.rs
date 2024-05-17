@@ -11,7 +11,7 @@ use log::debug;
 pub const MAX_UDP_PKT: usize = 65535;
 const MAX_IPV4_HDR: usize = 20;
 const MAX_UDP_HDR: usize = 8;
-const MONAD_GSO_SIZE: usize = 1490;
+pub const MONAD_GSO_SIZE: usize = 1490;
 
 const BUF_SIZE: usize = MAX_UDP_PKT;
 const NUM_RX_MSGHDR: usize = 128;
@@ -21,7 +21,7 @@ const CMSG_LEN: usize = 88;
 // message length is limited by the max limit of the underlying protocol
 //FIXME: This is expected size MAX_UDP_PKT - MAX_IPV4_HDR - MAX_UDP_HDR, but the actual measured
 //number where the packet isn't being fragmented is 65493. investigate
-const MAX_IOVEC_LEN: usize = 65493;
+const MAX_IOVEC_LEN: usize = 65493 / MONAD_GSO_SIZE * MONAD_GSO_SIZE;
 
 const LINUX_SENDMMSG_VLEN_MAX: usize = 1024;
 const NUM_IOVECS: usize = 1024;
@@ -230,7 +230,7 @@ impl<'a> NetworkSocket<'a> {
             retval.push(RecvmmsgResult {
                 len: msglen,
                 src_addr: NetworkSocket::get_addr(self.recv_ctrl.name[i]),
-                stride: 0,
+                stride,
             });
             debug!("from: {}", NetworkSocket::get_addr(self.recv_ctrl.name[i]));
             debug!("received: {}", msglen);
@@ -289,7 +289,7 @@ impl<'a> NetworkSocket<'a> {
             return None;
         }
 
-        let num_chunks = (data.len() / MAX_IOVEC_LEN) + 1;
+        let num_chunks = data.len().div_ceil(MAX_IOVEC_LEN);
         assert!(num_chunks * to.len() <= NUM_TX_MSGHDR);
 
         for (i, k) in (0..data.len()).step_by(MAX_IOVEC_LEN).enumerate() {
@@ -333,28 +333,34 @@ impl<'a> NetworkSocket<'a> {
 
         assert!(msg.len() < NUM_TX_MSGHDR);
 
-        for (i, (to, payload)) in msg.iter().enumerate() {
-            self.send_ctrl.name[i].write((*to).into());
+        let msg_clone = msg.clone(); // used just to keep reference counts alive until sendmmsg
 
-            self.send_ctrl.iovecs[i].iov_base = (*payload).as_ptr() as *const _ as *mut _;
-            self.send_ctrl.iovecs[i].iov_len = payload.len();
-            self.send_ctrl.msgs[i].msg_hdr.msg_iov = &mut self.send_ctrl.iovecs[i];
-            self.send_ctrl.msgs[i].msg_hdr.msg_iovlen = 1;
+        let mut i = 0;
+        for (to, mut payload) in msg {
+            while !payload.is_empty() {
+                assert!(i < NUM_TX_MSGHDR);
+                let chunk = payload.split_to(MAX_IOVEC_LEN.min(payload.len()));
 
-            self.send_ctrl.msgs[i].msg_hdr.msg_control = std::ptr::null_mut();
-            self.send_ctrl.msgs[i].msg_hdr.msg_controllen = 0;
+                self.send_ctrl.name[i].write(to.into());
 
-            self.send_ctrl.msgs[i].msg_hdr.msg_name =
-                self.send_ctrl.name[i].as_ptr() as *const _ as *mut _;
-            self.send_ctrl.msgs[i].msg_hdr.msg_namelen =
-                unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+                self.send_ctrl.iovecs[i].iov_base = (*chunk).as_ptr() as *const _ as *mut _;
+                self.send_ctrl.iovecs[i].iov_len = chunk.len();
+                self.send_ctrl.msgs[i].msg_hdr.msg_iov = &mut self.send_ctrl.iovecs[i];
+                self.send_ctrl.msgs[i].msg_hdr.msg_iovlen = 1;
+
+                self.send_ctrl.msgs[i].msg_hdr.msg_control = std::ptr::null_mut();
+                self.send_ctrl.msgs[i].msg_hdr.msg_controllen = 0;
+
+                self.send_ctrl.msgs[i].msg_hdr.msg_name =
+                    self.send_ctrl.name[i].as_ptr() as *const _ as *mut _;
+                self.send_ctrl.msgs[i].msg_hdr.msg_namelen =
+                    unsafe { self.send_ctrl.name[i].assume_init_ref().len() };
+
+                i += 1;
+            }
         }
 
-        self.sendmmsg(
-            msg.len()
-                .try_into()
-                .expect("msg len shouldn't exceed u32 capacity"),
-        )
+        self.sendmmsg(i.try_into().expect("msg len shouldn't exceed u32 capacity"))
     }
 
     fn sendmmsg(&mut self, num_msgs: u32) -> Option<()> {

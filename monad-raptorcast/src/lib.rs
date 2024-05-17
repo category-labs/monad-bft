@@ -1,0 +1,1097 @@
+use std::{
+    collections::{hash_map::Entry, BTreeMap, HashMap, VecDeque},
+    marker::PhantomData,
+    net::SocketAddr,
+    ops::{DerefMut, Range},
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
+
+use bytes::{Bytes, BytesMut};
+use futures::{Stream, StreamExt};
+use itertools::Itertools;
+use monad_crypto::{
+    certificate_signature::{
+        CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
+    },
+    hasher::{Hasher, HasherType},
+};
+use monad_dataplane::event_loop::{BroadcastMsg, Dataplane, UnicastMsg};
+use monad_executor::Executor;
+use monad_executor_glue::{Message, RouterCommand};
+use monad_merkle::{MerkleHash, MerkleProof, MerkleTree};
+use monad_types::{Deserializable, NodeId, Round, RouterTarget, Serializable, Stake};
+use raptor_code::SourceBlockDecoder;
+
+pub struct RaptorCastConfig<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    // TODO support dynamic updating
+    // TODO we need to GC these
+    pub epoch_validators: BTreeMap<Round, EpochValidators<ST>>,
+    // TODO support dynamic updating
+    pub known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+
+    pub key: ST::KeyPairType,
+    /// amount of redundancy to send
+    /// a value of 2 == send 2x total payload size total
+    pub redundancy: u8,
+
+    pub local_addr: String,
+}
+
+pub struct RaptorCast<ST, M, OM>
+where
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    OM: Serializable<Bytes> + Into<M> + Clone,
+{
+    key: ST::KeyPairType,
+    redundancy: u8,
+
+    // key is end_round - can use epoch_validators.range(current_round..) and check the returned
+    // start_round to check if there's an applicable validator set
+    epoch_validators: BTreeMap<Round, EpochValidators<ST>>,
+    known_addresses: HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+
+    // TODO add a cap on max number of chunks that will be forwarded per message? so that a DOS
+    // can't be induced by spamming broadcast chunks to any given node
+    message_cache: BTreeMap<MessageCacheKey<CertificateSignaturePubKey<ST>>, SourceBlockDecoder>,
+    signature_cache:
+        HashMap<[u8; HEADER_LEN as usize - 65 + 20], NodeId<CertificateSignaturePubKey<ST>>>,
+
+    dataplane: Dataplane,
+    pending_events: VecDeque<M::Event>,
+
+    waker: Option<Waker>,
+    _phantom: PhantomData<OM>,
+}
+
+#[derive(Clone)]
+pub struct EpochValidators<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    pub start_round: Round,
+    pub end_round: Round,
+    pub validators: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
+}
+
+impl<ST> EpochValidators<ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    /// Returns a view of the validator set without a given node. On ValidatorsView being dropped,
+    /// the validator set is reverted back to normal.
+    fn view_without(
+        &mut self,
+        without: Vec<&NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> ValidatorsView<ST> {
+        let mut removed = Vec::new();
+        for without in without {
+            if let Some(removed_validator) = self.validators.remove(without) {
+                removed.push((*without, removed_validator));
+            }
+        }
+        ValidatorsView {
+            view: &mut self.validators,
+            removed,
+        }
+    }
+}
+
+struct ValidatorsView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    view: &'a mut BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
+    removed: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Validator)>,
+}
+
+impl<'a, ST> Drop for ValidatorsView<'a, ST>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    fn drop(&mut self) {
+        while let Some((without, removed_validator)) = self.removed.pop() {
+            self.view.insert(without, removed_validator);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Validator {
+    pub stake: Stake,
+}
+
+#[derive(PartialEq, PartialOrd, Eq, Ord)]
+struct MessageCacheKey<PT>
+where
+    PT: PubKey,
+{
+    // round should be first for Ord derive implementation
+    round: Round,
+    author: NodeId<PT>,
+    app_message_hash: [u8; 20],
+    app_message_len: usize,
+}
+
+impl<ST, M, OM> RaptorCast<ST, M, OM>
+where
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    OM: Serializable<Bytes> + Into<M> + Clone,
+{
+    pub fn new(config: RaptorCastConfig<ST>) -> Self {
+        let dataplane = Dataplane::new(&config.local_addr);
+        Self {
+            epoch_validators: config.epoch_validators,
+            known_addresses: config.known_addresses,
+
+            key: config.key,
+            redundancy: config.redundancy,
+
+            message_cache: Default::default(),
+            signature_cache: Default::default(),
+
+            dataplane,
+            pending_events: Default::default(),
+
+            waker: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<ST, M, OM> Executor for RaptorCast<ST, M, OM>
+where
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    OM: Serializable<Bytes> + Into<M> + Clone,
+{
+    type Command = RouterCommand<CertificateSignaturePubKey<ST>, OM>;
+
+    fn replay(&mut self, mut commands: Vec<Self::Command>) {
+        commands.retain(|cmd| match cmd {
+            // we match on all commands to be explicit
+            RouterCommand::Publish { .. } => false,
+        });
+        self.exec(commands)
+    }
+
+    fn exec(&mut self, commands: Vec<Self::Command>) {
+        let self_id = NodeId::new(self.key.pubkey());
+        for command in commands {
+            match command {
+                RouterCommand::Publish { target, message } => {
+                    // FIXME round should be a parameter of RouterCommand::Publish
+                    let round = Round(0);
+                    let Some((_, round_validators)) =
+                        self.epoch_validators.range_mut(round..).next()
+                    else {
+                        tracing::error!(
+                            "don't have epoch validators populated for round: {:?}",
+                            round
+                        );
+                        continue;
+                    };
+
+                    let app_message = message.serialize();
+
+                    // send message to self if applicable
+                    match &target {
+                        RouterTarget::Broadcast => {
+                            if round_validators.validators.contains_key(&self_id) {
+                                let message: M = message.into();
+                                self.pending_events.push_back(message.event(self_id));
+                                if let Some(waker) = self.waker.take() {
+                                    waker.wake()
+                                }
+                            }
+                        }
+                        RouterTarget::PointToPoint(to) => {
+                            if to == &self_id {
+                                let message: M = message.into();
+                                self.pending_events.push_back(message.event(self_id));
+                                if let Some(waker) = self.waker.take() {
+                                    waker.wake()
+                                }
+                                continue;
+                            }
+                        }
+                    };
+
+                    let round_validators_without_self =
+                        round_validators.view_without(vec![&self_id]);
+                    if round_validators_without_self.view.is_empty() {
+                        // this is degenerate case where the only validator is self
+                        continue;
+                    }
+
+                    let messages = build_messages::<ST>(
+                        &self.key,
+                        monad_dataplane::network::MONAD_GSO_SIZE
+                            .try_into()
+                            .expect("GSO size too big"),
+                        app_message,
+                        self.redundancy,
+                        round.0,
+                        target,
+                        round_validators_without_self.view,
+                        &self.known_addresses,
+                    );
+
+                    self.dataplane.unicast(UnicastMsg { msgs: messages });
+                }
+            }
+        }
+    }
+}
+
+impl<ST, M, OM> Stream for RaptorCast<ST, M, OM>
+where
+    ST: CertificateSignatureRecoverable,
+    M: Message<NodeIdPubKey = CertificateSignaturePubKey<ST>> + Deserializable<Bytes>,
+    OM: Serializable<Bytes> + Into<M> + Clone,
+
+    Self: Unpin,
+{
+    type Item = M::Event;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.deref_mut();
+
+        if this.waker.is_none() {
+            this.waker = Some(cx.waker().clone());
+        }
+
+        if let Some(event) = this.pending_events.pop_front() {
+            return Poll::Ready(Some(event));
+        }
+
+        let self_id = NodeId::new(this.key.pubkey());
+
+        while let Poll::Ready(Some(message)) = this.dataplane.poll_next_unpin(cx) {
+            let mut broadcast_batcher = BroadcastBatcher {
+                dataplane: &mut this.dataplane,
+                message: &message.payload,
+                batch: None,
+            };
+
+            for payload_start_idx in (0..message.payload.len()).step_by(message.stride) {
+                let mut batch_guard = BatcherGuard {
+                    batcher: &mut broadcast_batcher,
+                    flush_batch: true,
+                };
+
+                let payload_end_idx = payload_start_idx + message.stride.min(message.payload.len());
+                let payload = message.payload.slice(payload_start_idx..payload_end_idx);
+                let parsed_message = match parse_message::<ST>(&mut this.signature_cache, payload) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        tracing::warn!("unable to parse message, err={:?}", err);
+                        continue;
+                    }
+                };
+
+                let Some((_, round_validators)) = this
+                    .epoch_validators
+                    .range_mut(Round(parsed_message.round)..)
+                    .next()
+                else {
+                    tracing::error!(
+                        "don't have epoch validators populated for round: {:?}",
+                        parsed_message.round
+                    );
+                    continue;
+                };
+
+                if !round_validators
+                    .validators
+                    .contains_key(&parsed_message.author)
+                {
+                    tracing::error!("not in validator set: {:?}", parsed_message.author);
+                    continue;
+                }
+
+                let self_hash = compute_hash(&self_id);
+                if parsed_message.broadcast {
+                    if self_hash == parsed_message.recipient_hash {
+                        let targets =
+                            round_validators.view_without(vec![&parsed_message.author, &self_id]);
+                        batch_guard.queue_broadcast(
+                            payload_start_idx,
+                            payload_end_idx,
+                            &parsed_message.author,
+                            || {
+                                targets
+                                    .view
+                                    .keys()
+                                    .filter_map(|validator| {
+                                        this.known_addresses.get(validator).copied()
+                                    })
+                                    .collect()
+                            },
+                        )
+                    }
+                } else if self_hash != parsed_message.recipient_hash {
+                    tracing::error!("dropping spoofed message");
+                    continue;
+                }
+
+                let app_message_len: usize = parsed_message.app_message_len.try_into().unwrap();
+                let entry = this
+                    .message_cache
+                    .entry(MessageCacheKey {
+                        round: Round(parsed_message.round),
+                        author: parsed_message.author,
+                        app_message_hash: parsed_message.app_message_hash,
+                        app_message_len,
+                    })
+                    .or_insert_with(|| {
+                        // data_size is always greater than zero, so this division is safe
+                        let num_source_symbols =
+                            app_message_len.div_ceil(parsed_message.chunk.len());
+                        SourceBlockDecoder::new(num_source_symbols)
+                    });
+
+                // TODO gc old messages so that memory growth isn't unbounded
+
+                if entry.fully_specified() {
+                    // already decoded
+                    continue;
+                }
+
+                entry.push_encoding_symbol(parsed_message.chunk, parsed_message.chunk_id.into());
+                if let Some(decoded) = entry.decode(app_message_len) {
+                    let Ok(message) = M::deserialize(&decoded) else {
+                        tracing::error!("failed to deserialize message");
+                        continue;
+                    };
+                    this.pending_events
+                        .push_back(message.event(parsed_message.author));
+                }
+            }
+            if let Some(event) = this.pending_events.pop_front() {
+                return Poll::Ready(Some(event));
+            }
+        }
+
+        Poll::Pending
+    }
+}
+
+/// Stuff to include:
+/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
+///               with merkle root)
+/// - 2 bytes => Version: bumped on protocol updates
+/// - 8 bytes (u64) => Round #
+/// - 20 bytes => first 20 bytes of hash of AppMessage
+///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
+///     for simplicity
+/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
+/// - 1 bit => broadcast or not
+/// - 7 bits => Merkle tree depth
+/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
+///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
+///
+/// - 1 byte => Chunk's merkle leaf idx
+/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
+///   - we set this even if broadcast bit is not set so that it's known if a message was intended
+///     to be sent to self
+/// - 2 bytes (u16) => This chunk's id
+/// - 2 bytes => Merkle chunk payload len
+/// - (merkle_chunk_payload_len bytes) => data
+///
+//
+//
+//
+// pub struct M {
+//     signature: [u8; 65],
+//     version: u16,
+//     round: u64,
+//     app_message_id: [u8; 20],
+//     app_message_len: u32,
+//     broadcast: bool,
+//
+//     merkle_tree_depth: u8,
+//     merkle_proof: Vec<[u8; 20]>,
+//
+//     chunk_merkle_leaf_idx: u8,
+//     chunk_recipient: [u8; 20],
+//     chunk_id: u16,
+//     chunk_len: u16,
+//
+//     data: Bytes,
+// }
+const HEADER_LEN: u16 = 65  // Sender signature
+            + 2  // Version
+            + 8  // Round #
+            + 20 // AppMessage hash
+            + 4 // AppMessage length
+            + 1; // Broadcast bit, 7 bits for Merkle Tree Depth
+const CHUNK_HEADER_LEN: u16 = 1 // Chunk's merkle leaf idx
+            + 20 // Chunk recipient hash
+            + 2 // Chunk idx
+            + 2; // Chunk data length
+
+fn compute_hash<PT>(id: &NodeId<PT>) -> [u8; 20]
+where
+    PT: PubKey,
+{
+    let mut hasher = HasherType::new();
+    hasher.update(&id.pubkey().bytes());
+    hasher.hash().0[..20].try_into().expect("20 bytes")
+}
+
+pub fn build_messages<ST>(
+    key: &ST::KeyPairType,
+    gso_size: u16,
+    app_message: Bytes,
+    redundancy: u8, // 2 == send 1 extra packet for every 1 original
+    round_no: u64,
+    target: RouterTarget<CertificateSignaturePubKey<ST>>,
+
+    // validator stakes for given round_no, not including self
+    // this MUST NOT BE EMPTY
+    round_validators: &BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, Validator>,
+    known_addresses: &HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddr>,
+) -> Vec<(SocketAddr, Bytes)>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    let body_size = gso_size
+        .checked_sub(HEADER_LEN + CHUNK_HEADER_LEN)
+        .expect("GSO too small");
+
+    let app_message_len: u32 = app_message.len().try_into().expect("message too big");
+
+    let is_broadcast = matches!(target, RouterTarget::Broadcast);
+
+    // calculate tree depth as a function of app_message_len and body_size
+    let tree_depth: u8 = if !is_broadcast && app_message_len <= body_size.into() {
+        1 // corresponds to 1 chunk (2^(h-1))
+    } else {
+        // TODO make this more sophisticated
+        6 // corresponds to 32 chunks (2^(h-1))
+    };
+    assert!(
+        tree_depth & (1 << 7) == 0,
+        "tree depth doesn't fit in 7 bits"
+    );
+    let chunks_per_merkle_batch: u8 = 2_u8
+        .checked_pow(u32::from(tree_depth) - 1)
+        .expect("tree depth too big");
+    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
+
+    let data_size = body_size.checked_sub(proof_size).expect("proof too big");
+    // TODO add new RouterTarget for non-raptor broadcast? instead of this heuristic
+    let is_raptor_broadcast = is_broadcast && app_message_len > data_size.into();
+
+    let num_packets: u16 = {
+        let mut num_packets: u16 = (app_message_len.div_ceil(data_size.into())
+            * u32::from(redundancy))
+        .try_into()
+        .expect("is redundancy too high? doesn't fit in u16");
+
+        if is_broadcast && !is_raptor_broadcast {
+            num_packets = num_packets
+                .checked_mul(round_validators.len() as u16)
+                .expect("num_packets doesn't fit in u16")
+        }
+
+        num_packets
+    };
+
+    let mut message = BytesMut::zeroed(gso_size as usize * num_packets as usize);
+
+    let mut chunk_datas = message
+        .chunks_mut(gso_size.into())
+        .map(|chunk| &mut chunk[(HEADER_LEN + proof_size).into()..])
+        .collect_vec();
+    assert_eq!(chunk_datas.len(), num_packets.into());
+
+    // the GSO-aware indices into `message`
+    let mut outbound_gso_idx: Vec<(SocketAddr, Range<usize>)> = Vec::new();
+    // popuate chunk_recipient and outbound_gso_idx
+    match &target {
+        RouterTarget::PointToPoint(to) => {
+            let Some(addr) = known_addresses.get(to) else {
+                tracing::warn!("not sending to {:?}, address unknown", to);
+                return Vec::new();
+            };
+            outbound_gso_idx.push((*addr, 0..gso_size as usize * num_packets as usize));
+            for chunk_data in &mut chunk_datas {
+                // populate chunk_recipient
+                chunk_data[1..1 + 20].copy_from_slice(&compute_hash(to));
+            }
+        }
+        RouterTarget::Broadcast if !is_raptor_broadcast => {
+            assert!(is_broadcast && !is_raptor_broadcast);
+            let total_validators = round_validators.len();
+            let mut running_validator_count = 0;
+            for (node_id, validator) in round_validators {
+                let start_idx: usize =
+                    num_packets as usize * running_validator_count / total_validators;
+                running_validator_count += 1;
+                let end_idx: usize =
+                    num_packets as usize * running_validator_count / total_validators;
+
+                if start_idx == end_idx {
+                    continue;
+                }
+                if let Some(addr) = known_addresses.get(node_id) {
+                    outbound_gso_idx.push((
+                        *addr,
+                        start_idx * gso_size as usize..end_idx * gso_size as usize,
+                    ));
+                } else {
+                    tracing::warn!("not sending to {:?}, address unknown", node_id)
+                }
+                for chunk_data in &mut chunk_datas[start_idx..end_idx] {
+                    // populate chunk_recipient
+                    chunk_data[1..1 + 20].copy_from_slice(&compute_hash(node_id));
+                }
+            }
+        }
+        RouterTarget::Broadcast => {
+            assert!(is_raptor_broadcast);
+            // FIXME should self be included in total_stake?
+            let total_stake: i64 = round_validators
+                .values()
+                .map(|validator| validator.stake.0)
+                .sum();
+            let mut running_stake = 0;
+            for (node_id, validator) in round_validators {
+                let start_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
+                running_stake += validator.stake.0;
+                let end_idx: usize = (num_packets as i64 * running_stake / total_stake) as usize;
+
+                if start_idx == end_idx {
+                    continue;
+                }
+                if let Some(addr) = known_addresses.get(node_id) {
+                    outbound_gso_idx.push((
+                        *addr,
+                        start_idx * gso_size as usize..end_idx * gso_size as usize,
+                    ));
+                } else {
+                    tracing::warn!("not sending to {:?}, address unknown", node_id)
+                }
+                for chunk_data in &mut chunk_datas[start_idx..end_idx] {
+                    // populate chunk_recipient
+                    chunk_data[1..1 + 20].copy_from_slice(&compute_hash(node_id));
+                }
+            }
+        }
+    };
+
+    // populates the following chunk-specific stuff
+    // - chunk_id: u16
+    // - chunk_len: u16
+    // - chunk_payload
+    let max_source_symbols = app_message.len().div_ceil(data_size.into());
+    let mut encoder = raptor_code::SourceBlockEncoder::new(app_message.clone(), max_source_symbols);
+    for (chunk_id, mut chunk_data) in chunk_datas.iter_mut().enumerate() {
+        let chunk_id = chunk_id as u16;
+        let chunk_len: u16 = encoder.chunk_len().try_into().expect("chunk_len too big");
+
+        let cursor = &mut chunk_data;
+        let (cursor_chunk_merkle_leaf_idx, cursor) = cursor.split_at_mut(1);
+        let (cursor_chunk_recipient, cursor) = cursor.split_at_mut(20);
+        let (cursor_chunk_id, cursor) = cursor.split_at_mut(2);
+        cursor_chunk_id.copy_from_slice(&chunk_id.to_le_bytes());
+        let (cursor_chunk_payload_len, cursor) = cursor.split_at_mut(2);
+        cursor_chunk_payload_len.copy_from_slice(&chunk_len.to_le_bytes());
+        let (cursor_chunk_payload, cursor) = cursor.split_at_mut(chunk_len.into());
+        encoder.fountain3(
+            chunk_id.into(),
+            &mut cursor_chunk_payload[..chunk_len.into()],
+        );
+    }
+
+    // At this point, everything BELOW chunk_merkle_leaf_idx is populated
+    // populate merkle trees/roots/leaf_idx + signatures (cached)
+    let version: u16 = 0;
+    let round_no: u64 = round_no;
+    let app_message_hash: [u8; 20] = {
+        let mut hasher = HasherType::new();
+        hasher.update(app_message);
+        hasher.hash().0[..20].try_into().unwrap()
+    };
+    message
+        // .par_chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
+        .chunks_mut(gso_size as usize * chunks_per_merkle_batch as usize)
+        .for_each(|merkle_batch| {
+            let mut merkle_batch = merkle_batch.chunks_mut(gso_size as usize).collect_vec();
+            let merkle_leaves = merkle_batch
+                .iter_mut()
+                .enumerate()
+                .map(|(chunk_idx, chunk)| {
+                    let chunk_payload = &mut chunk[(HEADER_LEN + proof_size).into()..];
+                    assert_eq!(
+                        chunk_payload.len(),
+                        CHUNK_HEADER_LEN as usize + data_size as usize
+                    );
+                    // populate merkle_leaf_idx
+                    chunk_payload[0] = chunk_idx.try_into().expect("chunk idx doesn't fit in u8");
+
+                    let mut hasher = HasherType::new();
+                    hasher.update(&chunk_payload);
+                    hasher.hash()
+                })
+                .collect_vec();
+            let merkle_tree = MerkleTree::new_with_depth(&merkle_leaves, tree_depth);
+            let mut header_with_root = {
+                let mut data = [0_u8; HEADER_LEN as usize + 20];
+                let cursor = &mut data;
+                let (cursor_signature, cursor) = cursor.split_at_mut(65);
+                let (cursor_version, cursor) = cursor.split_at_mut(2);
+                cursor_version.copy_from_slice(&version.to_le_bytes());
+                let (cursor_round_no, cursor) = cursor.split_at_mut(8);
+                cursor_round_no.copy_from_slice(&round_no.to_le_bytes());
+                let (cursor_app_message_hash, cursor) = cursor.split_at_mut(20);
+                cursor_app_message_hash.copy_from_slice(&app_message_hash);
+                let (cursor_app_message_len, cursor) = cursor.split_at_mut(4);
+                cursor_app_message_len.copy_from_slice(&app_message_len.to_le_bytes());
+                let (cursor_broadcast_merkle_depth, cursor) = cursor.split_at_mut(1);
+                cursor_broadcast_merkle_depth[0] = ((is_raptor_broadcast as u8) << 7) | tree_depth;
+
+                cursor.copy_from_slice(merkle_tree.root());
+                // 65  // Sender signature
+                // 2  // Version
+                // 8  // Round #
+                // 20 // AppMessage hash
+                // 4 // AppMessage length
+                // 1 // Broadcast bit, 7 bits for Merkle Tree Depth
+                // --
+                // 20 // Merkle root
+
+                data
+            };
+            let signature = ST::sign(&header_with_root[65..], key).serialize();
+            assert_eq!(signature.len(), 65);
+            header_with_root[..65].copy_from_slice(&signature);
+            let header = &header_with_root[..HEADER_LEN as usize];
+            for (leaf_idx, chunk) in merkle_batch.into_iter().enumerate() {
+                chunk[..HEADER_LEN as usize].copy_from_slice(header);
+                for (proof_idx, proof) in merkle_tree
+                    .proof(leaf_idx as u8)
+                    .siblings()
+                    .iter()
+                    .enumerate()
+                {
+                    let offset = HEADER_LEN as usize + 20 * proof_idx;
+                    chunk[offset..offset + 20].copy_from_slice(proof);
+                }
+            }
+        });
+
+    let message = message.freeze();
+
+    outbound_gso_idx
+        .into_iter()
+        .map(|(addr, range)| (addr, message.slice(range)))
+        .collect()
+}
+
+pub struct ValidatedMessage<PT>
+where
+    PT: PubKey,
+{
+    pub message: Bytes,
+
+    pub author: NodeId<PT>,
+    pub round: u64,
+    pub app_message_hash: [u8; 20],
+    pub app_message_len: u32,
+    pub broadcast: bool,
+    pub recipient_hash: [u8; 20],
+    pub chunk_id: u16,
+    pub chunk: Bytes, // raptor-coded portion
+}
+
+#[derive(Debug)]
+pub enum MessageValidationError {
+    UnknownVersion,
+    TooShort,
+    InvalidSignature,
+    InvalidTreeDepth,
+    InvalidMerkleProof,
+}
+
+/// - 65 bytes => Signature of sender over hash(rest of message up to merkle proof, concatenated
+///               with merkle root)
+/// - 2 bytes => Version: bumped on protocol updates
+/// - 8 bytes (u64) => Round #
+/// - 20 bytes => first 20 bytes of hash of AppMessage
+///   - this isn't technically necessary if payload_len is small enough to fit in 1 chunk, but keep
+///     for simplicity
+/// - 4 bytes (u32) => Serialized AppMessage length (bytes)
+/// - 1 bit => broadcast or not
+/// - 7 bits => Merkle tree depth
+/// - 20 bytes * (merkle_tree_depth - 1) => merkle proof (leaves include everything that follows,
+///   eg hash(chunk_recipient + chunk_byte_offset + chunk_len + payload))
+///
+/// - 1 byte => Chunk's merkle leaf idx
+/// - 20 bytes => first 20 bytes of hash of chunk's first hop recipient
+///   - we set this even if broadcast bit is not set so that it's known if a message was intended
+///     to be sent to self
+/// - 2 bytes (u16) => This chunk's id
+/// - 2 bytes => Merkle chunk payload len
+/// - (merkle_chunk_payload_len bytes) => data
+pub fn parse_message<ST>(
+    signature_cache: &mut HashMap<
+        [u8; HEADER_LEN as usize - 65 + 20],
+        NodeId<CertificateSignaturePubKey<ST>>,
+    >,
+    message: Bytes,
+) -> Result<ValidatedMessage<CertificateSignaturePubKey<ST>>, MessageValidationError>
+where
+    ST: CertificateSignatureRecoverable,
+{
+    let mut cursor: Bytes = message.clone();
+    let mut split_off = |mid| {
+        if mid > cursor.len() {
+            Err(MessageValidationError::TooShort)
+        } else {
+            Ok(cursor.split_to(mid))
+        }
+    };
+    let cursor_signature = split_off(65)?;
+    let signature =
+        ST::deserialize(&cursor_signature).map_err(|_| MessageValidationError::InvalidSignature)?;
+
+    let cursor_version = split_off(2)?;
+    let version = u16::from_le_bytes(cursor_version.as_ref().try_into().expect("u16 is 2 bytes"));
+    if version != 0 {
+        return Err(MessageValidationError::UnknownVersion);
+    }
+
+    let cursor_round = split_off(8)?;
+    let round = u64::from_le_bytes(cursor_round.as_ref().try_into().expect("u64 is 8 bytes"));
+
+    let cursor_app_message_hash = split_off(20)?;
+    let app_message_hash: [u8; 20] = cursor_app_message_hash
+        .as_ref()
+        .try_into()
+        .expect("Hash is 20 bytes");
+
+    let cursor_app_message_len = split_off(4)?;
+    let app_message_len = u32::from_le_bytes(
+        cursor_app_message_len
+            .as_ref()
+            .try_into()
+            .expect("u32 is 4 bytes"),
+    );
+
+    let cursor_broadcast_tree_depth = split_off(1)?[0];
+    let broadcast = (cursor_broadcast_tree_depth >> 7) != 0;
+    let tree_depth = cursor_broadcast_tree_depth & !(1 << 7);
+
+    if tree_depth < 1 {
+        return Err(MessageValidationError::InvalidTreeDepth);
+    }
+    let proof_size: u16 = 20 * (u16::from(tree_depth) - 1);
+
+    let mut merkle_proof = Vec::new();
+    for _ in 0..tree_depth - 1 {
+        let cursor_sibling = split_off(20)?;
+        let sibling =
+            MerkleHash::try_from(cursor_sibling.as_ref()).expect("MerkleHash is 20 bytes");
+        merkle_proof.push(sibling);
+    }
+    let cursor_merkle_idx = split_off(1)?[0];
+    let merkle_proof = MerkleProof::new_from_leaf_idx(merkle_proof, cursor_merkle_idx)
+        .ok_or(MessageValidationError::InvalidMerkleProof)?;
+
+    let cursor_recipient = split_off(20)?;
+    let recipient_hash: [u8; 20] = cursor_recipient
+        .as_ref()
+        .try_into()
+        .expect("Hash is 20 bytes");
+
+    let cursor_chunk_id = split_off(2)?;
+    let chunk_id = u16::from_le_bytes(cursor_chunk_id.as_ref().try_into().expect("u16 is 2 bytes"));
+
+    let cursor_payload_len = split_off(2)?;
+    let payload_len = u16::from_le_bytes(
+        cursor_payload_len
+            .as_ref()
+            .try_into()
+            .expect("u16 is 2 bytes"),
+    );
+    if payload_len == 0 {
+        // handle the degenerate case
+        return Err(MessageValidationError::TooShort);
+    }
+
+    let cursor_payload = split_off(payload_len as usize)?;
+
+    let leaf_hash = {
+        let mut hasher = HasherType::new();
+        hasher.update(
+            &message[HEADER_LEN as usize + proof_size as usize..
+                // HEADER_LEN as usize
+                //     + proof_size as usize
+                //     + CHUNK_HEADER_LEN as usize
+                //     + payload_len as usize
+                ],
+        );
+        hasher.hash()
+    };
+    let root = merkle_proof
+        .compute_root(&leaf_hash)
+        .ok_or(MessageValidationError::InvalidMerkleProof)?;
+    let mut signed_over = [0_u8; HEADER_LEN as usize - 65 + 20];
+    // TODO can avoid this copy if necessary
+    signed_over[..HEADER_LEN as usize - 65].copy_from_slice(&message[65..HEADER_LEN as usize]);
+    signed_over[HEADER_LEN as usize - 65..].copy_from_slice(&root);
+
+    let author = match signature_cache.entry(signed_over) {
+        Entry::Occupied(entry) => *entry.get(),
+        Entry::Vacant(entry) => {
+            let author = signature
+                .recover_pubkey(&signed_over)
+                .map_err(|_| MessageValidationError::InvalidSignature)?;
+            *entry.insert(NodeId::new(author))
+        }
+    };
+
+    if signature_cache.len() > 10_000 {
+        // FIXME this is a super jank way of bounding size of signature_cache
+        // should switch this to LRU eviction
+        signature_cache.clear();
+    }
+
+    Ok(ValidatedMessage {
+        message,
+
+        author,
+        round,
+        app_message_hash,
+        app_message_len,
+        broadcast,
+        recipient_hash,
+        chunk_id,
+        chunk: cursor_payload,
+    })
+}
+
+struct BroadcastBatch<PT: PubKey> {
+    author: NodeId<PT>,
+    targets: Vec<SocketAddr>,
+
+    start_idx: usize,
+    end_idx: usize,
+}
+struct BroadcastBatcher<'a, PT: PubKey> {
+    dataplane: &'a mut Dataplane,
+    message: &'a Bytes,
+
+    batch: Option<BroadcastBatch<PT>>,
+}
+impl<'a, PT: PubKey> Drop for BroadcastBatcher<'a, PT> {
+    fn drop(&mut self) {
+        self.flush()
+    }
+}
+impl<'a, PT: PubKey> BroadcastBatcher<'a, PT> {
+    fn flush(&mut self) {
+        if let Some(batch) = self.batch.take() {
+            self.dataplane.broadcast(BroadcastMsg {
+                targets: batch.targets,
+                payload: self.message.slice(batch.start_idx..batch.end_idx),
+            })
+        }
+    }
+}
+struct BatcherGuard<'a: 'g, 'g, PT: PubKey> {
+    batcher: &'g mut BroadcastBatcher<'a, PT>,
+    flush_batch: bool,
+}
+impl<'a: 'g, 'g, PT: PubKey> BatcherGuard<'a, 'g, PT> {
+    fn queue_broadcast(
+        &mut self,
+        payload_start_idx: usize,
+        payload_end_idx: usize,
+        author: &NodeId<PT>,
+        targets: impl FnOnce() -> Vec<SocketAddr>,
+    ) {
+        self.flush_batch = false;
+        if self
+            .batcher
+            .batch
+            .as_ref()
+            .is_some_and(|batch| &batch.author == author)
+        {
+            let batch = self.batcher.batch.as_mut().unwrap();
+            assert_eq!(batch.end_idx, payload_start_idx);
+            batch.end_idx = payload_end_idx;
+        } else {
+            self.batcher.flush();
+            self.batcher.batch = Some(BroadcastBatch {
+                author: *author,
+                targets: targets(),
+
+                start_idx: payload_start_idx,
+                end_idx: payload_end_idx,
+            })
+        }
+    }
+}
+impl<'a: 'g, 'g, PT: PubKey> Drop for BatcherGuard<'a, 'g, PT> {
+    fn drop(&mut self) {
+        if self.flush_batch {
+            self.batcher.flush();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use bytes::{Bytes, BytesMut};
+    use itertools::Itertools;
+    use monad_crypto::hasher::{Hasher, HasherType};
+    use monad_secp::SecpSignature;
+    use monad_types::{NodeId, RouterTarget, Stake};
+
+    use crate::{build_messages, parse_message, Validator};
+
+    #[test]
+    fn test_roundtrip() {
+        let keys = (0_u8..100_u8)
+            .map(|n| {
+                let mut hasher = HasherType::new();
+                hasher.update(n.to_le_bytes());
+                let mut hash = hasher.hash();
+                monad_secp::KeyPair::from_bytes(&mut hash.0).unwrap()
+            })
+            .collect_vec();
+
+        let round_validators = keys[1..]
+            .iter()
+            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+            .collect();
+
+        let known_addresses = keys
+            .iter()
+            .map(|key| {
+                (
+                    NodeId::new(key.pubkey()),
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                )
+            })
+            .collect();
+
+        let app_message: Bytes = vec![1_u8; 1024 * 1024].into();
+        let app_message_hash = {
+            let mut hasher = HasherType::new();
+            hasher.update(&app_message);
+            hasher.hash()
+        };
+
+        const ROUND: u64 = 5;
+        const GSO_SIZE: u16 = 1500;
+        let messages = build_messages::<SecpSignature>(
+            &keys[0],
+            GSO_SIZE, // gso_size
+            app_message.clone(),
+            2,     // redundancy,
+            ROUND, // round_no
+            RouterTarget::Broadcast,
+            &round_validators,
+            &known_addresses,
+        );
+
+        let mut signature_cache = Default::default();
+
+        for (to, mut aggregate_message) in messages {
+            while !aggregate_message.is_empty() {
+                let message = aggregate_message.split_to(GSO_SIZE.into());
+                let parsed_message =
+                    parse_message::<SecpSignature>(&mut signature_cache, message.clone())
+                        .expect("valid message");
+                assert_eq!(parsed_message.message, message);
+                assert_eq!(parsed_message.app_message_hash, app_message_hash.0[..20]);
+                assert_eq!(parsed_message.round, ROUND);
+                assert!(parsed_message.broadcast);
+                assert_eq!(parsed_message.app_message_len, app_message.len() as u32);
+                assert_eq!(parsed_message.author, NodeId::new(keys[0].pubkey()));
+            }
+        }
+    }
+
+    #[test]
+    fn test_bit_flip_parse_failure() {
+        let keys = (0_u8..100_u8)
+            .map(|n| {
+                let mut hasher = HasherType::new();
+                hasher.update(n.to_le_bytes());
+                let mut hash = hasher.hash();
+                monad_secp::KeyPair::from_bytes(&mut hash.0).unwrap()
+            })
+            .collect_vec();
+
+        let round_validators = keys[1..]
+            .iter()
+            .map(|key| (NodeId::new(key.pubkey()), Validator { stake: Stake(1) }))
+            .collect();
+
+        let known_addresses = keys
+            .iter()
+            .map(|key| {
+                (
+                    NodeId::new(key.pubkey()),
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                )
+            })
+            .collect();
+
+        let app_message: Bytes = vec![1_u8; 1024 * 2].into();
+
+        const ROUND: u64 = 5;
+        const GSO_SIZE: u16 = 1500;
+        let messages = build_messages::<SecpSignature>(
+            &keys[0],
+            GSO_SIZE, // gso_size
+            app_message,
+            2,     // redundancy,
+            ROUND, // round_no
+            RouterTarget::Broadcast,
+            &round_validators,
+            &known_addresses,
+        );
+
+        let mut signature_cache = Default::default();
+
+        for (to, mut aggregate_message) in messages {
+            while !aggregate_message.is_empty() {
+                let mut message: BytesMut =
+                    aggregate_message.split_to(GSO_SIZE.into()).as_ref().into();
+                // try flipping each bit
+                for bit_idx in 0..message.len() * 8 {
+                    let old_byte = message[bit_idx / 8];
+                    // flip bit
+                    message[bit_idx / 8] = old_byte ^ (1 << (bit_idx % 8));
+                    let maybe_parsed = parse_message::<SecpSignature>(
+                        &mut signature_cache,
+                        message.clone().into(),
+                    );
+
+                    // check that decoding fails
+                    assert!(
+                        maybe_parsed.is_err()
+                            || maybe_parsed.unwrap().author != NodeId::new(keys[0].pubkey())
+                    );
+
+                    // reset bit
+                    message[bit_idx / 8] = old_byte;
+                }
+            }
+        }
+    }
+}

@@ -34,6 +34,7 @@ pub struct UnicastMsg {
 pub struct RecvMsg {
     pub src_addr: SocketAddr,
     pub payload: Bytes,
+    pub stride: usize,
 }
 
 pub struct Dataplane {
@@ -220,26 +221,20 @@ impl DataplaneEventLoop {
                 result.stride.into()
             };
 
-            for j in (0..len).step_by(stride) {
-                let mut n = j + stride;
-                if n > len {
-                    n = len;
+            let b = Bytes::copy_from_slice(&self.socket.recv_ctrl.buf_refs[i][0..len]);
+            let rx = RecvMsg {
+                src_addr: src_sock_addr,
+                payload: b,
+                stride,
+            };
+            match self.ingress_sender.producer.push(rx) {
+                Err(e) => {
+                    debug!("send failed on ingress sender {e}");
+                    panic!("consider resizing queue for ingress");
                 }
-
-                let b = Bytes::copy_from_slice(&self.socket.recv_ctrl.buf_refs[i][j..n]);
-                let rx = RecvMsg {
-                    src_addr: src_sock_addr,
-                    payload: b,
-                };
-                match self.ingress_sender.producer.push(rx) {
-                    Err(e) => {
-                        debug!("send failed on ingress sender {e}");
-                        panic!("consider resizing queue for ingress");
-                    }
-                    Ok(()) => {
-                        debug!("sent bytes on ingress sender");
-                        self.ingress_sender.notify.0.wake();
-                    }
+                Ok(()) => {
+                    debug!("sent bytes on ingress sender");
+                    self.ingress_sender.notify.0.wake();
                 }
             }
         }

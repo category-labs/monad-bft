@@ -1,0 +1,40 @@
+[package]
+name = "monad-raptorcast"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+monad-crypto = { path = "../monad-crypto" }
+monad-dataplane = { path = "../monad-dataplane" }
+monad-executor = { path = "../monad-executor" }
+monad-executor-glue = { path = "../monad-executor-glue" }
+monad-merkle = { path = "../monad-merkle" }
+monad-secp = { path = "../monad-secp" }
+monad-types = { path = "../monad-types" }
+
+bytes = { workspace = true }
+futures = { workspace = true }
+itertools = { workspace = true }
+raptor-code = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[[bench]]
+name = "raptor_bench"
+harness = false
+
+[[example]]
+name = "service"
