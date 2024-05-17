@@ -264,8 +264,8 @@ async fn run(
         epoch_start_delay: Round(50),
         beneficiary: node_state.node_config.beneficiary,
         consensus_config: ConsensusConfig {
-            proposal_txn_limit: 1000,
-            proposal_gas_limit: 800_000_000,
+            proposal_txn_limit: node_state.node_config.consensus.block_txn_limit,
+            proposal_gas_limit: node_state.node_config.consensus.block_gas_limit,
             delta: Duration::from_millis(node_state.node_config.network.max_rtt_ms),
             max_blocksync_retries: 5,
             state_sync_threshold: SeqNum(state_sync_bound as u64),

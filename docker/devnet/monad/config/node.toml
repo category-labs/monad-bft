@@ -15,6 +15,10 @@ peers = []
 # mempool_address = "x.x.x.x:xxxx"
 # secp256k1_pubkey = "..."
 
+[consensus]
+block_txn_limit = 1000
+block_gas_limit = 800_000_000
+
 [network]
 bind_address_host = "0.0.0.0"
 bind_address_port = 8888

@@ -7,6 +7,9 @@ use serde::Deserialize;
 mod bootstrap;
 pub use bootstrap::{NodeBootstrapConfig, NodeBootstrapPeerConfig};
 
+pub mod consensus;
+pub use consensus::NodeConsensusConfig;
+
 mod network;
 pub use network::NodeNetworkConfig;
 
@@ -21,6 +24,7 @@ pub struct NodeConfig {
 
     pub bootstrap: NodeBootstrapConfig,
     pub network: NodeNetworkConfig,
+    pub consensus: NodeConsensusConfig,
 }
 
 #[derive(Debug, Deserialize)]

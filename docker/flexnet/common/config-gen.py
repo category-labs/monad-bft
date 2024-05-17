@@ -190,6 +190,11 @@ if __name__ == "__main__":
 
         toml["bootstrap"] = {"peers": local_peers}
 
+        toml["consensus"] = {
+            "block_txn_limit": 1000,
+            "block_gas_limit": 800_000_000,
+        }
+
         toml["network"] = {
             "bind_address_host": "0.0.0.0",
             "bind_address_port": BIND_ADDRESS_PORT,
