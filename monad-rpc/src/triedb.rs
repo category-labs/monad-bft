@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+};
 
 use alloy_primitives::{keccak256, Address, Bloom, Bytes};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
@@ -62,6 +65,10 @@ pub fn decode_tx_type(rlp_buf: &mut &[u8]) -> Result<U8, alloy_rlp::Error> {
 }
 
 impl TriedbEnv {
+    thread_local! {
+        pub static DB: RefCell<Option<Handle>> = RefCell::new(None);
+    }
+
     pub fn new(triedb_path: &Path) -> Self {
         Self {
             triedb_path: triedb_path.to_path_buf(),
@@ -72,9 +79,14 @@ impl TriedbEnv {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
-            let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
-            let result = TriedbEnv::latest_block(&db);
-            let _ = send.send(TriedbResult::BlockNum(result));
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
+                });
+
+                let result = TriedbEnv::latest_block(db);
+                let _ = send.send(TriedbResult::BlockNum(result));
+            });
         });
         recv.await.expect("rayon panic get_latest_block")
     }
@@ -83,58 +95,62 @@ impl TriedbEnv {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
-            let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
-            let (triedb_key, key_len_nibbles) = TriedbEnv::create_addr_key(&addr);
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
+                });
+                let (triedb_key, key_len_nibbles) = TriedbEnv::create_addr_key(&addr);
 
-            // parse block tag
-            let block_num = match block_tag {
-                BlockTags::Number(q) => q.0,
-                BlockTags::Default(t) => match t {
-                    BlockTagKey::Latest => TriedbEnv::latest_block(&db),
-                    BlockTagKey::Finalized => TriedbEnv::latest_block(&db),
-                },
-            };
+                // parse block tag
+                let block_num = match block_tag {
+                    BlockTags::Number(q) => q.0,
+                    BlockTags::Default(t) => match t {
+                        BlockTagKey::Latest => TriedbEnv::latest_block(db),
+                        BlockTagKey::Finalized => TriedbEnv::latest_block(db),
+                    },
+                };
 
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
-            let Some(result) = result else {
-                let _ = send.send(TriedbResult::Null);
-                return;
-            };
+                let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
+                let Some(result) = result else {
+                    let _ = send.send(TriedbResult::Null);
+                    return;
+                };
 
-            let mut buf = result.as_slice();
-            let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
-                debug!("rlp decode failed: {:?}", buf);
-                let _ = send.send(TriedbResult::EncodingError);
-                return;
-            };
+                let mut buf = result.as_slice();
+                let Ok(mut buf) = alloy_rlp::Header::decode_bytes(&mut buf, true) else {
+                    debug!("rlp decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
 
-            // account incarnation decode (currently not needed)
-            let Ok(_) = u64::decode(&mut buf) else {
-                debug!("rlp incarnation decode failed: {:?}", buf);
-                let _ = send.send(TriedbResult::EncodingError);
-                return;
-            };
+                // account incarnation decode (currently not needed)
+                let Ok(_) = u64::decode(&mut buf) else {
+                    debug!("rlp incarnation decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
 
-            let Ok(nonce) = u128::decode(&mut buf) else {
-                debug!("rlp nonce decode failed: {:?}", buf);
-                let _ = send.send(TriedbResult::EncodingError);
-                return;
-            };
-            let Ok(balance) = u128::decode(&mut buf) else {
-                debug!("rlp balance decode failed: {:?}", buf);
-                let _ = send.send(TriedbResult::EncodingError);
-                return;
-            };
+                let Ok(nonce) = u128::decode(&mut buf) else {
+                    debug!("rlp nonce decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
+                let Ok(balance) = u128::decode(&mut buf) else {
+                    debug!("rlp balance decode failed: {:?}", buf);
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                };
 
-            let code_hash = match <[u8; 32]>::decode(&mut buf) {
-                Ok(x) => x,
-                Err(e) => {
-                    debug!("rlp code_hash decode failed: {:?}", e);
-                    [0; 32]
-                }
-            };
+                let code_hash = match <[u8; 32]>::decode(&mut buf) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        debug!("rlp code_hash decode failed: {:?}", e);
+                        [0; 32]
+                    }
+                };
 
-            let _ = send.send(TriedbResult::Account(nonce, balance, code_hash));
+                let _ = send.send(TriedbResult::Account(nonce, balance, code_hash));
+            });
         });
         recv.await.expect("rayon panic get_account")
     }
@@ -148,34 +164,39 @@ impl TriedbEnv {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
-            let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
-            let (triedb_key, key_len_nibbles) = TriedbEnv::create_storage_at_key(&addr, &at);
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
+                });
+                let (triedb_key, key_len_nibbles) = TriedbEnv::create_storage_at_key(&addr, &at);
 
-            // parse block tag
-            let block_num = match block_tag {
-                BlockTags::Number(q) => q.0,
-                BlockTags::Default(t) => match t {
-                    BlockTagKey::Latest => TriedbEnv::latest_block(&db),
-                    BlockTagKey::Finalized => TriedbEnv::latest_block(&db),
-                },
-            };
+                // parse block tag
+                let block_num = match block_tag {
+                    BlockTags::Number(q) => q.0,
+                    BlockTags::Default(t) => match t {
+                        BlockTagKey::Latest => TriedbEnv::latest_block(db),
+                        BlockTagKey::Finalized => TriedbEnv::latest_block(db),
+                    },
+                };
 
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
-            let Some(result) = result else {
-                let _ = send.send(TriedbResult::Null);
-                return;
-            };
+                let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
+                let Some(result) = result else {
+                    let _ = send.send(TriedbResult::Null);
+                    return;
+                };
 
-            if result.len() > 32 {
-                debug!("storage value is max 32 bytes");
-                let _ = send.send(TriedbResult::EncodingError);
-                return;
-            }
-            let mut storage_value = [0_u8; 32];
-            for (byte, storage) in result.into_iter().rev().zip(storage_value.iter_mut().rev()) {
-                *storage = byte;
-            }
-            let _ = send.send(TriedbResult::Storage(storage_value));
+                if result.len() > 32 {
+                    debug!("storage value is max 32 bytes");
+                    let _ = send.send(TriedbResult::EncodingError);
+                    return;
+                }
+                let mut storage_value = [0_u8; 32];
+                for (byte, storage) in result.into_iter().rev().zip(storage_value.iter_mut().rev())
+                {
+                    *storage = byte;
+                }
+                let _ = send.send(TriedbResult::Storage(storage_value));
+            });
         });
         recv.await.expect("rayon panic get_storage_at")
     }
@@ -184,25 +205,29 @@ impl TriedbEnv {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
-            let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
-            let (triedb_key, key_len_nibbles) = TriedbEnv::create_code_key(&code_hash);
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
+                });
+                let (triedb_key, key_len_nibbles) = TriedbEnv::create_code_key(&code_hash);
 
-            // parse block tag
-            let block_num = match block_tag {
-                BlockTags::Number(q) => q.0,
-                BlockTags::Default(t) => match t {
-                    BlockTagKey::Latest => TriedbEnv::latest_block(&db),
-                    BlockTagKey::Finalized => TriedbEnv::latest_block(&db),
-                },
-            };
+                // parse block tag
+                let block_num = match block_tag {
+                    BlockTags::Number(q) => q.0,
+                    BlockTags::Default(t) => match t {
+                        BlockTagKey::Latest => TriedbEnv::latest_block(db),
+                        BlockTagKey::Finalized => TriedbEnv::latest_block(db),
+                    },
+                };
 
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
-            let Some(result) = result else {
-                let _ = send.send(TriedbResult::Null);
-                return;
-            };
+                let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
+                let Some(result) = result else {
+                    let _ = send.send(TriedbResult::Null);
+                    return;
+                };
 
-            let _ = send.send(TriedbResult::Code(result));
+                let _ = send.send(TriedbResult::Code(result));
+            });
         });
         recv.await.expect("rayon panic get_code")
     }
@@ -211,16 +236,20 @@ impl TriedbEnv {
         let triedb_path = self.triedb_path.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
-            let db = TriedbEnv::new_conn(&triedb_path).expect("triedb should exist");
-            let (triedb_key, key_len_nibbles) = TriedbEnv::create_receipt_key(txn_index);
+            TriedbEnv::DB.with_borrow_mut(|db_handle| {
+                let db = db_handle.get_or_insert_with(|| {
+                    TriedbEnv::new_conn(&triedb_path).expect("triedb should exist in path")
+                });
+                let (triedb_key, key_len_nibbles) = TriedbEnv::create_receipt_key(txn_index);
 
-            let result = TriedbEnv::read(&db, &triedb_key, key_len_nibbles, block_num);
-            let Some(result) = result else {
-                let _ = send.send(TriedbResult::Null);
-                return;
-            };
+                let result = TriedbEnv::read(db, &triedb_key, key_len_nibbles, block_num);
+                let Some(result) = result else {
+                    let _ = send.send(TriedbResult::Null);
+                    return;
+                };
 
-            let _ = send.send(TriedbResult::Receipt(result));
+                let _ = send.send(TriedbResult::Receipt(result));
+            });
         });
         recv.await.expect("rayon panic get_receipt")
     }
