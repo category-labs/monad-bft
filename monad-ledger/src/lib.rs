@@ -25,6 +25,11 @@ use reth_primitives::{Block, BlockBody, Header};
 
 type BlockHash = FixedBytes<32>;
 
+/// Protocol parameters that go into Eth block header
+pub struct EthHeaderParam {
+    pub gas_limit: u64,
+}
+
 /// A ledger for committed Ethereum blocks
 /// Blocks are RLP encoded and written to their own individual file, named by the block
 /// number
@@ -32,6 +37,7 @@ pub struct MonadBlockFileLedger<SCT> {
     dir_path: PathBuf,
     blockdb: BlockDb,
     last_committed_block_hash: BlockHash,
+    header_param: EthHeaderParam,
     phantom: PhantomData<SCT>,
 }
 
@@ -39,7 +45,7 @@ impl<SCT> MonadBlockFileLedger<SCT>
 where
     SCT: SignatureCollection + Clone,
 {
-    pub fn new(dir_path: PathBuf, blockdb: BlockDb) -> Self {
+    pub fn new(dir_path: PathBuf, blockdb: BlockDb, header_param: EthHeaderParam) -> Self {
         match fs::create_dir(&dir_path) {
             Ok(_) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
@@ -50,7 +56,7 @@ where
             blockdb,
             // FIXME: deal with genesis and execution delay gap later
             last_committed_block_hash: FixedBytes([0_u8; 32]),
-
+            header_param,
             phantom: PhantomData,
         }
     }
@@ -70,7 +76,12 @@ where
         let block_body = generate_block_body(&block.payload.txns);
 
         // the payload inside the monad block will be used to generate the eth header
-        let header = generate_header(self.last_committed_block_hash, block, &block_body);
+        let header = generate_header(
+            self.last_committed_block_hash,
+            &self.header_param,
+            block,
+            &block_body,
+        );
 
         let mut header_bytes = Vec::default();
         header.encode(&mut header_bytes);
@@ -155,6 +166,7 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
 /// Use data from the MonadBlock to generate an Ethereum Header
 fn generate_header<SCT: SignatureCollection>(
     parent_hash: BlockHash,
+    header_param: &EthHeaderParam,
     monad_block: &MonadBlock<SCT>,
     block_body: &BlockBody,
 ) -> Header {
@@ -182,8 +194,7 @@ fn generate_header<SCT: SignatureCollection>(
         logs_bloom: Bloom(FixedBytes(logs_bloom.0)),
         difficulty: U256::ZERO,
         number: monad_block.payload.seq_num.0,
-        // TODO-1: need to get the actual sum gas limit from the list of transactions being used
-        gas_limit: 15_000_000,
+        gas_limit: header_param.gas_limit,
         gas_used: gas_used.0,
         // TODO-1: Add to BFT proposal
         timestamp: 0,

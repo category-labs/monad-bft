@@ -31,7 +31,7 @@ use monad_gossip::{
     Gossip,
 };
 use monad_ipc::IpcReceiver;
-use monad_ledger::MonadBlockFileLedger;
+use monad_ledger::{EthHeaderParam, MonadBlockFileLedger};
 use monad_quic::{SafeQuinnConfig, Service, ServiceConfig};
 use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, MonadStateBuilder, MonadVersion, VerifiedMonadMessage};
@@ -230,6 +230,9 @@ async fn run(
         execution_ledger: MonadBlockFileLedger::new(
             node_state.execution_ledger_path,
             blockdb.clone(),
+            EthHeaderParam {
+                gas_limit: node_state.node_config.consensus.block_gas_limit,
+            },
         ),
         checkpoint: MockCheckpoint::default(),
         state_root_hash: MockStateRootHashNop::new(validators.clone(), val_set_update_interval),
