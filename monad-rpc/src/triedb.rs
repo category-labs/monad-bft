@@ -141,11 +141,15 @@ impl TriedbEnv {
                     return;
                 };
 
-                let code_hash = match <[u8; 32]>::decode(&mut buf) {
-                    Ok(x) => x,
-                    Err(e) => {
-                        debug!("rlp code_hash decode failed: {:?}", e);
-                        [0; 32]
+                let code_hash = if buf.is_empty() {
+                    [0; 32]
+                } else {
+                    match <[u8; 32]>::decode(&mut buf) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            debug!("rlp code_hash decode failed: {:?}", e);
+                            [0; 32]
+                        }
                     }
                 };
 
