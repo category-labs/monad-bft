@@ -4,7 +4,7 @@ use alloy_primitives::aliases::{B256, U128, U256, U64};
 use alloy_rlp::Decodable;
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
-use reth_primitives::{BlockHash, TransactionSigned};
+use reth_primitives::{transaction::TransactionKind, BlockHash, TransactionSigned};
 use reth_rpc_types::{AccessListItem, Log, Parity, Signature, Transaction, TransactionReceipt};
 use serde::Deserialize;
 use serde_json::Value;
@@ -136,6 +136,12 @@ pub fn parse_tx_receipt(
                     removed: Default::default(),
                 })
                 .collect();
+
+            let contract_address = match transaction.kind() {
+                TransactionKind::Create => Some(transaction.signer().create(transaction.nonce())),
+                _ => None,
+            };
+
             let tx_receipt = TransactionReceipt {
                 transaction_type: tx_type,
                 transaction_hash: Some(tx.hash()),
@@ -144,8 +150,7 @@ pub fn parse_tx_receipt(
                 block_number,
                 from: transaction.signer(),
                 to: tx.to(),
-                // TODO: read from triedb to determine whether a contract is deployed
-                contract_address: None,
+                contract_address,
                 // TODO: gas_used = cumulative_gas_used[txn_index] - cumulative_gas_used[txn_index-1]
                 gas_used: Some(U256::from(21000)),
                 effective_gas_price: U128::from(effective_gas_price),
