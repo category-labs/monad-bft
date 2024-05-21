@@ -1,6 +1,7 @@
 use std::{ops::Deref, time::Duration};
 
 use async_graphql::{Context, NewType, Object, Union};
+use monad_consensus_types::metrics::Metrics;
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     AsyncStateVerifyEvent, BlockSyncEvent, ConsensusEvent, MempoolEvent, MetricsEvent, MonadEvent,
@@ -115,6 +116,9 @@ impl<'s> GraphQLNode<'s> {
     async fn id(&self) -> GraphQLNodeId {
         self.0.id.get_peer_id().into()
     }
+    async fn metrics(&self) -> GraphQLMetrics<'s> {
+        GraphQLMetrics(self.0.state.metrics())
+    }
     async fn pending_messages(&self) -> Vec<GraphQLPendingMessage<'s>> {
         self.0
             .pending_inbound_messages
@@ -128,6 +132,41 @@ impl<'s> GraphQLNode<'s> {
                 })
             })
             .collect()
+    }
+}
+
+struct GraphQLMetrics<'s>(&'s Metrics);
+#[Object]
+impl<'s> GraphQLMetrics<'s> {
+    async fn consensus_created_qc(&self) -> u32 {
+        self.0.consensus_events.created_qc.try_into().unwrap()
+    }
+    async fn consensus_local_timeout(&self) -> u32 {
+        self.0.consensus_events.local_timeout.try_into().unwrap()
+    }
+    async fn consensus_handle_proposal(&self) -> u32 {
+        self.0.consensus_events.handle_proposal.try_into().unwrap()
+    }
+    async fn consensus_failed_txn_validation(&self) -> u32 {
+        self.0
+            .consensus_events
+            .failed_txn_validation
+            .try_into()
+            .unwrap()
+    }
+    async fn consensus_invalid_proposal_round_leader(&self) -> u32 {
+        self.0
+            .consensus_events
+            .invalid_proposal_round_leader
+            .try_into()
+            .unwrap()
+    }
+    async fn consensus_out_of_order_proposals(&self) -> u32 {
+        self.0
+            .consensus_events
+            .out_of_order_proposals
+            .try_into()
+            .unwrap()
     }
 }
 
