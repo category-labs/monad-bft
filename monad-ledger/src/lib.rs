@@ -141,7 +141,6 @@ fn generate_block_body(monad_full_txs: &FullTransactionList) -> BlockBody {
         .unwrap()
         .0
         .into_iter()
-        .map(|tx| tx.into_signed())
         .collect();
 
     BlockBody {

@@ -1,12 +1,12 @@
 use alloy_primitives::TxHash;
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
-use reth_primitives::TransactionSignedEcRecovered;
+use reth_primitives::TransactionSigned;
 
 // FIXME reth types shouldn't be leaked
 pub type EthTxHash = TxHash;
 // FIXME reth types shouldn't be leaked
-pub type EthTransaction = TransactionSignedEcRecovered;
+pub type EthTransaction = TransactionSigned;
 
 /// A list of Eth transaction hash
 #[derive(Clone, Debug, PartialEq, Eq)]

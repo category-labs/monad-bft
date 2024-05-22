@@ -137,7 +137,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         let tx =
                             EthTransaction::decode(&mut tx.as_ref()).expect("must be valid eth tx");
 
-                        let signer = tx.signer();
+                        let signer = tx.recover_signer().unwrap();
                         assert_eq!(signer, author_address);
                         assert_eq!(tx.transaction, eth_tx.transaction);
                         debug!("received tx");
