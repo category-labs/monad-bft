@@ -267,7 +267,7 @@ fn many_nodes_quic_bw() {
     swarm_ledger_verification(&swarm, min_ledger_len);
 
     let mut verifier =
-        MockSwarmVerifier::default().tick_range(Duration::from_secs(106), Duration::from_secs(1));
+        MockSwarmVerifier::default().tick_range(Duration::from_secs(107), Duration::from_secs(1));
 
     let node_ids = swarm.states().keys().copied().collect_vec();
     verifier

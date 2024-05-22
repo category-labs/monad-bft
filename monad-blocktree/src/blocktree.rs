@@ -275,7 +275,7 @@ mod test {
     };
     use monad_eth_types::EthAddress;
     use monad_testutil::signing::MockSignatures;
-    use monad_types::{BlockId, NodeId, Round, SeqNum};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
     use super::BlockTree;
 
@@ -304,10 +304,11 @@ mod test {
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
+        let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -316,6 +317,7 @@ mod test {
 
         let b1 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -331,6 +333,7 @@ mod test {
 
         let v2 = VoteInfo {
             id: b1.get_id(),
+            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
@@ -339,6 +342,7 @@ mod test {
 
         let b2 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -354,6 +358,7 @@ mod test {
 
         let v3 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -362,6 +367,7 @@ mod test {
 
         let b3 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -377,6 +383,7 @@ mod test {
 
         let v4 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -385,6 +392,7 @@ mod test {
 
         let b4 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -400,6 +408,7 @@ mod test {
 
         let v5 = VoteInfo {
             id: b3.get_id(),
+            epoch: Epoch(1),
             round: Round(2),
             parent_id: g.get_id(),
             parent_round: Round(1),
@@ -408,6 +417,7 @@ mod test {
 
         let b5 = Block::new(
             node_id(),
+            Epoch(1),
             Round(3),
             &payload,
             &QC::new(
@@ -423,6 +433,7 @@ mod test {
 
         let v6 = VoteInfo {
             id: b5.get_id(),
+            epoch: Epoch(1),
             round: Round(3),
             parent_id: b5.get_parent_id(),
             parent_round: Round(2),
@@ -431,6 +442,7 @@ mod test {
 
         let b6 = Block::new(
             node_id(),
+            Epoch(1),
             Round(4),
             &payload,
             &QC::new(
@@ -446,6 +458,7 @@ mod test {
 
         let v7 = VoteInfo {
             id: b6.get_id(),
+            epoch: Epoch(1),
             round: Round(6),
             parent_id: b5.get_id(),
             parent_round: Round(5),
@@ -454,6 +467,7 @@ mod test {
 
         let b7 = Block::new(
             node_id(),
+            Epoch(1),
             Round(7),
             &payload,
             &QC::new(
@@ -528,6 +542,7 @@ mod test {
 
         let v8 = VoteInfo {
             id: b5.get_id(),
+            epoch: Epoch(1),
             round: Round(5),
             parent_id: b3.get_id(),
             parent_round: Round(3),
@@ -536,6 +551,7 @@ mod test {
 
         let b8 = Block::new(
             node_id(),
+            Epoch(1),
             Round(8),
             &payload,
             &QC::new(
@@ -562,10 +578,11 @@ mod test {
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
+        let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -574,6 +591,7 @@ mod test {
 
         let b1 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -589,6 +607,7 @@ mod test {
 
         let v2 = VoteInfo {
             id: b1.get_id(),
+            epoch: Epoch(1),
             round: Round(2),
             parent_id: g.get_parent_id(),
             parent_round: Round(1),
@@ -597,6 +616,7 @@ mod test {
 
         let b2 = Block::new(
             node_id(),
+            Epoch(1),
             Round(3),
             &payload,
             &QC::new(
@@ -638,6 +658,7 @@ mod test {
     fn equal_level_branching() {
         let g = Block::new(
             node_id(),
+            Epoch(1),
             Round(1),
             &Payload {
                 txns: FullTransactionList::empty(),
@@ -651,6 +672,7 @@ mod test {
 
         let v1 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -659,6 +681,7 @@ mod test {
 
         let b1 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &Payload {
                 txns: FullTransactionList::new(vec![1].into()),
@@ -680,6 +703,7 @@ mod test {
 
         let b2 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &Payload {
                 txns: FullTransactionList::new(vec![2].into()),
@@ -701,6 +725,7 @@ mod test {
 
         let v2 = VoteInfo {
             id: b1.get_id(),
+            epoch: Epoch(1),
             round: Round(2),
             parent_id: g.get_id(),
             parent_round: Round(1),
@@ -709,6 +734,7 @@ mod test {
 
         let b3 = Block::new(
             node_id(),
+            Epoch(1),
             Round(3),
             &Payload {
                 txns: FullTransactionList::new(vec![3].into()),
@@ -762,6 +788,7 @@ mod test {
     fn duplicate_blocks() {
         let g = Block::new(
             node_id(),
+            Epoch(1),
             Round(1),
             &Payload {
                 txns: FullTransactionList::empty(),
@@ -775,6 +802,7 @@ mod test {
 
         let v1 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
@@ -783,6 +811,7 @@ mod test {
 
         let b1 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &Payload {
                 txns: FullTransactionList::new(vec![1].into()),
@@ -821,10 +850,11 @@ mod test {
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
+        let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -833,6 +863,7 @@ mod test {
 
         let b1 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -848,6 +879,7 @@ mod test {
 
         let v2 = VoteInfo {
             id: b1.get_id(),
+            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
@@ -856,6 +888,7 @@ mod test {
 
         let b2 = Block::new(
             node_id(),
+            Epoch(1),
             Round(3),
             &payload,
             &QC::new(
@@ -871,6 +904,7 @@ mod test {
 
         let b3 = Block::new(
             node_id(),
+            Epoch(1),
             Round(4),
             &payload,
             &QC::new(
@@ -886,6 +920,7 @@ mod test {
 
         let b4 = Block::new(
             node_id(),
+            Epoch(1),
             Round(5),
             &payload,
             &QC::new(
@@ -944,10 +979,11 @@ mod test {
             beneficiary: EthAddress::default(),
             randao_reveal: RandaoReveal::default(),
         };
-        let g = Block::new(node_id(), Round(1), &payload, &QC::genesis_qc());
+        let g = Block::new(node_id(), Epoch(1), Round(1), &payload, &QC::genesis_qc());
 
         let v1 = VoteInfo {
             id: g.get_id(),
+            epoch: Epoch(1),
             round: Round(1),
             parent_id: g.get_parent_id(),
             parent_round: Round(0),
@@ -956,6 +992,7 @@ mod test {
 
         let b1 = Block::new(
             node_id(),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -971,6 +1008,7 @@ mod test {
 
         let v2 = VoteInfo {
             id: b1.get_id(),
+            epoch: Epoch(1),
             round: Round(2),
             parent_id: b1.get_parent_id(),
             parent_round: Round(1),
@@ -979,6 +1017,7 @@ mod test {
 
         let b2 = Block::new(
             node_id(),
+            Epoch(1),
             Round(3),
             &payload,
             &QC::new(
@@ -994,6 +1033,7 @@ mod test {
 
         let b3 = Block::new(
             node_id(),
+            Epoch(1),
             Round(4),
             &payload,
             &QC::new(
@@ -1009,6 +1049,7 @@ mod test {
 
         let b4 = Block::new(
             node_id(),
+            Epoch(1),
             Round(5),
             &payload,
             &QC::new(

@@ -77,6 +77,7 @@ impl Safety {
     /// Make a TimeoutInfo if it's safe to timeout the current round
     pub fn make_timeout<SCT: SignatureCollection>(
         &mut self,
+        epoch: Epoch,
         round: Round,
         high_qc: QuorumCertificate<SCT>,
         last_tc: &Option<TimeoutCertificate<SCT>>,
@@ -84,7 +85,11 @@ impl Safety {
         let qc_round = high_qc.get_round();
         if self.safe_to_timeout(round, qc_round, last_tc) {
             self.update_highest_vote_round(round);
-            Some(TimeoutInfo { round, high_qc })
+            Some(TimeoutInfo {
+                epoch,
+                round,
+                high_qc,
+            })
         } else {
             None
         }
@@ -105,6 +110,7 @@ impl Safety {
 
             let vote_info = VoteInfo {
                 id: block.get_id(),
+                epoch: block.get_epoch(),
                 round: block.get_round(),
                 parent_id: block.get_parent_id(),
                 parent_round: block.get_parent_round(),

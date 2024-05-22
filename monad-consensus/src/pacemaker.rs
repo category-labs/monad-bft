@@ -9,8 +9,8 @@ use monad_consensus_types::{
     timeout::{Timeout, TimeoutCertificate},
     voting::ValidatorMapping,
 };
-use monad_types::{NodeId, Round};
-use monad_validator::validator_set::ValidatorSetType;
+use monad_types::{Epoch, NodeId, Round};
+use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
 
 use crate::{
     messages::message::TimeoutMessage,
@@ -29,8 +29,8 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     /// this is used to calculate the local round timeout duration
     delta: Duration,
 
+    current_epoch: Epoch,
     current_round: Round,
-
     /// None if we advanced to the current round via QC
     /// Some(TC) if we advanced to the current round via TC
     last_round_tc: Option<TimeoutCertificate<SCT>>,
@@ -79,11 +79,13 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn new(
         delta: Duration,
+        current_epoch: Epoch,
         current_round: Round,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
     ) -> Self {
         Self {
             delta,
+            current_epoch,
             current_round,
             last_round_tc,
             pending_timeouts: BTreeMap::new(),
@@ -94,6 +96,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 
     pub fn get_current_round(&self) -> Round {
         self.current_round
+    }
+
+    pub fn get_current_epoch(&self) -> Epoch {
+        self.current_epoch
     }
 
     pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<SCT>> {
@@ -108,12 +114,14 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     /// pending timeout messages are cleared.
     /// Creates the command to start the local round timeout
     #[must_use]
-    fn enter_round(&mut self, new_round: Round) -> PacemakerCommand<SCT> {
+    fn enter_round(&mut self, new_round: Round, new_epoch: Epoch) -> PacemakerCommand<SCT> {
         assert!(new_round > self.current_round);
+        assert!(new_epoch >= self.current_epoch);
 
         self.phase = PhaseHonest::Zero;
         self.pending_timeouts.clear();
 
+        self.current_epoch = new_epoch;
         self.current_round = new_round;
 
         PacemakerCommand::Schedule {
@@ -132,7 +140,12 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     ) -> Vec<PacemakerCommand<SCT>> {
         let mut cmds = vec![PacemakerCommand::ScheduleReset];
         let maybe_broadcast = safety
-            .make_timeout(self.current_round, high_qc.clone(), &self.last_round_tc)
+            .make_timeout(
+                self.current_epoch,
+                self.current_round,
+                high_qc.clone(),
+                &self.last_round_tc,
+            )
             .map(|timeout_info| {
                 well_formed(
                     timeout_info.round,
@@ -211,6 +224,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         // invalid timeout messages if there are signature errors
         while self.phase == PhaseHonest::One && validators.has_super_majority_votes(&timeouts) {
             match TimeoutCertificate::new(
+                tm_info.epoch,
                 tm_info.round,
                 self.pending_timeouts
                     .iter()
@@ -259,15 +273,17 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_tc(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
+        epoch_manager: &EpochManager,
         metrics: &mut Metrics,
     ) -> Option<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
             return None;
         }
         metrics.consensus_events.enter_new_round_tc += 1;
-        let round = tc.round;
+        let new_round = tc.round + Round(1);
+        let new_epoch = epoch_manager.get_epoch(new_round);
         self.last_round_tc = Some(tc.clone());
-        Some(self.enter_round(round + Round(1)))
+        Some(self.enter_round(new_round, new_epoch))
     }
 
     /// advance the round based on a QC
@@ -277,6 +293,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
+        epoch_manager: &EpochManager,
         metrics: &mut Metrics,
     ) -> Option<PacemakerCommand<SCT>> {
         if qc.get_round() < self.current_round {
@@ -284,7 +301,9 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         }
         metrics.consensus_events.enter_new_round_qc += 1;
         self.last_round_tc = None;
-        Some(self.enter_round(qc.get_round() + Round(1)))
+        let new_round = qc.get_round() + Round(1);
+        let new_epoch = epoch_manager.get_epoch(new_round);
+        Some(self.enter_round(new_round, new_epoch))
     }
 }
 
@@ -308,7 +327,7 @@ mod test {
         signing::{create_certificate_keys, create_keys},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, SeqNum, Stake};
+    use monad_types::{BlockId, Epoch, SeqNum, Stake};
     use monad_validator::validator_set::{ValidatorSetFactory, ValidatorSetTypeFactory};
     use zerocopy::AsBytes;
 
@@ -318,6 +337,7 @@ mod test {
     type SignatureCollectionType = MultiSig<SignatureType>;
 
     fn get_high_qc<SCT: SignatureCollection>(
+        qc_epoch: Epoch,
         qc_round: Round,
         keys: &[SCT::NodeIdPubKey],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
@@ -325,6 +345,7 @@ mod test {
     ) -> QuorumCertificate<SCT> {
         let vote_info = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
+            epoch: qc_epoch,
             round: qc_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
@@ -353,12 +374,14 @@ mod test {
 
     fn create_timeout_message<SCT: SignatureCollection>(
         certkeypair: &SignatureCollectionKeyPairType<SCT>,
+        timeout_epoch: Epoch,
         timeout_round: Round,
         high_qc: QuorumCertificate<SCT>,
         valid: bool,
     ) -> TimeoutMessage<SCT> {
         let timeout = Timeout {
             tminfo: TimeoutInfo {
+                epoch: timeout_epoch,
                 round: timeout_round,
                 high_qc,
             },
@@ -377,8 +400,12 @@ mod test {
 
     #[test]
     fn all_honest() {
-        let mut pacemaker =
-            Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
+        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
+            Duration::from_secs(1),
+            Epoch(1),
+            Round(1),
+            None,
+        );
         let mut safety = Safety::default();
 
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
@@ -386,8 +413,10 @@ mod test {
             SignatureCollectionType,
             _,
         >(4, ValidatorSetFactory::default());
+        let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
+            Epoch(1),
             Round(0),
             keys.iter()
                 .map(CertificateKeyPair::pubkey)
@@ -397,10 +426,34 @@ mod test {
             &vmap,
         );
 
-        let tm0 = create_timeout_message(&certkeys[0], timeout_round, high_qc.clone(), true);
-        let tm1 = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
-        let tm2 = create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), true);
-        let tm3 = create_timeout_message(&certkeys[3], timeout_round, high_qc.clone(), true);
+        let tm0 = create_timeout_message(
+            &certkeys[0],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm1 = create_timeout_message(
+            &certkeys[1],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm2 = create_timeout_message(
+            &certkeys[2],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm3 = create_timeout_message(
+            &certkeys[3],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
 
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
@@ -457,8 +510,12 @@ mod test {
 
     #[test]
     fn phase_supermajority_invalid_no_progress() {
-        let mut pacemaker =
-            Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
+        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
+            Duration::from_secs(1),
+            Epoch(1),
+            Round(1),
+            None,
+        );
         let mut safety = Safety::default();
 
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
@@ -466,8 +523,10 @@ mod test {
             SignatureCollectionType,
             _,
         >(4, ValidatorSetFactory::default());
+        let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
+            Epoch(1),
             Round(0),
             keys.iter()
                 .map(CertificateKeyPair::pubkey)
@@ -477,10 +536,27 @@ mod test {
             &vmap,
         );
 
-        let tm0_valid = create_timeout_message(&certkeys[0], timeout_round, high_qc.clone(), true);
-        let tm1_valid = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
-        let tm2_invalid =
-            create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), false);
+        let tm0_valid = create_timeout_message(
+            &certkeys[0],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm1_valid = create_timeout_message(
+            &certkeys[1],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm2_invalid = create_timeout_message(
+            &certkeys[2],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            false,
+        );
 
         let _ = pacemaker.process_remote_timeout(
             &valset,
@@ -516,8 +592,12 @@ mod test {
 
     #[test]
     fn phase_supermajority_invalid_progress() {
-        let mut pacemaker =
-            Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
+        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
+            Duration::from_secs(1),
+            Epoch(1),
+            Round(1),
+            None,
+        );
         let mut safety = Safety::default();
 
         let keys = create_keys::<SignatureType>(4);
@@ -548,8 +628,10 @@ mod test {
             .expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
+        let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
+            Epoch(1),
             Round(0),
             keys.iter()
                 .map(CertificateKeyPair::pubkey)
@@ -559,10 +641,27 @@ mod test {
             &vmap,
         );
 
-        let tm0_invalid =
-            create_timeout_message(&certkeys[0], timeout_round, high_qc.clone(), false);
-        let tm1_valid = create_timeout_message(&certkeys[1], timeout_round, high_qc.clone(), true);
-        let tm2_valid = create_timeout_message(&certkeys[2], timeout_round, high_qc.clone(), true);
+        let tm0_invalid = create_timeout_message(
+            &certkeys[0],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            false,
+        );
+        let tm1_valid = create_timeout_message(
+            &certkeys[1],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
+        let tm2_valid = create_timeout_message(
+            &certkeys[2],
+            timeout_epoch,
+            timeout_round,
+            high_qc.clone(),
+            true,
+        );
 
         let _ = pacemaker.process_remote_timeout(
             &valset,
@@ -599,6 +698,7 @@ mod test {
 
         // assert the TC is created over the two valid timeouts
         let mut hasher = HasherType::new();
+        hasher.update(Epoch(1).as_bytes());
         hasher.update(Round(1).as_bytes());
         hasher.update(Round(0).as_bytes());
         let timeout_hash = hasher.hash();

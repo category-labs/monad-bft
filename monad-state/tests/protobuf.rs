@@ -41,6 +41,7 @@ fn make_tc<
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 >(
+    tc_epoch: Epoch,
     tc_round: Round,
     high_qc_round: HighQcRound,
     keys: &[ST::KeyPairType],
@@ -48,6 +49,7 @@ fn make_tc<
     validator_mapping: &ValidatorMapping<SCT::NodeIdPubKey, SignatureCollectionKeyPairType<SCT>>,
 ) -> TimeoutCertificate<SCT> {
     let mut hasher = HasherType::new();
+    hasher.update(tc_epoch);
     hasher.update(tc_round);
     hasher.update(high_qc_round.qc_round);
 
@@ -63,6 +65,7 @@ fn make_tc<
     let sig_col = SCT::new(tc_sigs, validator_mapping, tmo_digest.as_ref()).unwrap();
 
     TimeoutCertificate {
+        epoch: tc_epoch,
         round: tc_round,
         high_qc_rounds: vec![HighQcRoundSigColTuple {
             high_qc_round,
@@ -148,6 +151,7 @@ test_all_combination!(test_vote_message, |num_keys| {
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
+        epoch: Epoch(1),
         round: Round(2),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(1),
@@ -215,6 +219,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
+        epoch: epoch_manager.get_epoch(Round(1)),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
@@ -247,6 +252,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     // timeout message for Round(3)
     // TODO-3: add more high_qc_rounds
     let tc = make_tc::<ST, SCT>(
+        epoch_manager.get_epoch(Round(2)),
         Round(2),
         HighQcRound { qc_round: Round(1) },
         keypairs.as_slice(),
@@ -255,6 +261,7 @@ test_all_combination!(test_timeout_message, |num_keys| {
     );
 
     let tmo_info = TimeoutInfo {
+        epoch: epoch_manager.get_epoch(Round(3)),
         round: Round(3),
         high_qc: qc,
     };
@@ -389,6 +396,7 @@ test_all_combination!(test_proposal_tc, |num_keys| {
     };
 
     let tc = make_tc::<ST, SCT>(
+        epoch_manager.get_epoch(tc_round),
         tc_round,
         high_qc_round,
         keypairs.as_slice(),

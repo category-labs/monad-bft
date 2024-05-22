@@ -108,10 +108,11 @@ impl<ST: CertificateSignatureRecoverable> SignatureCollection for MockSignatures
     }
 }
 
-pub fn hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
+pub fn block_hash<T: SignatureCollection>(b: &Block<T>) -> Hash {
     let block_id = {
         let mut hasher = HasherType::new();
         hasher.update(b.author.pubkey().bytes());
+        hasher.update(b.epoch);
         hasher.update(b.round);
         hasher.update(b.payload.txns.bytes());
         hasher.update(b.payload.header.parent_hash);

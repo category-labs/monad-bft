@@ -17,13 +17,15 @@ message ProtoHighQcRoundSigColTuple {
 }
 
 message ProtoTimeoutCertificate {
-  monad_proto.basic.ProtoRound round = 1;
-  repeated ProtoHighQcRoundSigColTuple high_qc_rounds = 2;
+  monad_proto.basic.ProtoEpoch epoch = 1;
+  monad_proto.basic.ProtoRound round = 2;
+  repeated ProtoHighQcRoundSigColTuple high_qc_rounds = 3;
 }
 
 message ProtoTimeoutInfo {
-  monad_proto.basic.ProtoRound round = 1;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 2;
+  monad_proto.basic.ProtoEpoch epoch = 1;
+  monad_proto.basic.ProtoRound round = 2;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate high_qc = 3;
 }
 
 message ProtoTimeout {

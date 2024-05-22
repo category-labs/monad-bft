@@ -26,12 +26,14 @@ type SignatureCollectionType = MultiSig<NopSignature>;
 #[test]
 fn timeout_digest() {
     let ti = TimeoutInfo {
+        epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
@@ -45,6 +47,7 @@ fn timeout_digest() {
     };
 
     let mut hasher = HasherType::new();
+    hasher.update(ti.epoch);
     hasher.update(ti.round);
     hasher.update(ti.high_qc.get_round());
     let h1 = hasher.hash();
@@ -57,12 +60,14 @@ fn timeout_digest() {
 #[test]
 fn timeout_info_hash() {
     let ti = TimeoutInfo {
+        epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
@@ -76,6 +81,7 @@ fn timeout_info_hash() {
     };
 
     let mut hasher = HasherType::new();
+    hasher.update(ti.epoch);
     hasher.update(ti.round.0.as_bytes());
     hasher.update(ti.high_qc.get_block_id().0.as_bytes());
     hasher.update(ti.high_qc.get_hash());
@@ -89,12 +95,14 @@ fn timeout_info_hash() {
 #[test]
 fn timeout_hash() {
     let ti = TimeoutInfo {
+        epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
@@ -113,6 +121,7 @@ fn timeout_hash() {
     };
 
     let mut hasher = HasherType::new();
+    hasher.update(tmo.tminfo.epoch.0.as_bytes());
     hasher.update(tmo.tminfo.round.0.as_bytes());
     hasher.update(tmo.tminfo.high_qc.get_block_id().0.as_bytes());
     hasher.update(tmo.tminfo.high_qc.get_hash());
@@ -126,12 +135,14 @@ fn timeout_hash() {
 #[test]
 fn timeout_msg_hash() {
     let ti = TimeoutInfo {
+        epoch: Epoch(1),
         round: Round(10),
         high_qc: QuorumCertificate::<MockSignatures<SignatureType>>::new(
             QcInfo {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
@@ -154,6 +165,7 @@ fn timeout_msg_hash() {
     let tmo_msg = TimeoutMessage::new(tmo, &cert_key);
 
     let mut hasher = HasherType::new();
+    hasher.update(tmo_msg.timeout.tminfo.epoch.0.as_bytes());
     hasher.update(tmo_msg.timeout.tminfo.round.0.as_bytes());
     hasher.update(
         tmo_msg
@@ -187,18 +199,20 @@ fn timeout_msg_hash() {
 
 #[test]
 fn proposal_msg_hash() {
-    use monad_testutil::signing::hash;
+    use monad_testutil::signing::block_hash;
 
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
 
     let mut privkey: [u8; 32] = [127; 32];
     let keypair = <NopKeyPair as CertificateKeyPair>::from_bytes(&mut privkey).unwrap();
     let author = NodeId::new(keypair.pubkey());
+    let epoch = Epoch(1);
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
             vote: Vote {
                 vote_info: VoteInfo {
+                    epoch: Epoch(1),
                     id: BlockId(Hash([0x00_u8; 32])),
                     round: Round(0),
                     parent_id: BlockId(Hash([0x00_u8; 32])),
@@ -213,6 +227,7 @@ fn proposal_msg_hash() {
 
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
+        epoch,
         round,
         &Payload {
             txns,
@@ -230,7 +245,7 @@ fn proposal_msg_hash() {
     };
 
     let h1 = HasherType::hash_object(&proposal);
-    let h2 = hash(&block);
+    let h2 = block_hash(&block);
 
     assert_eq!(h1, h2);
 }
@@ -254,6 +269,7 @@ fn max_high_qc() {
     .collect();
 
     let tc = TimeoutCertificate {
+        epoch: Epoch(1),
         round: Round(2),
         high_qc_rounds,
     };
@@ -266,6 +282,7 @@ fn max_high_qc() {
 fn vote_msg_hash(cs: CommitResult) {
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
+        epoch: Epoch(1),
         round: Round(0),
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),

@@ -38,6 +38,10 @@ impl QcInfo {
     pub fn get_round(&self) -> Round {
         self.vote.vote_info.round
     }
+
+    pub fn get_epoch(&self) -> Epoch {
+        self.vote.vote_info.epoch
+    }
 }
 
 impl std::fmt::Debug for QcInfo {
@@ -83,6 +87,7 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
     pub fn genesis_qc() -> Self {
         let vote_info = VoteInfo {
             id: BlockId(GENESIS_QC_HASH),
+            epoch: Epoch(1),
             round: Round(0),
             parent_id: BlockId(GENESIS_QC_HASH),
             parent_round: Round(0),
@@ -124,6 +129,10 @@ impl<SCT: SignatureCollection> QuorumCertificate<SCT> {
 
     pub fn get_round(&self) -> Round {
         self.info.get_round()
+    }
+
+    pub fn get_epoch(&self) -> Epoch {
+        self.info.get_epoch()
     }
 
     pub fn get_block_id(&self) -> BlockId {

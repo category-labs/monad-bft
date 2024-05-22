@@ -29,7 +29,7 @@ use monad_testutil::{
     signing::{get_certificate_key, get_key},
     validators::create_keys_w_validators,
 };
-use monad_types::{BlockId, NodeId, Round, SeqNum, Serializable, TimeoutVariant};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, Serializable, TimeoutVariant};
 use monad_validator::validator_set::ValidatorSetFactory;
 use monad_wal::{
     wal::{WALogger, WALoggerConfig},
@@ -119,6 +119,7 @@ fn bench_vote(c: &mut Criterion) {
     let certkey = get_certificate_key::<SignatureCollectionType>(2);
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
+        epoch: Epoch(1),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
@@ -169,6 +170,7 @@ fn bench_timeout(c: &mut Criterion) {
 
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
+        epoch: Epoch(1),
         round: Round(1),
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(2),
@@ -196,11 +198,13 @@ fn bench_timeout(c: &mut Criterion) {
     let qc = QuorumCertificate::new(qcinfo, aggsig);
 
     let tmo_info = TimeoutInfo {
+        epoch: Epoch(1),
         round: Round(3),
         high_qc: qc,
     };
 
     let high_qc_round = HighQcRound { qc_round: Round(1) };
+    let tc_epoch = Epoch(1);
     let tc_round = Round(2);
     let mut hasher = HasherType::new();
     hasher.update(tc_round);
@@ -223,6 +227,7 @@ fn bench_timeout(c: &mut Criterion) {
     }];
 
     let tc = TimeoutCertificate {
+        epoch: tc_epoch,
         round: tc_round,
         high_qc_rounds,
     };

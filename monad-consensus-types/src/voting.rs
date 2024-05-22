@@ -60,6 +60,8 @@ impl Hashable for Vote {
 pub struct VoteInfo {
     /// id of the proposed block
     pub id: BlockId,
+    /// epoch of the proposed block
+    pub epoch: Epoch,
     /// round of the proposed block
     pub round: Round,
     /// parent block id of the proposed block
@@ -74,6 +76,7 @@ impl std::fmt::Debug for VoteInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoteInfo")
             .field("id", &self.id)
+            .field("epoch", &self.epoch)
             .field("r", &self.round)
             .field("pid", &self.parent_id)
             .field("pr", &self.parent_round)
@@ -85,6 +88,7 @@ impl std::fmt::Debug for VoteInfo {
 impl Hashable for VoteInfo {
     fn hash(&self, state: &mut impl Hasher) {
         self.id.hash(state);
+        state.update(self.epoch.as_bytes());
         state.update(self.round.as_bytes());
         self.parent_id.hash(state);
         state.update(self.parent_round.as_bytes());
@@ -95,7 +99,7 @@ impl Hashable for VoteInfo {
 #[cfg(test)]
 mod test {
     use monad_crypto::hasher::{Hash, Hashable, Hasher, HasherType};
-    use monad_types::{BlockId, Round, SeqNum};
+    use monad_types::{BlockId, Epoch, Round, SeqNum};
     use test_case::test_case;
     use zerocopy::AsBytes;
 
@@ -106,6 +110,7 @@ mod test {
     fn voteinfo_hash() {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
+            epoch: Epoch(1),
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
@@ -114,6 +119,7 @@ mod test {
 
         let mut hasher = HasherType::new();
         hasher.update(vi.id.0);
+        hasher.update(vi.epoch);
         hasher.update(vi.round);
         hasher.update(vi.parent_id.0);
         hasher.update(vi.parent_round);
@@ -130,6 +136,7 @@ mod test {
     fn vote_hash(cr: CommitResult) {
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
+            epoch: Epoch(1),
             round: Round(0),
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),

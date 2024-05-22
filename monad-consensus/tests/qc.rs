@@ -15,6 +15,7 @@ fn comparison() {
 
     let vi_1 = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
+        epoch: Epoch(1),
         round: Round(2),
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
@@ -23,6 +24,7 @@ fn comparison() {
 
     let vi_2 = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
+        epoch: Epoch(1),
         round: Round(3),
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),

@@ -150,8 +150,13 @@ where
     fn next_tc(&mut self, epoch: Epoch) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
         let valset = self.val_epoch_map.get_val_set(&epoch).unwrap();
         let val_cert_pubkeys = self.val_epoch_map.get_cert_pubkeys(&epoch).unwrap();
-        self.proposal_gen
-            .next_tc(&self.keys, &self.cert_keys, valset, val_cert_pubkeys)
+        self.proposal_gen.next_tc(
+            &self.keys,
+            &self.cert_keys,
+            valset,
+            &self.epoch_manager,
+            val_cert_pubkeys,
+        )
     }
 }
 
@@ -496,6 +501,7 @@ fn make_block<SCT: SignatureCollection<NodeIdPubKey = NopPubKey>>() -> Block<SCT
 
     Block::new(
         NodeId::new(NopPubKey::from_bytes(&[0u8; 32]).unwrap()),
+        Epoch(1),
         Round(1),
         &Payload {
             txns,
@@ -681,6 +687,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                             Vote {
                                 vote_info: VoteInfo {
                                     id: proposal_message.block.get_id(),
+                                    epoch: proposal_message.block.epoch,
                                     round: proposal_message.block.round,
                                     parent_id: BlockId(Hash([0u8; 32])),
                                     parent_round: Round(0),

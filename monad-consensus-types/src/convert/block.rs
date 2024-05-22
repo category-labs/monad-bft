@@ -35,6 +35,7 @@ impl<SCT: SignatureCollection> From<&Block<SCT>> for ProtoBlock {
     fn from(value: &Block<SCT>) -> Self {
         Self {
             author: Some((&value.author).into()),
+            epoch: Some((&value.epoch).into()),
             round: Some((&value.round).into()),
             payload: Some((&value.payload).into()),
             qc: Some((&value.qc).into()),
@@ -51,6 +52,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoBlock> for Block<SCT> {
                 .author
                 .ok_or(Self::Error::MissingRequiredField(
                     "Block<AggregateSignatures>.author".to_owned(),
+                ))?
+                .try_into()?,
+            value
+                .epoch
+                .ok_or(Self::Error::MissingRequiredField(
+                    "Block<AggregateSignatures>.epoch".to_owned(),
                 ))?
                 .try_into()?,
             value

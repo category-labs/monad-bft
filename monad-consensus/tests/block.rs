@@ -10,7 +10,7 @@ use monad_crypto::{
     NopSignature,
 };
 use monad_eth_types::EthAddress;
-use monad_testutil::signing::{hash, node_id, MockSignatures};
+use monad_testutil::signing::{block_hash, node_id, MockSignatures};
 use monad_types::*;
 
 type SignatureType = NopSignature;
@@ -19,6 +19,7 @@ type SignatureType = NopSignature;
 fn block_hash_id() {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let author = node_id::<SignatureType>();
+    let epoch = Epoch(1);
     let round = Round(234);
     let qc = QuorumCertificate::<MockSignatures<SignatureType>>::new(
         QcInfo {
@@ -26,6 +27,7 @@ fn block_hash_id() {
                 vote_info: VoteInfo {
                     id: BlockId(Hash([0x00_u8; 32])),
                     parent_id: BlockId(Hash([0x00_u8; 32])),
+                    epoch: Epoch(1),
                     round: Round(0),
                     parent_round: Round(0),
                     seq_num: SeqNum(0),
@@ -38,6 +40,7 @@ fn block_hash_id() {
 
     let block = Block::<MockSignatures<SignatureType>>::new(
         author,
+        epoch,
         round,
         &Payload {
             txns,
@@ -50,7 +53,7 @@ fn block_hash_id() {
     );
 
     let h1 = HasherType::hash_object(&block);
-    let h2: Hash = hash(&block);
+    let h2: Hash = block_hash(&block);
 
     assert_eq!(h1, h2);
 }

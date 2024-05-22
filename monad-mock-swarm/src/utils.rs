@@ -33,7 +33,7 @@ pub mod test_tool {
     use monad_state::VerifiedMonadMessage;
     use monad_testutil::signing::create_keys;
     use monad_transformer::{LinkMessage, ID};
-    use monad_types::{BlockId, NodeId, Round, SeqNum};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
     type ST = NopSignature;
     type KeyPairType = <ST as CertificateSignature>::KeyPairType;
@@ -64,6 +64,7 @@ pub mod test_tool {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x00_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x00_u8; 32])),
                         parent_round: Round(0),
@@ -85,7 +86,7 @@ pub mod test_tool {
             randao_reveal: RandaoReveal::default(),
         };
 
-        Block::new(fake_node_id(), round, &payload, &fake_qc())
+        Block::new(fake_node_id(), Epoch(1), round, &payload, &fake_qc())
     }
 
     pub fn fake_proposal_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
@@ -104,6 +105,7 @@ pub mod test_tool {
     pub fn fake_vote_message(kp: &KeyPairType, round: Round) -> VerifiedMonadMessage<ST, SC> {
         let vote_info = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
+            epoch: Epoch(1),
             round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: Round(0),
@@ -126,6 +128,7 @@ pub mod test_tool {
 
     pub fn fake_timeout_message(kp: &KeyPairType) -> VerifiedMonadMessage<ST, SC> {
         let timeout_info = TimeoutInfo {
+            epoch: Epoch(1),
             round: Round(0),
             high_qc: fake_qc(),
         };

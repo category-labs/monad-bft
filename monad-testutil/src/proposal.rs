@@ -21,7 +21,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_eth_types::EthAddress;
-use monad_types::{NodeId, Round, SeqNum};
+use monad_types::{Epoch, NodeId, Round, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -31,6 +31,7 @@ use monad_validator::{
 
 #[derive(Clone)]
 pub struct ProposalGen<ST, SCT> {
+    epoch: Epoch,
     round: Round,
     qc: QuorumCertificate<SCT>,
     high_qc: QuorumCertificate<SCT>,
@@ -56,6 +57,7 @@ where
     pub fn new() -> Self {
         let genesis_qc = QuorumCertificate::genesis_qc();
         ProposalGen {
+            epoch: Epoch(1),
             round: Round(0),
             qc: genesis_qc.clone(),
             high_qc: genesis_qc,
@@ -83,6 +85,7 @@ where
         } else {
             // entering new round from qc
             self.round += Round(1);
+            self.epoch = epoch_manager.get_epoch(self.round);
             &self.qc
         };
 
@@ -103,6 +106,7 @@ where
 
         let block = Block::new(
             NodeId::new(leader_key.pubkey()),
+            self.epoch,
             self.round,
             &Payload {
                 txns,
@@ -138,6 +142,7 @@ where
         keys: &[ST::KeyPairType],
         certkeys: &[SignatureCollectionKeyPairType<SCT>],
         valset: &VT,
+        epoch_manager: &EpochManager,
         validator_mapping: &ValidatorMapping<
             CertificateSignaturePubKey<ST>,
             SignatureCollectionKeyPairType<SCT>,
@@ -156,6 +161,7 @@ where
         };
 
         let tminfo = TimeoutInfo {
+            epoch: self.epoch,
             round: self.round,
             high_qc: self.high_qc.clone(),
         };
@@ -177,6 +183,7 @@ where
             sigs: tmo_sig_col,
         };
         let tc = TimeoutCertificate::<SCT> {
+            epoch: self.epoch,
             round: self.round,
             high_qc_rounds: vec![high_qc_sig_tuple],
         };
@@ -194,6 +201,7 @@ where
 
         // entering new round through tc
         self.round += Round(1);
+        self.epoch = epoch_manager.get_epoch(self.round);
         self.last_tc = Some(tc);
         tmo_msgs
     }
@@ -209,6 +217,7 @@ where
     ) -> QuorumCertificate<SCT> {
         let vi = VoteInfo {
             id: block.get_id(),
+            epoch: block.epoch,
             round: block.round,
             parent_id: block.qc.get_block_id(),
             parent_round: block.qc.get_round(),

@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthAddress;
-use monad_types::{BlockId, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, RouterTarget, SeqNum};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -233,7 +233,7 @@ where
             high_qc: genesis_qc,
             state_root_validator,
             // high_qc round is 0, so pacemaker round should start at 1
-            pacemaker: Pacemaker::new(config.delta, Round(1), None),
+            pacemaker: Pacemaker::new(config.delta, Epoch(1), Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId::new(my_pubkey),
             config,
@@ -519,7 +519,7 @@ where
             node.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, node.metrics)
+                .advance_round_tc(last_round_tc, node.epoch_manager, node.metrics)
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
@@ -556,7 +556,7 @@ where
             node.metrics.consensus_events.created_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(&tc, node.metrics)
+                .advance_round_tc(&tc, node.epoch_manager, node.metrics)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
@@ -748,14 +748,18 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc, epoch_manager, metrics));
 
-        cmds.extend(self.pacemaker.advance_round_qc(qc, metrics).map(|cmd| {
-            ConsensusCommand::from_pacemaker_command(
-                &self.keypair,
-                &self.cert_keypair,
-                version,
-                cmd,
-            )
-        }));
+        cmds.extend(
+            self.pacemaker
+                .advance_round_qc(qc, epoch_manager, metrics)
+                .map(|cmd| {
+                    ConsensusCommand::from_pacemaker_command(
+                        &self.keypair,
+                        &self.cert_keypair,
+                        version,
+                        cmd,
+                    )
+                }),
+        );
 
         // if the qc points to a block that is missing from the blocktree, we need
         // to request it.
@@ -835,6 +839,7 @@ where
             node.tx_pool,
             validator_set,
             last_round_tc,
+            node.epoch_manager.get_epoch(round),
             node.metrics,
             node.version,
         ));
@@ -849,6 +854,7 @@ where
         txpool: &mut TT,
         validators: &VT,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
+        epoch: Epoch,
         metrics: &mut Metrics,
         version: &str,
     ) -> Vec<ConsensusCommand<ST, SCT>>
@@ -871,6 +877,7 @@ where
                 header.state_root = hash;
                 let b = Block::new(
                     node_id,
+                    epoch,
                     round,
                     &Payload {
                         txns,
@@ -1074,7 +1081,7 @@ where
             metrics.consensus_events.proposal_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, metrics)
+                .advance_round_tc(last_round_tc, epoch_manager, metrics)
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
@@ -1408,8 +1415,13 @@ mod test {
         fn next_tc(&mut self, epoch: Epoch) -> Vec<Verified<ST, TimeoutMessage<SCT>>> {
             let valset = self.val_epoch_map.get_val_set(&epoch).unwrap();
             let val_cert_pubkeys = self.val_epoch_map.get_cert_pubkeys(&epoch).unwrap();
-            self.proposal_gen
-                .next_tc(&self.keys, &self.cert_keys, valset, val_cert_pubkeys)
+            self.proposal_gen.next_tc(
+                &self.keys,
+                &self.cert_keys,
+                valset,
+                &self.epoch_manager,
+                val_cert_pubkeys,
+            )
         }
     }
 
@@ -1618,6 +1630,7 @@ mod test {
 
         let vi = VoteInfo {
             id: BlockId(Hash([0x00_u8; 32])),
+            epoch: Epoch(1),
             round: expected_qc_high_round,
             parent_id: BlockId(Hash([0x00_u8; 32])),
             parent_round: expected_qc_high_round - Round(1),
@@ -2889,6 +2902,7 @@ mod test {
         assert!(invalid_author != p2.block.author);
         let invalid_b2 = Block::new(
             invalid_author,
+            epoch,
             p2.block.round,
             &p2.block.payload,
             &p2.block.qc,

@@ -16,7 +16,7 @@ use monad_crypto::{
     hasher::{Hash, Hasher, HasherType},
 };
 use monad_eth_types::EthAddress;
-use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
 // test utility if you only wish for simple block
 #[derive(Clone, PartialEq, Eq)]
@@ -56,9 +56,15 @@ impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
     fn get_id(&self) -> BlockId {
         self.block_id
     }
+
     fn get_round(&self) -> Round {
         Round(1)
     }
+
+    fn get_epoch(&self) -> Epoch {
+        Epoch(1)
+    }
+
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {
         unimplemented!()
     }
@@ -123,6 +129,7 @@ where
 {
     let vi = VoteInfo {
         id: BlockId(Hash([42_u8; 32])),
+        epoch: Epoch(1),
         round: qc_round,
         parent_id: BlockId(Hash([43_u8; 32])),
         parent_round: Round(0),
@@ -153,6 +160,7 @@ where
 
     Block::<SCT>::new(
         author,
+        Epoch(1),
         block_round,
         &Payload {
             txns,

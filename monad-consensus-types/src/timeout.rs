@@ -31,6 +31,8 @@ impl<SCT: SignatureCollection> Hashable for Timeout<SCT> {
 /// Data to include in a timeout
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutInfo<SCT> {
+    /// Epoch where the timeout happens
+    pub epoch: Epoch,
     /// The round that timed out
     pub round: Round,
     /// The node's highest known qc
@@ -39,6 +41,7 @@ pub struct TimeoutInfo<SCT> {
 
 impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
     fn hash(&self, state: &mut impl Hasher) {
+        state.update(self.epoch);
         state.update(self.round);
         state.update(self.high_qc.get_block_id().0.as_bytes());
         state.update(self.high_qc.get_hash());
@@ -48,6 +51,7 @@ impl<SCT: SignatureCollection> Hashable for TimeoutInfo<SCT> {
 impl<SCT: SignatureCollection> TimeoutInfo<SCT> {
     pub fn timeout_digest(&self) -> Hash {
         let mut hasher = HasherType::new();
+        hasher.update(self.epoch.as_bytes());
         hasher.update(self.round.as_bytes());
         hasher.update(self.high_qc.get_round().as_bytes());
         hasher.hash()
@@ -76,6 +80,8 @@ pub struct HighQcRoundSigColTuple<SCT> {
 /// A collection of Timeout messages is the basis for building a TC
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeoutCertificate<SCT> {
+    /// The epoch where the TC is created
+    pub epoch: Epoch,
     /// The Timeout messages must have been for the same round
     /// to create a TC
     pub round: Round,
@@ -87,6 +93,7 @@ pub struct TimeoutCertificate<SCT> {
 
 impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
     pub fn new(
+        epoch: Epoch,
         round: Round,
         high_qc_round_sig_tuple: &[(
             NodeId<SCT::NodeIdPubKey>,
@@ -119,6 +126,7 @@ impl<SCT: SignatureCollection> TimeoutCertificate<SCT> {
             });
         }
         Ok(Self {
+            epoch,
             round,
             high_qc_rounds,
         })

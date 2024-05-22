@@ -11,7 +11,7 @@ use monad_consensus_types::{
 };
 use monad_crypto::hasher::{Hashable, Hasher};
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction, EthTxHash};
-use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
 #[derive(Default)]
 pub struct EthTxPool(BTreeMap<EthTxHash, EthTransaction>);
@@ -117,6 +117,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for EthValidatedBlock<SCT> {
 
     fn get_round(&self) -> Round {
         self.block.round
+    }
+
+    fn get_epoch(&self) -> Epoch {
+        self.block.epoch
     }
 
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {

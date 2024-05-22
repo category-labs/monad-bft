@@ -2,7 +2,7 @@ use monad_crypto::{
     certificate_signature::PubKey,
     hasher::{Hashable, Hasher, HasherType},
 };
-use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
@@ -20,6 +20,9 @@ pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
 
     /// Round in which this block was proposed
     fn get_round(&self) -> Round;
+
+    /// Epoch in which this block was proposed
+    fn get_epoch(&self) -> Epoch;
 
     /// Node which proposed this block
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey>;
@@ -58,6 +61,9 @@ pub struct Block<SCT: SignatureCollection> {
     /// proposer of this block
     pub author: NodeId<SCT::NodeIdPubKey>,
 
+    /// Epoch this block was proposed in
+    pub epoch: Epoch,
+
     /// round this block was proposed in
     pub round: Round,
 
@@ -82,6 +88,7 @@ impl<SCT: SignatureCollection> std::fmt::Debug for Block<SCT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Block")
             .field("author", &self.author)
+            .field("epoch", &self.epoch)
             .field("round", &self.round)
             .field("qc", &self.qc)
             .field("id", &self.id)
@@ -102,12 +109,14 @@ impl<SCT: SignatureCollection> Block<SCT> {
     // FIXME &QuorumCertificate -> QuorumCertificate
     pub fn new(
         author: NodeId<SCT::NodeIdPubKey>,
+        epoch: Epoch,
         round: Round,
         payload: &Payload,
         qc: &QuorumCertificate<SCT>,
     ) -> Self {
         Self {
             author,
+            epoch,
             round,
             payload: payload.clone(),
             qc: qc.clone(),
@@ -115,6 +124,7 @@ impl<SCT: SignatureCollection> Block<SCT> {
                 let mut _block_hash_span = tracing::trace_span!("block_hash_span").entered();
                 let mut state = HasherType::new();
                 author.hash(&mut state);
+                state.update(epoch.as_bytes());
                 state.update(round.as_bytes());
                 payload.hash(&mut state);
                 state.update(qc.get_block_id().0.as_bytes());
@@ -136,6 +146,10 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 
     fn get_round(&self) -> Round {
         self.round
+    }
+
+    fn get_epoch(&self) -> Epoch {
+        self.epoch
     }
 
     fn get_author(&self) -> NodeId<Self::NodeIdPubKey> {

@@ -58,6 +58,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoHighQcRoundSigColTuple>
 impl<SCT: SignatureCollection> From<&TimeoutCertificate<SCT>> for ProtoTimeoutCertificate {
     fn from(value: &TimeoutCertificate<SCT>) -> Self {
         Self {
+            epoch: Some((&value.epoch).into()),
             round: Some((&value.round).into()),
             high_qc_rounds: value
                 .high_qc_rounds
@@ -73,6 +74,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutCertificate> for TimeoutCerti
 
     fn try_from(value: ProtoTimeoutCertificate) -> Result<Self, Self::Error> {
         Ok(Self {
+            epoch: value
+                .epoch
+                .ok_or(Self::Error::MissingRequiredField(
+                    "TimeoutCertificate.epoch".to_owned(),
+                ))?
+                .try_into()?,
             round: value
                 .round
                 .ok_or(Self::Error::MissingRequiredField(
@@ -91,6 +98,7 @@ impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutCertificate> for TimeoutCerti
 impl<SCT: SignatureCollection> From<&TimeoutInfo<SCT>> for ProtoTimeoutInfo {
     fn from(value: &TimeoutInfo<SCT>) -> Self {
         Self {
+            epoch: Some((&value.epoch).into()),
             round: Some((&value.round).into()),
             high_qc: Some((&value.high_qc).into()),
         }
@@ -102,6 +110,12 @@ impl<SCT: SignatureCollection> TryFrom<ProtoTimeoutInfo> for TimeoutInfo<SCT> {
 
     fn try_from(value: ProtoTimeoutInfo) -> Result<Self, Self::Error> {
         Ok(Self {
+            epoch: value
+                .epoch
+                .ok_or(Self::Error::MissingRequiredField(
+                    "TimeoutInfo<AggregateSignatures>.epoch".to_owned(),
+                ))?
+                .try_into()?,
             round: value
                 .round
                 .ok_or(Self::Error::MissingRequiredField(

@@ -377,7 +377,7 @@ mod test {
         signing::{get_key, MockSignatures},
         validators::create_keys_w_validators,
     };
-    use monad_types::{BlockId, NodeId, Round, SeqNum, TimeoutVariant};
+    use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum, TimeoutVariant};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory, ValidatorSetType};
 
     use super::BlockSyncRequester;
@@ -420,6 +420,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -453,6 +454,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x02_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -499,6 +501,7 @@ mod test {
 
         let block_1 = Block::new(
             NodeId::new(keypair.pubkey()),
+            Epoch(1),
             Round(0),
             &payload,
             &QC::new(
@@ -506,6 +509,7 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
+                            epoch: Epoch(1),
                             round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
                             parent_round: Round(0),
@@ -520,6 +524,7 @@ mod test {
 
         let block_2 = Block::new(
             NodeId::new(keypair.pubkey()),
+            Epoch(1),
             Round(1),
             &payload,
             &QC::new(
@@ -527,6 +532,7 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
+                            epoch: Epoch(1),
                             round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
                             parent_round: Round(0),
@@ -541,6 +547,7 @@ mod test {
 
         let block_3 = Block::new(
             NodeId::new(keypair.pubkey()),
+            Epoch(1),
             Round(2),
             &payload,
             &QC::new(
@@ -548,6 +555,7 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
+                            epoch: Epoch(1),
                             round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
                             parent_round: Round(0),
@@ -566,6 +574,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block_1.get_id(),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -594,6 +603,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block_2.get_id(),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -622,6 +632,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block_3.get_id(),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -785,6 +796,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -866,6 +878,7 @@ mod test {
                     vote: Vote {
                         vote_info: VoteInfo {
                             id: BlockId(Hash([0x01_u8; 32])),
+                            epoch: Epoch(1),
                             round: Round(0),
                             parent_id: BlockId(Hash([0x02_u8; 32])),
                             parent_round: Round(0),
@@ -879,6 +892,7 @@ mod test {
 
             Block::new(
                 *valset.get_members().iter().next().unwrap().0,
+                Epoch(1),
                 Round(0),
                 &payload,
                 qc,
@@ -890,6 +904,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: block.get_id(),
+                        epoch: Epoch(1),
                         round: Round(0),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -1040,6 +1055,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x01_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(1),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -1068,6 +1084,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x02_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(2),
                         parent_id: BlockId(Hash([0x02_u8; 32])),
                         parent_round: Round(0),
@@ -1095,6 +1112,7 @@ mod test {
                 vote: Vote {
                     vote_info: VoteInfo {
                         id: BlockId(Hash([0x03_u8; 32])),
+                        epoch: Epoch(1),
                         round: Round(3),
                         parent_id: BlockId(Hash([0x03_u8; 32])),
                         parent_round: Round(0),

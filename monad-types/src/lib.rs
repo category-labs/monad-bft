@@ -59,8 +59,14 @@ impl std::fmt::Debug for Round {
 /// During an epoch, the validator set remain stable: no validator is allowed to
 /// stake or unstake until the next epoch
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, AsBytes)]
 pub struct Epoch(pub u64);
+
+impl AsRef<[u8]> for Epoch {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
 
 impl Add for Epoch {
     type Output = Self;

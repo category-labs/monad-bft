@@ -12,7 +12,7 @@ use monad_crypto::{
 };
 use monad_multi_sig::MultiSig;
 use monad_testutil::validators::create_keys_w_validators;
-use monad_types::{BlockId, NodeId, Round, SeqNum};
+use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 use monad_validator::validator_set::{ValidatorSet, ValidatorSetFactory};
 use test_case::test_case;
 
@@ -23,10 +23,12 @@ type SignatureCollectionType = MultiSig<SignatureType>;
 fn create_vote_message(
     key: &NopKeyPair,
     certkey: &SignatureCollectionKeyPairType<SignatureCollectionType>,
+    vote_epoch: Epoch,
     vote_round: Round,
 ) -> (NodeId<PubKeyType>, VoteMessage<SignatureCollectionType>) {
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
+        epoch: vote_epoch,
         round: vote_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
@@ -61,8 +63,12 @@ fn setup_ctx(
     let mut votes = Vec::new();
     for j in 0..num_rounds {
         for i in 0..num_nodes {
-            let svm_with_author =
-                create_vote_message(&keys[i as usize], &cert_keys[i as usize], Round(j));
+            let svm_with_author = create_vote_message(
+                &keys[i as usize],
+                &cert_keys[i as usize],
+                Epoch(1),
+                Round(j),
+            );
 
             votes.push(svm_with_author);
         }

@@ -10,6 +10,7 @@ pub struct ValidationErrors {
     pub val_data_unavailable: u64,
     pub invalid_vote_message: u64,
     pub invalid_version: u64,
+    pub invalid_epoch: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]

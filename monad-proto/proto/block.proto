@@ -29,7 +29,8 @@ message ProtoPayload {
 
 message ProtoBlock {
   monad_proto.basic.ProtoNodeId author = 1;
-  monad_proto.basic.ProtoRound round = 2;
-  ProtoPayload payload = 3;
-  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 4;
+  monad_proto.basic.ProtoEpoch epoch = 2;
+  monad_proto.basic.ProtoRound round = 3;
+  ProtoPayload payload = 4;
+  monad_proto.quorum_certificate.ProtoQuorumCertificate qc = 5;
 }

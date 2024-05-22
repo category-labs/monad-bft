@@ -36,13 +36,16 @@ type SignatureCollectionType = MockSignatures<SignatureType>;
 
 fn setup_block(
     author: NodeId<PubKeyType>,
+    block_epoch: Epoch,
     block_round: Round,
+    qc_epoch: Epoch,
     qc_round: Round,
     signers: &[PubKeyType],
 ) -> Block<MockSignatures<SignatureType>> {
     let txns = FullTransactionList::new(vec![1, 2, 3, 4].into());
     let vi = VoteInfo {
         id: BlockId(Hash([0x00_u8; 32])),
+        epoch: qc_epoch,
         round: qc_round,
         parent_id: BlockId(Hash([0x00_u8; 32])),
         parent_round: Round(0),
@@ -60,6 +63,7 @@ fn setup_block(
 
     Block::<MockSignatures<SignatureType>>::new(
         author,
+        block_epoch,
         block_round,
         &Payload {
             txns,
@@ -92,7 +96,9 @@ fn test_proposal_hash() {
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
+            epoch_manager.get_epoch(Round(234)),
             Round(234),
+            epoch_manager.get_epoch(Round(233)),
             Round(233),
             keypairs
                 .iter()
@@ -132,7 +138,9 @@ fn test_proposal_missing_tc() {
     let proposal = Unvalidated::new(ProposalMessage {
         block: setup_block(
             author,
+            epoch_manager.get_epoch(Round(234)),
             Round(234),
+            epoch_manager.get_epoch(Round(232)),
             Round(232),
             keypairs
                 .iter()
@@ -172,7 +180,9 @@ fn test_proposal_author_not_sender() {
     let proposal = ProtocolMessage::Proposal(ProposalMessage {
         block: setup_block(
             author,
+            epoch_manager.get_epoch(Round(234)),
             Round(234),
+            epoch_manager.get_epoch(Round(233)),
             Round(233),
             keypairs
                 .iter()
@@ -202,22 +212,6 @@ fn test_proposal_invalid_author() {
 
     vlist.push((NodeId::new(author_keypair.pubkey()), Stake(0)));
 
-    let author = NodeId::new(author_keypair.pubkey());
-    let proposal = ProtocolMessage::Proposal(ProposalMessage {
-        block: setup_block(
-            author,
-            Round(234),
-            Round(233),
-            &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
-        ),
-        last_round_tc: None,
-    });
-    let conmsg = ConsensusMessage {
-        version: "TEST".into(),
-        message: proposal,
-    };
-    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &non_valdiator_keypair);
-
     let vset = ValidatorSetFactory::default().create(vlist).unwrap();
     let vmap: ValidatorMapping<PubKeyType, _> = ValidatorMapping::new(vec![(
         NodeId::new(author_keypair.pubkey()),
@@ -231,6 +225,25 @@ fn test_proposal_invalid_author() {
         vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
         vmap,
     );
+
+    let author = NodeId::new(author_keypair.pubkey());
+    let proposal = ProtocolMessage::Proposal(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)),
+            Round(233),
+            &[author_keypair.pubkey(), non_valdiator_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
+    let conmsg = ConsensusMessage {
+        version: "TEST".into(),
+        message: proposal,
+    };
+    let sp = TestSigner::<SignatureType>::sign_object(conmsg, &non_valdiator_keypair);
+
     assert_eq!(
         sp.verify(&epoch_manager, &val_epoch_map, &author.pubkey())
             .unwrap_err(),
@@ -246,17 +259,6 @@ fn test_proposal_invalid_qc() {
 
     vlist.push((NodeId::new(non_staked_keypair.pubkey()), Stake(0)));
     vlist.push((NodeId::new(staked_keypair.pubkey()), Stake(1)));
-
-    let author = NodeId::new(non_staked_keypair.pubkey());
-    let proposal = Unvalidated::new(ProposalMessage {
-        block: setup_block(
-            author,
-            Round(234),
-            Round(233),
-            &[non_staked_keypair.pubkey()],
-        ),
-        last_round_tc: None,
-    });
 
     let vset = ValidatorSetFactory::default().create(vlist).unwrap();
     let vmap = ValidatorMapping::new(vec![
@@ -276,6 +278,19 @@ fn test_proposal_invalid_qc() {
         vset.get_members().iter().map(|(a, b)| (*a, *b)).collect(),
         vmap,
     );
+
+    let author = NodeId::new(non_staked_keypair.pubkey());
+    let proposal = Unvalidated::new(ProposalMessage {
+        block: setup_block(
+            author,
+            epoch_manager.get_epoch(Round(234)),
+            Round(234),
+            epoch_manager.get_epoch(Round(233)),
+            Round(233),
+            &[non_staked_keypair.pubkey()],
+        ),
+        last_round_tc: None,
+    });
 
     let validate_result = proposal.validate(&epoch_manager, &val_epoch_map);
 

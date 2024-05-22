@@ -15,6 +15,7 @@ impl From<&VoteInfo> for ProtoVoteInfo {
     fn from(vi: &VoteInfo) -> Self {
         ProtoVoteInfo {
             id: Some((&vi.id).into()),
+            epoch: Some((&vi.epoch).into()),
             round: Some((&vi.round).into()),
             parent_id: Some((&vi.parent_id).into()),
             parent_round: Some((&vi.parent_round).into()),
@@ -29,6 +30,12 @@ impl TryFrom<ProtoVoteInfo> for VoteInfo {
             id: proto_vi
                 .id
                 .ok_or(Self::Error::MissingRequiredField("VoteInfo.id".to_owned()))?
+                .try_into()?,
+            epoch: proto_vi
+                .epoch
+                .ok_or(Self::Error::MissingRequiredField(
+                    "VoteInfo.epoch".to_owned(),
+                ))?
                 .try_into()?,
             round: proto_vi
                 .round

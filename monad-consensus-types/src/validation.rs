@@ -20,4 +20,6 @@ pub enum Error {
     InvalidVoteMessage,
     /// Consensus Message version must match
     InvalidVersion,
+    /// Epoch number in message doesn't match local records
+    InvalidEpoch,
 }
