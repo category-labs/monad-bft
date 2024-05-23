@@ -13,7 +13,7 @@ use crate::{
     },
     eth_txn_handlers::{parse_tx_content, parse_tx_receipt},
     jsonrpc::JsonRpcError,
-    triedb::{TriedbEnv, TriedbResult},
+    triedb::{decode_receipt, ReceiptDetails, TriedbEnv, TriedbResult},
 };
 
 fn parse_block_content(value: &BlockValue, return_full_txns: bool) -> Option<Block> {
@@ -256,22 +256,37 @@ pub async fn monad_eth_getBlockReceipts(
     };
     let block_num = block.block.number;
 
-    let mut block_receipts: Vec<TransactionReceipt> = vec![];
+    let mut block_receipts: Vec<(ReceiptDetails, u64)> = vec![];
     for txn_index in 0..block.block.body.len() {
         match triedb_env.get_receipt(txn_index as u64, block_num).await {
             TriedbResult::Null => continue,
             TriedbResult::Receipt(rlp_receipt) => {
                 let mut rlp_buf = rlp_receipt.as_slice();
-
-                let Some(receipt) =
-                    parse_tx_receipt(&block, &mut rlp_buf, block_num, txn_index as u64)
-                else {
-                    return Err(JsonRpcError::internal_error());
-                };
-                block_receipts.push(receipt);
+                let receipt =
+                    decode_receipt(&mut rlp_buf).map_err(|_| JsonRpcError::internal_error())?;
+                block_receipts.push((receipt, txn_index as u64));
             }
             _ => return Err(JsonRpcError::internal_error()),
         }
+    }
+
+    let block_receipts: Vec<TransactionReceipt> = block_receipts
+        .into_iter()
+        .scan(None, |prev, (receipt, txn_index)| {
+            let parsed_receipt = parse_tx_receipt(
+                &block,
+                prev.to_owned(),
+                receipt.clone(),
+                block_num,
+                txn_index,
+            );
+            *prev = Some(receipt);
+            parsed_receipt
+        })
+        .collect();
+
+    if block_receipts.len() != block.block.body.len() {
+        return Err(JsonRpcError::internal_error());
     }
 
     if block_receipts.is_empty() {

@@ -1,7 +1,6 @@
 use std::cmp::min;
 
 use alloy_primitives::aliases::{B256, U128, U256, U64};
-use alloy_rlp::Decodable;
 use log::{debug, trace};
 use monad_blockdb::{BlockTableKey, BlockValue, EthTxKey};
 use reth_primitives::{transaction::TransactionKind, BlockHash, TransactionSigned};
@@ -17,7 +16,7 @@ use crate::{
         UnformattedData,
     },
     jsonrpc::JsonRpcError,
-    triedb::{decode_tx_type, ReceiptDetails, TriedbEnv, TriedbResult},
+    triedb::{decode_receipt, ReceiptDetails, TriedbEnv, TriedbResult},
 };
 
 pub fn parse_tx_content(
@@ -89,86 +88,75 @@ pub fn parse_tx_content(
 
 pub fn parse_tx_receipt(
     block: &BlockValue,
-    rlp_receipt: &mut &[u8],
+    prev_receipt: Option<ReceiptDetails>,
+    receipt: ReceiptDetails,
     block_num: u64,
     tx_index: u64,
 ) -> Option<TransactionReceipt> {
-    // decode transaction type from buffer
-    let tx_type = match decode_tx_type(rlp_receipt) {
-        Ok(tx_type) => tx_type,
-        Err(e) => {
-            debug!("tx type decode error: {e}");
-            return None::<TransactionReceipt>;
-        }
+    let tx = block.block.body.get(tx_index as usize)?;
+    let transaction = tx
+        .clone()
+        .into_ecrecovered_unchecked()
+        .expect("transaction sender should exist");
+    let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default() as u128;
+    // effective gas price is calculated according to eth json rpc specification
+    let effective_gas_price = base_fee_per_gas
+        + min(
+            tx.max_fee_per_gas() - base_fee_per_gas,
+            tx.max_priority_fee_per_gas().unwrap(),
+        );
+    let block_hash = Some(block.block.hash_slow());
+    let block_number = Some(U256::from(block_num));
+    let logs = receipt
+        .logs
+        .into_iter()
+        .enumerate()
+        .map(|(log_index, log_item)| Log {
+            address: log_item.address,
+            topics: log_item.topics,
+            data: log_item.data,
+            block_hash,
+            block_number,
+            transaction_hash: Some(tx.hash()),
+            transaction_index: Some(U256::from(tx_index)),
+            log_index: Some(U256::from(log_index)),
+            removed: Default::default(),
+        })
+        .collect();
+
+    let contract_address = match transaction.kind() {
+        TransactionKind::Create => Some(transaction.signer().create(transaction.nonce())),
+        _ => None,
     };
 
-    match ReceiptDetails::decode(rlp_receipt) {
-        Ok(r) => {
-            let tx = block.block.body.get(tx_index as usize)?;
-            let transaction = tx
-                .clone()
-                .into_ecrecovered_unchecked()
-                .expect("transaction sender should exist");
-            let base_fee_per_gas = block.block.base_fee_per_gas.unwrap_or_default() as u128;
-            // effective gas price is calculated according to eth json rpc specification
-            let effective_gas_price = base_fee_per_gas
-                + min(
-                    tx.max_fee_per_gas() - base_fee_per_gas,
-                    tx.max_priority_fee_per_gas().unwrap(),
-                );
-            let block_hash = Some(block.block.hash_slow());
-            let block_number = Some(U256::from(block_num));
-            let logs = r
-                .logs
-                .into_iter()
-                .enumerate()
-                .map(|(log_index, log_item)| Log {
-                    address: log_item.address,
-                    topics: log_item.topics,
-                    data: log_item.data,
-                    block_hash,
-                    block_number,
-                    transaction_hash: Some(tx.hash()),
-                    transaction_index: Some(U256::from(tx_index)),
-                    log_index: Some(U256::from(log_index)),
-                    removed: Default::default(),
-                })
-                .collect();
+    let gas_used = if let Some(prev_receipt) = prev_receipt {
+        U256::from(receipt.cumulative_gas_used - prev_receipt.cumulative_gas_used)
+    } else {
+        U256::from(receipt.cumulative_gas_used)
+    };
 
-            let contract_address = match transaction.kind() {
-                TransactionKind::Create => Some(transaction.signer().create(transaction.nonce())),
-                _ => None,
-            };
-
-            let tx_receipt = TransactionReceipt {
-                transaction_type: tx_type,
-                transaction_hash: Some(tx.hash()),
-                transaction_index: U64::from(tx_index),
-                block_hash,
-                block_number,
-                from: transaction.signer(),
-                to: tx.to(),
-                contract_address,
-                // TODO: gas_used = cumulative_gas_used[txn_index] - cumulative_gas_used[txn_index-1]
-                gas_used: Some(U256::from(21000)),
-                effective_gas_price: U128::from(effective_gas_price),
-                cumulative_gas_used: U256::from(r.cumulative_gas_used),
-                status_code: Some(r.status),
-                logs,
-                logs_bloom: r.logs_bloom,
-                state_root: None,
-                // TODO: EIP4844 fields
-                blob_gas_used: None,
-                blob_gas_price: None,
-                ..Default::default()
-            };
-            Some(tx_receipt)
-        }
-        Err(e) => {
-            debug!("receipt decode error: {e}");
-            None::<TransactionReceipt>
-        }
-    }
+    let tx_receipt = TransactionReceipt {
+        transaction_type: receipt.tx_type,
+        transaction_hash: Some(tx.hash()),
+        transaction_index: U64::from(tx_index),
+        block_hash,
+        block_number,
+        from: transaction.signer(),
+        to: tx.to(),
+        contract_address,
+        gas_used: Some(gas_used),
+        effective_gas_price: U128::from(effective_gas_price),
+        cumulative_gas_used: U256::from(receipt.cumulative_gas_used),
+        status_code: Some(receipt.status),
+        logs,
+        logs_bloom: receipt.logs_bloom,
+        state_root: None,
+        // TODO: EIP4844 fields
+        blob_gas_used: None,
+        blob_gas_price: None,
+        ..Default::default()
+    };
+    Some(tx_receipt)
 }
 
 #[derive(Deserialize, Debug)]
@@ -244,13 +232,30 @@ pub async fn monad_eth_getTransactionReceipt(
         return serialize_result(None::<TransactionReceipt>);
     };
     let block_num = block.block.number;
-
     match triedb_env.get_receipt(txn_index, block_num).await {
         TriedbResult::Null => serialize_result(None::<TransactionReceipt>),
         TriedbResult::Receipt(rlp_receipt) => {
             let mut rlp_buf = rlp_receipt.as_slice();
+            let receipt =
+                decode_receipt(&mut rlp_buf).map_err(|_| JsonRpcError::internal_error())?;
 
-            let Some(receipt) = parse_tx_receipt(&block, &mut rlp_buf, block_num, txn_index) else {
+            let prev_receipt = if txn_index > 0 {
+                let TriedbResult::Receipt(prev_receipt_rlp_buf) =
+                    triedb_env.get_receipt(txn_index - 1, block_num).await
+                else {
+                    return Err(JsonRpcError::internal_error());
+                };
+                Some(
+                    decode_receipt(&mut prev_receipt_rlp_buf.as_slice())
+                        .map_err(|_| JsonRpcError::internal_error())?,
+                )
+            } else {
+                None
+            };
+
+            let Some(receipt) =
+                parse_tx_receipt(&block, prev_receipt, receipt, block_num, txn_index)
+            else {
                 return Err(JsonRpcError::internal_error());
             };
             serialize_result(Some(receipt))
