@@ -1,17 +1,16 @@
 use std::collections::HashSet;
 
-use alloy_primitives::TxHash;
 use bytes::Bytes;
 
-use crate::payload::FullTransactionList;
-
-/// This describes a method of obtaining transaction hashes from an RLP encoded block
-pub type HashPolicyOutput = HashSet<TxHash>;
-pub type HashPolicy<SCT> = fn(&Block<SCT>) -> Result<HashPolicyOutput, alloy_rlp::Error>;
+use crate::{
+    block::{BlockPolicy, BlockType, PassthruBlockPolicy},
+    payload::FullTransactionList,
+    signature_collection::SignatureCollection,
+};
 
 /// This trait represents the storage of transactions that
 /// are potentially available for a proposal
-pub trait TxPool {
+pub trait TxPool<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
     /// Handle transactions submitted by users via RPC
     fn insert_tx(&mut self, tx: Bytes);
 
@@ -24,14 +23,16 @@ pub trait TxPool {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_tx_hashes: HashPolicyOutput,
+        pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
     ) -> (FullTransactionList, Option<FullTransactionList>);
 
     /// Handle transactions cascaded forward by other nodes
     fn handle_cascading_txns(&mut self) {}
 }
 
-impl<T: TxPool + ?Sized> TxPool for Box<T> {
+impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: TxPool<SCT, BPT> + ?Sized> TxPool<SCT, BPT>
+    for Box<T>
+{
     fn insert_tx(&mut self, tx: Bytes) {
         (**self).insert_tx(tx)
     }
@@ -40,7 +41,7 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
         &mut self,
         tx_limit: usize,
         gas_limit: u64,
-        pending_tx_hashes: HashPolicyOutput,
+        pending_tx_hashes: HashSet<<BPT::ValidatedBlock as BlockType<SCT>>::TxnHash>,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         (**self).create_proposal(tx_limit, gas_limit, pending_tx_hashes)
     }
@@ -48,8 +49,6 @@ impl<T: TxPool + ?Sized> TxPool for Box<T> {
 
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-
-use crate::block::Block;
 
 const MOCK_DEFAULT_SEED: u64 = 1;
 const TXN_SIZE: usize = 32;
@@ -67,14 +66,16 @@ impl Default for MockTxPool {
     }
 }
 
-impl TxPool for MockTxPool {
+impl<SCT: SignatureCollection> TxPool<SCT, PassthruBlockPolicy> for MockTxPool {
     fn insert_tx(&mut self, _tx: Bytes) {}
 
     fn create_proposal(
         &mut self,
         tx_limit: usize,
         _gas_limit: u64,
-        _pending_txs: HashPolicyOutput,
+        _pending_txs: HashSet<
+            <<PassthruBlockPolicy as BlockPolicy<SCT>>::ValidatedBlock as BlockType<SCT>>::TxnHash,
+        >,
     ) -> (FullTransactionList, Option<FullTransactionList>) {
         if tx_limit == 0 {
             (FullTransactionList::empty(), None)

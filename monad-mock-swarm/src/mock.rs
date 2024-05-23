@@ -29,6 +29,7 @@ use crate::swarm_relation::SwarmRelation;
 
 pub struct MockExecutor<S: SwarmRelation> {
     ledger: MockLedger<
+        S::SignatureCollectionType,
         CertificateSignaturePubKey<S::SignatureType>,
         Block<S::SignatureCollectionType>,
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,
@@ -321,6 +322,7 @@ impl<S: SwarmRelation> MockExecutor<S> {
     pub fn ledger(
         &self,
     ) -> &MockLedger<
+        S::SignatureCollectionType,
         CertificateSignaturePubKey<S::SignatureType>,
         Block<S::SignatureCollectionType>,
         MonadEvent<S::SignatureType, S::SignatureCollectionType>,

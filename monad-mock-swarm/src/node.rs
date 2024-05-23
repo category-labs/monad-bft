@@ -1,11 +1,15 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
     time::Duration,
     usize,
 };
 
 use itertools::Itertools;
 use monad_async_state_verify::BoxedAsyncStateVerifyProcess;
+use monad_consensus_types::{
+    block::PassthruBlockPolicy, block_validator::BlockValidator, txpool::TxPool,
+};
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor::Executor;
 use monad_executor_glue::MonadEvent;
@@ -27,6 +31,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
     pub state_builder: MonadStateBuilder<
         S::SignatureType,
         S::SignatureCollectionType,
+        S::BlockPolicyType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::TxPool,
@@ -48,6 +53,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
         state_builder: MonadStateBuilder<
             S::SignatureType,
             S::SignatureCollectionType,
+            S::BlockPolicyType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::TxPool,
@@ -86,6 +92,10 @@ impl<S: SwarmRelation> NodeBuilder<S> {
 
     // FIXME can this be deleted?
         S::RouterScheduler: Sync,
+
+    // why is this needed
+        <S as SwarmRelation>::TxPool: TxPool<S::SignatureCollectionType, PassthruBlockPolicy>,
+        <S as SwarmRelation>::BlockValidator: BlockValidator<S::SignatureCollectionType, PassthruBlockPolicy>,
     {
         NodeBuilder {
             id: self.id,
@@ -108,7 +118,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 epoch_start_delay: self.state_builder.epoch_start_delay,
                 beneficiary: self.state_builder.beneficiary,
                 consensus_config: self.state_builder.consensus_config,
-                hash_policy: self.state_builder.hash_policy,
+                _pd: PhantomData,
             },
             logger: Box::new(self.logger),
             replay_events: self.replay_events,

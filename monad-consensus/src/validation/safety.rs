@@ -1,7 +1,7 @@
 use std::cmp;
 
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockPolicy, BlockType},
     ledger::CommitResult,
     quorum_certificate::{QcInfo, QuorumCertificate},
     signature_collection::SignatureCollection,
@@ -93,25 +93,25 @@ impl Safety {
     /// Make a Vote if it's safe to vote in the round. Set the commit field if
     /// QC formed on the voted block can cause a commit: `block.qc.round` is
     /// consecutive with `block.round`
-    pub fn make_vote<SCT: SignatureCollection>(
+    pub fn make_vote<SCT: SignatureCollection, BPT: BlockPolicy<SCT>>(
         &mut self,
-        block: &Block<SCT>,
+        block: &BPT::ValidatedBlock,
         last_tc: &Option<TimeoutCertificate<SCT>>,
     ) -> Option<Vote> {
-        let qc_round = block.qc.get_round();
-        if self.safe_to_vote(block.round, qc_round, last_tc) {
+        let qc_round = block.get_parent_round();
+        if self.safe_to_vote(block.get_round(), qc_round, last_tc) {
             self.update_highest_qc_round(qc_round);
-            self.update_highest_vote_round(block.round);
+            self.update_highest_vote_round(block.get_round());
 
             let vote_info = VoteInfo {
                 id: block.get_id(),
-                round: block.round,
-                parent_id: block.qc.get_block_id(),
-                parent_round: block.qc.get_round(),
+                round: block.get_round(),
+                parent_id: block.get_parent_id(),
+                parent_round: block.get_parent_round(),
                 seq_num: block.get_seq_num(),
             };
 
-            let commit_result = if commit_condition(block.round, block.qc.info) {
+            let commit_result = if commit_condition(block.get_round(), block.get_qc().info) {
                 CommitResult::Commit
             } else {
                 CommitResult::NoCommit

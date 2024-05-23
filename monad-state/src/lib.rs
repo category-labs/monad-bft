@@ -20,12 +20,12 @@ use monad_consensus::{
 };
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig, ConsensusState};
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockPolicy},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
     signature_collection::{SignatureCollection, SignatureCollectionKeyPairType},
-    txpool::{HashPolicy, TxPool},
+    txpool::TxPool,
     validation,
     validator_data::ValidatorData,
 };
@@ -109,14 +109,16 @@ impl MonadVersion {
     }
 }
 
-pub struct MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
+    BVT: BlockValidator<SCT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     /// Core consensus algorithm state machine
-    consensus: ConsensusState<ST, SCT, BVT, SVT>,
+    consensus: ConsensusState<ST, SCT, BPT, BVT, SVT>,
     /// Handle responses to block sync requests from other nodes
     block_sync_responder: BlockSyncResponder,
 
@@ -140,20 +142,22 @@ where
     _pd: PhantomData<ST>,
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool,
-    BVT: BlockValidator,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
         ValidatorSetType = VTF::ValidatorSetType,
     >,
 {
-    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BVT, SVT> {
+    pub fn consensus(&self) -> &ConsensusState<ST, SCT, BPT, BVT, SVT> {
         &self.consensus
     }
 
@@ -165,7 +169,7 @@ where
         self.consensus.get_pubkey()
     }
 
-    pub fn blocktree(&self) -> &BlockTree<SCT> {
+    pub fn blocktree(&self) -> &BlockTree<SCT, BPT> {
         self.consensus.blocktree()
     }
 
@@ -332,14 +336,15 @@ where
     }
 }
 
-pub struct MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub struct MonadStateBuilder<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool,
-    BVT: BlockValidator,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
@@ -362,17 +367,19 @@ where
     pub beneficiary: EthAddress,
 
     pub consensus_config: ConsensusConfig,
-    pub hash_policy: HashPolicy<SCT>,
+    pub _pd: PhantomData<BPT>,
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadStateBuilder<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadStateBuilder<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool,
-    BVT: BlockValidator,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,
@@ -382,7 +389,7 @@ where
     pub fn build(
         self,
     ) -> (
-        MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
         Vec<
             Command<
                 MonadEvent<ST, SCT>,
@@ -403,7 +410,6 @@ where
             self.beneficiary,
             self.key,
             self.certkey,
-            self.hash_policy,
         );
 
         let mut monad_state = MonadState {
@@ -438,14 +444,16 @@ where
     }
 }
 
-impl<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT> MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool,
-    BVT: BlockValidator,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
     ASVT: AsyncStateVerifyProcess<
         SignatureCollectionType = SCT,

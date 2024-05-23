@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, time::Duration};
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, metrics::Metrics, payload::StateRoot,
-    txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+    payload::StateRoot, txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -40,6 +40,7 @@ struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -68,11 +69,8 @@ impl SwarmRelation for ReplaySwarm {
 
     type Logger = MockMemLogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn run_nodes_until<S>(

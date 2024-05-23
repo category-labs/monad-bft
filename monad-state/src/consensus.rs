@@ -12,8 +12,11 @@ use monad_consensus_state::{
     ConsensusState, NodeState,
 };
 use monad_consensus_types::{
-    block::Block, block_validator::BlockValidator, payload::StateRootValidator,
-    signature_collection::SignatureCollection, txpool::TxPool,
+    block::{Block, BlockPolicy},
+    block_validator::BlockValidator,
+    payload::StateRootValidator,
+    signature_collection::SignatureCollection,
+    txpool::TxPool,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -27,31 +30,34 @@ use monad_validator::{leader_election::LeaderElection, validator_set::ValidatorS
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
+    BVT: BlockValidator<SCT, BPT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    consensus: &'a mut ConsensusState<ST, SCT, BVT, SVT>,
+    consensus: &'a mut ConsensusState<ST, SCT, BPT, BVT, SVT>,
     node_state: NodeState<'a, ST, SCT, VTF, LT, TT>,
 
     _phantom: PhantomData<ASVT>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    ConsensusChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    ConsensusChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    TT: TxPool,
-    BVT: BlockValidator,
+    TT: TxPool<SCT, BPT>,
+    BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,

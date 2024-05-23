@@ -1,7 +1,9 @@
-use std::time::Duration;
+use std::{marker::PhantomData, time::Duration};
 
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{block::BlockType, validator_data::ValidatorData};
+use monad_consensus_types::{
+    block::BlockType, signature_collection::SignatureCollection, validator_data::ValidatorData,
+};
 use monad_eth_types::EthAddress;
 use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{MonadStateBuilder, MonadVersion};
@@ -31,6 +33,7 @@ pub fn make_state_configs<S: SwarmRelation>(
     MonadStateBuilder<
         S::SignatureType,
         S::SignatureCollectionType,
+        S::BlockPolicyType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::TxPool,
@@ -85,7 +88,7 @@ pub fn make_state_configs<S: SwarmRelation>(
                 max_blocksync_retries,
                 state_sync_threshold,
             },
-            hash_policy: |_| Ok::<_, _>(Default::default()),
+            _pd: PhantomData,
         })
         .collect()
 }
@@ -99,7 +102,10 @@ pub fn swarm_ledger_verification<S: SwarmRelation>(swarm: &Nodes<S>, min_ledger_
     ledger_verification(&ledgers, min_ledger_len)
 }
 
-pub fn ledger_verification<O: BlockType + PartialEq>(ledgers: &Vec<Vec<O>>, min_ledger_len: usize) {
+pub fn ledger_verification<SCT: SignatureCollection, O: BlockType<SCT> + PartialEq>(
+    ledgers: &Vec<Vec<O>>,
+    min_ledger_len: usize,
+) {
     let (max_ledger_idx, max_b) = ledgers
         .iter()
         .map(Vec::len)

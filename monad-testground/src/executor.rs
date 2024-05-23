@@ -1,8 +1,14 @@
+use std::marker::PhantomData;
+
 use monad_async_state_verify::PeerAsyncStateVerify;
 use monad_consensus_state::{command::Checkpoint, ConsensusConfig};
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::NopStateRoot,
-    signature_collection::SignatureCollection, txpool::MockTxPool, validator_data::ValidatorData,
+    block::{Block, PassthruBlockPolicy},
+    block_validator::MockValidator,
+    payload::NopStateRoot,
+    signature_collection::SignatureCollection,
+    txpool::MockTxPool,
+    validator_data::ValidatorData,
 };
 use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -90,7 +96,7 @@ pub fn make_monad_executor<ST, SCT>(
         MonadEvent<ST, SCT>,
     >,
     TokioTimer<MonadEvent<ST, SCT>>,
-    MockLedger<CertificateSignaturePubKey<ST>, Block<SCT>, MonadEvent<ST, SCT>>,
+    MockLedger<SCT, CertificateSignaturePubKey<ST>, Block<SCT>, MonadEvent<ST, SCT>>,
     BoxExecutor<'static, ExecutionLedgerCommand<SCT>>,
     MockCheckpoint<Checkpoint<SCT>>,
     BoxUpdater<'static, StateRootHashCommand<Block<SCT>>, MonadEvent<ST, SCT>>,
@@ -146,6 +152,7 @@ where
 type MonadStateType<ST, SCT> = MonadState<
     ST,
     SCT,
+    PassthruBlockPolicy,
     ValidatorSetFactory<CertificateSignaturePubKey<ST>>,
     SimpleRoundRobin<CertificateSignaturePubKey<ST>>,
     MockTxPool,
@@ -202,7 +209,7 @@ where
         epoch_start_delay: config.epoch_start_delay,
         beneficiary: EthAddress::default(),
         consensus_config: config.consensus_config,
-        hash_policy: |_| Ok::<_, _>(Default::default()),
+        _pd: PhantomData,
     }
     .build()
 }

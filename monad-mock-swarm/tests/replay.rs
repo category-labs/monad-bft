@@ -7,7 +7,7 @@ use std::{
 use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::{Block, BlockType},
+    block::{BlockType, PassthruBlockPolicy},
     block_validator::MockValidator,
     payload::NopStateRoot,
     txpool::MockTxPool,
@@ -42,6 +42,7 @@ struct ReplaySwarm;
 impl SwarmRelation for ReplaySwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -70,11 +71,8 @@ impl SwarmRelation for ReplaySwarm {
 
     type Logger = WALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]

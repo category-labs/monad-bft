@@ -49,8 +49,10 @@ impl<PT: PubKey> Default for MockBlock<PT> {
     }
 }
 
-impl<PT: PubKey> BlockType for MockBlock<PT> {
+impl<SCT: SignatureCollection, PT: PubKey> BlockType<SCT> for MockBlock<PT> {
     type NodeIdPubKey = PT;
+    type TxnHash = ();
+
     fn get_id(&self) -> BlockId {
         self.block_id
     }
@@ -70,6 +72,30 @@ impl<PT: PubKey> BlockType for MockBlock<PT> {
 
     fn get_seq_num(&self) -> SeqNum {
         SeqNum(0)
+    }
+
+    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
+        vec![]
+    }
+
+    fn is_txn_list_empty(&self) -> bool {
+        true
+    }
+
+    fn get_txn_list_len(&self) -> usize {
+        0
+    }
+
+    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
+        unimplemented!()
+    }
+
+    fn get_unvalidated_block(self) -> Block<SCT> {
+        unimplemented!()
+    }
+
+    fn get_qc(&self) -> &QuorumCertificate<SCT> {
+        unimplemented!()
     }
 }
 

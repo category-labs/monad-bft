@@ -18,6 +18,7 @@ monad-blockdb = { path = "../monad-blockdb" }
 monad-blocktree = { path = "../monad-blocktree" }
 monad-bls = { path = "../monad-bls" }
 monad-crypto = { path = "../monad-crypto" }
+monad-eth-block-validator = { path = "../monad-eth-block-validator" }
 monad-eth-txpool = { path = "../monad-eth-txpool" }
 monad-eth-types = { path = "../monad-eth-types", features = ["serde"] }
 monad-executor = { path = "../monad-executor" }

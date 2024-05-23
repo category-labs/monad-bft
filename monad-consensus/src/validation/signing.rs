@@ -408,7 +408,7 @@ impl<SCT: SignatureCollection> Unvalidated<BlockSyncResponseMessage<SCT>> {
         VT: ValidatorSetType<NodeIdPubKey = SCT::NodeIdPubKey>,
     {
         if let BlockSyncResponseMessage::BlockFound(b) = &self.obj {
-            verify_certificates(epoch_manager, val_epoch_map, &(None), &b.qc)?;
+            verify_certificates(epoch_manager, val_epoch_map, &(None), b.get_qc())?;
         }
 
         Ok(Validated { message: self })

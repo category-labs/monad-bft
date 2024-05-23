@@ -7,7 +7,8 @@ use bytes::Bytes;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -43,6 +44,7 @@ struct NopSwarm;
 impl SwarmRelation for NopSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = MultiSig<NopSignature>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
 
@@ -67,11 +69,8 @@ impl SwarmRelation for NopSwarm {
 
     type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 struct BlsSwarm;
@@ -79,6 +78,7 @@ struct BlsSwarm;
 impl SwarmRelation for BlsSwarm {
     type SignatureType = SignatureType;
     type SignatureCollectionType = BlsSignatureCollection<NodeIdPubKey>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
 
@@ -103,11 +103,8 @@ impl SwarmRelation for BlsSwarm {
 
     type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 fn many_nodes_nop_timeout() -> u128 {

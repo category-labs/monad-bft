@@ -13,6 +13,7 @@ members = [
     "monad-cxx",
     "monad-dataplane",
     "monad-debugger",
+    "monad-eth-block-validator",
     "monad-eth-types",
     "monad-eth-tx",
     "monad-eth-txpool",

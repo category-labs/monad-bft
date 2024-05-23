@@ -1,4 +1,5 @@
 use std::{
+    marker::PhantomData,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -13,7 +14,6 @@ use monad_blockdb::BlockDbBuilder;
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_state::ConsensusConfig;
 use monad_consensus_types::{
-    block_validator::MockValidator,
     payload::{NopStateRoot, StateRoot, StateRootValidator},
     state_root_hash::StateRootHash,
     validator_data::ValidatorData,
@@ -22,6 +22,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignature, CertificateSignaturePubKey},
     hasher::Hash,
 };
+use monad_eth_block_validator::EthValidator;
 use monad_eth_txpool::EthTxPool;
 use monad_executor::Executor;
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MetricsCommand, MonadEvent};
@@ -257,7 +258,10 @@ async fn run(
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election: SimpleRoundRobin::default(),
         transaction_pool: EthTxPool::default(),
-        block_validator: MockValidator,
+        block_validator: EthValidator {
+            tx_limit: node_state.node_config.consensus.block_txn_limit,
+            block_gas_limit: node_state.node_config.consensus.block_gas_limit,
+        },
         state_root_validator: Box::new(NopStateRoot {}) as Box<dyn StateRootValidator>,
         async_state_verify: PeerAsyncStateVerify::default(),
         validators,
@@ -273,7 +277,7 @@ async fn run(
             max_blocksync_retries: 5,
             state_sync_threshold: SeqNum(state_sync_bound as u64),
         },
-        hash_policy: monad_eth_txpool::transaction_hash_policy,
+        _pd: PhantomData,
     };
 
     // parse test mode commands

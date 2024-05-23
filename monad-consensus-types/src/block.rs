@@ -6,13 +6,15 @@ use monad_types::{BlockId, NodeId, Round, SeqNum};
 use zerocopy::AsBytes;
 
 use crate::{
-    payload::Payload, quorum_certificate::QuorumCertificate,
+    payload::{FullTransactionList, Payload},
+    quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
 };
 
 /// This trait represents a consensus block
-pub trait BlockType: Clone + PartialEq + Eq {
+pub trait BlockType<SCT: SignatureCollection>: Clone + PartialEq + Eq {
     type NodeIdPubKey: PubKey;
+    type TxnHash: PartialEq + Eq + std::hash::Hash;
     /// Unique hash for the block
     fn get_id(&self) -> BlockId;
 
@@ -32,6 +34,20 @@ pub trait BlockType: Clone + PartialEq + Eq {
 
     /// Sequence number when this block was proposed
     fn get_seq_num(&self) -> SeqNum;
+
+    /// get list of all txn hashes in this block
+    fn get_txn_hashes(&self) -> Vec<Self::TxnHash>;
+
+    fn is_txn_list_empty(&self) -> bool;
+
+    fn get_txn_list_len(&self) -> usize;
+
+    /// get a reference to the block's QC
+    fn get_qc(&self) -> &QuorumCertificate<SCT>;
+
+    fn get_unvalidated_block(self) -> Block<SCT>;
+
+    fn get_unvalidated_block_ref(&self) -> &Block<SCT>;
 }
 
 /// structure of the consensus block
@@ -110,8 +126,9 @@ impl<SCT: SignatureCollection> Block<SCT> {
     }
 }
 
-impl<SCT: SignatureCollection> BlockType for Block<SCT> {
+impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
     type NodeIdPubKey = SCT::NodeIdPubKey;
+    type TxnHash = ();
 
     fn get_id(&self) -> BlockId {
         self.id
@@ -136,4 +153,45 @@ impl<SCT: SignatureCollection> BlockType for Block<SCT> {
     fn get_seq_num(&self) -> SeqNum {
         self.payload.seq_num
     }
+
+    fn get_txn_hashes(&self) -> Vec<Self::TxnHash> {
+        vec![]
+    }
+
+    fn is_txn_list_empty(&self) -> bool {
+        self.payload.txns == FullTransactionList::empty()
+    }
+
+    fn get_txn_list_len(&self) -> usize {
+        self.payload.txns.bytes().len()
+    }
+
+    fn get_qc(&self) -> &QuorumCertificate<SCT> {
+        &self.qc
+    }
+
+    fn get_unvalidated_block(self) -> Block<SCT> {
+        self
+    }
+
+    fn get_unvalidated_block_ref(&self) -> &Block<SCT> {
+        self
+    }
+}
+
+/// Trait that represents how inner contents of a block should be validated
+pub trait BlockPolicy<SCT: SignatureCollection> {
+    type ValidatedBlock: Sized
+        + PartialEq
+        + Eq
+        + std::fmt::Debug
+        + BlockType<SCT, NodeIdPubKey = SCT::NodeIdPubKey>
+        + Hashable
+        + Send;
+}
+
+/// A block policy which does not validate the inner contents of the block
+pub struct PassthruBlockPolicy;
+impl<SCT: SignatureCollection> BlockPolicy<SCT> for PassthruBlockPolicy {
+    type ValidatedBlock = Block<SCT>;
 }

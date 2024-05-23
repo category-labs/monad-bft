@@ -9,8 +9,8 @@ mod test {
     use itertools::Itertools;
     use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
     use monad_consensus_types::{
-        block::Block, block_validator::MockValidator, metrics::Metrics, payload::StateRoot,
-        txpool::MockTxPool,
+        block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
+        payload::StateRoot, txpool::MockTxPool,
     };
     use monad_crypto::{
         certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -46,6 +46,7 @@ mod test {
     impl SwarmRelation for ValidatorSwapSwarm {
         type SignatureType = NopSignature;
         type SignatureCollectionType = MultiSig<Self::SignatureType>;
+        type BlockPolicyType = PassthruBlockPolicy;
 
         type TransportMessage =
             VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -74,11 +75,8 @@ mod test {
 
         type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-        type StateRootHashExecutor = MockStateRootHashSwap<
-            Block<Self::SignatureCollectionType>,
-            Self::SignatureType,
-            Self::SignatureCollectionType,
-        >;
+        type StateRootHashExecutor =
+            MockStateRootHashSwap<Self::SignatureType, Self::SignatureCollectionType>;
     }
 
     fn verify_nodes_in_epoch(nodes: Vec<&Node<impl SwarmRelation>>, epoch: Epoch) {

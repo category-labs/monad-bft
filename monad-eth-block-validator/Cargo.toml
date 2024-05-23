@@ -1,8 +1,16 @@
 [package]
-name = "monad-block-validator"
+name = "monad-eth-block-validator"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+bench = false
+
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
-monad-eth-types = { path = "../monad-eth-types" }
+monad-crypto = { path = "../monad-crypto" }
+monad-eth-tx = { path = "../monad-eth-tx" }
+monad-eth-txpool = { path = "../monad-eth-txpool" }
+
+alloy-rlp = { workspace = true }
+tracing = { workspace = true }

@@ -1,13 +1,13 @@
 use std::{
     collections::{HashMap, VecDeque},
-    marker::Unpin,
+    marker::{PhantomData, Unpin},
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
 
 use futures::Stream;
-use monad_consensus_types::block::BlockType;
+use monad_consensus_types::{block::BlockType, signature_collection::SignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
 use monad_executor::Executor;
 use monad_executor_glue::LedgerCommand;
@@ -18,25 +18,31 @@ use tracing::warn;
 /// Purpose of the ledger is to have retrievable committed blocks to
 /// respond the BlockSync requests
 /// MockLedger stores the ledger in memory and is only expected to be used in testing
-pub struct MockLedger<PT: PubKey, O: BlockType, E> {
+pub struct MockLedger<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> {
     blockchain: Vec<O>,
     block_index: HashMap<BlockId, usize>,
     ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
+    _pd: PhantomData<SCT>,
 }
 
-impl<PT: PubKey, O: BlockType, E> Default for MockLedger<PT, O, E> {
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Default
+    for MockLedger<SCT, PT, O, E>
+{
     fn default() -> Self {
         Self {
             blockchain: Vec::new(),
             block_index: HashMap::new(),
             ledger_fetches: HashMap::default(),
             waker: None,
+            _pd: PhantomData,
         }
     }
 }
 
-impl<PT: PubKey, O: BlockType, E> Executor for MockLedger<PT, O, E> {
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
+    for MockLedger<SCT, PT, O, E>
+{
     type Command = LedgerCommand<PT, O, E>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
@@ -80,7 +86,8 @@ impl<PT: PubKey, O: BlockType, E> Executor for MockLedger<PT, O, E> {
     }
 }
 
-impl<PT: PubKey, O: BlockType, E> Stream for MockLedger<PT, O, E>
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Stream
+    for MockLedger<SCT, PT, O, E>
 where
     Self: Unpin,
 {
@@ -104,7 +111,7 @@ where
     }
 }
 
-impl<PT: PubKey, O: BlockType, E> MockLedger<PT, O, E> {
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> MockLedger<SCT, PT, O, E> {
     pub fn ready(&self) -> bool {
         !self.ledger_fetches.is_empty()
     }
@@ -113,15 +120,16 @@ impl<PT: PubKey, O: BlockType, E> MockLedger<PT, O, E> {
     }
 }
 
-pub struct BoundedLedger<PT: PubKey, O: BlockType, E> {
+pub struct BoundedLedger<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> {
     recent_blocks: VecDeque<O>,
     max_blocks: usize,
     num_commits: usize,
     ledger_fetches: HashMap<(NodeId<PT>, BlockId), Box<dyn (FnOnce(Option<O>) -> E) + Send + Sync>>,
     waker: Option<Waker>,
+    _pd: PhantomData<SCT>,
 }
 
-impl<PT: PubKey, O: BlockType, E> BoundedLedger<PT, O, E> {
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> BoundedLedger<SCT, PT, O, E> {
     pub fn new(max_blocks: usize) -> Self {
         Self {
             recent_blocks: VecDeque::new(),
@@ -129,11 +137,14 @@ impl<PT: PubKey, O: BlockType, E> BoundedLedger<PT, O, E> {
             num_commits: 0,
             ledger_fetches: HashMap::default(),
             waker: None,
+            _pd: PhantomData,
         }
     }
 }
 
-impl<PT: PubKey, O: BlockType, E> Executor for BoundedLedger<PT, O, E> {
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Executor
+    for BoundedLedger<SCT, PT, O, E>
+{
     type Command = LedgerCommand<PT, O, E>;
 
     fn replay(&mut self, mut commands: Vec<Self::Command>) {
@@ -181,7 +192,8 @@ impl<PT: PubKey, O: BlockType, E> Executor for BoundedLedger<PT, O, E> {
     }
 }
 
-impl<PT: PubKey, O: BlockType, E> Stream for BoundedLedger<PT, O, E>
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> Stream
+    for BoundedLedger<SCT, PT, O, E>
 where
     Self: Unpin,
 {
@@ -204,7 +216,7 @@ where
     }
 }
 
-impl<PT: PubKey, O: BlockType, E> BoundedLedger<PT, O, E> {
+impl<SCT: SignatureCollection, PT: PubKey, O: BlockType<SCT>, E> BoundedLedger<SCT, PT, O, E> {
     pub fn get_num_commits(&self) -> usize {
         self.num_commits
     }
@@ -225,6 +237,7 @@ mod tests {
     };
     use monad_executor::Executor;
     use monad_executor_glue::LedgerCommand;
+    use monad_multi_sig::MultiSig;
     use monad_testutil::{block::MockBlock, signing::get_key};
     use monad_types::{BlockId, NodeId};
     use rand::{seq::SliceRandom, Rng, SeedableRng};
@@ -234,6 +247,7 @@ mod tests {
     use crate::ledger::MockLedger;
 
     type SignatureType = NopSignature;
+    type SignatureCollectionType = MultiSig<SignatureType>;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -271,8 +285,12 @@ mod tests {
 
     #[test]
     fn test_basic_stream_functionality() {
-        let mut mock_ledger =
-            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
+        let mut mock_ledger = MockLedger::<
+            SignatureCollectionType,
+            PubKeyType,
+            MockBlock<PubKeyType>,
+            MockLedgerEvent<PubKeyType>,
+        >::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
         let block = MockBlock::<PubKeyType>::new(
             monad_types::BlockId(Hash([0x00_u8; 32])),
@@ -305,8 +323,12 @@ mod tests {
 
     #[test]
     fn test_seeking_exist() {
-        let mut mock_ledger =
-            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
+        let mut mock_ledger = MockLedger::<
+            SignatureCollectionType,
+            PubKeyType,
+            MockBlock<PubKeyType>,
+            MockLedgerEvent<PubKeyType>,
+        >::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
             MockBlock::new(
@@ -373,8 +395,12 @@ mod tests {
     }
     #[test]
     fn test_seeking_non_exist() {
-        let mut mock_ledger =
-            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
+        let mut mock_ledger = MockLedger::<
+            SignatureCollectionType,
+            PubKeyType,
+            MockBlock<PubKeyType>,
+            MockLedgerEvent<PubKeyType>,
+        >::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
 
         mock_ledger.exec(vec![LedgerCommand::LedgerCommit(vec![
@@ -430,8 +456,12 @@ mod tests {
         assert!(node_req_range > 0);
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let poll_pref = rng.gen_range(0.0..1.0);
-        let mut mock_ledger =
-            MockLedger::<PubKeyType, MockBlock<PubKeyType>, MockLedgerEvent<PubKeyType>>::default();
+        let mut mock_ledger = MockLedger::<
+            SignatureCollectionType,
+            PubKeyType,
+            MockBlock<PubKeyType>,
+            MockLedgerEvent<PubKeyType>,
+        >::default();
         assert_eq!(mock_ledger.next().now_or_never(), None); // nothing should be within the pipeline
 
         let blocks: Vec<_> = (1..40_u8)

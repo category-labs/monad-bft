@@ -4,7 +4,7 @@ use monad_async_state_verify::{AsyncStateVerifyCommand, AsyncStateVerifyProcess}
 use monad_consensus::{messages::message::PeerStateRootMessage, validation::signing::Validated};
 use monad_consensus_state::command::Checkpoint;
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockPolicy},
     block_validator::BlockValidator,
     metrics::Metrics,
     payload::StateRootValidator,
@@ -24,10 +24,11 @@ use monad_validator::{
 
 use crate::{handle_validation_error, MonadState, VerifiedMonadMessage};
 
-pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+pub(super) struct AsyncStateVerifyChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    BPT: BlockPolicy<SCT>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
     async_state_verify: &'a mut ASVT,
@@ -41,15 +42,16 @@ where
 
     metrics: &'a mut Metrics,
 
-    _phantom: PhantomData<(ST, LT, TT, BVT, SVT)>,
+    _phantom: PhantomData<(ST, LT, TT, BVT, SVT, BPT)>,
 }
 
-impl<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
-    AsyncStateVerifyChildState<'a, ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>
+impl<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
+    AsyncStateVerifyChildState<'a, ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator,
+    BPT: BlockPolicy<SCT>,
+    BVT: BlockValidator<SCT, BPT>,
     SVT: StateRootValidator,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     ASVT: AsyncStateVerifyProcess<
@@ -58,7 +60,7 @@ where
     >,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, VTF, LT, TT, BVT, SVT, ASVT>,
+        monad_state: &'a mut MonadState<ST, SCT, BPT, VTF, LT, TT, BVT, SVT, ASVT>,
     ) -> Self {
         Self {
             async_state_verify: &mut monad_state.async_state_verify,

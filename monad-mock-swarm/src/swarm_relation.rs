@@ -3,7 +3,7 @@ use monad_async_state_verify::{
     AsyncStateVerifyProcess, BoxedAsyncStateVerifyProcess, PeerAsyncStateVerify,
 };
 use monad_consensus_types::{
-    block::Block,
+    block::{Block, BlockPolicy, PassthruBlockPolicy},
     block_validator::{BlockValidator, MockValidator},
     payload::{StateRoot, StateRootValidator},
     signature_collection::SignatureCollection,
@@ -31,6 +31,7 @@ use crate::{mock::MockExecutor, node::Node, transformer::MonadMessageTransformer
 pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::SignatureType,
     <S as SwarmRelation>::SignatureCollectionType,
+    <S as SwarmRelation>::BlockPolicyType,
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
     <S as SwarmRelation>::TxPool,
@@ -48,10 +49,14 @@ where
     type SignatureCollectionType: SignatureCollection<
         NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>,
     >;
+    type BlockPolicyType: BlockPolicy<Self::SignatureCollectionType>;
 
     type TransportMessage: PartialEq + Eq + Send + Sync + Unpin;
 
-    type BlockValidator: BlockValidator + Send + Sync + Unpin;
+    type BlockValidator: BlockValidator<Self::SignatureCollectionType, Self::BlockPolicyType>
+        + Send
+        + Sync
+        + Unpin;
     type StateRootValidator: StateRootValidator + Send + Sync + Unpin;
     type ValidatorSetTypeFactory: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<Self::SignatureType>>
         + Send
@@ -61,7 +66,7 @@ where
         + Send
         + Sync
         + Unpin;
-    type TxPool: TxPool + Send + Sync + Unpin;
+    type TxPool: TxPool<Self::SignatureCollectionType, Self::BlockPolicyType> + Send + Sync + Unpin;
     type AsyncStateRootVerify: AsyncStateVerifyProcess<
             SignatureCollectionType = Self::SignatureCollectionType,
             ValidatorSetType = <Self::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
@@ -93,7 +98,6 @@ where
         + Unpin;
 
     type StateRootHashExecutor: MockableStateRootHash<
-            Block = Block<Self::SignatureCollectionType>,
             Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
             SignatureCollection = Self::SignatureCollectionType,
         > + Send
@@ -105,10 +109,12 @@ pub struct DebugSwarmRelation;
 impl SwarmRelation for DebugSwarmRelation {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
 
-    type BlockValidator = Box<dyn BlockValidator + Send + Sync>;
+    type BlockValidator =
+        Box<dyn BlockValidator<Self::SignatureCollectionType, Self::BlockPolicyType> + Send + Sync>;
     type StateRootValidator = Box<dyn StateRootValidator + Send + Sync>;
     type ValidatorSetTypeFactory =
         BoxedValidatorSetTypeFactory<CertificateSignaturePubKey<Self::SignatureType>>;
@@ -117,7 +123,8 @@ impl SwarmRelation for DebugSwarmRelation {
             + Send
             + Sync,
     >;
-    type TxPool = Box<dyn TxPool + Send + Sync>;
+    type TxPool =
+        Box<dyn TxPool<Self::SignatureCollectionType, Self::BlockPolicyType> + Send + Sync>;
     type AsyncStateRootVerify = BoxedAsyncStateVerifyProcess<Self::SignatureCollectionType>;
 
     type RouterScheduler = Box<
@@ -150,7 +157,6 @@ impl SwarmRelation for DebugSwarmRelation {
 
     type StateRootHashExecutor = Box<
         dyn MockableStateRootHash<
-                Block = Block<Self::SignatureCollectionType>,
                 Event = MonadEvent<Self::SignatureType, Self::SignatureCollectionType>,
                 SignatureCollection = Self::SignatureCollectionType,
                 Command = StateRootHashCommand<Block<Self::SignatureCollectionType>>,
@@ -165,6 +171,7 @@ pub struct NoSerSwarm;
 impl SwarmRelation for NoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -193,17 +200,15 @@ impl SwarmRelation for NoSerSwarm {
 
     type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct BytesSwarm;
 impl SwarmRelation for BytesSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage = Bytes;
 
@@ -231,17 +236,15 @@ impl SwarmRelation for BytesSwarm {
 
     type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub struct MonadMessageNoSerSwarm;
 impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -268,9 +271,6 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
 
     type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }

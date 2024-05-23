@@ -2,7 +2,8 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    txpool::MockTxPool,
 };
 use monad_crypto::{
     certificate_signature::{CertificateKeyPair, CertificateSignaturePubKey},
@@ -31,6 +32,7 @@ pub struct LogSwarm;
 impl SwarmRelation for LogSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -59,11 +61,8 @@ impl SwarmRelation for LogSwarm {
 
     type Logger = WALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 pub fn generate_log(

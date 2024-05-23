@@ -1,11 +1,13 @@
-use std::{collections::HashMap, fmt, result::Result as StdResult};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    result::Result as StdResult,
+};
 
 use monad_consensus_types::{
-    block::{Block, BlockType},
-    payload::FullTransactionList,
+    block::{BlockPolicy, BlockType},
     quorum_certificate::QuorumCertificate,
     signature_collection::SignatureCollection,
-    txpool::{HashPolicy, HashPolicyOutput},
 };
 use monad_tracing_counter::inc_count;
 use monad_types::{BlockId, Round, SeqNum};
@@ -44,30 +46,27 @@ struct Root {
     block_id: BlockId,
 }
 
-type Tree<SCT> = HashMap<BlockId, (Block<SCT>, HashPolicyOutput)>;
+type Tree<T> = HashMap<BlockId, T>;
 
-pub struct BlockTree<SCT: SignatureCollection> {
+pub struct BlockTree<SCT: SignatureCollection, BP: BlockPolicy<SCT>> {
     /// The round and block_id of last committed block
     root: Root,
     /// Uncommitted blocks
     /// First level of blocks in the tree have block.get_parent_id() == root.block_id
-    tree: Tree<SCT>,
-    /// This field is used to allow moving the computation of transaction hashes out of the
-    /// critical path of proposal creation
-    hash_policy: HashPolicy<SCT>,
+    tree: Tree<BP::ValidatedBlock>,
 }
 
-impl<SCT: SignatureCollection> PartialEq<Self> for BlockTree<SCT> {
+impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> PartialEq<Self> for BlockTree<SCT, BP> {
     fn eq(&self, other: &Self) -> bool {
         self.root == other.root && self.tree == other.tree
     }
 }
 
-impl<SCT: SignatureCollection> Eq for BlockTree<SCT> {}
+impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> Eq for BlockTree<SCT, BP> {}
 
-impl<SCT: SignatureCollection> fmt::Debug for BlockTree<SCT>
+impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> fmt::Debug for BlockTree<SCT, BP>
 where
-    SCT: SignatureCollection,
+    BP: BlockPolicy<SCT>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlockTree")
@@ -77,8 +76,8 @@ where
     }
 }
 
-impl<SCT: SignatureCollection> BlockTree<SCT> {
-    pub fn new(root: QuorumCertificate<SCT>, hash_policy: HashPolicy<SCT>) -> Self {
+impl<SCT: SignatureCollection, BP: BlockPolicy<SCT>> BlockTree<SCT, BP> {
+    pub fn new(root: QuorumCertificate<SCT>) -> Self {
         Self {
             root: Root {
                 round: root.info.get_round(),
@@ -86,7 +85,6 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
                 block_id: root.get_block_id(),
             },
             tree: HashMap::new(),
-            hash_policy,
         }
     }
 
@@ -111,15 +109,15 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
     /// - When prune is called on round `new_root` block, only round `n+1` block
     ///   is added (as `new_root`'s children) All the blocks that remains
     ///   shouldn't be pruned -> complete
-    pub fn prune(&mut self, new_root: &BlockId) -> Vec<Block<SCT>> {
+    pub fn prune(&mut self, new_root: &BlockId) -> Vec<BP::ValidatedBlock> {
         assert!(self.has_path_to_root(new_root));
-        let mut commit: Vec<Block<SCT>> = Vec::new();
+        let mut commit: Vec<BP::ValidatedBlock> = Vec::new();
 
         if new_root == &self.root.block_id {
             return commit;
         }
 
-        let (new_root_block, _) = self
+        let new_root_block = self
             .tree
             .remove(new_root)
             .expect("new root must exist in blocktree");
@@ -137,13 +135,12 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
                 .tree
                 .remove(&parent_id)
                 .expect("path to root must exist")
-                .0;
         }
 
         // garbage collect old blocks
         // remove any blocks less than or equal to round `n`
         self.tree
-            .retain(|_, (b, _)| b.get_parent_round() >= new_root_block.get_round());
+            .retain(|_, b| b.get_parent_round() >= new_root_block.get_round());
         // new root should be set to QC of the block that's the new root
         self.root = Root {
             round: new_root_block.get_round(),
@@ -159,15 +156,13 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
     /// Add a new block to the block tree if it's not in the tree and is higher
     /// than the root block's round number
-    pub fn add(&mut self, b: Block<SCT>) -> Result<()> {
+    pub fn add(&mut self, b: BP::ValidatedBlock) -> Result<()> {
         if !self.is_valid_to_insert(&b) {
             inc_count!(blocktree.add.duplicate);
             return Ok(());
         }
 
-        let transaction_hashes = (self.hash_policy)(&b)
-            .map_err(|e| BlockTreeError::HashPolicy((b.get_id(), e.to_string())))?;
-        self.tree.insert(b.get_id(), (b, transaction_hashes));
+        self.tree.insert(b.get_id(), b);
         inc_count!(blocktree.add.success);
         Ok(())
     }
@@ -184,9 +179,9 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
         let mut maybe_unknown_block_qc = qc;
         let mut maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
-        while let Some((known_block, _)) = self.tree.get(&maybe_unknown_bid) {
-            maybe_unknown_block_qc = &known_block.qc;
-            maybe_unknown_bid = maybe_unknown_block_qc.get_block_id();
+        while let Some(known_block) = self.tree.get(&maybe_unknown_bid) {
+            maybe_unknown_block_qc = known_block.get_qc();
+            maybe_unknown_bid = known_block.get_parent_id();
             // If the unknown block's round == self.root, that means we've already committed it
             if maybe_unknown_block_qc.get_round() == self.root.round {
                 return None;
@@ -201,7 +196,7 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         }
         let mut visit = *b;
 
-        while let Some((btb, _)) = self.tree.get(&visit) {
+        while let Some(btb) = self.tree.get(&visit) {
             if btb.get_parent_id() == self.root.block_id {
                 return true;
             }
@@ -211,43 +206,23 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
     }
 
     /// Fetches transactions on the path in [`b`, root)
-    pub fn get_txs_on_path_to_root(&self, b: &BlockId) -> Option<Vec<FullTransactionList>> {
-        let mut txs = Vec::default();
-
+    pub fn get_tx_hashes_on_path_to_root(
+        &self,
+        b: &BlockId,
+    ) -> Option<HashSet<<BP::ValidatedBlock as BlockType<SCT>>::TxnHash>> {
+        let mut txs = HashSet::new();
         if b == &self.root.block_id {
             return Some(txs);
         }
 
         let mut visit = *b;
 
-        while let Some((btb, _)) = self.tree.get(&visit) {
+        while let Some(btb) = self.tree.get(&visit) {
             if btb.get_parent_id() == self.root.block_id {
                 return Some(txs);
             }
 
-            txs.push(btb.payload.txns.clone());
-
-            visit = btb.get_parent_id();
-        }
-        None
-    }
-
-    /// Fetches transactions on the path in [`b`, root)
-    pub fn get_tx_hashes_on_path_to_root(&self, b: &BlockId) -> Option<HashPolicyOutput> {
-        let mut txs = Default::default();
-
-        if b == &self.root.block_id {
-            return Some(txs);
-        }
-
-        let mut visit = *b;
-
-        while let Some((btb, hashes)) = self.tree.get(&visit) {
-            if btb.get_parent_id() == self.root.block_id {
-                return Some(txs);
-            }
-
-            txs.extend(hashes);
+            txs.extend(btb.get_txn_hashes());
 
             visit = btb.get_parent_id();
         }
@@ -256,16 +231,16 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
 
     /// Remove all blocks which are older than the given sequence number
     pub fn remove_old_blocks(&mut self, seq_num: SeqNum) {
-        self.tree.retain(|_, (b, _)| b.get_seq_num() >= seq_num);
+        self.tree.retain(|_, b| b.get_seq_num() >= seq_num);
     }
 
     /// A block is valid to insert if it does not already exist in the block
     /// tree and its round is greater than the round of the root
-    pub fn is_valid_to_insert(&self, b: &Block<SCT>) -> bool {
+    pub fn is_valid_to_insert(&self, b: &BP::ValidatedBlock) -> bool {
         !self.tree.contains_key(&b.get_id()) && b.get_round() > self.root.round
     }
 
-    pub fn tree(&self) -> &Tree<SCT> {
+    pub fn tree(&self) -> &Tree<BP::ValidatedBlock> {
         &self.tree
     }
 
@@ -277,20 +252,18 @@ impl<SCT: SignatureCollection> BlockTree<SCT> {
         self.root.seq_num
     }
 
-    pub fn get(&self, block_id: &BlockId) -> Option<&Block<SCT>> {
-        self.tree.get(block_id).map(|(block, _)| block)
+    pub fn get(&self, block_id: &BlockId) -> Option<&BP::ValidatedBlock> {
+        self.tree.get(block_id).map(|block| block)
     }
 }
 
 #[cfg(test)]
 mod test {
     use monad_consensus_types::{
-        block::{Block as ConsensusBlock, BlockType},
+        block::{Block as ConsensusBlock, BlockType, PassthruBlockPolicy},
         ledger::CommitResult,
         payload::{ExecutionArtifacts, FullTransactionList, Payload, RandaoReveal},
         quorum_certificate::{QcInfo, QuorumCertificate},
-        signature_collection::SignatureCollection,
-        txpool::HashPolicyOutput,
         voting::{Vote, VoteInfo},
     };
     use monad_crypto::{
@@ -307,6 +280,7 @@ mod test {
     use super::BlockTree;
 
     type SignatureType = NopSignature;
+    type BlockPolicyType = PassthruBlockPolicy;
     type PubKeyType = CertificateSignaturePubKey<SignatureType>;
     type Block = ConsensusBlock<MockSignatures<SignatureType>>;
     type QC = QuorumCertificate<MockSignatures<SignatureType>>;
@@ -319,12 +293,6 @@ mod test {
             )
             .unwrap();
         NodeId::new(keypair.pubkey())
-    }
-
-    fn nop_hash_policy<SCT: SignatureCollection>(
-        block: &monad_consensus_types::block::Block<SCT>,
-    ) -> Result<HashPolicyOutput, alloy_rlp::Error> {
-        Ok(Default::default())
     }
 
     #[test]
@@ -508,7 +476,7 @@ mod test {
         //        |
         //        b6
         let mut blocktree =
-            BlockTree::<MockSignatures<_>>::new(QuorumCertificate::genesis_qc(), nop_hash_policy);
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
 
         assert!(blocktree.add(b1.clone()).is_ok());
@@ -643,7 +611,8 @@ mod test {
         );
 
         let gid = g.get_id();
-        let mut blocktree = BlockTree::new(QC::genesis_qc(), nop_hash_policy);
+        let mut blocktree =
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g).is_ok());
 
         assert!(blocktree.add(b2.clone()).is_ok());
@@ -765,7 +734,8 @@ mod test {
         //  b1    b2
         //  |
         //  b3
-        let mut blocktree = BlockTree::new(QC::genesis_qc(), nop_hash_policy);
+        let mut blocktree =
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.add(b2.clone()).is_ok());
@@ -832,7 +802,8 @@ mod test {
             ),
         );
 
-        let mut blocktree = BlockTree::new(QC::genesis_qc(), nop_hash_policy);
+        let mut blocktree =
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
         assert!(blocktree.add(b1.clone()).is_ok());
@@ -928,7 +899,8 @@ mod test {
             ),
         );
 
-        let mut blocktree = BlockTree::new(QC::genesis_qc(), nop_hash_policy);
+        let mut blocktree =
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
         assert!(blocktree.has_path_to_root(&g.get_id()));
         assert!(!blocktree.has_path_to_root(&b1.get_id()));
@@ -1050,7 +1022,8 @@ mod test {
             ),
         );
 
-        let mut blocktree = BlockTree::new(QC::genesis_qc(), nop_hash_policy);
+        let mut blocktree =
+            BlockTree::<MockSignatures<_>, BlockPolicyType>::new(QuorumCertificate::genesis_qc());
         assert!(blocktree.add(g.clone()).is_ok());
         assert!(blocktree.get_missing_ancestor(&g.qc).is_none()); // root naturally don't have missing ancestor
 

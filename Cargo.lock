@@ -3369,6 +3369,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-eth-block-validator"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "monad-consensus-types",
+ "monad-crypto",
+ "monad-eth-tx",
+ "monad-eth-txpool",
+ "tracing",
+]
+
+[[package]]
 name = "monad-eth-tx"
 version = "0.1.0"
 dependencies = [
@@ -3387,7 +3399,10 @@ dependencies = [
  "bytes",
  "criterion",
  "monad-consensus-types",
+ "monad-crypto",
  "monad-eth-tx",
+ "monad-multi-sig",
+ "monad-types",
  "rand",
  "reth-primitives",
  "tracing",
@@ -3602,6 +3617,7 @@ dependencies = [
  "monad-consensus-state",
  "monad-consensus-types",
  "monad-crypto",
+ "monad-eth-block-validator",
  "monad-eth-txpool",
  "monad-eth-types",
  "monad-executor",
@@ -3951,6 +3967,7 @@ dependencies = [
  "monad-eth-types",
  "monad-executor",
  "monad-executor-glue",
+ "monad-multi-sig",
  "monad-testutil",
  "monad-types",
  "ntest",

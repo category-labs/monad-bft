@@ -8,13 +8,17 @@ bench = false
 
 [dependencies]
 monad-consensus-types = { path = "../monad-consensus-types" }
+monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }
+monad-types = { path = "../monad-types" }
 
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monad-multi-sig = { path = "../monad-multi-sig" }
+
 alloy-primitives = { workspace = true }
 criterion = { workspace = true }
 reth-primitives = { workspace = true }

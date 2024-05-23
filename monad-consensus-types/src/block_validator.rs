@@ -1,22 +1,52 @@
 use core::fmt::Debug;
 
-use crate::payload::FullTransactionList;
+use monad_crypto::certificate_signature::{CertificateKeyPair, CertificateSignature};
 
-pub trait BlockValidator {
-    fn validate(&self, full_txs: &FullTransactionList) -> bool;
+use crate::{
+    block::{Block, BlockPolicy},
+    signature_collection::SignatureCollection,
+};
+
+pub trait BlockValidator<SCT: SignatureCollection, BPT: BlockPolicy<SCT>> {
+    fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock>;
+    fn other_validation(
+        &self,
+        block: &BPT::ValidatedBlock,
+        author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> bool;
 }
 
-impl<T: BlockValidator + ?Sized> BlockValidator for Box<T> {
-    fn validate(&self, full_txs: &FullTransactionList) -> bool {
-        (**self).validate(full_txs)
+impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT>, T: BlockValidator<SCT, BPT> + ?Sized>
+    BlockValidator<SCT, BPT> for Box<T>
+{
+    fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock> {
+        (**self).validate(block)
+    }
+
+    fn other_validation(
+        &self,
+        block: &BPT::ValidatedBlock,
+        author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> bool {
+        (**self).other_validation(block, author_pubkey)
     }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct MockValidator;
 
-impl BlockValidator for MockValidator {
-    fn validate(&self, _full_txs: &FullTransactionList) -> bool {
+impl<SCT: SignatureCollection, BPT: BlockPolicy<SCT, ValidatedBlock = Block<SCT>>>
+    BlockValidator<SCT, BPT> for MockValidator
+{
+    fn validate(&self, block: Block<SCT>) -> Option<BPT::ValidatedBlock> {
+        Some(block)
+    }
+
+    fn other_validation(
+        &self,
+        _block: &BPT::ValidatedBlock,
+        _author_pubkey: &<<SCT::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType,
+    ) -> bool {
         true
     }
 }

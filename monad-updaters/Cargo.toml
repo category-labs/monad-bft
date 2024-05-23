@@ -28,6 +28,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { path = "../monad-testutil" }
+monad-multi-sig = { path = "../monad-multi-sig" }
 
 ntest = { workspace = true }
 test-case = { workspace = true }

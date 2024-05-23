@@ -4,7 +4,8 @@ use itertools::Itertools;
 use monad_async_state_verify::{majority_threshold, PeerAsyncStateVerify};
 use monad_bls::BlsSignatureCollection;
 use monad_consensus_types::{
-    block::Block, block_validator::MockValidator, payload::StateRoot, txpool::MockTxPool,
+    block::PassthruBlockPolicy, block_validator::MockValidator, payload::StateRoot,
+    txpool::MockTxPool,
 };
 use monad_crypto::certificate_signature::CertificateSignaturePubKey;
 use monad_executor_glue::MonadEvent;
@@ -33,6 +34,7 @@ impl SwarmRelation for BLSSwarm {
     type SignatureType = SecpSignature;
     type SignatureCollectionType =
         BlsSignatureCollection<CertificateSignaturePubKey<Self::SignatureType>>;
+    type BlockPolicyType = PassthruBlockPolicy;
 
     type TransportMessage =
         VerifiedMonadMessage<Self::SignatureType, Self::SignatureCollectionType>;
@@ -61,11 +63,8 @@ impl SwarmRelation for BLSSwarm {
 
     type Logger = MockWALogger<MonadEvent<Self::SignatureType, Self::SignatureCollectionType>>;
 
-    type StateRootHashExecutor = MockStateRootHashNop<
-        Block<Self::SignatureCollectionType>,
-        Self::SignatureType,
-        Self::SignatureCollectionType,
-    >;
+    type StateRootHashExecutor =
+        MockStateRootHashNop<Self::SignatureType, Self::SignatureCollectionType>;
 }
 
 #[test]

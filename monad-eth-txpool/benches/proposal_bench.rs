@@ -2,7 +2,9 @@ use alloy_rlp::Encodable;
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use monad_consensus_types::{payload::FullTransactionList, txpool::TxPool};
-use monad_eth_txpool::EthTxPool;
+use monad_crypto::NopSignature;
+use monad_eth_txpool::{EthBlockPolicy, EthTxPool};
+use monad_multi_sig::MultiSig;
 use rand::{Rng, RngCore};
 use reth_primitives::{
     sign_message, Address, Transaction, TransactionKind, TransactionSigned, TxLegacy, B256,
@@ -42,6 +44,8 @@ struct BenchController {
     pub gas_limit: u64,
 }
 
+type SignatureCollectionType = MultiSig<NopSignature>;
+
 fn create_pool_and_transactions() -> BenchController {
     let mut txpool = EthTxPool::default();
     let txns = (0..NUM_TRANSACTIONS)
@@ -60,7 +64,10 @@ fn create_pool_and_transactions() -> BenchController {
     let bytes = Bytes::copy_from_slice(&txns_encoded);
 
     for txn in txns.iter() {
-        txpool.insert_tx(Bytes::from(txn.envelope_encoded()));
+        TxPool::<SignatureCollectionType, EthBlockPolicy>::insert_tx(
+            &mut txpool,
+            Bytes::from(txn.envelope_encoded()),
+        );
     }
     let txns_list = FullTransactionList::new(bytes);
 
@@ -78,7 +85,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched_ref(
             create_pool_and_transactions,
             |controller| {
-                controller.pool.create_proposal(
+                TxPool::<SignatureCollectionType, EthBlockPolicy>::create_proposal(
+                    &mut controller.pool,
                     proposal_txn_limit,
                     controller.gas_limit,
                     Default::default(),
