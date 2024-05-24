@@ -39,7 +39,10 @@ reth-rpc-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "macros"] }
+notify = "6.1.1"
+pin-project = "1.1.5"
 
 [dev-dependencies]
 test-case = { workspace = true }
+tempfile = { workspace = true }

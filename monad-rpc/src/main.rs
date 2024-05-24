@@ -325,7 +325,7 @@ struct MonadRpcResources {
 impl Handler<Disconnect> for MonadRpcResources {
     type Result = ();
 
-    fn handle(&mut self, msg: Disconnect, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: Disconnect, ctx: &mut Self::Context) -> Self::Result {
         debug!("received disconnect {:?}", ctx);
     }
 }
@@ -379,10 +379,12 @@ async fn main() -> std::io::Result<()> {
     // channel to send
     let (ipc_sender, ipc_receiver) = flume::unbounded::<TransactionSigned>();
     tokio::spawn(async move {
-        // FIXME: continuously try and reconnect if fail
-        let mut sender = MempoolTxIpcSender::new(args.ipc_path)
-            .await
-            .expect("IPC sock must exist");
+        let ipc_path = args.ipc_path;
+        let mut sender =
+            retry(|| async { MempoolTxIpcSender::new(&ipc_path).await.map_err(|e| e) })
+                .await
+                .expect("failed to create ipc sender");
+
         while let Ok(tx) = ipc_receiver.recv_async().await {
             sender.send(tx).await.expect("IPC send failed");
         }
@@ -408,6 +410,29 @@ async fn main() -> std::io::Result<()> {
         .bind((args.rpc_addr, args.rpc_port))?
         .run()
         .await
+}
+
+async fn retry<T, E, F>(attempt: impl Fn() -> F) -> Result<T, E>
+where
+    F: futures::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let duration = std::time::Duration::from_secs(2);
+    let mut retries = 1;
+
+    loop {
+        match attempt().await {
+            Ok(t) => return Ok(t),
+            Err(e) if retries <= 3 => {
+                let timeout = duration * retries;
+                debug!("caught error: {e}, retrying in {timeout:#?}");
+                tokio::time::sleep(timeout).await;
+                retries += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 #[cfg(test)]
