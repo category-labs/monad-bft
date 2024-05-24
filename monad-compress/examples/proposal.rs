@@ -61,7 +61,6 @@ fn main() {
     let epoch = epoch_manager.get_epoch(proposal.block.round);
     let proposer_leader = election.get_leader(
         proposal.block.round,
-        epoch,
         val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
     );
     let leader_key = keys

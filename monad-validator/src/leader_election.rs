@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{Epoch, NodeId, Round, Stake};
+use monad_types::{NodeId, Round, Stake};
 
 // VotingPower is i64
 pub trait LeaderElection {
@@ -9,7 +9,6 @@ pub trait LeaderElection {
     fn get_leader(
         &self,
         round: Round,
-        epoch: Epoch,
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> NodeId<Self::NodeIdPubKey>;
 }
@@ -20,9 +19,8 @@ impl<T: LeaderElection + ?Sized> LeaderElection for Box<T> {
     fn get_leader(
         &self,
         round: Round,
-        epoch: Epoch,
         validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
     ) -> NodeId<Self::NodeIdPubKey> {
-        (**self).get_leader(round, epoch, validators)
+        (**self).get_leader(round, validators)
     }
 }

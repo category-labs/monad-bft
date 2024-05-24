@@ -312,9 +312,9 @@ where
 
         // author, leader, round checks
         let round = self.pacemaker.get_current_round();
-        let block_round_leader =
-            node.election
-                .get_leader(block.get_round(), epoch, validator_set.get_members());
+        let block_round_leader = node
+            .election
+            .get_leader(block.get_round(), validator_set.get_members());
         if block.get_round() > round
             || author != block_round_leader
             || block.get_author() != block_round_leader
@@ -372,17 +372,15 @@ where
 
             // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
             // error-prone
-            let (next_round, next_epoch, next_validator_set) = {
+            let (next_round, next_validator_set) = {
                 let next_round = round + Round(1);
                 let next_epoch = node.epoch_manager.get_epoch(next_round);
                 let Some(next_validator_set) = node.val_epoch_map.get_val_set(&next_epoch) else {
                     todo!("handle non-existent validatorset for next round epoch");
                 };
-                (next_round, next_epoch, next_validator_set.get_members())
+                (next_round, next_validator_set.get_members())
             };
-            let next_leader = node
-                .election
-                .get_leader(next_round, next_epoch, next_validator_set);
+            let next_leader = node.election.get_leader(next_round, next_validator_set);
             let msg = ConsensusMessage {
                 version: node.version.into(),
                 message: ProtocolMessage::Vote(vote_msg),
@@ -773,7 +771,7 @@ where
     {
         let mut cmds = Vec::new();
 
-        let (round, epoch, validator_set) = {
+        let (round, validator_set) = {
             let round = self.pacemaker.get_current_round();
             // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
             // error-prone
@@ -781,15 +779,11 @@ where
             let Some(validator_set) = node.val_epoch_map.get_val_set(&epoch) else {
                 todo!("handle non-existent validatorset for next round epoch");
             };
-            (round, epoch, validator_set)
+            (round, validator_set)
         };
 
         // check that self is leader
-        if self.nodeid
-            != node
-                .election
-                .get_leader(round, epoch, validator_set.get_members())
-        {
+        if self.nodeid != node.election.get_leader(round, validator_set.get_members()) {
             return cmds;
         }
 
@@ -2521,7 +2515,6 @@ mod test {
         let epoch = env.epoch_manager.get_epoch(Round(11));
         let next_leader = env.election.get_leader(
             Round(11),
-            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -2687,7 +2680,6 @@ mod test {
         let epoch = env.epoch_manager.get_epoch(Round(missing_round + 1));
         let next_leader = env.election.get_leader(
             Round(missing_round + 1),
-            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         let mut leader_index = 0;
@@ -2779,7 +2771,6 @@ mod test {
         let epoch = env.epoch_manager.get_epoch(Round(4));
         let invalid_author = env.election.get_leader(
             Round(4),
-            epoch,
             env.val_epoch_map.get_val_set(&epoch).unwrap().get_members(),
         );
         assert!(invalid_author != NodeId::new(node.consensus_state.get_keypair().pubkey()));

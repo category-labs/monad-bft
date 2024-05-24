@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, marker::PhantomData};
 
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{Epoch, NodeId, Round, Stake};
+use monad_types::{NodeId, Round, Stake};
 
 use crate::leader_election::LeaderElection;
 
@@ -18,12 +18,14 @@ impl<PT: PubKey> Default for WeightedRoundRobin<PT> {
     }
 }
 
-impl<PT: PubKey> WeightedRoundRobin<PT> {
+impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
+    type NodeIdPubKey = PT;
+
     /// Computes the leader using interleaved weighted round-robin (IWRR) scheduling
     /// # Panics
     /// Panics if `validators.is_empty()` or if `validators` does not contain an element whose stake is > 0, because
     /// there is no sensible choice for leader in either of those cases.
-    pub fn get_leader(&self, round: Round, validators: &BTreeMap<NodeId<PT>, Stake>) -> NodeId<PT> {
+    fn get_leader(&self, round: Round, validators: &BTreeMap<NodeId<PT>, Stake>) -> NodeId<PT> {
         let max_stake = validators
             .iter()
             .map(|(_, stake)| stake.0)
@@ -58,19 +60,6 @@ impl<PT: PubKey> WeightedRoundRobin<PT> {
             })
             .nth(schedule_index)
             .expect("no validator had positive stake")
-    }
-}
-
-impl<PT: PubKey> LeaderElection for WeightedRoundRobin<PT> {
-    type NodeIdPubKey = PT;
-
-    fn get_leader(
-        &self,
-        round: Round,
-        _epoch: Epoch,
-        validators: &BTreeMap<NodeId<Self::NodeIdPubKey>, Stake>,
-    ) -> NodeId<PT> {
-        self.get_leader(round, validators)
     }
 }
 
