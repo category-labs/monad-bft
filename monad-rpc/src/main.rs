@@ -376,16 +376,19 @@ async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
     // initialize logger
-    let rpc_log_file_path = args
-        .logging_path
-        .unwrap_or_else(|| "/tmp/rpc.log".to_string());
-    let rpc_logger = Logger::new(
-        1000000000 * 1024, // 1GB max file size
-        2,                 // two files in rotation
-        rpc_log_file_path.clone(),
-        format!("{}.{}", rpc_log_file_path, "{}"),
-    );
-    rpc_logger.init();
+    if let Some(log_path) = args.logging_path {
+        Logger::new(
+            1 * 1024 * 1024 * 1024, // 1GB max file size
+            2,                      // two files in rotation
+            log_path.clone(),
+            format!("{}.{}", log_path, "{}"),
+        )
+        .init();
+        info!("Custom logger initialized with file path: {}", log_path);
+    } else {
+        env_logger::try_init().expect("failed to initialize logger");
+        info!("Default env logger initialized");
+    }
 
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender

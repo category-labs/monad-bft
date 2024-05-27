@@ -1,3 +1,5 @@
+use std::env;
+
 use log::LevelFilter;
 use log4rs::{
     append::{
@@ -10,7 +12,6 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     filter::threshold::ThresholdFilter,
 };
-use std::env;
 
 pub struct Logger {
     // Maximum file size for a which a new file should then be created
