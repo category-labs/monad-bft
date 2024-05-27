@@ -36,6 +36,7 @@ use crate::{
         monad_eth_maxPriorityFeePerGas,
     },
     jsonrpc::{JsonRpcError, Request, RequestWrapper, Response, ResponseWrapper},
+    logger::Logger,
     mempool_tx::MempoolTxIpcSender,
     websocket::Disconnect,
 };
@@ -50,6 +51,7 @@ mod eth_txn_handlers;
 mod gas_handlers;
 mod hex;
 mod jsonrpc;
+mod logger;
 mod mempool_tx;
 mod triedb;
 mod websocket;
@@ -373,7 +375,17 @@ pub fn create_app<S: 'static>(
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    env_logger::try_init().expect("failed to initialize logger");
+    // initialize logger
+    let rpc_log_file_path = args
+        .logging_path
+        .unwrap_or_else(|| "/tmp/rpc.log".to_string());
+    let rpc_logger = Logger::new(
+        1000000000 * 1024, // 1GB max file size
+        2,                 // two files in rotation
+        rpc_log_file_path.clone(),
+        format!("{}.{}", rpc_log_file_path, "{}"),
+    );
+    rpc_logger.init();
 
     // channels and thread for communicating over the mempool ipc socket
     // RPC handlers that need to send to the mempool can clone the ipc_sender
