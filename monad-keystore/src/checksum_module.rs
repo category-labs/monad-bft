@@ -22,27 +22,35 @@ pub enum ChecksumError {
 }
 
 impl ChecksumModule {
+    pub fn generate_checksum(
+        &self,
+        key: &[u8],
+        cipher_message: &Vec<u8>,
+    ) -> Vec<u8> {
+        assert!(key.len() == 32);
+
+        match self.checksum_hash {
+            ChecksumHash::SHA256 => {
+                let mut to_hash = key[16..].to_vec();
+                to_hash.extend(cipher_message.to_owned());
+
+                let mut sha256 = Sha256Hash::new();
+                sha256.update(to_hash);
+                sha256.hash().0.to_vec()
+            }
+        }
+    }
+
     pub fn verify_checksum(
         &self,
         decryption_key: &[u8],
         cipher_message: &Vec<u8>,
     ) -> Result<(), ChecksumError> {
-        assert!(decryption_key.len() == 32);
-
-        match self.checksum_hash {
-            ChecksumHash::SHA256 => {
-                let mut to_hash = decryption_key[16..].to_vec();
-                to_hash.extend(cipher_message.to_owned());
-
-                let mut sha256 = Sha256Hash::new();
-                sha256.update(to_hash);
-                let hash = sha256.hash().0.to_vec();
-
-                (hash == self.checksum)
-                    .then_some(())
-                    .ok_or(ChecksumError::FailedChecksumVerification)
-            }
-        }
+        let expected_checksum = self.generate_checksum(decryption_key, cipher_message);
+        
+        (expected_checksum == self.checksum)
+            .then_some(())
+            .ok_or(ChecksumError::FailedChecksumVerification)
     }
 }
 

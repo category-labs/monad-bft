@@ -28,6 +28,21 @@ pub struct CipherModule {
 }
 
 impl CipherModule {
+    pub fn encrypt(&self, private_key: &[u8], encryption_key: &[u8]) -> Vec<u8> {
+        match &self.params {
+            CipherParams::Aes128Params(aes_128_params) => {
+                let key = GenericArray::clone_from_slice(&encryption_key[..16]);
+                let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
+                let mut cipher = Aes128Ctr::new(&key, &iv);
+
+                let mut ciphertext = private_key.to_vec();
+                cipher.apply_keystream(&mut ciphertext);
+
+                ciphertext
+            }
+        }
+    }
+
     pub fn decrypt(&self, decryption_key: &[u8]) -> Vec<u8> {
         assert!(decryption_key.len() == 32);
 
@@ -37,10 +52,10 @@ impl CipherModule {
                 let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
                 let mut cipher = Aes128Ctr::new(&key, &iv);
 
-                let mut decrypted_message = self.cipher_message.clone();
-                cipher.apply_keystream(&mut decrypted_message);
+                let mut private_key = self.cipher_message.clone();
+                cipher.apply_keystream(&mut private_key);
 
-                decrypted_message.to_vec()
+                private_key
             }
         }
     }
