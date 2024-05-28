@@ -15,6 +15,6 @@ hex = { workspace = true }
 monad-crypto = { path = "../monad-crypto" }
 pbkdf2 = { workspace = true, features = ["simple"] }
 scrypt = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
