@@ -3508,6 +3508,7 @@ dependencies = [
  "hex",
  "monad-crypto",
  "pbkdf2",
+ "rand",
  "scrypt",
  "serde",
  "serde_json",

@@ -29,7 +29,7 @@ pub struct Pbkdf2Params {
 
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(untagged)]
-enum KDFParams {
+pub enum KDFParams {
     Scrypt(ScryptParams),
     Pbkdf2(Pbkdf2Params),
 }
@@ -37,8 +37,8 @@ enum KDFParams {
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct KDFModule {
-    kdf_name: String,
-    params: KDFParams,
+    pub kdf_name: String,
+    pub params: KDFParams,
 }
 
 #[derive(Debug)]

@@ -1,10 +1,11 @@
+use rand::{RngCore, SeedableRng};
 use serde::Deserialize;
 
 use crate::{
     checksum_module::{ChecksumError, ChecksumHash},
-    cipher_module::CipherModule,
+    cipher_module::{Aes128Params, CipherModule, CipherParams},
     hex_string::deserialize_bytes_from_hex_string,
-    kdf_module::{KDFError, KDFModule},
+    kdf_module::{KDFError, KDFModule, KDFParams, ScryptParams},
 };
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +38,37 @@ impl CryptoModules {
         serde_json::from_str(str).map_err(|_| KeystoreError::InvalidJSONFormat)
     }
 
+    // Default parameters if cryptographic modules not provided
+    pub fn create_default(seed: u64) -> Self {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        // create parameters
+        let mut iv = vec![0u8; 32];
+        rng.fill_bytes(&mut iv);
+        let mut salt = vec![0u8, 64];
+        rng.fill_bytes(&mut salt);
+        
+        CryptoModules {
+            cipher: CipherModule {
+                cipher_function: String::from("AES_128_CTR"),
+                params: CipherParams::Aes128Params(Aes128Params {
+                    iv,
+                }),
+            },
+            kdf: KDFModule {
+                kdf_name: String::from("scrypt"),
+                params: KDFParams::Scrypt(ScryptParams {
+                    salt,
+                    key_len: 32,
+                    n: 262144,
+                    r: 8,
+                    p: 1,
+                })
+            },
+            hash: ChecksumHash::SHA256
+        }
+    }
+
     // Encrypt the private key with a passphrase
     // Returns the corresponding ciphertext and checksum
     pub fn encrypt(&self, private_key: &Vec<u8>, password: &String) -> Result<(Vec<u8>, Vec<u8>), KeystoreError> {
@@ -67,14 +99,16 @@ impl CryptoModules {
     }
 }
 
-impl Keystore {}
+impl Keystore {
+
+}
 
 #[cfg(test)]
 mod test {
     use serde_json::json;
 
     use crate::keystore::CryptoModules;
-    
+
     #[test]
     fn test_keystore_encrypt() {
         let keystore_json = json!({
