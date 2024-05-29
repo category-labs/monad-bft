@@ -1,24 +1,27 @@
 use aes::cipher::{generic_array::GenericArray, KeyIvInit, StreamCipher};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use super::hex_string::deserialize_bytes_from_hex_string;
+use crate::hex_string::{deserialize_bytes_from_hex_string, serialize_bytes_to_hex_string};
 
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Aes128Params {
-    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
+    #[serde(
+        serialize_with = "serialize_bytes_to_hex_string",
+        deserialize_with = "deserialize_bytes_from_hex_string"
+    )]
     pub iv: Vec<u8>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum CipherParams {
     Aes128Params(Aes128Params),
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CipherModule {
     pub cipher_function: String,
@@ -26,14 +29,16 @@ pub struct CipherModule {
 }
 
 impl CipherModule {
-    pub fn encrypt(&self, private_key: &Vec<u8>, encryption_key: &Vec<u8>) -> Vec<u8> {
+    pub fn encrypt(&self, private_key: &[u8], encryption_key: &[u8]) -> Vec<u8> {
+        assert!(encryption_key.len() == 32);
+
         match &self.params {
             CipherParams::Aes128Params(aes_128_params) => {
                 let key = GenericArray::clone_from_slice(&encryption_key[..16]);
                 let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
                 let mut cipher = Aes128Ctr::new(&key, &iv);
 
-                let mut ciphertext = private_key.clone();
+                let mut ciphertext = private_key.to_owned();
                 cipher.apply_keystream(&mut ciphertext);
 
                 ciphertext
@@ -41,7 +46,7 @@ impl CipherModule {
         }
     }
 
-    pub fn decrypt(&self, ciphertext: &Vec<u8>, decryption_key: &Vec<u8>) -> Vec<u8> {
+    pub fn decrypt(&self, ciphertext: &[u8], decryption_key: &[u8]) -> Vec<u8> {
         assert!(decryption_key.len() == 32);
 
         match &self.params {
@@ -50,7 +55,7 @@ impl CipherModule {
                 let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
                 let mut cipher = Aes128Ctr::new(&key, &iv);
 
-                let mut private_key = ciphertext.clone();
+                let mut private_key = ciphertext.to_owned();
                 cipher.apply_keystream(&mut private_key);
 
                 private_key

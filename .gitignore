@@ -4,3 +4,5 @@
 /docker/devnet/monad/ledger
 /docker/devnet/monad/wal
 /docker/devnet/monad/triedb
+
+test-keys
