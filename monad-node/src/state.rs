@@ -1,12 +1,11 @@
 use std::{path::PathBuf, time::Duration};
 
-use base64::Engine;
 use clap::{error::ErrorKind, FromArgMatches};
 use log::info;
 use monad_bls::BlsKeyPair;
+use monad_keystore::keystore::Keystore;
 use monad_secp::KeyPair;
 use opentelemetry_otlp::WithExportConfig;
-use zeroize::Zeroize;
 
 use crate::{
     cli::Cli,
@@ -37,20 +36,22 @@ impl NodeState {
     pub fn setup(cmd: &mut clap::Command) -> Result<Self, NodeSetupError> {
         let cli = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
-        let secp_key = load_secp256k1_keypair(&cli.secp_identity)?;
+        let keystore_password = cli.keystore_password.as_deref().unwrap_or("");
+
+        let secp_key = load_secp256k1_keypair(&cli.secp_identity, keystore_password)?;
         info!(
             "Loaded secp256k1 key from {:?}, pubkey=0x{}",
             &cli.secp_identity,
             hex::encode(secp_key.pubkey().bytes_compressed())
         );
         // FIXME this is somewhat jank.. is there a better way?
-        let gossip_key = load_secp256k1_keypair(&cli.secp_identity)?;
+        let gossip_key = load_secp256k1_keypair(&cli.secp_identity, keystore_password)?;
         info!(
             "Loaded gossip key from {:?}, pubkey=0x{}",
             &cli.secp_identity,
             hex::encode(gossip_key.pubkey().bytes_compressed())
         );
-        let bls_key = load_bls12_381_keypair(&cli.bls_identity)?;
+        let bls_key = load_bls12_381_keypair(&cli.bls_identity, keystore_password)?;
         info!(
             "Loaded bls12_381 key from {:?}, pubkey=0x{}",
             &cli.bls_identity,
@@ -85,31 +86,31 @@ impl NodeState {
     }
 }
 
-fn load_secp256k1_keypair(path: &PathBuf) -> Result<KeyPair, NodeSetupError> {
-    let mut b64 = std::fs::read_to_string(path)?;
-    let mut secret = Vec::with_capacity(32);
-    let result = base64::engine::general_purpose::STANDARD.decode_vec(b64.trim_end(), &mut secret);
-    b64.zeroize();
-    if result.is_ok() && secret.len() == 32 {
-        return Ok(KeyPair::from_bytes(&mut secret)?);
+fn load_secp256k1_keypair(path: &PathBuf, keystore_password: &str) -> Result<KeyPair, NodeSetupError> {
+    let result = Keystore::load_key(path.as_path(), keystore_password);
+    if result.is_ok() {
+        let mut secret = result.unwrap();
+        if secret.len() == 32 {
+            return Ok(KeyPair::from_bytes(&mut secret)?);
+        } 
     }
     Err(NodeSetupError::Custom {
         kind: ErrorKind::ValueValidation,
-        msg: "secp secret must be base64-encoded 32 bytes".to_owned(),
+        msg: "secp secret must be encoded in keystore json".to_owned(),
     })
 }
 
-fn load_bls12_381_keypair(path: &PathBuf) -> Result<BlsKeyPair, NodeSetupError> {
-    let mut b64 = std::fs::read_to_string(path)?;
-    let mut secret = Vec::with_capacity(32);
-    let result = base64::engine::general_purpose::STANDARD.decode_vec(b64.trim_end(), &mut secret);
-    b64.zeroize();
-    if result.is_ok() && secret.len() == 32 {
-        return Ok(BlsKeyPair::from_bytes(&mut secret)?);
+fn load_bls12_381_keypair(path: &PathBuf, keystore_password: &str) -> Result<BlsKeyPair, NodeSetupError> {
+    let result = Keystore::load_key(path.as_path(), keystore_password);
+    if result.is_ok() {
+        let mut secret = result.unwrap();
+        if secret.len() == 32 {
+            return Ok(BlsKeyPair::from_bytes(&mut secret)?);
+        } 
     }
     Err(NodeSetupError::Custom {
         kind: ErrorKind::ValueValidation,
-        msg: "bls secret must be base64-encoded 32 bytes".to_owned(),
+        msg: "bls secret secret must be encoded in keystore json".to_owned(),
     })
 }
 

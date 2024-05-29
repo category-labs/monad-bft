@@ -43,6 +43,11 @@ pub struct Cli {
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    /// Set the password for decrypting keystore file
+    /// Default to empty string
+    #[arg(long)]
+    pub keystore_password: Option<String>,
+
     /// Default to run in prod mode
     /// Passing "testmode" enables test only arguments
     #[command(subcommand)]

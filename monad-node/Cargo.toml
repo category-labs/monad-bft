@@ -25,6 +25,7 @@ monad-executor = { path = "../monad-executor" }
 monad-executor-glue = { path = "../monad-executor-glue" }
 monad-gossip = { path = "../monad-gossip" }
 monad-ipc = { path = "../monad-ipc" }
+monad-keystore = { path = "../monad-keystore" }
 monad-quic = { path = "../monad-quic" }
 monad-ledger = { path = "../monad-ledger" }
 monad-secp = { path = "../monad-secp" }
@@ -35,7 +36,6 @@ monad-validator = { path = "../monad-validator" }
 monad-wal = { path = "../monad-wal" }
 monad-opentelemetry-executor = { path = "../monad-opentelemetry-executor" }
 
-base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
