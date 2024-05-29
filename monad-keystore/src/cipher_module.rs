@@ -9,20 +9,20 @@ type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 #[serde(deny_unknown_fields)]
 pub struct Aes128Params {
     #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
-    iv: Vec<u8>,
+    pub iv: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
-enum CipherParams {
+pub enum CipherParams {
     Aes128Params(Aes128Params),
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CipherModule {
-    cipher_function: String,
-    params: CipherParams,
+    pub cipher_function: String,
+    pub params: CipherParams,
 }
 
 impl CipherModule {

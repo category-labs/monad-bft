@@ -14,6 +14,7 @@ ctr = { workspace = true }
 hex = { workspace = true }
 monad-crypto = { path = "../monad-crypto" }
 pbkdf2 = { workspace = true, features = ["simple"] }
+rand = { workspace = true }
 scrypt = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
