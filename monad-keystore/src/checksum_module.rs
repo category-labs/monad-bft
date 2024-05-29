@@ -1,19 +1,9 @@
 use monad_crypto::hasher::{Hasher, Sha256Hash};
 use serde::Deserialize;
 
-use super::hex_string::deserialize_bytes_from_hex_string;
-
 #[derive(Debug, Deserialize, PartialEq)]
 pub enum ChecksumHash {
     SHA256,
-}
-
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ChecksumModule {
-    checksum_hash: ChecksumHash,
-    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
-    checksum: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -21,7 +11,7 @@ pub enum ChecksumError {
     FailedChecksumVerification,
 }
 
-impl ChecksumModule {
+impl ChecksumHash {
     pub fn generate_checksum(
         &self,
         key: &[u8],
@@ -29,7 +19,7 @@ impl ChecksumModule {
     ) -> Vec<u8> {
         assert!(key.len() == 32);
 
-        match self.checksum_hash {
+        match self {
             ChecksumHash::SHA256 => {
                 let mut to_hash = key[16..].to_vec();
                 to_hash.extend(cipher_message.to_owned());
@@ -43,12 +33,13 @@ impl ChecksumModule {
 
     pub fn verify_checksum(
         &self,
-        decryption_key: &[u8],
+        key: &[u8],
         cipher_message: &Vec<u8>,
+        checksum: &Vec<u8>,
     ) -> Result<(), ChecksumError> {
-        let expected_checksum = self.generate_checksum(decryption_key, cipher_message);
+        let expected_checksum = self.generate_checksum(key, cipher_message);
         
-        (expected_checksum == self.checksum)
+        (expected_checksum.as_slice() == checksum.as_slice())
             .then_some(())
             .ok_or(ChecksumError::FailedChecksumVerification)
     }
@@ -56,27 +47,20 @@ impl ChecksumModule {
 
 #[cfg(test)]
 mod test {
-    use serde_json::json;
-
-    use super::ChecksumModule;
     use crate::checksum_module::ChecksumHash;
 
     #[test]
-    fn test_parse_json() {
-        let checksum = "7e1163a838ecae42f0ddf93021d71d31073b010e61ba304920195f68fcb83b36";
-        let checksum_json = json!({
-            "checksum_hash": "SHA256",
-            "checksum": "7e1163a838ecae42f0ddf93021d71d31073b010e61ba304920195f68fcb83b36"
-        });
-        let serialized_json = checksum_json.to_string();
+    fn test_generate_checksum() {
+        let checksum_hash = ChecksumHash::SHA256;
+        let key = [0u8; 32];
+        let ciphertext = hex::decode("1234").unwrap();
 
-        let checksum_module: ChecksumModule = serde_json::from_str(&serialized_json).unwrap();
+        let checksum = checksum_hash.generate_checksum(
+            &key,
+            &ciphertext
+        );
+        let expected_checksum = "a0fec0e194fac478497c7e4b2279bb19379a15357e90f251ef78658bf592fabd";
 
-        let expected_module = ChecksumModule {
-            checksum_hash: ChecksumHash::SHA256,
-            checksum: hex::decode(checksum).unwrap(),
-        };
-
-        assert!(checksum_module == expected_module);
+        assert!(hex::encode(checksum) == expected_checksum);
     }
 }
