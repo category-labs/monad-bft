@@ -3609,7 +3609,6 @@ dependencies = [
 name = "monad-node"
 version = "0.1.0"
 dependencies = [
- "base64 0.21.5",
  "bytes",
  "chrono",
  "clap 4.4.10",
@@ -3630,6 +3629,7 @@ dependencies = [
  "monad-executor-glue",
  "monad-gossip",
  "monad-ipc",
+ "monad-keystore",
  "monad-ledger",
  "monad-opentelemetry-executor",
  "monad-quic",

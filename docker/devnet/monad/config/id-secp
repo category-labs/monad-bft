@@ -1,1 +1,21 @@
-fDQpgbuHJYS/up9z0zTIOh96F2ttJVexGZa9Pwwt20g=
+{
+    "ciphertext":"c6f374cde1b414fe8b33aba5216058cd5adf000399d5cc42e788b91788a830ae",
+    "checksum":"ecb56d4e6fca2f5d9f33c415bd61fcf0aed93680b3d2e12358c8e41e40456710",
+    "cipher":{
+        "cipher_function":"AES_128_CTR",
+        "params":{
+            "iv":"19b349ea721e00172914ed9d640086fd"
+        }
+    },
+    "kdf":{
+        "kdf_name":"scrypt",
+        "params":{
+            "salt":"05013c5016cb6e29170b594e32b8b5b1200f931706825b553283b369409d18d4",
+            "key_len":32,
+            "n":262144,
+            "r":8,
+            "p":1
+        }
+    },
+    "hash":"SHA256"
+}

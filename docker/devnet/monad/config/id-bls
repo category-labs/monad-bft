@@ -1,1 +1,21 @@
-apq1wC8JFu0pReZPpGJB1iBek7Yhr7tfLmUy4m7+SUc=
+{
+    "ciphertext":"dbc2de70a4bc24697294423d4cb4daff0bf071b504abe6efd52aef50b2b1dc22",
+    "checksum":"59ecd0c8020e7a9e9ca9243e6a3d824061d0634735fa2d2992ebb53136349773",
+    "cipher":{
+        "cipher_function":"AES_128_CTR",
+        "params":{
+            "iv":"d62263f95df5915c7fbc114b5edc8bc4"
+        }
+    },
+    "kdf":{
+        "kdf_name":"scrypt",
+        "params":{
+            "salt":"0b1804bc154d0b90656c07e01db45750d4157e12bb928fd1bbfdbfe31f544af2",
+            "key_len":32,
+            "n":262144,
+            "r":8,
+            "p":1
+        }
+    },
+    "hash":"SHA256"
+}
