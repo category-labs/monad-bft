@@ -21,21 +21,19 @@ enum CipherParams {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CipherModule {
-    pub cipher_function: String,
-    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
-    pub cipher_message: Vec<u8>,
+    cipher_function: String,
     params: CipherParams,
 }
 
 impl CipherModule {
-    pub fn encrypt(&self, private_key: &[u8], encryption_key: &[u8]) -> Vec<u8> {
+    pub fn encrypt(&self, private_key: &Vec<u8>, encryption_key: &Vec<u8>) -> Vec<u8> {
         match &self.params {
             CipherParams::Aes128Params(aes_128_params) => {
                 let key = GenericArray::clone_from_slice(&encryption_key[..16]);
                 let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
                 let mut cipher = Aes128Ctr::new(&key, &iv);
 
-                let mut ciphertext = private_key.to_vec();
+                let mut ciphertext = private_key.clone();
                 cipher.apply_keystream(&mut ciphertext);
 
                 ciphertext
@@ -43,7 +41,7 @@ impl CipherModule {
         }
     }
 
-    pub fn decrypt(&self, decryption_key: &[u8]) -> Vec<u8> {
+    pub fn decrypt(&self, ciphertext: &Vec<u8>, decryption_key: &Vec<u8>) -> Vec<u8> {
         assert!(decryption_key.len() == 32);
 
         match &self.params {
@@ -52,7 +50,7 @@ impl CipherModule {
                 let iv = GenericArray::clone_from_slice(&aes_128_params.iv);
                 let mut cipher = Aes128Ctr::new(&key, &iv);
 
-                let mut private_key = self.cipher_message.clone();
+                let mut private_key = ciphertext.clone();
                 cipher.apply_keystream(&mut private_key);
 
                 private_key
@@ -69,22 +67,19 @@ mod test {
 
     #[test]
     fn test_parse_json() {
-        let cipher_message = "c2755caf2c080f939f2b23ce55e6dfbf7430ac36593d778206a60f968baa7055";
         let iv = "af29e87a9fd4699e335f718d03e30ed9";
-        let kdf_json = json!({
+        let cipher_json = json!({
             "cipher_function": "AES_128_CTR",
-            "cipher_message": cipher_message,
             "params": {
                 "iv": iv
             }
         });
-        let serialized_json = kdf_json.to_string();
+        let serialized_json = cipher_json.to_string();
 
         let cipher_module: CipherModule = serde_json::from_str(&serialized_json).unwrap();
 
         let expected_module = CipherModule {
             cipher_function: "AES_128_CTR".to_owned(),
-            cipher_message: hex::decode(cipher_message).unwrap(),
             params: CipherParams::Aes128Params(Aes128Params {
                 iv: hex::decode(iv).unwrap(),
             }),
