@@ -1,14 +1,17 @@
 use pbkdf2::{hmac::Hmac, pbkdf2};
 use scrypt::{scrypt, Params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use super::hex_string::deserialize_bytes_from_hex_string;
+use crate::hex_string::{deserialize_bytes_from_hex_string, serialize_bytes_to_hex_string};
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScryptParams {
-    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
+    #[serde(
+        serialize_with = "serialize_bytes_to_hex_string",
+        deserialize_with = "deserialize_bytes_from_hex_string"
+    )]
     pub salt: Vec<u8>,
     pub key_len: u32,
     #[serde(alias = "N")]
@@ -17,24 +20,27 @@ pub struct ScryptParams {
     pub p: u32,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pbkdf2Params {
-    #[serde(deserialize_with = "deserialize_bytes_from_hex_string")]
+    #[serde(
+        serialize_with = "serialize_bytes_to_hex_string",
+        deserialize_with = "deserialize_bytes_from_hex_string"
+    )]
     pub salt: Vec<u8>,
     #[serde(alias = "dKlen")]
     pub dk_len: u32,
     pub count: u32,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum KDFParams {
     Scrypt(ScryptParams),
     Pbkdf2(Pbkdf2Params),
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KDFModule {
     pub kdf_name: String,
