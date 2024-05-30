@@ -10,7 +10,7 @@ env:
 
 jobs:
   publish-monad-bft-node:
-    runs-on: ubuntu-latest-32
+    runs-on: ubuntu-24.04-32
 
     permissions:
       contents: read
@@ -47,7 +47,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   publish-blockwatch:
-    runs-on: ubuntu-latest-32
+    runs-on: ubuntu-24.04-32
 
     permissions:
       contents: read
