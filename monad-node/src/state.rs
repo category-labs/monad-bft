@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use clap::{error::ErrorKind, FromArgMatches};
 use log::info;
@@ -86,13 +89,13 @@ impl NodeState {
     }
 }
 
-fn load_secp256k1_keypair(path: &PathBuf, keystore_password: &str) -> Result<KeyPair, NodeSetupError> {
-    let result = Keystore::load_key(path.as_path(), keystore_password);
+fn load_secp256k1_keypair(path: &Path, keystore_password: &str) -> Result<KeyPair, NodeSetupError> {
+    let result = Keystore::load_key(path, keystore_password);
     if result.is_ok() {
         let mut secret = result.unwrap();
         if secret.len() == 32 {
             return Ok(KeyPair::from_bytes(&mut secret)?);
-        } 
+        }
     }
     Err(NodeSetupError::Custom {
         kind: ErrorKind::ValueValidation,
@@ -100,13 +103,16 @@ fn load_secp256k1_keypair(path: &PathBuf, keystore_password: &str) -> Result<Key
     })
 }
 
-fn load_bls12_381_keypair(path: &PathBuf, keystore_password: &str) -> Result<BlsKeyPair, NodeSetupError> {
-    let result = Keystore::load_key(path.as_path(), keystore_password);
+fn load_bls12_381_keypair(
+    path: &Path,
+    keystore_password: &str,
+) -> Result<BlsKeyPair, NodeSetupError> {
+    let result = Keystore::load_key(path, keystore_password);
     if result.is_ok() {
         let mut secret = result.unwrap();
         if secret.len() == 32 {
             return Ok(BlsKeyPair::from_bytes(&mut secret)?);
-        } 
+        }
     }
     Err(NodeSetupError::Custom {
         kind: ErrorKind::ValueValidation,
