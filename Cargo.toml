@@ -89,7 +89,7 @@ chrono = "0.4.34"
 clap = "4.2"
 cmake = "0.1"
 console_error_panic_hook = "0.1"
-criterion = "0.4"
+criterion = { version = "0.4", features = ["html_reports"] }
 ctr = "0.9.2"
 cxx = "1.0"
 env_logger = "0.10"
