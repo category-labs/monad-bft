@@ -153,6 +153,7 @@ elif [ "$mode" == "test" ]; then
 
     docker compose build $build_services &&
     docker compose up --detach $node_services
+    docker compose logs $node_services --follow &
     sleep 10
     docker compose down $node_services
 

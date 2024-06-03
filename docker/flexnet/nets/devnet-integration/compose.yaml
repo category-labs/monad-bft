@@ -15,7 +15,7 @@ services:
 
   monad_execution:
     image: monad-execution-builder:latest
-    command: monad --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json --log_level ERROR
+    command: monad --db /monad/triedb/test.db --block_db /monad/ledger --genesis_file /monad/config/genesis.json --log_level DEBUG
     depends_on:
       - build_triedb
     volumes:
@@ -30,7 +30,7 @@ services:
     depends_on:
       - monad_execution
     environment:
-      - RUST_LOG=
+      - RUST_LOG=debug
     volumes:
       - ./node:/monad
 

@@ -23,7 +23,7 @@ WORKDIR /usr/src/monad-bft
 
 COPY --from=builder /usr/src/monad-bft/node /usr/local/bin/monad-node
 
-ENV RUST_LOG=info
+ENV RUST_LOG=debug
 CMD monad-node \
     --secp-identity /monad/config/id-secp \
     --bls-identity /monad/config/id-bls \
