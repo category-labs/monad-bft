@@ -410,10 +410,11 @@ mod test {
             .iter()
             .map(|(node_id, _, _)| *node_id)
             .collect();
-        let (validators_epoch_2, validators_epoch_3) = genesis_validators.split_at(2);
+        let (validators_epoch_3, validators_epoch_4) = genesis_validators.split_at(2);
         // validators for epoch 1 = genesis_validators
-        // validators for epoch 2 = validators_epoch_2
+        // validators for epoch 2 = genesis_validators
         // validators for epoch 3 = validators_epoch_3
+        // validators for epoch 4 = validators_epoch_4
 
         let all_peers: BTreeSet<_> = state_configs
             .iter()
@@ -446,17 +447,17 @@ mod test {
 
         let mut nodes = swarm_config.build();
 
-        let update_block_num = val_set_update_interval;
+        let update_block_num_end_1 = val_set_update_interval;
 
         let mut term_on_schedule_epoch_2 =
-            UntilTerminator::new().until_block(update_block_num.0 as usize + 1);
+            UntilTerminator::new().until_block(update_block_num_end_1.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch_2).is_some() {}
 
         // all nodes must still be in epoch 1 but schedule epoch 2
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(1));
         let epoch_2_start_round = verify_nodes_scheduled_epoch(
             nodes.states().values().collect_vec(),
-            update_block_num,
+            update_block_num_end_1,
             Epoch(2),
         );
 
@@ -468,17 +469,17 @@ mod test {
         // all nodes must have advanced to next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
 
-        let next_update_block_num = val_set_update_interval + val_set_update_interval;
+        let update_block_num_end_2 = SeqNum(val_set_update_interval.0 * 2);
 
         let mut term_on_schedule_epoch_3 =
-            UntilTerminator::new().until_block(next_update_block_num.0 as usize + 1);
+            UntilTerminator::new().until_block(update_block_num_end_2.0 as usize + 1);
         while nodes.step_until(&mut term_on_schedule_epoch_3).is_some() {}
 
         // all nodes must still be in the same epoch but schedule next epoch
         verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(2));
         let epoch_3_start_round = verify_nodes_scheduled_epoch(
             nodes.states().values().collect_vec(),
-            next_update_block_num,
+            update_block_num_end_2,
             Epoch(3),
         );
 
@@ -486,6 +487,28 @@ mod test {
         let mut term_in_epoch_3 =
             UntilTerminator::new().until_round(epoch_3_start_round + Round(10));
         while nodes.step_until(&mut term_in_epoch_3).is_some() {}
+
+        // all nodes must have advanced to next epoch
+        verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(3));
+
+        let update_block_num_end_3 = SeqNum(val_set_update_interval.0 * 3);
+
+        let mut term_on_schedule_epoch_4 =
+            UntilTerminator::new().until_block(update_block_num_end_3.0 as usize + 1);
+        while nodes.step_until(&mut term_on_schedule_epoch_4).is_some() {}
+
+        // all nodes must still be in the same epoch but schedule next epoch
+        verify_nodes_in_epoch(nodes.states().values().collect_vec(), Epoch(3));
+        let epoch_4_start_round = verify_nodes_scheduled_epoch(
+            nodes.states().values().collect_vec(),
+            update_block_num_end_3,
+            Epoch(4),
+        );
+
+        // terminate well into the fourth epoch
+        let mut term_in_epoch_4 =
+            UntilTerminator::new().until_round(epoch_4_start_round + Round(10));
+        while nodes.step_until(&mut term_in_epoch_4).is_some() {}
 
         let ledgers = nodes
             .states()
@@ -496,12 +519,14 @@ mod test {
 
         for ledger in ledgers {
             for block in ledger {
-                if block.round < epoch_2_start_round {
+                if block.round < epoch_3_start_round {
+                    // the first two epochs both have genesis validators as the
+                    // validator set
                     assert!(genesis_validators.contains(&block.author));
-                } else if block.round < epoch_3_start_round {
-                    assert!(validators_epoch_2.contains(&block.author));
-                } else {
+                } else if block.round < epoch_4_start_round {
                     assert!(validators_epoch_3.contains(&block.author));
+                } else {
+                    assert!(validators_epoch_4.contains(&block.author));
                 }
             }
         }

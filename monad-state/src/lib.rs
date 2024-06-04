@@ -437,7 +437,10 @@ where
 
         let mut init_cmds = Vec::new();
         init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
-            ValidatorEvent::UpdateValidators((self.validators, Epoch(1))),
+            ValidatorEvent::UpdateValidators((self.validators.clone(), Epoch(1))),
+        )));
+        init_cmds.extend(monad_state.update(MonadEvent::ValidatorEvent(
+            ValidatorEvent::UpdateValidators((self.validators, Epoch(2))),
         )));
 
         init_cmds.extend(

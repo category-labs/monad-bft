@@ -18,7 +18,7 @@ use monad_executor_glue::{MonadEvent, StateRootHashCommand};
 use monad_types::{Epoch, SeqNum, Stake};
 use rand::RngCore;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
-use tracing::debug;
+use tracing::{debug, error};
 
 pub trait MockableStateRootHash:
     Executor<Command = StateRootHashCommand<Block<Self::SignatureCollection>>>
@@ -40,6 +40,13 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
     }
 }
 
+/// Validator set update prepared from staking contract/execution
+struct ValidatorSetUpdate<SCT: SignatureCollection> {
+    /// Epoch for which the validator set is prepared
+    epoch: Epoch,
+    validator_data: ValidatorData<SCT>,
+}
+
 /// An updater that immediately creates a StateRootHash update and
 /// the ValidatorData for the next epoch when it receives a
 /// ledger commit command.
@@ -50,9 +57,8 @@ pub struct MockStateRootHashNop<ST, SCT: SignatureCollection> {
     state_root_update: Option<StateRootHashInfo>,
 
     // validator set updates
-    epoch: Epoch,
     genesis_validator_data: ValidatorData<SCT>,
-    next_val_data: Option<ValidatorData<SCT>>,
+    next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
     calc_state_root: fn(SeqNum) -> StateRootHash,
 
@@ -74,7 +80,6 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashNop<ST, SCT> {
         val_set_update_interval: SeqNum,
     ) -> Self {
         Self {
-            epoch: Epoch(1),
             state_root_update: None,
             genesis_validator_data,
             next_val_data: None,
@@ -145,12 +150,20 @@ where
                         .get_seq_num()
                         .is_epoch_end(self.val_set_update_interval)
                     {
-                        let next_epoch = block
+                        if self.next_val_data.is_some() {
+                            error!("Validator set data is not consumed");
+                        }
+                        let locked_epoch = block
                             .get_seq_num()
-                            .get_next_block_epoch(self.val_set_update_interval);
-                        assert_eq!(next_epoch, self.epoch + Epoch(1));
-                        self.epoch = next_epoch;
-                        self.next_val_data = Some(self.genesis_validator_data.clone());
+                            .get_locked_epoch(self.val_set_update_interval);
+                        assert_eq!(
+                            locked_epoch,
+                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                        );
+                        self.next_val_data = Some(ValidatorSetUpdate {
+                            epoch: locked_epoch,
+                            validator_data: self.genesis_validator_data.clone(),
+                        });
                     }
 
                     wake = true;
@@ -183,8 +196,8 @@ where
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
-                    next_val_data,
-                    this.epoch,
+                    next_val_data.validator_data,
+                    next_val_data.epoch,
                 )),
             )))
         } else {
@@ -210,10 +223,9 @@ pub struct MockStateRootHashSwap<ST, SCT: SignatureCollection> {
     state_root_update: Option<StateRootHashInfo>,
 
     // validator set updates
-    epoch: Epoch,
     val_data_1: ValidatorData<SCT>,
     val_data_2: ValidatorData<SCT>,
-    next_val_data: Option<ValidatorData<SCT>>,
+    next_val_data: Option<ValidatorSetUpdate<SCT>>,
     val_set_update_interval: SeqNum,
 
     waker: Option<Waker>,
@@ -242,7 +254,6 @@ impl<ST, SCT: SignatureCollection> MockStateRootHashSwap<ST, SCT> {
 
         Self {
             state_root_update: None,
-            epoch: Epoch(1),
             val_data_1: ValidatorData(val_data_1),
             val_data_2: ValidatorData(val_data_2),
             next_val_data: None,
@@ -302,16 +313,27 @@ where
                         .get_seq_num()
                         .is_epoch_end(self.val_set_update_interval)
                     {
-                        self.next_val_data = if self.epoch.0 % 2 == 0 {
-                            Some(self.val_data_1.clone())
+                        if self.next_val_data.is_some() {
+                            error!("Validator set data is not consumed");
+                        }
+                        let locked_epoch = block
+                            .get_seq_num()
+                            .get_locked_epoch(self.val_set_update_interval);
+                        assert_eq!(
+                            locked_epoch,
+                            seq_num.to_epoch(self.val_set_update_interval) + Epoch(2)
+                        );
+                        self.next_val_data = if locked_epoch.0 % 2 == 0 {
+                            Some(ValidatorSetUpdate {
+                                epoch: locked_epoch,
+                                validator_data: self.val_data_1.clone(),
+                            })
                         } else {
-                            Some(self.val_data_2.clone())
+                            Some(ValidatorSetUpdate {
+                                epoch: locked_epoch,
+                                validator_data: self.val_data_2.clone(),
+                            })
                         };
-
-                        let next_epoch =
-                            block.get_seq_num().to_epoch(self.val_set_update_interval) + Epoch(1);
-                        assert_eq!(next_epoch, self.epoch + Epoch(1));
-                        self.epoch = next_epoch;
                     }
 
                     wake = true;
@@ -344,8 +366,8 @@ where
         } else if let Some(next_val_data) = this.next_val_data.take() {
             Poll::Ready(Some(MonadEvent::ValidatorEvent(
                 monad_executor_glue::ValidatorEvent::<SCT>::UpdateValidators((
-                    next_val_data,
-                    this.epoch,
+                    next_val_data.validator_data,
+                    next_val_data.epoch,
                 )),
             )))
         } else {

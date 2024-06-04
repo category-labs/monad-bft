@@ -165,13 +165,14 @@ impl SeqNum {
         *self % val_set_update_interval == SeqNum(0) && *self != SeqNum(0)
     }
 
-    /// Compute the epoch number of the next block/sequence number
+    /// Get the epoch number whose validator set is locked by this block. Should
+    /// only be called on the boundary block sequence number
     ///
-    /// sn.get_next_block_epoch(interval) == sn.to_epoch(interval) + Epoch(1)
-    /// <->
-    /// sn.is_epoch_end(interval) == true
-    pub fn get_next_block_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
-        (*self + SeqNum(1)).to_epoch(val_set_update_interval)
+    /// Current design locks the info for epoch n + 2 by the end of epoch n. The
+    /// validators have an entire epoch to prepare themselves for any duties
+    pub fn get_locked_epoch(&self, val_set_update_interval: SeqNum) -> Epoch {
+        assert!(self.is_epoch_end(val_set_update_interval));
+        (*self).to_epoch(val_set_update_interval) + Epoch(2)
     }
 }
 
@@ -350,24 +351,5 @@ mod test {
     #[should_panic]
     fn test_epoch_conversion_genesis() {
         GENESIS_SEQ_NUM.to_epoch(SeqNum(100));
-    }
-
-    #[test]
-    fn test_next_epoch() {
-        let interval = SeqNum(100);
-        let mut seq_num = SeqNum(0);
-
-        while seq_num < SeqNum(interval.0 * 3) {
-            // sn.get_next_block_epoch(interval) == sn.to_epoch(interval) + Epoch(1)
-            // <->
-            // sn.is_epoch_end(interval) == true
-            let is_next_epoch =
-                seq_num.get_next_block_epoch(interval) == seq_num.to_epoch(interval) + Epoch(1);
-            let is_epoch_end = seq_num.is_epoch_end(interval);
-
-            assert_eq!(is_next_epoch, is_epoch_end);
-
-            seq_num += SeqNum(1);
-        }
     }
 }
