@@ -3,6 +3,7 @@ FROM ubuntu:22.04 AS base
 
 RUN apt update
 RUN apt upgrade -y
+RUN apt-get update
 RUN apt install -y ca-certificates curl pkg-config gnupg software-properties-common wget
 
 RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
