@@ -132,7 +132,7 @@ where
             ConsensusEvent::Timeout(tmo_event) => match tmo_event {
                 TimeoutVariant::Pacemaker => self
                     .consensus
-                    .handle_timeout_expiry(self.node_state.metrics)
+                    .handle_timeout_expiry(self.node_state.epoch_manager, self.node_state.metrics)
                     .into_iter()
                     .map(|cmd| {
                         ConsensusCommand::from_pacemaker_command(

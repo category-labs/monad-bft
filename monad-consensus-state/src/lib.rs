@@ -233,7 +233,7 @@ where
             high_qc: genesis_qc,
             state_root_validator,
             // high_qc round is 0, so pacemaker round should start at 1
-            pacemaker: Pacemaker::new(config.delta, Epoch(1), Round(1), None),
+            pacemaker: Pacemaker::new(config.delta, Round(1), None),
             safety: Safety::default(),
             nodeid: NodeId::new(my_pubkey),
             config,
@@ -258,14 +258,18 @@ where
     }
 
     /// handles the local timeout expiry event
-    pub fn handle_timeout_expiry(&mut self, metrics: &mut Metrics) -> Vec<PacemakerCommand<SCT>> {
+    pub fn handle_timeout_expiry(
+        &mut self,
+        epoch_manager: &EpochManager,
+        metrics: &mut Metrics,
+    ) -> Vec<PacemakerCommand<SCT>> {
         metrics.consensus_events.local_timeout += 1;
         debug!(
             "local timeout: round={:?}",
             self.pacemaker.get_current_round()
         );
         self.pacemaker
-            .handle_event(&mut self.safety, &self.high_qc)
+            .handle_event(&mut self.safety, &self.high_qc, epoch_manager)
             .into_iter()
             .collect()
     }
@@ -519,7 +523,7 @@ where
             node.metrics.consensus_events.remote_timeout_msg_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, node.epoch_manager, node.metrics)
+                .advance_round_tc(last_round_tc, node.metrics)
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
@@ -537,6 +541,7 @@ where
             .process_remote_timeout::<VTF::ValidatorSetType>(
                 validator_set,
                 validator_mapping,
+                node.epoch_manager,
                 &mut self.safety,
                 &self.high_qc,
                 author,
@@ -556,7 +561,7 @@ where
             node.metrics.consensus_events.created_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(&tc, node.epoch_manager, node.metrics)
+                .advance_round_tc(&tc, node.metrics)
                 .into_iter()
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
@@ -748,18 +753,14 @@ where
         let mut cmds = Vec::new();
         cmds.extend(self.process_qc(qc, epoch_manager, metrics));
 
-        cmds.extend(
-            self.pacemaker
-                .advance_round_qc(qc, epoch_manager, metrics)
-                .map(|cmd| {
-                    ConsensusCommand::from_pacemaker_command(
-                        &self.keypair,
-                        &self.cert_keypair,
-                        version,
-                        cmd,
-                    )
-                }),
-        );
+        cmds.extend(self.pacemaker.advance_round_qc(qc, metrics).map(|cmd| {
+            ConsensusCommand::from_pacemaker_command(
+                &self.keypair,
+                &self.cert_keypair,
+                version,
+                cmd,
+            )
+        }));
 
         // if the qc points to a block that is missing from the blocktree, we need
         // to request it.
@@ -1081,7 +1082,7 @@ where
             metrics.consensus_events.proposal_with_tc += 1;
             let advance_round_cmds = self
                 .pacemaker
-                .advance_round_tc(last_round_tc, epoch_manager, metrics)
+                .advance_round_tc(last_round_tc, metrics)
                 .map(|cmd| {
                     ConsensusCommand::from_pacemaker_command(
                         &self.keypair,
@@ -1684,9 +1685,11 @@ mod test {
 
         // local timeout for state in Round 1
         assert_eq!(consensus_state.pacemaker.get_current_round(), Round(1));
-        let _ = consensus_state
-            .pacemaker
-            .handle_event(&mut consensus_state.safety, &consensus_state.high_qc);
+        let _ = consensus_state.pacemaker.handle_event(
+            &mut consensus_state.safety,
+            &consensus_state.high_qc,
+            &env.epoch_manager,
+        );
 
         // check no vote commands result from receiving the proposal for round 1
 
@@ -1963,9 +1966,11 @@ mod test {
         assert!(p2_votes[0].vote.ledger_commit_info.is_commitable());
 
         // round 2 timeout
-        let pacemaker_cmds = consensus_state
-            .pacemaker
-            .handle_event(&mut consensus_state.safety, &consensus_state.high_qc);
+        let pacemaker_cmds = consensus_state.pacemaker.handle_event(
+            &mut consensus_state.safety,
+            &consensus_state.high_qc,
+            &env.epoch_manager,
+        );
 
         let broadcast_cmd = pacemaker_cmds
             .iter()
@@ -2701,7 +2706,7 @@ mod test {
         // now timeout someone
         let cmds = node1
             .consensus_state
-            .handle_timeout_expiry(&mut node1.metrics);
+            .handle_timeout_expiry(&env.epoch_manager, &mut node1.metrics);
         let tmo: Vec<&Timeout<SignatureCollectionType>> = cmds
             .iter()
             .filter_map(|cmd| match cmd {

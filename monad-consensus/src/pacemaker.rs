@@ -9,7 +9,7 @@ use monad_consensus_types::{
     timeout::{Timeout, TimeoutCertificate},
     voting::ValidatorMapping,
 };
-use monad_types::{Epoch, NodeId, Round};
+use monad_types::{NodeId, Round};
 use monad_validator::{epoch_manager::EpochManager, validator_set::ValidatorSetType};
 
 use crate::{
@@ -29,7 +29,6 @@ pub struct Pacemaker<SCT: SignatureCollection> {
     /// this is used to calculate the local round timeout duration
     delta: Duration,
 
-    current_epoch: Epoch,
     current_round: Round,
     /// None if we advanced to the current round via QC
     /// Some(TC) if we advanced to the current round via TC
@@ -79,13 +78,11 @@ pub enum PacemakerCommand<SCT: SignatureCollection> {
 impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn new(
         delta: Duration,
-        current_epoch: Epoch,
         current_round: Round,
         last_round_tc: Option<TimeoutCertificate<SCT>>,
     ) -> Self {
         Self {
             delta,
-            current_epoch,
             current_round,
             last_round_tc,
             pending_timeouts: BTreeMap::new(),
@@ -96,10 +93,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 
     pub fn get_current_round(&self) -> Round {
         self.current_round
-    }
-
-    pub fn get_current_epoch(&self) -> Epoch {
-        self.current_epoch
     }
 
     pub fn get_last_round_tc(&self) -> &Option<TimeoutCertificate<SCT>> {
@@ -114,14 +107,12 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     /// pending timeout messages are cleared.
     /// Creates the command to start the local round timeout
     #[must_use]
-    fn enter_round(&mut self, new_round: Round, new_epoch: Epoch) -> PacemakerCommand<SCT> {
+    fn enter_round(&mut self, new_round: Round) -> PacemakerCommand<SCT> {
         assert!(new_round > self.current_round);
-        assert!(new_epoch >= self.current_epoch);
 
         self.phase = PhaseHonest::Zero;
         self.pending_timeouts.clear();
 
-        self.current_epoch = new_epoch;
         self.current_round = new_round;
 
         PacemakerCommand::Schedule {
@@ -137,11 +128,13 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
+        epoch_manager: &EpochManager,
     ) -> Vec<PacemakerCommand<SCT>> {
         let mut cmds = vec![PacemakerCommand::ScheduleReset];
+        let current_epoch = epoch_manager.get_epoch(self.current_round);
         let maybe_broadcast = safety
             .make_timeout(
-                self.current_epoch,
+                current_epoch,
                 self.current_round,
                 high_qc.clone(),
                 &self.last_round_tc,
@@ -172,9 +165,10 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         &mut self,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
+        epoch_manager: &EpochManager,
     ) -> Vec<PacemakerCommand<SCT>> {
         self.phase = PhaseHonest::One;
-        self.local_timeout_round(safety, high_qc)
+        self.local_timeout_round(safety, high_qc, epoch_manager)
     }
 
     /// handle timeout messages from external nodes
@@ -189,6 +183,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
             SCT::NodeIdPubKey,
             SignatureCollectionKeyPairType<SCT>,
         >,
+        epoch_manager: &EpochManager,
         safety: &mut Safety,
         high_qc: &QuorumCertificate<SCT>,
         author: NodeId<SCT::NodeIdPubKey>,
@@ -215,7 +210,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
 
         if self.phase == PhaseHonest::Zero && validators.has_honest_vote(&timeouts) {
             // self.local_timeout_round emits PacemakerCommand::ScheduleReset
-            ret_commands.extend(self.local_timeout_round(safety, high_qc));
+            ret_commands.extend(self.local_timeout_round(safety, high_qc, epoch_manager));
             self.phase = PhaseHonest::One;
         }
 
@@ -273,7 +268,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_tc(
         &mut self,
         tc: &TimeoutCertificate<SCT>,
-        epoch_manager: &EpochManager,
         metrics: &mut Metrics,
     ) -> Option<PacemakerCommand<SCT>> {
         if tc.round < self.current_round {
@@ -281,9 +275,8 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         }
         metrics.consensus_events.enter_new_round_tc += 1;
         let new_round = tc.round + Round(1);
-        let new_epoch = epoch_manager.get_epoch(new_round);
         self.last_round_tc = Some(tc.clone());
-        Some(self.enter_round(new_round, new_epoch))
+        Some(self.enter_round(new_round))
     }
 
     /// advance the round based on a QC
@@ -293,7 +286,6 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
     pub fn advance_round_qc(
         &mut self,
         qc: &QuorumCertificate<SCT>,
-        epoch_manager: &EpochManager,
         metrics: &mut Metrics,
     ) -> Option<PacemakerCommand<SCT>> {
         if qc.get_round() < self.current_round {
@@ -302,8 +294,7 @@ impl<SCT: SignatureCollection> Pacemaker<SCT> {
         metrics.consensus_events.enter_new_round_qc += 1;
         self.last_round_tc = None;
         let new_round = qc.get_round() + Round(1);
-        let new_epoch = epoch_manager.get_epoch(new_round);
-        Some(self.enter_round(new_round, new_epoch))
+        Some(self.enter_round(new_round))
     }
 }
 
@@ -400,12 +391,8 @@ mod test {
 
     #[test]
     fn all_honest() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Epoch(1),
-            Round(1),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
@@ -413,6 +400,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(4, ValidatorSetFactory::default());
+        let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
         let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
@@ -458,6 +446,7 @@ mod test {
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[0].pubkey()),
@@ -470,6 +459,7 @@ mod test {
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[1].pubkey()),
@@ -486,6 +476,7 @@ mod test {
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[2].pubkey()),
@@ -499,6 +490,7 @@ mod test {
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[3].pubkey()),
@@ -510,12 +502,8 @@ mod test {
 
     #[test]
     fn phase_supermajority_invalid_no_progress() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Epoch(1),
-            Round(1),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
         let (keys, certkeys, valset, vmap) = create_keys_w_validators::<
@@ -523,6 +511,7 @@ mod test {
             SignatureCollectionType,
             _,
         >(4, ValidatorSetFactory::default());
+        let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
         let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
@@ -561,6 +550,7 @@ mod test {
         let _ = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[0].pubkey()),
@@ -570,6 +560,7 @@ mod test {
         let _ = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[1].pubkey()),
@@ -579,6 +570,7 @@ mod test {
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[2].pubkey()),
@@ -592,12 +584,8 @@ mod test {
 
     #[test]
     fn phase_supermajority_invalid_progress() {
-        let mut pacemaker = Pacemaker::<SignatureCollectionType>::new(
-            Duration::from_secs(1),
-            Epoch(1),
-            Round(1),
-            None,
-        );
+        let mut pacemaker =
+            Pacemaker::<SignatureCollectionType>::new(Duration::from_secs(1), Round(1), None);
         let mut safety = Safety::default();
 
         let keys = create_keys::<SignatureType>(4);
@@ -628,6 +616,7 @@ mod test {
             .expect("create validator set");
         let vmap = ValidatorMapping::new(voting_identity);
 
+        let epoch_manager = EpochManager::new(SeqNum(1000), Round(50));
         let timeout_epoch = Epoch(1);
         let timeout_round = Round(1);
         let high_qc = get_high_qc(
@@ -666,6 +655,7 @@ mod test {
         let _ = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[1].pubkey()),
@@ -675,6 +665,7 @@ mod test {
         let (tc, _cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[0].pubkey()),
@@ -688,6 +679,7 @@ mod test {
         let (tc, cmds) = pacemaker.process_remote_timeout(
             &valset,
             &vmap,
+            &epoch_manager,
             &mut safety,
             &high_qc,
             NodeId::new(keys[2].pubkey()),
