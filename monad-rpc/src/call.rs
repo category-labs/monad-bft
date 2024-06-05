@@ -2,6 +2,7 @@ use std::{cmp::min, path::Path};
 
 use alloy_primitives::{Address, Uint, U256, U64, U8};
 use monad_blockdb_utils::BlockDbEnv;
+use monad_cxx::StateOverrideSet;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
@@ -276,6 +277,8 @@ struct MonadEthCallParams {
     transaction: CallRequest,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
+    #[serde(default)]
+    state_overrides: StateOverrideSet, // empty = no state overrides
 }
 
 pub async fn monad_eth_call(
@@ -304,6 +307,15 @@ pub async fn monad_eth_call(
         }
         (None, data) | (data, None) => data,
     };
+
+    let state_overrides = &params.state_overrides;
+    for state_override in state_overrides.values() {
+        if state_override.state.is_some() && state_override.state_diff.is_some() {
+            return Err(JsonRpcError::invalid_params());
+        }
+    }
+
+    // TODO: check duplicate address, duplicate storage key, etc.
 
     let triedb_env: TriedbEnv = TriedbEnv::new(triedb_path);
 
@@ -372,6 +384,7 @@ pub async fn monad_eth_call(
         block_number,
         triedb_path,
         execution_ledger_path,
+        state_overrides,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
             Ok(json!(hex::encode(&output_data)))
