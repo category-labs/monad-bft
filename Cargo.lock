@@ -3645,6 +3645,8 @@ dependencies = [
  "hex-literal",
  "monad-eth-tx",
  "reth-primitives",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

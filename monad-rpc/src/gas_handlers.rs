@@ -3,6 +3,7 @@ use std::{ops::Sub, path::Path};
 use alloy_primitives::{U256, U64};
 use monad_blockdb::BlockTagKey;
 use monad_blockdb_utils::BlockDbEnv;
+use monad_cxx::StateOverrideSet;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{Transaction, TransactionKind};
 use reth_rpc_types::FeeHistory;
@@ -23,6 +24,8 @@ struct MonadEthEstimateGasParams {
     tx: CallRequest,
     #[serde(default, deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
+    #[serde(default)]
+    state_override_set: StateOverrideSet,
 }
 
 // TODO: bump reth-primitives to use the setter method from library
@@ -69,6 +72,8 @@ pub async fn monad_eth_estimateGas(
         }
         (None, data) | (data, None) => data,
     };
+
+    let state_override_set = &params.state_override_set;
 
     let triedb_env = TriedbEnv::new(triedb_path);
 
@@ -128,6 +133,7 @@ pub async fn monad_eth_estimateGas(
         block_number,
         triedb_path,
         execution_ledger_path,
+        state_override_set,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
             gas_used,
@@ -151,6 +157,7 @@ pub async fn monad_eth_estimateGas(
                 block_number,
                 triedb_path,
                 execution_ledger_path,
+                state_override_set,
             ) {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
                     gas_used, ..
@@ -183,6 +190,7 @@ pub async fn monad_eth_estimateGas(
             block_number,
             triedb_path,
             execution_ledger_path,
+            state_override_set,
         ) {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
