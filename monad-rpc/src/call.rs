@@ -1,12 +1,12 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
-use alloy_primitives::{Address, Uint, U256, U64, U8};
+use alloy_primitives::{Address, Bytes, Uint, B256, U256, U64, U8};
 use log::debug;
 use monad_blockdb_utils::BlockDbEnv;
 use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::Block;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, to_string, Value};
 
 use crate::{
     eth_json_types::{deserialize_block_tags, BlockTags},
@@ -248,11 +248,29 @@ pub struct CallInput {
     pub data: Option<alloy_primitives::Bytes>,
 }
 
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<U256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<U64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<Bytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<HashMap<B256, B256>>,
+    // TODO: statediff
+}
+
+pub type StateOverrides = HashMap<Address, StateOverride>;
+
 #[derive(Debug, Deserialize)]
 struct MonadEthCallParams {
     transaction: CallRequest,
     #[serde(deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
+    #[serde(default)]
+    state_overrides: StateOverrides, // empty = no state overrides
 }
 
 pub async fn monad_eth_call(
@@ -307,6 +325,8 @@ pub async fn monad_eth_call(
     let sender = params.transaction.from.unwrap_or_default();
     let txn: reth_primitives::transaction::Transaction = params.transaction.try_into()?;
     let block_number = block_header.block.header.number;
+    let state_overrides = to_string(&params.state_overrides).unwrap_or_default();
+
     match monad_cxx::eth_call(
         txn,
         block_header.block.header,
@@ -314,6 +334,7 @@ pub async fn monad_eth_call(
         block_number,
         triedb_path,
         execution_ledger_path,
+        state_overrides,
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { output_data, .. }) => {
             Ok(json!(hex::encode(&output_data)))

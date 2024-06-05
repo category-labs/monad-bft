@@ -5,6 +5,7 @@
 struct TestDb;
 
 TestDb *make_testdb();
+void testdb_deposit(TestDb *);
 void testdb_load_callenv(TestDb *);
 void testdb_load_callcontract(TestDb *);
 std::string testdb_path(TestDb const *);

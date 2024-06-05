@@ -17,6 +17,8 @@
 
 #include <boost/outcome/try.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <quill/Quill.h>
 
 #include <filesystem>
@@ -30,7 +32,8 @@ namespace
         Transaction const &txn, BlockHeader const &header,
         uint64_t const block_number, Address const &sender,
         BlockHashBuffer const &buffer,
-        std::vector<std::filesystem::path> const &dbname_paths)
+        std::vector<std::filesystem::path> const &dbname_paths,
+        std::string const &state_overrides)
     {
         // TODO: Hardset rev to be Shanghai at the moment
         static constexpr auto rev = EVMC_SHANGHAI;
@@ -51,8 +54,80 @@ namespace
         Incarnation incarnation{block_number, Incarnation::LAST_TX};
         State state{block_state, incarnation};
 
+        // State override
+        nlohmann::json state_overrides_json =
+            state_overrides.empty() ? nlohmann::json::object()
+                                    : nlohmann::json::parse(state_overrides);
+
+        for (auto const &[addr, state_delta] : state_overrides_json.items()) {
+            // address
+            Address address{};
+            auto const address_byte_string = evmc::from_hex(addr);
+            MONAD_ASSERT(address_byte_string.has_value());
+            std::copy_n(
+                address_byte_string.value().begin(),
+                address_byte_string.value().length(),
+                address.bytes);
+
+            if (state_delta.contains("balance")) {
+                auto const balance =
+                    intx::from_string<uint256_t>(state_delta.at("balance"));
+                if (balance >
+                    intx::be::load<uint256_t>(state.get_balance(address))) {
+                    state.add_to_balance(
+                        address,
+                        balance - intx::be::load<uint256_t>(
+                                      state.get_balance(address)));
+                }
+                else {
+                    state.subtract_from_balance(
+                        address,
+                        intx::be::load<uint256_t>(state.get_balance(address)) -
+                            balance);
+                }
+            }
+
+            if (state_delta.contains("nonce")) {
+                auto const nonce = state_delta.at("nonce").get<uint64_t>();
+                state.set_nonce(address, nonce);
+            }
+
+            if (state_delta.contains("code")) {
+                auto const code =
+                    evmc::from_hex(state_delta.at("code").get<std::string>())
+                        .value();
+                state.set_code(address, code);
+            }
+
+            // storage is called "state"
+            if (state_delta.contains("state")) {
+                // we need to access the account first before accessing its
+                // storage
+                state.get_nonce(address);
+                for (auto const &[k, v] : state_delta.at("state").items()) {
+                    bytes32_t storage_key;
+                    bytes32_t storage_value;
+                    std::memcpy(
+                        storage_key.bytes,
+                        evmc::from_hex(k).value().data(),
+                        32);
+
+                    auto const storage_value_byte_string =
+                        evmc::from_hex(v.get<std::string>()).value();
+                    std::copy_n(
+                        storage_value_byte_string.begin(),
+                        storage_value_byte_string.length(),
+                        storage_value.bytes);
+
+                    state.set_storage(address, storage_key, storage_value);
+                }
+            }
+
+            // TODO: StateDiff
+        }
+
         // nonce validation hack
-        auto const acct = ro.read_account(sender);
+        auto const &acct = state.recent_account(sender);
         enriched_txn.nonce = acct.has_value() ? acct.value().nonce : 0;
 
         BOOST_OUTCOME_TRY(validate_transaction(enriched_txn, acct));
@@ -102,7 +177,8 @@ int64_t monad_evmc_result::get_gas_refund() const
 monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_txn, std::vector<uint8_t> const &rlp_header,
     std::vector<uint8_t> const &rlp_sender, uint64_t const block_number,
-    std::string const &triedb_path, std::string const &blockdb_path)
+    std::string const &triedb_path, std::string const &blockdb_path,
+    std::string const &state_overrides)
 {
     byte_string_view rlp_txn_view(rlp_txn.begin(), rlp_txn.end());
     auto const txn_result = rlp::decode_transaction(rlp_txn_view);
@@ -152,8 +228,14 @@ monad_evmc_result eth_call(
             paths.emplace_back(file.path());
         }
     }
-    auto const result =
-        eth_call_helper(txn, block_header, block_number, sender, buffer, paths);
+    auto const result = eth_call_helper(
+        txn,
+        block_header,
+        block_number,
+        sender,
+        buffer,
+        paths,
+        state_overrides);
     monad_evmc_result ret;
     if (MONAD_UNLIKELY(result.has_error())) {
         ret.status_code = INT_MAX;

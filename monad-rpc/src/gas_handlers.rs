@@ -7,10 +7,10 @@ use monad_triedb_utils::{TriedbEnv, TriedbResult};
 use reth_primitives::{Transaction, TransactionKind, U256};
 use reth_rpc_types::FeeHistory;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{to_string, Value};
 
 use crate::{
-    call::{sender_gas_allowance, CallRequest},
+    call::{sender_gas_allowance, CallRequest, StateOverrides},
     eth_json_types::{
         deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
     },
@@ -22,6 +22,7 @@ struct MonadEthEstimateGasParams {
     tx: CallRequest,
     #[serde(default, deserialize_with = "deserialize_block_tags")]
     block: BlockTags,
+    state_overrides: StateOverrides,
 }
 
 // TODO: bump reth-primitives to use the setter method from library
@@ -96,6 +97,7 @@ pub async fn monad_eth_estimateGas(
 
     let sender = params.tx.from.unwrap_or_default();
     let mut txn: reth_primitives::transaction::Transaction = params.tx.try_into()?;
+    let state_overrides = to_string(&params.state_overrides).unwrap_or_default();
 
     if matches!(txn.kind(), TransactionKind::Call(_)) && txn.input().is_empty() {
         return serialize_result(format!("0x{:x}", 21_000));
@@ -108,6 +110,7 @@ pub async fn monad_eth_estimateGas(
         block_number,
         triedb_path,
         execution_ledger_path,
+        state_overrides.clone(),
     ) {
         monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
             gas_used,
@@ -131,6 +134,7 @@ pub async fn monad_eth_estimateGas(
                 block_number,
                 triedb_path,
                 execution_ledger_path,
+                state_overrides.clone(),
             ) {
                 monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult {
                     gas_used, ..
@@ -163,6 +167,7 @@ pub async fn monad_eth_estimateGas(
             block_number,
             triedb_path,
             execution_ledger_path,
+            state_overrides.clone(),
         ) {
             monad_cxx::CallResult::Success(monad_cxx::SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
