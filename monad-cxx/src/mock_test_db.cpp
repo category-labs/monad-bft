@@ -9,6 +9,8 @@ TestDb *make_testdb()
     return nullptr;
 }
 
+void testdb_deposit(TestDb *const db) {}
+
 void testdb_load_callenv(TestDb *const db) {}
 
 void testdb_load_callcontract(TestDb *const db) {}

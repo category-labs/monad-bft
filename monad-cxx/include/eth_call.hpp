@@ -23,4 +23,5 @@ struct monad_evmc_result
 monad_evmc_result eth_call(
     std::vector<uint8_t> const &rlp_txn, std::vector<uint8_t> const &rlp_header,
     std::vector<uint8_t> const &rlp_sender, uint64_t block_number,
-    std::string const &triedb_path, std::string const &blockdb_path);
+    std::string const &triedb_path, std::string const &blockdb_path,
+    std::string const &state_overrides);

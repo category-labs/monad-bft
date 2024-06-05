@@ -24,6 +24,18 @@ TestDb *make_testdb()
         .db = TrieDb{mpt::OnDiskDbConfig{.dbname_paths = {dir / "test.db"}}}};
 }
 
+// the default deposit account is 0x00...0
+void testdb_deposit(TestDb *const db)
+{
+    StateDeltas state_deltas;
+    state_deltas.emplace(
+        0x00000000000000000000_address,
+        StateDelta{
+            .account = {std::nullopt, Account{.balance = 1'000'000'000}}});
+
+    db->db.commit(state_deltas, {});
+}
+
 void testdb_load_callenv(TestDb *const db)
 {
     StateDeltas state_deltas;
@@ -59,6 +71,11 @@ void testdb_load_callcontract(TestDb *const db)
                 "12600efd5b60003560f01c61ff01146047576d77726f6e672d63616c6c6461"
                 "7461600052600e6012fd5b61ffee6000526002601ef3")
                 .value())));
+    code.emplace(
+        0x5fe7f977e71dba2ea1a68e21057beebb9be2ac30c6410aa38d4f3fbe41dcffd2_bytes32,
+        std::make_shared<CodeAnalysis>(
+            analyze(evmc::from_hex("0x01").value())));
+
     state_deltas.emplace(
         0x17e7eedce4ac02ef114a7ed9fe6e2f33feba1667_address,
         StateDelta{
@@ -67,6 +84,16 @@ void testdb_load_callcontract(TestDb *const db)
                 Account{
                     .code_hash =
                         0x975f732458c1f6c2dd22b866b031cc509c6d4f788b1f020e351c1cdba48dacca_bytes32,
+                    .nonce = 1}}});
+
+    state_deltas.emplace(
+        0x000000000000000000000000000000000000000a_address,
+        StateDelta{
+            .account = {
+                std::nullopt,
+                Account{
+                    .code_hash =
+                        0x5fe7f977e71dba2ea1a68e21057beebb9be2ac30c6410aa38d4f3fbe41dcffd2_bytes32,
                     .nonce = 1}}});
     db->db.commit(state_deltas, code);
 }
