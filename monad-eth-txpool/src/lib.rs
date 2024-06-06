@@ -13,7 +13,7 @@ use monad_crypto::hasher::{Hashable, Hasher};
 use monad_eth_tx::{EthFullTransactionList, EthSignedTransaction, EthTransaction, EthTxHash};
 use monad_types::{BlockId, Epoch, NodeId, Round, SeqNum};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct EthTxPool(BTreeMap<EthTxHash, EthTransaction>);
 
 impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
@@ -67,6 +67,66 @@ impl<SCT: SignatureCollection> TxPool<SCT, EthBlockPolicy> for EthTxPool {
         let leftovers = None;
 
         (FullTransactionList::new(full_tx_list), leftovers)
+    }
+}
+#[cfg(test)]
+mod test {
+    use std::collections::HashSet;
+
+    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_rlp::{Decodable, Encodable};
+    use bytes::BytesMut;
+    use monad_consensus_types::txpool::TxPool;
+    use monad_crypto::NopSignature;
+    use monad_eth_tx::{EthSignedTransaction, EthTransaction};
+    use monad_multi_sig::MultiSig;
+    use reth_primitives::{
+        hex::decode, sign_message, Transaction, TransactionKind, TransactionSigned, TxLegacy,
+    };
+    use tracing::debug;
+    use tracing_test::traced_test;
+
+    use crate::{EthBlockPolicy, EthTxPool};
+
+    type Pool = dyn TxPool<MultiSig<NopSignature>, EthBlockPolicy>;
+
+    #[test]
+    #[traced_test]
+    fn test_transaction_equality() {
+        let sender = B256::repeat_byte(0xAu8);
+        let tx = {
+            let transaction = Transaction::Legacy(TxLegacy {
+                chain_id: Some(1337),
+                nonce: 1,
+                gas_price: 1,
+                gas_limit: 1,
+                to: TransactionKind::Call(Address::repeat_byte(0u8)),
+                value: 0.into(),
+                input: vec![0; 0].into(),
+            });
+
+            let hash = transaction.signature_hash();
+
+            let sender_secret_key = sender;
+            let signature =
+                sign_message(sender_secret_key, hash).expect("signature should always succeed");
+
+            TransactionSigned {
+                transaction,
+                hash,
+                signature,
+            }
+        };
+        let encoded_txn = tx.envelope_encoded();
+        let decoded_txn = EthTransaction::decode(&mut encoded_txn.as_ref())
+            .unwrap()
+            .into_signed();
+        // for some reason, this passes
+        assert_eq!(decoded_txn.recalculate_hash(), tx.recalculate_hash());
+        // but this doesn't
+        assert_eq!(decoded_txn.hash(), tx.hash());
+        // which prevents this from passing as well
+        assert_eq!(decoded_txn, tx);
     }
 }
 

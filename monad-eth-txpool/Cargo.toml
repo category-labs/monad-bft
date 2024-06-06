@@ -18,6 +18,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 monad-multi-sig = { path = "../monad-multi-sig" }
+tracing-test = { workspace = true }
 
 alloy-primitives = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }

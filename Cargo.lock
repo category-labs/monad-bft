@@ -3412,6 +3412,7 @@ dependencies = [
  "rand",
  "reth-primitives",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
