@@ -76,6 +76,30 @@ int triedb_read(
     return value_len;
 }
 
+int triedb_read_data(
+    triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value,
+    uint64_t block_id)
+{
+    if (!db->db_.is_latest()) {
+        db->db_.load_latest();
+    }
+    auto result =
+        db->db_.get_data(monad::mpt::NibblesView{0, key_len_nibbles, key}, block_id);
+    if (!result.has_value()) {
+        return -1;
+    }
+
+    auto const &value_view = result.value();
+    if ((value_view.size() >> std::numeric_limits<int>::digits) != 0) {
+        // value length doesn't fit in return type
+        return -2;
+    }
+    int const value_len = (int)value_view.size();
+    *value = new uint8_t[value_len];
+    memcpy((void *)*value, value_view.data(), value_len);
+    return value_len;
+}
+
 void triedb_async_read(
     triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
     void (*completed)(bytes value, int length, void *user), void *user)

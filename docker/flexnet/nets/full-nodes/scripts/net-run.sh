@@ -155,6 +155,8 @@ done
 build_services=$(docker compose config --services | grep build)
 runner_services=$(docker compose config --services | grep runner)
 
+sed -i 's/ports:/expose:/g' compose.yaml
+
 docker compose build $build_services
 docker compose build $runner_services
 
@@ -185,3 +187,4 @@ else
     echo "Unreachable"
     exit 1
 fi
+exit 0

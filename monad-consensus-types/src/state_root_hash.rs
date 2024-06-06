@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use monad_crypto::hasher::{Hash, Hashable};
-use monad_types::{Round, SeqNum};
+use monad_types::SeqNum;
 use serde::{Deserialize, Serialize};
 use zerocopy::AsBytes;
 
@@ -29,13 +29,11 @@ impl AsRef<[u8]> for StateRootHash {
 pub struct StateRootHashInfo {
     pub state_root_hash: StateRootHash,
     pub seq_num: SeqNum,
-    pub round: Round,
 }
 
 impl Hashable for StateRootHashInfo {
     fn hash(&self, state: &mut impl monad_crypto::hasher::Hasher) {
         state.update(self.state_root_hash.as_bytes());
         state.update(self.seq_num.as_bytes());
-        state.update(self.round.as_bytes());
     }
 }

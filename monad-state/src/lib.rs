@@ -641,7 +641,6 @@ where
         for StateRootHashInfo {
             state_root_hash,
             seq_num,
-            round: _,
         } in self.forkpoint.state_roots.iter().cloned()
         {
             state_root_validator.add_state_root(seq_num, state_root_hash);
@@ -784,8 +783,9 @@ where
             }
 
             MonadEvent::AsyncStateVerifyEvent(async_state_verify_event) => {
-                let async_state_verify_cmds =
-                    AsyncStateVerifyChildState::new(self).update(async_state_verify_event);
+                let current_round_estimate = self.consensus.get_current_round();
+                let async_state_verify_cmds = AsyncStateVerifyChildState::new(self)
+                    .update(async_state_verify_event, current_round_estimate);
 
                 async_state_verify_cmds
                     .into_iter()
@@ -874,8 +874,6 @@ mod test {
             state_roots.push(StateRootHashInfo {
                 state_root_hash: StateRootHash(Hash([i as u8; 32])),
                 seq_num: SeqNum(i),
-                round: Round(i + 1), // this can't happen in prod
-                                     // but we're not verifying
             });
         }
 

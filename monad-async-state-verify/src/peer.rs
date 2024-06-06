@@ -14,7 +14,7 @@ use monad_crypto::{
     certificate_signature::CertificateSignature,
     hasher::{Hash, Hasher, HasherType},
 };
-use monad_types::{Epoch, NodeId, SeqNum, Stake};
+use monad_types::{Epoch, NodeId, Round, SeqNum, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 use tracing::{info, warn};
 
@@ -145,6 +145,7 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
         info: StateRootHashInfo,
         epoch: Epoch,
+        round: Round,
     ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>> {
         let mut cmds = Vec::new();
         let entry = self.state_roots.entry(info.seq_num).or_default();
@@ -192,6 +193,7 @@ where
             info,
             sig,
             epoch,
+            round,
         });
         cmds
     }
@@ -362,16 +364,14 @@ mod test {
         let true_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xab_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
         let false_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xff_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
-        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5));
+        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5), Round(1));
         assert_eq!(cmds.len(), 2);
 
         if let AsyncStateVerifyCommand::StateRootUpdate(info) = cmds[0] {
@@ -385,6 +385,7 @@ mod test {
             info,
             sig,
             epoch,
+            round,
         } = cmds[1]
         {
             assert_eq!(peer, node0);
@@ -466,10 +467,9 @@ mod test {
         let true_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xab_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
-        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5));
+        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5), Round(1));
         assert_eq!(cmds.len(), 1);
 
         if let AsyncStateVerifyCommand::BroadcastStateRoot {
@@ -477,6 +477,7 @@ mod test {
             info,
             sig,
             epoch,
+            round,
         } = cmds[0]
         {
             assert_eq!(peer, node0);
@@ -581,13 +582,11 @@ mod test {
         let true_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xab_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
         let false_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xff_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
         // malformed sig
@@ -634,16 +633,14 @@ mod test {
         let true_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xab_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
         let false_info = StateRootHashInfo {
             state_root_hash: StateRootHash(Hash([0xff_u8; 32])),
             seq_num: SeqNum(1),
-            round: Round(1),
         };
 
-        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5));
+        let cmds = asv.handle_local_state_root(node0, &certkeys[0], true_info, Epoch(5), Round(1));
         assert_eq!(cmds.len(), 2);
 
         if let AsyncStateVerifyCommand::StateRootUpdate(info) = cmds[0] {
@@ -657,6 +654,7 @@ mod test {
             info,
             sig,
             epoch,
+            round,
         } = cmds[1]
         {
             assert_eq!(peer, node0);

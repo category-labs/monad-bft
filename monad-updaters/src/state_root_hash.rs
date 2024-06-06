@@ -57,10 +57,10 @@ impl<T: MockableStateRootHash + ?Sized> MockableStateRootHash for Box<T> {
 }
 
 /// Validator set update prepared from staking contract/execution
-struct ValidatorSetUpdate<SCT: SignatureCollection> {
+pub(crate) struct ValidatorSetUpdate<SCT: SignatureCollection> {
     /// Epoch for which the validator set is prepared
-    epoch: Epoch,
-    validator_data: ValidatorSetData<SCT>,
+    pub epoch: Epoch,
+    pub validator_data: ValidatorSetData<SCT>,
 }
 
 /// An updater that immediately creates a StateRootHash update and
@@ -133,7 +133,6 @@ where
         // hash is pseudorandom seeded by the block's seq num to ensure
         // that it is deterministic between nodes
         let seq_num = block.get_seq_num();
-        let round = block.get_round();
         let state_root_hash = (self.calc_state_root)(seq_num);
         debug!(
             "block number {:?} state root hash {:?}",
@@ -142,7 +141,6 @@ where
         StateRootHashInfo {
             state_root_hash,
             seq_num,
-            round,
         }
     }
 }
@@ -328,7 +326,6 @@ where
 
     fn compute_state_root_hash(&self, block: &Block<SCT>) -> StateRootHashInfo {
         let seq_num = block.get_seq_num();
-        let round = block.get_round();
         let mut gen = ChaChaRng::seed_from_u64(seq_num.0);
         let mut hash = StateRootHash(Hash([0; 32]));
         gen.fill_bytes(&mut hash.0 .0);
@@ -336,7 +333,6 @@ where
         StateRootHashInfo {
             state_root_hash: hash,
             seq_num,
-            round,
         }
     }
 }

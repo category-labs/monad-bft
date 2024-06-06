@@ -11,4 +11,5 @@ monad-node \
     --mempool-ipc-path /monad/mempool.sock \
     --execution-ledger-path /monad/ledger \
     --blockdb-path /monad/blockdb \
+    --triedb-path /monad/triedb \
     > /monad/logs/client.log 2>&1

@@ -85,7 +85,6 @@ RUN --mount=type=cache,target=/usr/src/monad-bft/target     \
     cp `ls -lt $(find target/release | grep lib${ETH_CALL_TARGET}.so) | head -1 | awk '{print $9}'` /output/lib && \
     cp `ls -lt $(find target/release | grep lib${TRIEDB_TARGET}.so) | head -1 | awk '{print $9}'` /output/lib
 
-
 FROM ubuntu:24.04 AS exporter
 WORKDIR /output
 

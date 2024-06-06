@@ -44,6 +44,11 @@ int triedb_read(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, ui
     return value_len;
 }
 
+int triedb_read_data(triedb *db, bytes key, uint8_t key_len_nibbles, bytes *value, uint64_t block_id)
+{
+    return 0;
+}
+
 int triedb_finalize(bytes value)
 {
     delete value;

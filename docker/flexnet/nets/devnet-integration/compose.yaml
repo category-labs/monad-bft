@@ -34,6 +34,8 @@ services:
       - RUST_LOG=
     volumes:
       - ./node:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
 
   monad_rpc:
     build:

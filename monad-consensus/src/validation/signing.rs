@@ -471,9 +471,11 @@ impl<SCT: SignatureCollection> Unvalidated<PeerStateRootMessage<SCT>> {
         // If the node is lagging too far behind, it wouldn't know when the
         // next epoch is starting. The epoch retrieved here may be incorrect.
         // TODO: Need to check that case. Should trigger statesync.
-        let epoch = epoch_manager
-            .get_epoch(self.obj.info.round)
-            .ok_or(Error::InvalidEpoch)?;
+        let epoch = self
+            .obj
+            .info
+            .seq_num
+            .to_epoch(epoch_manager.val_set_update_interval);
         let valset = val_epoch_map
             .get_val_set(&epoch)
             .ok_or(Error::ValidatorSetDataUnavailable)?;

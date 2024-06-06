@@ -10,6 +10,8 @@ mod bindings {
     include!(concat!(env!("OUT_DIR"), "/triedb.rs"));
 }
 
+const STATE_NIBBLE: u8 = 0x0;
+
 pub struct Handle {
     db_ptr: *mut bindings::triedb,
 }
@@ -54,6 +56,33 @@ impl Handle {
 
         // check that there's no unexpected error
         assert!(result > 0);
+
+        let value_len = result.try_into().unwrap();
+        let value = unsafe {
+            let value = std::slice::from_raw_parts(value_ptr, value_len).to_vec();
+            bindings::triedb_finalize(value_ptr);
+            value
+        };
+
+        Some(value)
+    }
+
+    pub fn get_state_root(&self, block_id: u64) -> Option<Vec<u8>> {
+        let key: Vec<u8> = vec![STATE_NIBBLE];
+        let mut value_ptr = null();
+        let result = unsafe {
+            bindings::triedb_read_data(self.db_ptr, key.as_ptr(), 1, &mut value_ptr, block_id)
+        };
+        if result == -1 {
+            return None;
+        }
+
+        if result == 0 {
+            return Some(Vec::new());
+        }
+
+        // check that there's no unexpected error
+        assert_eq!(result, 32);
 
         let value_len = result.try_into().unwrap();
         let value = unsafe {

@@ -16,7 +16,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor_glue::{
     AsyncStateVerifyEvent, Command, LoopbackCommand, MonadEvent, RouterCommand,
 };
-use monad_types::{NodeId, RouterTarget};
+use monad_types::{NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager, validator_set::ValidatorSetTypeFactory,
     validators_epoch_mapping::ValidatorsEpochMapping,
@@ -78,6 +78,7 @@ where
     pub(super) fn update(
         &mut self,
         event: AsyncStateVerifyEvent<SCT>,
+        round: Round,
     ) -> Vec<WrappedAsyncStateVerifyCommand<SCT>> {
         let cmds = match event {
             AsyncStateVerifyEvent::PeerStateRoot {
@@ -100,10 +101,7 @@ where
 
                 let PeerStateRootMessage { peer, info, sig } = validated;
 
-                let epoch = self
-                    .epoch_manager
-                    .get_epoch(info.round)
-                    .expect("epoch exists");
+                let epoch = self.epoch_manager.get_epoch(round).expect("epoch exists");
                 let valset = self
                     .val_epoch_map
                     .get_val_set(&epoch)
@@ -123,8 +121,9 @@ where
                     self.cert_keypair,
                     info,
                     self.epoch_manager
-                        .get_epoch(info.round)
+                        .get_epoch(round)
                         .expect("record for local execution round"),
+                    round,
                 )
             }
         };
@@ -160,9 +159,10 @@ where
                 info,
                 sig,
                 epoch,
+                round,
             } => {
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::Broadcast(epoch, info.round),
+                    target: RouterTarget::Broadcast(epoch, round),
                     message: VerifiedMonadMessage::PeerStateRootMessage(Validated::new(
                         PeerStateRootMessage { peer, info, sig },
                     )),

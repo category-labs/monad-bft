@@ -30,7 +30,6 @@ impl From<&StateRootHashInfo> for ProtoStateRootHashInfo {
         ProtoStateRootHashInfo {
             state_root_hash: Some((&value.state_root_hash).into()),
             seq_num: Some((&value.seq_num).into()),
-            round: Some((&value.round).into()),
         }
     }
 }
@@ -53,17 +52,9 @@ impl TryFrom<ProtoStateRootHashInfo> for StateRootHashInfo {
             ))?
             .try_into()?;
 
-        let round = value
-            .round
-            .ok_or(ProtoError::MissingRequiredField(
-                "ProtoStateRootHashVote.round".to_owned(),
-            ))?
-            .try_into()?;
-
         Ok(StateRootHashInfo {
             state_root_hash,
             seq_num,
-            round,
         })
     }
 }

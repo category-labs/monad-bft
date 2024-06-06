@@ -361,8 +361,7 @@ where
             MonadEvent::StateRootEvent(_) => "STATE_ROOT".to_string(),
             MonadEvent::AsyncStateVerifyEvent(AsyncStateVerifyEvent::LocalStateRoot(root)) => {
                 format!(
-                    "AsyncStateVerifyEvent::LocalStateRoot -- round:{} seqnum:{} hash:{}",
-                    root.round.0,
+                    "AsyncStateVerifyEvent::LocalStateRoot -- seqnum:{} hash:{}",
                     root.seq_num.0,
                     root.state_root_hash.0.to_string()
                 )

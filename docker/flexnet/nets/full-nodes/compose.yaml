@@ -31,6 +31,8 @@ services:
     image: image0:latest
     volumes:
       - ./node0:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     cap_add:
       - NET_ADMIN
     depends_on:
@@ -59,6 +61,8 @@ services:
     image: image0:latest
     volumes:
       - ./node1:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     cap_add:
       - NET_ADMIN
     depends_on:
@@ -87,6 +91,8 @@ services:
     image: image0:latest
     volumes:
       - ./node2:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     cap_add:
       - NET_ADMIN
     depends_on:
@@ -115,6 +121,8 @@ services:
     image: image0:latest
     volumes:
       - ./node3:/monad
+    security_opt:
+      - "seccomp:${MONAD_BFT_ROOT}/docker/devnet/monad/config/profile.json"
     cap_add:
       - NET_ADMIN
     depends_on:

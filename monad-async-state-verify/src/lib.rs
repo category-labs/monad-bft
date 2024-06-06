@@ -3,7 +3,7 @@ use monad_consensus_types::{
     state_root_hash::StateRootHashInfo,
     voting::ValidatorMapping,
 };
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, NodeId, Round, Stake};
 use monad_validator::validator_set::ValidatorSetType;
 
 pub mod peer;
@@ -18,6 +18,7 @@ pub enum AsyncStateVerifyCommand<SCT: SignatureCollection> {
         info: StateRootHashInfo,
         sig: SCT::SignatureType,
         epoch: Epoch,
+        round: Round,
     },
     /// Send state root update to consensus state (we can remove this by having
     /// consensus taking a reference to async state verify)
@@ -50,6 +51,7 @@ pub trait AsyncStateVerifyProcess {
         cert_keypair: &SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
         info: StateRootHashInfo,
         epoch: Epoch,
+        round: Round,
     ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>>;
 
     fn handle_peer_state_root(
@@ -78,8 +80,9 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
         info: StateRootHashInfo,
         epoch: Epoch,
+        round: Round,
     ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>> {
-        (**self).handle_local_state_root(self_id, cert_keypair, info, epoch)
+        (**self).handle_local_state_root(self_id, cert_keypair, info, epoch, round)
     }
 
     fn handle_peer_state_root(
@@ -108,6 +111,7 @@ trait AsyncStateVerifyHelper {
         cert_keypair: &SignatureCollectionKeyPairType<Self::SCT>,
         info: StateRootHashInfo,
         epoch: Epoch,
+        round: Round,
     ) -> Vec<AsyncStateVerifyCommand<Self::SCT>>;
 
     fn handle_peer_state_root(
@@ -138,8 +142,9 @@ where
         cert_keypair: &SignatureCollectionKeyPairType<Self::SCT>,
         info: StateRootHashInfo,
         epoch: Epoch,
+        round: Round,
     ) -> Vec<AsyncStateVerifyCommand<Self::SCT>> {
-        self.handle_local_state_root(self_id, cert_keypair, info, epoch)
+        self.handle_local_state_root(self_id, cert_keypair, info, epoch, round)
     }
 
     fn handle_peer_state_root(
@@ -182,9 +187,10 @@ impl<SCT: SignatureCollection> AsyncStateVerifyProcess for BoxedAsyncStateVerify
         cert_keypair: &SignatureCollectionKeyPairType<Self::SignatureCollectionType>,
         info: StateRootHashInfo,
         epoch: Epoch,
+        round: Round,
     ) -> Vec<AsyncStateVerifyCommand<Self::SignatureCollectionType>> {
         self.0
-            .handle_local_state_root(self_id, cert_keypair, info, epoch)
+            .handle_local_state_root(self_id, cert_keypair, info, epoch, round)
     }
 
     fn handle_peer_state_root(
