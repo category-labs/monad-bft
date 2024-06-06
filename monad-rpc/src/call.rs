@@ -60,7 +60,7 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         gas_limit: call_request
                             .gas
-                            .unwrap_or(Uint::from(i64::MAX))
+                            .unwrap_or(Uint::from(10_000_000))
                             .try_into()
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         to: reth_primitives::TransactionKind::Call(
@@ -95,7 +95,7 @@ impl TryFrom<CallRequest> for reth_primitives::transaction::Transaction {
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         gas_limit: call_request
                             .gas
-                            .unwrap_or(Uint::from(i64::MAX))
+                            .unwrap_or(Uint::from(10_000_000))
                             .try_into()
                             .map_err(|_| JsonRpcError::invalid_params())?,
                         access_list: reth_primitives::AccessList::default(),
