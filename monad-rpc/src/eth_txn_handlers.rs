@@ -49,17 +49,15 @@ pub fn parse_tx_content(
     };
 
     // parse access list
-    let access_list = Some(
-        tx.access_list()
-            .unwrap()
-            .0
+    let access_list = tx.access_list().map(|list| {
+        list.0
             .iter()
             .map(|item| AccessListItem {
                 address: item.address.0.into(),
                 storage_keys: item.storage_keys.iter().map(|key| key.0.into()).collect(),
             })
-            .collect(),
-    );
+            .collect()
+    });
 
     let retval = Transaction {
         hash: tx.hash(),
