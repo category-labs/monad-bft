@@ -1,6 +1,5 @@
 #include <cassert>
 #include <filesystem>
-#include <iostream>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -75,6 +74,62 @@ int triedb_read(
     *value = new uint8_t[value_len];
     memcpy((void *)*value, value_view.data(), value_len);
     return value_len;
+}
+
+void triedb_async_read(
+    triedb *db, bytes key, uint8_t key_len_nibbles, uint64_t block_id,
+    void (*completed)(bytes value, int length, void *user), void *user)
+{
+    if (!db->db_.is_latest()) {
+        db->db_.load_latest();
+    }
+
+    struct receiver_t
+    {
+        void (*completed_)(bytes value, int length, void *user);
+        void *user_;
+
+        void set_value(
+            monad::async::erased_connected_operation *state,
+            monad::async::result<monad::byte_string> result)
+        {
+            bytes value = nullptr;
+            int length = 0;
+            auto completed = completed_;
+            auto user = user_;
+            if (!result) {
+                length = -1;
+            }
+            else {
+                auto const &value_view = result.value();
+                if ((value_view.size() >> std::numeric_limits<int>::digits) !=
+                    0) {
+                    // value length doesn't fit in return type
+                    length = -2;
+                }
+                else {
+                    length = (int)value_view.size();
+                    value = new uint8_t[value_len];
+                    memcpy((void *)value, value_view.data(), (size_t)length));
+                }
+            }
+            delete state;
+            completed(value, length, user);
+        }
+    };
+
+    auto *state = new auto(monad::async::connect(
+        monad::mpt::make_get_sender(
+            db->db_,
+            monad::mpt::NibblesView{0, key_len_nibbles, key},
+            block_id),
+        receiver_t{completed, user}));
+    state->initiate();
+}
+
+size_t triedb_poll(triedb *db, bool blocking, size_t count)
+{
+    return db->db_.poll(blocking, count);
 }
 
 int triedb_finalize(bytes value)
