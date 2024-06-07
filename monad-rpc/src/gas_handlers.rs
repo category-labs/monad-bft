@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{
     blockdb::BlockDbEnv,
-    call::CallRequest,
+    call::{sender_gas_allowance, CallRequest},
     eth_json_types::{
         deserialize_block_tags, deserialize_quantity, serialize_result, BlockTags, Quantity,
     },
@@ -32,7 +32,7 @@ pub async fn monad_eth_estimateGas(
 ) -> Result<Value, JsonRpcError> {
     trace!("monad_eth_estimateGas: {params:?}");
 
-    let params: MonadEthEstimateGasParams = match serde_json::from_value(params) {
+    let mut params: MonadEthEstimateGasParams = match serde_json::from_value(params) {
         Ok(s) => s,
         Err(e) => {
             debug!("invalid params {e}");
@@ -40,11 +40,17 @@ pub async fn monad_eth_estimateGas(
         }
     };
 
-    // TODO: use the provided block from user
-    let TriedbResult::BlockNum(block_number) = TriedbEnv::new(triedb_path).get_latest_block().await
-    else {
-        debug!("triedb did not have latest block header");
-        return Err(JsonRpcError::internal_error());
+    let triedb_env = TriedbEnv::new(triedb_path);
+
+    let block_number = match params.block {
+        BlockTags::Default(_) => {
+            let TriedbResult::BlockNum(block_number) = triedb_env.get_latest_block().await else {
+                debug!("triedb did not have latest block header");
+                return Err(JsonRpcError::internal_error());
+            };
+            block_number
+        }
+        BlockTags::Number(block_number) => block_number.0,
     };
 
     let Some(block_header) = blockdb_env
@@ -53,6 +59,16 @@ pub async fn monad_eth_estimateGas(
     else {
         debug!("blockdb did not have latest block header");
         return Err(JsonRpcError::internal_error());
+    };
+
+    let allowance = if params.tx.gas.is_none() {
+        sender_gas_allowance(&triedb_env, block_number, &params.tx).await?
+    } else {
+        None
+    };
+
+    if allowance.is_some() {
+        params.tx.gas = allowance;
     };
 
     let sender = params.tx.from.unwrap_or_default();

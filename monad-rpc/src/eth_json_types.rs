@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use log::debug;
 use monad_blockdb::BlockTagKey;
-use reth_primitives::U256;
+use reth_primitives::{Address, U256};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -75,6 +75,12 @@ impl From<U256> for FixedData<32> {
     fn from(u: U256) -> Self {
         let bytes: [u8; 32] = u.to_be_bytes();
         FixedData(bytes)
+    }
+}
+
+impl From<Address> for FixedData<20> {
+    fn from(addr: Address) -> Self {
+        FixedData(*addr.0)
     }
 }
 
