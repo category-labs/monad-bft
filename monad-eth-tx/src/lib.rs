@@ -1,9 +1,11 @@
-use alloy_primitives::TxHash;
+use alloy_primitives::{Address, TxHash};
 use alloy_rlp::{Decodable, Encodable};
 use bytes::{Bytes, BytesMut};
 use reth_primitives::{TransactionSigned, TransactionSignedEcRecovered};
 
 // FIXME reth types shouldn't be leaked
+pub type EthAddress = Address;
+pub type Nonce = u64;
 pub type EthTxHash = TxHash;
 // FIXME reth types shouldn't be leaked
 pub type EthTransaction = TransactionSignedEcRecovered;

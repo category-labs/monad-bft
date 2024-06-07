@@ -2113,6 +2113,16 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a19187fea3ac7e84da7dacf48de0c45d63c6a76f9490dae389aead16c243fce3"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a12e6657c4c97ebab115a42dcee77225f7f482cdd841cf7088c657a42e9e00e7"
@@ -3458,14 +3468,18 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "criterion",
+ "itertools 0.10.5",
  "monad-consensus-types",
  "monad-crypto",
  "monad-eth-tx",
  "monad-multi-sig",
  "monad-types",
  "rand",
+ "rand_chacha",
  "reth-primitives",
+ "sorted_vector_map",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
@@ -5044,6 +5058,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
+name = "quickcheck"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "588f6378e4dd99458b60ec275b4477add41ce4fa9f64dcba6f15adccb19b50d6"
+dependencies = [
+ "env_logger 0.8.4",
+ "log",
+ "rand",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.0"
 source = "git+https://github.com/omegablitz/quinn.git?rev=0780497b#0780497b297f514a5bd9807d3bd0c06c5f56f895"
@@ -6060,6 +6085,16 @@ checksum = "ce305eb0b4296696835b71df73eb912e0f1ffd2556a501fcede6e0c50349191c"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "sorted_vector_map"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9167648c2ababdbe45294fe7f7b0ab56555fd754990a7637a5a420774461368"
+dependencies = [
+ "itertools 0.11.0",
+ "quickcheck",
 ]
 
 [[package]]

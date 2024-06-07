@@ -12,17 +12,21 @@ monad-crypto = { path = "../monad-crypto" }
 monad-eth-tx = { path = "../monad-eth-tx" }
 monad-types = { path = "../monad-types" }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
+itertools = { workspace = true }
+reth-primitives = { workspace = true }
+sorted_vector_map = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-monad-multi-sig = { path = "../monad-multi-sig" }
-
-alloy-primitives = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
-reth-primitives = { workspace = true }
 rand = { workspace = true }
+rand_chacha = { workspace = true }
+tracing-test = { workspace = true }
+
+monad-multi-sig = { path = "../monad-multi-sig" }
 monad-types = { path = "../monad-types" }
 monad-crypto = { path = "../monad-crypto" }
 
