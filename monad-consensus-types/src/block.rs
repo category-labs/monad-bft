@@ -196,6 +196,7 @@ impl<SCT: SignatureCollection> BlockType<SCT> for Block<SCT> {
 /// Trait that represents how inner contents of a block should be validated
 pub trait BlockPolicy<SCT: SignatureCollection> {
     type ValidatedBlock: Sized
+        + Clone
         + PartialEq
         + Eq
         + std::fmt::Debug

@@ -364,11 +364,10 @@ where
         }
 
         // at this point, block is valid and can be added to the blocktree
-        cmds.extend(self.try_add_blocktree(&block, node));
+        cmds.extend(self.try_add_blocktree(&block, Some(state_root_action), node));
 
         // out-of-order proposals are possible if some round R+1 proposal arrives
-        // before R because of network conditions. The proposals are still valid but
-        // we don't vote on them
+        // before R because of network conditions. The proposals are still valid
         if block.get_round() != round {
             debug!(
                 "Out-of-order proposal: expected-round={:?} \
@@ -377,46 +376,6 @@ where
                 block.get_round(),
             );
             node.metrics.consensus_events.out_of_order_proposals += 1;
-            return cmds;
-        }
-
-        // StateRootAction::Defer means we don't have enough information to
-        // decide if the state root hash is valid. It's ok to insert into the
-        // block tree, but we can't vote on the block
-        if matches!(state_root_action, StateRootAction::Defer) {
-            return cmds;
-        }
-
-        assert!(matches!(state_root_action, StateRootAction::Proceed));
-        // decide if its safe to cast vote on this proposal
-        let vote = self.safety.make_vote::<SCT, BPT>(&block, &p.last_round_tc);
-
-        if let Some(v) = vote {
-            let vote_msg = VoteMessage::<SCT>::new(v, &self.cert_keypair);
-
-            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
-            // error-prone
-            let (next_round, next_validator_set) = {
-                let next_round = round + Round(1);
-                let next_epoch = node.epoch_manager.get_epoch(next_round);
-                let Some(next_validator_set) = node.val_epoch_map.get_val_set(&next_epoch) else {
-                    todo!("handle non-existent validatorset for next round epoch");
-                };
-                (next_round, next_validator_set.get_members())
-            };
-            let next_leader = node.election.get_leader(next_round, next_validator_set);
-            let msg = ConsensusMessage {
-                version: node.version.into(),
-                message: ProtocolMessage::Vote(vote_msg),
-            }
-            .sign(&self.keypair);
-            let send_cmd = ConsensusCommand::Publish {
-                target: RouterTarget::PointToPoint(next_leader),
-                message: msg,
-            };
-            debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
-            node.metrics.consensus_events.created_vote += 1;
-            cmds.push(send_cmd);
         }
 
         cmds
@@ -623,7 +582,8 @@ where
                         val_set,
                         node.metrics,
                     ));
-                    cmds.extend(self.try_add_blocktree(&block, node));
+
+                    cmds.extend(self.try_add_blocktree(&block, None, node));
                 }
             }
             BlockSyncResult::Failed(retry_cmd) => cmds.extend(retry_cmd),
@@ -643,7 +603,7 @@ where
     /// try and fetch it from the blocktree
     pub fn fetch_uncommitted_block(&self, bid: &BlockId) -> Option<&Block<SCT>> {
         self.pending_block_tree
-            .get(bid)
+            .get_block(bid)
             .map(|b| b.get_unvalidated_block_ref())
     }
 
@@ -693,7 +653,7 @@ where
         if qc.info.vote.ledger_commit_info.is_commitable()
             && self
                 .pending_block_tree
-                .has_path_to_root(&qc.info.vote.vote_info.parent_id)
+                .is_coherent(&qc.info.vote.vote_info.parent_id)
         {
             let blocks_to_commit = self
                 .pending_block_tree
@@ -778,6 +738,7 @@ where
     fn try_add_blocktree<VTF, LT, TT>(
         &mut self,
         block: &BPT::ValidatedBlock,
+        state_root_action: Option<StateRootAction>,
         node: &mut NodeState<ST, SCT, VTF, LT, TT>,
     ) -> Vec<ConsensusCommand<ST, SCT>>
     where
@@ -788,7 +749,88 @@ where
         self.pending_block_tree
             .add(block.clone())
             .expect("Failed to add block to blocktree");
-        self.try_propose(node)
+
+        let mut cmds = Vec::new();
+
+        // if the current round is the same as block round, try to vote. else, try to propose
+        if block.get_round() == self.pacemaker.get_current_round() {
+            // TODO: This block could be received via blocksync. Retrieve the block received
+            // this round and try to vote for that
+            let state_root_action =
+                state_root_action.expect("should exist if proposal was handled this round");
+            cmds.extend(self.try_vote(block, state_root_action, node));
+        } else {
+            cmds.extend(self.try_propose(node));
+        }
+
+        cmds
+    }
+
+    #[must_use]
+    fn try_vote<VTF, LT, TT>(
+        &mut self,
+        validated_block: &BPT::ValidatedBlock,
+        state_root_action: StateRootAction,
+        node: &mut NodeState<ST, SCT, VTF, LT, TT>,
+    ) -> Vec<ConsensusCommand<ST, SCT>>
+    where
+        VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+        TT: TxPool<SCT, BPT>,
+    {
+        let mut cmds = Vec::new();
+        let round = self.pacemaker.get_current_round();
+
+        // check that the block is coherent
+        if !self
+            .pending_block_tree
+            .is_coherent(&validated_block.get_id())
+        {
+            return cmds;
+        }
+
+        // StateRootAction::Defer means we don't have enough information to
+        // decide if the state root hash is valid. It's ok to insert into the
+        // block tree, but we can't vote on the block
+        if matches!(state_root_action, StateRootAction::Defer) {
+            return cmds;
+        }
+
+        assert!(matches!(state_root_action, StateRootAction::Proceed));
+
+        // decide if its safe to cast vote on this proposal
+        let last_tc = self.pacemaker.get_last_round_tc();
+        let vote = self.safety.make_vote::<SCT, BPT>(validated_block, last_tc);
+
+        if let Some(v) = vote {
+            let vote_msg = VoteMessage::<SCT>::new(v, &self.cert_keypair);
+
+            // TODO this grouping should be enforced by epoch_manager/val_epoch_map to be less
+            // error-prone
+            let (next_round, next_validator_set) = {
+                let next_round = round + Round(1);
+                let next_epoch = node.epoch_manager.get_epoch(next_round);
+                let Some(next_validator_set) = node.val_epoch_map.get_val_set(&next_epoch) else {
+                    todo!("handle non-existent validatorset for next round epoch");
+                };
+                (next_round, next_validator_set.get_members())
+            };
+            let next_leader = node.election.get_leader(next_round, next_validator_set);
+            let msg = ConsensusMessage {
+                version: node.version.into(),
+                message: ProtocolMessage::Vote(vote_msg),
+            }
+            .sign(&self.keypair);
+            let send_cmd = ConsensusCommand::Publish {
+                target: RouterTarget::PointToPoint(next_leader),
+                message: msg,
+            };
+            debug!("Created Vote: vote={:?} next_leader={:?}", v, next_leader);
+            node.metrics.consensus_events.created_vote += 1;
+            cmds.push(send_cmd);
+        }
+
+        cmds
     }
 
     #[must_use]
@@ -824,10 +866,10 @@ where
             return cmds;
         }
 
-        // check that we have path to root
+        // check that we have path to root and block is coherent
         if !self
             .pending_block_tree
-            .has_path_to_root(&self.high_qc.get_block_id())
+            .is_coherent(&self.high_qc.get_block_id())
         {
             return cmds;
         }
@@ -1575,6 +1617,22 @@ mod test {
             .collect()
     }
 
+    fn find_vote_message<ST, SCT>(
+        cmds: &[ConsensusCommand<ST, SCT>],
+    ) -> Option<&ConsensusCommand<ST, SCT>>
+    where
+        ST: CertificateSignatureRecoverable,
+        SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
+    {
+        cmds.iter().find(|c| match c {
+            ConsensusCommand::Publish {
+                target: RouterTarget::PointToPoint(..),
+                message,
+            } => matches!(&message.deref().deref().message, ProtocolMessage::Vote(..)),
+            _ => false,
+        })
+    }
+
     fn find_blocksync_request<ST, SCT>(
         cmds: &[ConsensusCommand<ST, SCT>],
     ) -> Option<&ConsensusCommand<ST, SCT>>
@@ -1869,8 +1927,8 @@ mod test {
         // next proposal will trigger everything to be committed if there is
         // a consecutive chain as expected
         // last proposal arrvies
-        let p_last = env.next_proposal_empty();
-        let (author, _, verified_message) = p_last.destructure();
+        let p_to_validate_blocks = env.next_proposal_empty();
+        let (author, _, verified_message) = p_to_validate_blocks.destructure();
         let _ = consensus_state.handle_proposal_message(author, verified_message, &mut node_state);
 
         assert_eq!(consensus_state.pending_block_tree.size(), 2);
@@ -2033,19 +2091,19 @@ mod test {
         let cp1 = env.next_proposal_empty();
         let mp1 = env.mal_proposal_empty();
 
-        let (author, _, verified_message) = cp1.destructure();
-        let block_1 = verified_message.block.clone();
-        let cmds1 = n1.handle_proposal_message(author, verified_message.clone());
+        let (author_1, _, proposal_message_1) = cp1.destructure();
+        let block_1 = proposal_message_1.block.clone();
+        let cmds1 = n1.handle_proposal_message(author_1, proposal_message_1.clone());
         let p1_votes = extract_vote_msgs(cmds1)[0];
 
-        let cmds3 = n3.handle_proposal_message(author, verified_message.clone());
+        let cmds3 = n3.handle_proposal_message(author_1, proposal_message_1.clone());
         let p3_votes = extract_vote_msgs(cmds3)[0];
 
-        let cmds4 = n4.handle_proposal_message(author, verified_message);
+        let cmds4 = n4.handle_proposal_message(author_1, proposal_message_1);
         let p4_votes = extract_vote_msgs(cmds4)[0];
 
-        let (author, _, verified_message) = mp1.destructure();
-        let cmds2 = n2.handle_proposal_message(author, verified_message);
+        let (mal_author_1, _, mal_proposal_message_1) = mp1.destructure();
+        let cmds2 = n2.handle_proposal_message(mal_author_1, mal_proposal_message_1);
         let p2_votes = extract_vote_msgs(cmds2)[0];
 
         assert_eq!(p1_votes.vote, p3_votes.vote);
@@ -2088,21 +2146,24 @@ mod test {
         // this should cause it to emit the RequestBlockSync Message because the the QC parent
         // points to a different proposal (second_state has the malicious proposal in its blocktree)
         let cp2 = env.next_proposal_empty();
-        let (author_2, _, verified_message_2) = cp2.destructure();
-        let block_2 = verified_message_2.block.clone();
-        let _ = n2.handle_proposal_message(author_2, verified_message_2.clone());
+        let (author_2, _, proposal_message_2) = cp2.destructure();
+        let block_2 = proposal_message_2.block.clone();
+        let cmds2 = n2.handle_proposal_message(author_2, proposal_message_2.clone());
+        // Blocksync already requested with the created QC, should not request for same
+        // block again unless the first request fails
+        assert!(find_blocksync_request(&cmds2).is_none());
 
         // first_state has the correct block in its blocktree, so it should not request anything
-        let cmds1 = n1.handle_proposal_message(author_2, verified_message_2.clone());
+        let cmds1 = n1.handle_proposal_message(author_2, proposal_message_2.clone());
         assert!(find_blocksync_request(&cmds1).is_none());
 
         // next correct proposal is created and we send it to the first two states.
         let cp3 = env.next_proposal_empty();
-        let (author, _, verified_message) = cp3.destructure();
-        let block_3 = verified_message.block.clone();
+        let (author_3, _, proposal_message_3) = cp3.destructure();
+        let block_3 = proposal_message_3.block.clone();
 
-        let cmds2 = n2.handle_proposal_message(author, verified_message.clone());
-        let cmds1 = n1.handle_proposal_message(author, verified_message);
+        let cmds2 = n2.handle_proposal_message(author_3, proposal_message_3.clone());
+        let cmds1 = n1.handle_proposal_message(author_3, proposal_message_3);
 
         // second_state has the malicious block in the blocktree, so it will not be able to
         // commit anything
@@ -2113,23 +2174,23 @@ mod test {
         assert_eq!(n1.consensus_state.pending_block_tree.size(), 2);
         assert!(find_commit_cmd(&cmds1).is_some());
 
-        let valset = env.val_epoch_map.get_val_set(&Epoch(1)).unwrap().clone();
         let msg = BlockSyncResponseMessage::BlockFound(block_1);
         // a block sync request arrived, helping second state to recover
         let _ = n2.handle_block_sync(routing_target, msg);
 
         // in the next round, second_state should recover and able to commit
         let cp4 = env.next_proposal_empty();
-        let (author, _, verified_message) = cp4.destructure();
-        let cmds2 = n2.handle_proposal_message(author, verified_message.clone());
+        let (author_4, _, proposal_message_4) = cp4.destructure();
+
+        let cmds2 = n2.handle_proposal_message(author_4, proposal_message_4.clone());
         // new block added should allow path_to_root properly, thus no more request sync
         assert!(find_blocksync_request(&cmds2).is_none());
-
-        let cmds1 = n1.handle_proposal_message(author, verified_message.clone());
 
         // second_state has the correct blocks, so expect to see a commit
         assert_eq!(n2.consensus_state.pending_block_tree.size(), 2);
         assert!(find_commit_cmd(&cmds2).is_some());
+
+        let cmds1 = n1.handle_proposal_message(author_4, proposal_message_4.clone());
 
         // first_state has the correct blocks, so expect to see a commit
         assert_eq!(n1.consensus_state.pending_block_tree.size(), 2);
@@ -2138,7 +2199,7 @@ mod test {
         // third_state only received proposal for round 1, and is missing proposal for round 2, 3, 4
         // feeding third_state with a proposal from round 4 should trigger a recursive behaviour to ask for blocks
 
-        let cmds3 = n3.handle_proposal_message(author, verified_message);
+        let cmds3 = n3.handle_proposal_message(author_4, proposal_message_4);
 
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 2);
         let res = find_blocksync_request(&cmds3);
@@ -2172,8 +2233,8 @@ mod test {
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 3);
         assert!(find_blocksync_request(&cmds3).is_none());
 
-        //arrival of proposal should also prevent block_sync_request from modifying the tree
-        let cmds2 = n3.handle_proposal_message(author_2, verified_message_2);
+        // arrival of proposal should also prevent block_sync_request from modifying the tree
+        let cmds2 = n3.handle_proposal_message(author_2, proposal_message_2);
         assert_eq!(n3.consensus_state.pending_block_tree.size(), 4);
         assert!(find_blocksync_request(&cmds2).is_none());
 
@@ -3788,5 +3849,250 @@ mod test {
 
         // Should trigger state sync (only metric assertion for now)
         assert_eq!(n1.metrics.consensus_events.trigger_state_sync, 1);
+    }
+
+    #[test_case(true; "Receive missed block through blocksync")]
+    #[test_case(false; "Receive missed block through out of order proposal")]
+    fn test_delay_coherency_check_of_proposal_message_scenario(through_blocksync: bool) {
+        // Scenario and expected result:
+        // State 1 receives Block 1. It should store Block 1 as validated in blocktree and send a vote message
+        // State 1 receives Block 3. It should request blocksync for Block 2, skip voting, and store Block 3
+        //      as unvalidated in blocktree
+        // State 1 receives Block 2 (blocksync/out-of-order proposal [ARGUMENT]). It should store Block 2 as
+        //      validated in blocktree, and skip voting. Block 3 should still be unvalidated in the blocktree.
+        // State 1 receives Block 4. It should validate Block 3 and Block 4, and send a vote message.
+
+        let num_states = 2;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            MockTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (n2, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal_empty();
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // no blocksync requests
+        assert!(find_blocksync_request(&cmds).is_none());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // generate block 2
+        let cp = env.next_proposal_empty();
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        // generate block 3
+        let cp = env.next_proposal_empty();
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_3_id = proposal_message_3.block.get_id();
+
+        // state receives block 3
+        let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+        // should not vote for block 3
+        assert!(find_vote_message(&cmds).is_none());
+        assert!(find_blocksync_request(&cmds).is_some());
+        // block 3 should be in the blocktree as not coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(!block_3_blocktree_entry.is_coherent);
+
+        // state receives block 2
+        if through_blocksync {
+            let msg = BlockSyncResponseMessage::BlockFound(proposal_message_2.block);
+            // blocksync response for state 2
+            let _ = n1.handle_block_sync(n2.consensus_state.nodeid, msg);
+        } else {
+            let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+            // should not vote for block or blocksync
+            assert!(find_vote_message(&cmds).is_none());
+            assert!(find_blocksync_request(&cmds).is_none());
+        }
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // block 3 should be in the blocktree as coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_3_blocktree_entry.is_coherent);
+    }
+
+    #[test_case(true; "Delay validation of blocksync block")]
+    #[test_case(false; "Delay validation of out of order proposal")]
+    fn test_update_coherency_of_missed_block(through_blocksync: bool) {
+        // Scenario and expected result:
+        // State 1 receives Block 1. It should store Block 1 as validated in blocktree and send a vote message
+        // State 1 receives Block 4. It should request blocksync for Block 3, skip voting, and store Block 4
+        //      as unvalidated in blocktree
+        // State 1 receives Block 3 (blocksync/out-of-order proposal [ARGUMENT]). It should request blocksync
+        //      for Block 2, and store Block 3 as unvalidated in blocktree
+        // State 1 receives Block 2. It should store Block 2 as validated in blocktree, and skip voting.
+        //      Block 3 should still be unvalidated in the blocktree.
+        // State 1 receives Block 5. It should validate Block 3, 4 and 5, and send a vote message.
+
+        let num_states = 2;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            _,
+            StateRootValidatorType,
+            _,
+            _,
+        >(
+            num_states as u32,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            MockTxPool::default(),
+            || NopStateRoot,
+        );
+
+        let (n1, other_states) = ctx.split_first_mut().unwrap();
+        let (n2, _) = other_states.split_first_mut().unwrap();
+
+        // state receives block 1
+        let cp = env.next_proposal_empty();
+        let (author_1, _, proposal_message_1) = cp.destructure();
+        let block_1_id = proposal_message_1.block.get_id();
+
+        let cmds = n1.handle_proposal_message(author_1, proposal_message_1);
+        // vote for block 1
+        assert!(find_vote_message(&cmds).is_some());
+        // no blocksync requests
+        assert!(find_blocksync_request(&cmds).is_none());
+        // block 1 should be in the blocktree as coherent
+        let block_1_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_1_id)
+            .expect("should be in the blocktree");
+        assert!(block_1_blocktree_entry.is_coherent);
+
+        // generate block 2
+        let cp = env.next_proposal_empty();
+        let (author_2, _, proposal_message_2) = cp.destructure();
+        let block_2_id = proposal_message_2.block.get_id();
+
+        // generate block 3
+        let cp = env.next_proposal_empty();
+        let (author_3, _, proposal_message_3) = cp.destructure();
+        let block_3_id = proposal_message_3.block.get_id();
+
+        // generate block 4
+        let cp = env.next_proposal_empty();
+        let (author_4, _, proposal_message_4) = cp.destructure();
+        let block_4_id = proposal_message_4.block.get_id();
+
+        // state receives block 4
+        let cmds = n1.handle_proposal_message(author_4, proposal_message_4);
+        // should not vote for block 4
+        assert!(find_vote_message(&cmds).is_none());
+        assert!(find_blocksync_request(&cmds).is_some());
+        // block 4 should be in the blocktree as not coherent
+        let block_4_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_4_id)
+            .expect("should be in the blocktree");
+        assert!(!block_4_blocktree_entry.is_coherent);
+
+        // state receives block 3
+        if through_blocksync {
+            let msg = BlockSyncResponseMessage::BlockFound(proposal_message_3.block);
+            // blocksync response for state 3
+            let cmds = n1.handle_block_sync(n2.consensus_state.nodeid, msg);
+            // request blocksync for block 2
+            assert!(find_blocksync_request(&cmds).is_some());
+        } else {
+            let cmds = n1.handle_proposal_message(author_3, proposal_message_3);
+            // should not vote for block or blocksync
+            assert!(find_vote_message(&cmds).is_none());
+            // request blocksync for block 2
+            assert!(find_blocksync_request(&cmds).is_some());
+        }
+        // block 3 should be in the blocktree as not coherent
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(!block_3_blocktree_entry.is_coherent);
+
+        // block 4 should still be in the blocktree as not coherent
+        let block_4_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_4_id)
+            .expect("should be in the blocktree");
+        assert!(!block_4_blocktree_entry.is_coherent);
+
+        // state receives block 2
+        if through_blocksync {
+            let msg = BlockSyncResponseMessage::BlockFound(proposal_message_2.block);
+            // blocksync response for state 2
+            let _ = n1.handle_block_sync(n2.consensus_state.nodeid, msg);
+        } else {
+            let cmds = n1.handle_proposal_message(author_2, proposal_message_2);
+            // should not vote for block or blocksync
+            assert!(find_vote_message(&cmds).is_none());
+            assert!(find_blocksync_request(&cmds).is_none());
+        }
+        // block 2 should be in the blocktree as coherent
+        let block_2_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_2_id)
+            .expect("should be in the blocktree");
+        assert!(block_2_blocktree_entry.is_coherent);
+
+        // block 3 should still be in the blocktree as not validated
+        let block_3_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_3_id)
+            .expect("should be in the blocktree");
+        assert!(block_3_blocktree_entry.is_coherent);
+
+        // block 4 should still be in the blocktree as not validated
+        let block_4_blocktree_entry = n1
+            .consensus_state
+            .pending_block_tree
+            .get_entry(&block_4_id)
+            .expect("should be in the blocktree");
+        assert!(block_4_blocktree_entry.is_coherent);
     }
 }

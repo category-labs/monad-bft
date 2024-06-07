@@ -182,7 +182,11 @@ fn all_messages_delayed(direction: TransformerReplayOrder) {
     // after replay
     //
     // the reverse function of happy_path_tick_by_block
-    let expected_blocks = (Duration::from_millis(500).as_millis() / delta.as_millis() - 1) / 2 - 2;
+    let expected_blocks = (Duration::from_millis(500).as_millis() / delta.as_millis() - 1) / 2 - 3;
+    // reason for -3:
+    // -2 because there are 2 uncommitted blocks in the blocktree
+    // -1 because the blackout node can't propose blocks when there are unvalidated
+    //    blocks in its blocktree
     swarm_ledger_verification(&swarm, longest_ledger_before + expected_blocks as usize);
 
     let longest_ledger_after = swarm
